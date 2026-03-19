@@ -1,4 +1,4 @@
-# Phase 4c: Chain Analysis — Split Agent Architecture
+# Phase 4c: Chain Analysis - Split Agent Architecture
 
 > **Usage**: Orchestrator reads this file and spawns 2 sequential chain agents.
 > Replace placeholders `{SCRATCHPAD}`, `{list...}`, etc. with actual values.
@@ -74,11 +74,11 @@ Check if reaching state S1 (from Finding A) also reaches state S2 (from Finding 
 ## PHASE 1: GROUPING AND DEDUP
 
 1. MERGE depth findings, enabler findings ([EN-N]), and breadth findings
-2. CROSS-CORRELATE findings across agents — deduplicate same root cause
+2. CROSS-CORRELATE findings across agents - deduplicate same root cause
 3. GROUP by root cause into hypotheses
 4. RECOVER dismissed findings if contradicted by depth agents
 5. ANALYZE compound exploits
-6. VERIFY coverage — every finding has a status
+6. VERIFY coverage - every finding has a status
 
 ### GROUPING RULES (MANDATORY)
 1. **Max 5 findings per hypothesis**. If grouping would exceed 5, split by exploit path.
@@ -98,9 +98,9 @@ Check if reaching state S1 (from Finding A) also reaches state S2 (from Finding 
 ## Output
 
 Write:
-- {SCRATCHPAD}/hypotheses.md — hypothesis table (grouped findings)
-- {SCRATCHPAD}/finding_mapping.md — finding → hypothesis mapping
-- {SCRATCHPAD}/enabler_results.md — enabler enumeration results (dangerous states, 5-actor tables, cross-state interactions)
+- {SCRATCHPAD}/hypotheses.md - hypothesis table (grouped findings)
+- {SCRATCHPAD}/finding_mapping.md - finding → hypothesis mapping
+- {SCRATCHPAD}/enabler_results.md - enabler enumeration results (dangerous states, 5-actor tables, cross-state interactions)
 
 Return: 'DONE: {N} hypotheses, {E} enabler paths enumerated'
 ")
@@ -121,17 +121,17 @@ Read:
 - {SCRATCHPAD}/hypotheses.md (grouped hypotheses from Agent 1)
 - {SCRATCHPAD}/finding_mapping.md (finding → hypothesis mapping from Agent 1)
 - {SCRATCHPAD}/enabler_results.md (enabler enumeration + cross-state interactions from Agent 1)
-- {SCRATCHPAD}/variable_finding_map.md (variable→finding cross-reference for variable-level matching — if missing, fall back to grep-based variable name matching in findings_inventory.md)
+- {SCRATCHPAD}/variable_finding_map.md (variable→finding cross-reference for variable-level matching - if missing, fall back to grep-based variable name matching in findings_inventory.md)
 - {SCRATCHPAD}/findings_inventory.md (for full finding details when needed)
 
 For specific chain candidates, read the relevant source files directly.
 
-## PHASE 2: CHAIN ANALYSIS — Match Postconditions to Preconditions
+## PHASE 2: CHAIN ANALYSIS - Match Postconditions to Preconditions
 
 For each PARTIAL or REFUTED finding:
 1. Extract its missing precondition and type (STATE/ACCESS/TIMING/EXTERNAL/BALANCE)
-2. **For STATE-type preconditions**: extract the specific state variable name(s). Use variable_finding_map.md to find ALL findings that write to the SAME variable — match on variable names, not just descriptions.
-3. Search ALL CONFIRMED/PARTIAL findings for matching postconditions — across ALL severity tiers and vulnerability classes
+2. **For STATE-type preconditions**: extract the specific state variable name(s). Use variable_finding_map.md to find ALL findings that write to the SAME variable - match on variable names, not just descriptions.
+3. Search ALL CONFIRMED/PARTIAL findings for matching postconditions - across ALL severity tiers and vulnerability classes
 4. If found: Create CHAIN HYPOTHESIS with combined attack sequence
 
 ### Chain Hypothesis Format
@@ -184,15 +184,15 @@ For each chain hypothesis:
 
 ## Output
 
-Update {SCRATCHPAD}/hypotheses.md — add chain hypotheses to the hypothesis table
+Update {SCRATCHPAD}/hypotheses.md - add chain hypotheses to the hypothesis table
 Write:
-- {SCRATCHPAD}/synthesis_full.md — full analysis (enabler + grouping + chain results)
-- {SCRATCHPAD}/chain_hypotheses.md — chain summary with:
+- {SCRATCHPAD}/synthesis_full.md - full analysis (enabler + grouping + chain results)
+- {SCRATCHPAD}/chain_hypotheses.md - chain summary with:
   1. Chain summary table: Chain ID | Finding A | Missing Precondition | Finding B | Postcondition Match | Chain Severity
   2. Detailed chain hypotheses
   3. Findings status update (which findings upgraded)
   4. Verification priority order
-- {SCRATCHPAD}/composition_coverage.md — composition coverage map
+- {SCRATCHPAD}/composition_coverage.md - composition coverage map
 
 Return: 'DONE: {M} chains identified, {K} severity upgrades, {U} unexplored pairs remaining, verification priority: [list]'
 ")
@@ -235,7 +235,7 @@ ITERATIVE_CHAIN_COMPOSITION(SCRATCHPAD):
 
 ```
 Task(subagent_type="security-analyzer", prompt="
-You are the Chain Composition Agent — ITERATION 2 (targeted cross-class pass).
+You are the Chain Composition Agent - ITERATION 2 (targeted cross-class pass).
 
 The first chain analysis identified {M} chains. {U} cross-class finding pairs were NOT explored.
 Analyze ONLY these unexplored pairs for compound attack paths.
@@ -246,7 +246,7 @@ Analyze ONLY these unexplored pairs for compound attack paths.
 - {SCRATCHPAD}/findings_inventory.md (full finding details)
 
 ## Unexplored Pairs
-{PASTE UNEXPLORED CROSS-CLASS PAIRS — max 15}
+{PASTE UNEXPLORED CROSS-CLASS PAIRS - max 15}
 
 ## Your Task
 For EACH pair:
@@ -277,10 +277,10 @@ Chain hypotheses receive PRIORITY in verification:
 
 ```solidity
 function test_CH1_full_chain() public {
-    // === STEP 1: Enabler (Finding B) — create the postcondition ===
-    // === VERIFY POSTCONDITION — assert precondition for Finding A is now met ===
-    // === STEP 2: Blocked Finding (Finding A) — execute previously-blocked attack ===
-    // === VERIFY CHAIN IMPACT — assert combined impact > either alone ===
+    // === STEP 1: Enabler (Finding B) - create the postcondition ===
+    // === VERIFY POSTCONDITION - assert precondition for Finding A is now met ===
+    // === STEP 2: Blocked Finding (Finding A) - execute previously-blocked attack ===
+    // === VERIFY CHAIN IMPACT - assert combined impact > either alone ===
 }
 ```
 

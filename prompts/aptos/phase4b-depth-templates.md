@@ -103,7 +103,7 @@ Also read {SCRATCHPAD}/attack_surface.md and check for UNANALYZED attack vectors
    - Rule 2 (Griefable Preconditions): Were ALL functions with manipulable preconditions checked (admin AND permissionless)? Were resource creation front-running and FungibleStore donation vectors checked?
    - Rule 10 (Worst-State): Were severity assessments using realistic peak parameters?
    - Rule 14 (Constraint Coherence + Setter Regression): Were independently-settable limits checked for coherence? Were admin setters checked for regression below accumulated state?
-   - **Write completeness (uses pre-computed invariants)**: Read `{SCRATCHPAD}/semantic_invariants.md` (pre-computed by Phase 4a.5 agent). For each variable flagged with POTENTIAL GAP: verify the gap is real by tracing the value-changing function — does it actually modify the tracked value without updating the variable? If confirmed → FINDING. Also check: are there value-changing functions the pre-computation agent missed? Cross-reference with your own code reading.
+   - **Write completeness (uses pre-computed invariants)**: Read `{SCRATCHPAD}/semantic_invariants.md` (pre-computed by Phase 4a.5 agent). For each variable flagged with POTENTIAL GAP: verify the gap is real by tracing the value-changing function - does it actually modify the tracked value without updating the variable? If confirmed → FINDING. Also check: are there value-changing functions the pre-computation agent missed? Cross-reference with your own code reading.
 
 7. **Address vs signer recipient**: For every entry function that accepts an `address` parameter AND modifies accounting/state for that address:
    - Does the function handle the case where `address != signer::address_of(account)`?
@@ -230,7 +230,7 @@ Answer the investigation questions below using the source code.
 For EACH question:
 1. Read the referenced code location YOURSELF
 2. Apply at least 2 depth techniques (BOUNDARY, VARIATION, TRACE)
-3. If you find a defense mechanism (cap, bound, min/max, guard): trace each INPUT to the defense — can any input be externally manipulated to weaken it?
+3. If you find a defense mechanism (cap, bound, min/max, guard): trace each INPUT to the defense - can any input be externally manipulated to weaken it?
 4. Make your OWN MCP tool calls:
    - validate_hypothesis() for RAG validation
    - search_solodit_live() if local results < 5

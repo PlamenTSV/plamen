@@ -1,4 +1,4 @@
-# Phase 4a: Inventory Agent Prompt Template — Sui Move
+# Phase 4a: Inventory Agent Prompt Template - Sui Move
 
 > **Usage**: Orchestrator reads this file and spawns the Inventory Agent with this prompt.
 > Replace placeholders `{SCRATCHPAD}`, `{list...}`, etc. with actual values.

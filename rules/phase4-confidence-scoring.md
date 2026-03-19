@@ -13,7 +13,7 @@ Every finding is scored on 4 axes after Phase 4b iteration 1 completes:
 |------|-----------------|---------|
 | **Evidence** | Quality of supporting evidence | Best evidence tag: [PROD-ONCHAIN]=1.0, [PROD-SOURCE]=0.9, [PROD-FORK]=0.9, [MEDUSA-PASS]=1.0, [CODE]=0.8, [DOC]=0.4, [MOCK]=0.2, [EXT-UNV]=0.1 |
 | **Consensus** | Domain-aware agreement | (agents that flagged same root cause) / (agents whose domain covers this location). If only 1 agent's domain covers the location → Consensus = 1.0 if that agent found it. **Specialized agent bonus**: +0.2 when finding discovered by an agent instantiated from a Required skill template (capped at 1.0). |
-| **Analysis Quality** | Depth of analytical work performed | **Mode A** (depth agent findings, including [DST-*]): Count Depth Evidence tags — 0 tags=0.1, 1 tag=0.4, 2 tags=0.7, 3+ tags=1.0. **Mode B** (all other findings): Legacy step execution — (steps marked ✓) / (total applicable steps). Steps marked ✗(valid reason) count as ✓. Steps marked ✗(no reason) or ? count as 0. |
+| **Analysis Quality** | Depth of analytical work performed | **Mode A** (depth agent findings, including [DST-*]): Count Depth Evidence tags - 0 tags=0.1, 1 tag=0.4, 2 tags=0.7, 3+ tags=1.0. **Mode B** (all other findings): Legacy step execution - (steps marked ✓) / (total applicable steps). Steps marked ✗(valid reason) count as ✓. Steps marked ✗(no reason) or ? count as 0. |
 | **RAG Match** | Historical precedent strength | RAG confidence from `rag_validation.md` (written by Phase 4b.5 RAG Sweep). Score = validate_hypothesis result / 10. If RAG Sweep tool call failed for a finding: 0.3 (floor). |
 
 ### Composite Score Formula
@@ -76,7 +76,7 @@ Between iterations, carry forward ONLY:
 - Evidence source tags ([CODE], [PROD-ONCHAIN], etc.)
 - Current confidence score
 - A focused investigation question
-- **Analysis path summary**: A 1-2 sentence description of WHAT the previous agent analyzed and HOW it reasoned — not what it concluded. Example: *"Iteration 1 agent traced the numerator manipulation path through supply changes; did not explore divisor staleness or timestamp anchor."* This summary is used for contrastive conditioning: telling the next agent what was already explored so it can deliberately diverge.
+- **Analysis path summary**: A 1-2 sentence description of WHAT the previous agent analyzed and HOW it reasoned - not what it concluded. Example: *"Iteration 1 agent traced the numerator manipulation path through supply changes; did not explore divisor staleness or timestamp anchor."* This summary is used for contrastive conditioning: telling the next agent what was already explored so it can deliberately diverge.
 
 **Explicitly excluded**: All prior agent verdicts, confidence assessments, and cross-references. Analysis path summaries describe the EXPLORATION PATH (what was looked at), not the REASONING OUTPUT (what was concluded).
 
@@ -85,7 +85,7 @@ Between iterations, carry forward ONLY:
 Iteration 2+ agent prompts include a STRUCTURAL adversarial role, not just a soft freshness instruction. Research shows soft instructions ("think critically", "do fresh analysis") produce <50% divergence, while hard DA role assignment produces >99% divergence.
 
 Iteration 2+ agents receive this framing:
-*"You are the Devil's Advocate Depth Agent. Your PRIMARY job is to find what the previous analysis MISSED — not to re-confirm what it found. For each finding you investigate:*
+*"You are the Devil's Advocate Depth Agent. Your PRIMARY job is to find what the previous analysis MISSED - not to re-confirm what it found. For each finding you investigate:*
 *1. Read the analysis path summary (what was explored). Your job is to explore what was NOT.*
 *2. For each CONFIRMED conclusion from iteration 1: ask 'what adjacent bug does this analysis OBSCURE?' What is the OPPOSITE interpretation of the same code?*
 *3. For each REFUTED conclusion from iteration 1: ask 'what enabler makes this exploitable after all?'*
@@ -103,7 +103,7 @@ Iteration 2+ agents MUST make their own MCP tool calls (static analyzer, RAG) ra
 
 ### Rule AD-5: New-Evidence-Only Re-Scoring
 
-Re-scoring after iteration 2+ only upgrades confidence if the agent produced NEW evidence — defined as:
+Re-scoring after iteration 2+ only upgrades confidence if the agent produced NEW evidence - defined as:
 - A new code reference not in the iteration 1 output
 - A new MCP tool output (static analyzer function source, RAG match)
 - A new production verification result
@@ -116,18 +116,18 @@ Error traces from failed PoCs (Phase 5 verification) become investigation questi
 
 ---
 
-## `extract_evidence_only()` — Finding Card Format for Iteration 2+
+## `extract_evidence_only()` - Finding Card Format for Iteration 2+
 
 Each finding card sent to iteration 2+ agents contains ONLY:
 
 ```markdown
 ## Finding [XX-N]: Title
 - **Location**: SourceFile:L45-L67
-- **Evidence**: [CODE] — validation check at L45; [CODE] — state update at L52
+- **Evidence**: [CODE] - validation check at L45; [CODE] - state update at L52
 - **Confidence**: 0.35
-- **Evidence Gap**: [What specific evidence is missing — e.g., "No production verification of external behavior"]
-- **Prior Path**: [1-2 sentence analysis path summary — what the previous agent explored and how. E.g., "Traced numerator manipulation via supply inflation; did not explore divisor staleness or timestamp anchor."]
-- **Investigate**: [Focused question — e.g., "Can setMaxBond() be called with value below current totalBonded? Trace what happens to the while loop at L120."]
+- **Evidence Gap**: [What specific evidence is missing - e.g., "No production verification of external behavior"]
+- **Prior Path**: [1-2 sentence analysis path summary - what the previous agent explored and how. E.g., "Traced numerator manipulation via supply inflation; did not explore divisor staleness or timestamp anchor."]
+- **Investigate**: [Focused question - e.g., "Can setMaxBond() be called with value below current totalBonded? Trace what happens to the while loop at L120."]
 ```
 
 **Max ~250 chars per finding card** (excluding code refs). The Prior Path field enables contrastive conditioning without prescribing the approach.
@@ -139,7 +139,7 @@ Each finding card sent to iteration 2+ agents contains ONLY:
 1. **Monotonic confidence**: Confidence can only increase or stay flat between iterations. Evidence from prior iterations is preserved.
 2. **New evidence required**: Score increase requires at least one NEW evidence tag not present in the previous iteration's scoring input.
 3. **No self-referential scoring**: The scoring agent scores based on evidence artifacts in the scratchpad files, not on the depth agent's self-reported confidence.
-4. **Scoring agent model**: Always haiku (mechanical task — formula application, not reasoning).
+4. **Scoring agent model**: Always haiku (mechanical task - formula application, not reasoning).
 
 ---
 
@@ -147,7 +147,7 @@ Each finding card sent to iteration 2+ agents contains ONLY:
 
 > **Trigger**: Always, after depth loop exits (Phase 4b DONE) and before confidence scoring.
 > **Purpose**: Ensures every finding gets RAG validation as a PIPELINE STAGE, not an optional agent tool call.
-> **Model**: sonnet (haiku rejects unified-vuln-db MCP tool schemas containing oneOf/allOf — see v1.0.1 fix)
+> **Model**: sonnet (haiku rejects unified-vuln-db MCP tool schemas containing oneOf/allOf - see v1.0.1 fix)
 > **Budget**: 1 agent (not counted against depth budget)
 
 ### Pre-check: RAG_TOOLS_AVAILABLE flag
@@ -170,13 +170,13 @@ For EVERY finding in {SCRATCHPAD}/findings_inventory.md:
 2. Call search_solodit_live(keywords='{vulnerability class}', max_results=10)
 3. Record the result
 
-If a tool call fails, record [RAG: TOOL_ERROR] for that finding — do NOT silently skip.
+If a tool call fails, record [RAG: TOOL_ERROR] for that finding - do NOT silently skip.
 
 ## Fallback Chain (if MCP tools fail)
 If validate_hypothesis or search_solodit_live fails (API error, schema error, timeout):
 1. Try get_similar_findings(pattern='{finding description}')
 2. If that also fails: try get_common_vulnerabilities(category='{vulnerability class}')
-3. If ALL MCP tools fail: use WebSearch fallback — search 'site:solodit.xyz {vulnerability class} {key term}' for each finding and extract match count + relevance
+3. If ALL MCP tools fail: use WebSearch fallback - search 'site:solodit.xyz {vulnerability class} {key term}' for each finding and extract match count + relevance
 4. If WebSearch also fails: record [RAG: ALL_TOOLS_FAILED] and score = 0.3
 
 **IMPORTANT**: If the FIRST MCP call fails with a schema/API error, assume ALL MCP calls will fail. Switch immediately to WebSearch fallback for remaining findings instead of retrying each one. This prevents N×timeout delays.
@@ -192,10 +192,10 @@ Return: 'DONE: {N} findings validated, {E} tool errors, fallback={MCP|WEB|NONE}'
 ### Retry on agent failure (orchestrator inline)
 
 If the RAG sweep agent itself fails (API error, crash, 0 output):
-1. **Do NOT retry with the same model** — the failure is likely schema-level, not transient
+1. **Do NOT retry with the same model** - the failure is likely schema-level, not transient
 2. Log: `"RAG sweep failed: {error}. Writing floor scores."`
 3. Write `{SCRATCHPAD}/rag_validation.md` with 0.3 floor for all findings
-4. Continue to confidence scoring — the floor score preserves pipeline progress
+4. Continue to confidence scoring - the floor score preserves pipeline progress
 ```
 
 The scoring agent reads `rag_validation.md` for Axis 4 instead of checking individual agent outputs.
@@ -214,5 +214,5 @@ The scoring agent reads `rag_validation.md` for Axis 4 instead of checking indiv
 | `rag_validation.md` | RAG Validation Sweep Agent (Phase 4b.5) | Per-finding RAG scores from validate_hypothesis + search_solodit_live |
 | `design_stress_findings.md` | Design Stress Testing Agent | Design limit, adequacy, and constraint coherence findings |
 | `composition_coverage.md` | Chain Analysis Agent | Finding-pair composition coverage map (explored/unexplored) |
-| `violations.md` | Orchestrator (on skip) | Thorough mode workflow violations — skipped mandatory steps (Rule 12) |
+| `violations.md` | Orchestrator (on skip) | Thorough mode workflow violations - skipped mandatory steps (Rule 12) |
 | `checkpoint_postdepth.md` | Orchestrator (after depth) | Post-depth assertion results for Thorough mode completeness |

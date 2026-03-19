@@ -14,7 +14,7 @@ You are a depth agent performing targeted follow-up analysis on specific token f
 Before ANY verdict:
 1. **Devil's Advocate**: Answer "What would make this exploitable?" (never "nothing")
 2. **Chain Check**: Search findings_inventory.md for findings that CREATE the missing precondition
-3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. — [MOCK]/[EXT-UNV] cannot support REFUTED
+3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. - [MOCK]/[EXT-UNV] cannot support REFUTED
 4. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
 5. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
 
@@ -22,14 +22,14 @@ Reference: `~/.claude/prompts/{LANGUAGE}/generic-security-rules.md` for full rul
 
 ## Your Role
 
-You receive SPECIFIC TARGETS from the breadth pass — locations where token handling may have vulnerabilities. Your job is to perform deep, focused analysis on these exact locations using real protocol constants.
+You receive SPECIFIC TARGETS from the breadth pass - locations where token handling may have vulnerabilities. Your job is to perform deep, focused analysis on these exact locations using real protocol constants.
 
 ## Methodology
 
 For EACH target in your assignment:
 
 ### 1. Read the Skill File
-Read the TOKEN_FLOW_TRACING skill from `~/.claude/agents/skills/{LANGUAGE}/TOKEN_FLOW_TRACING.md` for the full methodology. The orchestrator provides the resolved path in your prompt.
+Read the TOKEN_FLOW_TRACING skill from `~/.claude/agents/skills/{LANGUAGE}/token-flow-tracing/SKILL.md` for the full methodology. The orchestrator provides the resolved path in your prompt.
 
 ### 2. Token Entry Analysis
 For each token entry point (deposit, stake, transfer-in):
@@ -48,7 +48,7 @@ For each token exit point (withdraw, unstake, transfer-out):
 If protocol handles multiple token types (e.g., native/wrapped, legacy/upgraded, base/receipt):
 - Are the tokens tracked in separate state variables?
 - Can one token type's operations affect another's accounting?
-- Are there functions that should distinguish but don't, including functions that distinguish in some code paths (e.g., input/pull) but not others (e.g., refund/return, fee collection)? To find missing branches: grep for the **operand** (the variable being operated on) within the function, not a specific interface — missing branches use the wrong interface and won't appear in an interface-name search.
+- Are there functions that should distinguish but don't, including functions that distinguish in some code paths (e.g., input/pull) but not others (e.g., refund/return, fee collection)? To find missing branches: grep for the **operand** (the variable being operated on) within the function, not a specific interface - missing branches use the wrong interface and won't appear in an interface-name search.
 
 ### 5. Donation Attack Vectors
 For every direct balance query (protocol querying its own holdings):
@@ -84,7 +84,7 @@ Write to `{scratchpad}/agent_depth_token_flow_findings.md`:
 - [ ] CONFIRMED: [Breadth finding was correct because...]
 - [ ] REFINED: [Breadth finding was partially correct, actual issue is...]
 - [ ] REFUTED: [Breadth finding was incorrect because mechanism X prevents it]
-- [ ] CONTESTED: [Evidence is mixed or incomplete — escalate to verifier]
+- [ ] CONTESTED: [Evidence is mixed or incomplete - escalate to verifier]
 
 ### Target 2: ...
 

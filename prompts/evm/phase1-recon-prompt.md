@@ -8,25 +8,25 @@
 >
 > | Agent | Tasks | Model | Why Separate |
 > |-------|-------|-------|-------------|
-> | **1A: RAG-only** | TASK 0 steps 1-5 (vuln-db + Solodit) | **sonnet** | MCP calls can be slow; isolate from file I/O. Sonnet sufficient — mechanical query+format task. |
+> | **1A: RAG-only** | TASK 0 steps 1-5 (vuln-db + Solodit) | **sonnet** | MCP calls can be slow; isolate from file I/O. Sonnet sufficient - mechanical query+format task. |
 > | **1B: Docs + External + Fork** | TASK 0 step 6 (fork ancestry), TASK 3, TASK 11 | opus | Tavily web search can hang; separate from RAG |
-> | **2: Build + Slither + Tests** | TASK 1, 2, 8, 9 | **sonnet** | Build/compile is blocking; Slither is fail-fast. Sonnet sufficient — tool execution + output formatting. |
-> | **3: Patterns + Surface + Templates** | TASK 4, 5, 6, 7, 10 | opus | Pure codebase analysis, no external deps. Opus needed — attack surface + template selection requires reasoning. |
+> | **2: Build + Slither + Tests** | TASK 1, 2, 8, 9 | **sonnet** | Build/compile is blocking; Slither is fail-fast. Sonnet sufficient - tool execution + output formatting. |
+> | **3: Patterns + Surface + Templates** | TASK 4, 5, 6, 7, 10 | opus | Pure codebase analysis, no external deps. Opus needed - attack surface + template selection requires reasoning. |
 >
-> **CRITICAL — RAG TIMEOUT POLICY (v9.9.6)**:
+> **CRITICAL - RAG TIMEOUT POLICY (v9.9.6)**:
 > Agent 1A is **FIRE-AND-FORGET**. The orchestrator MUST NOT block on Agent 1A completion.
 > - Spawn Agent 1A with `run_in_background: true`
 > - **DO NOT await Agent 1A** before proceeding to Phase 2. Wait ONLY for Agents 1B, 2, and 3.
 > - After Agents 1B/2/3 complete, check Agent 1A status:
 >   - If complete → read its `meta_buffer.md` output
->   - If still running → **ABANDON IT**. Write a minimal empty `meta_buffer.md` with `# Meta-Buffer\n## RAG: UNAVAILABLE — agent timed out\nPhase 4b.5 RAG Validation Sweep will compensate.`
+>   - If still running → **ABANDON IT**. Write a minimal empty `meta_buffer.md` with `# Meta-Buffer\n## RAG: UNAVAILABLE - agent timed out\nPhase 4b.5 RAG Validation Sweep will compensate.`
 > - **Rationale**: RAG MCP calls (unified-vuln-db, Solodit) can hang indefinitely (observed: 100+ minutes with 0 output). The pipeline's real RAG safety net is Phase 4b.5 (RAG Validation Sweep), which runs after depth analysis when the pipeline has time budget. Early RAG is nice-to-have, not blocking.
 >
 > Agent 1A writes: `meta_buffer.md`
 > Agent 1B writes: `design_context.md`, `external_production_behavior.md`, fork section of `meta_buffer.md`
 > Agent 2 writes: `build_status.md`, `function_list.md`, `call_graph.md`, `state_variables.md`, `modifiers.md`, `event_definitions.md`, `external_interfaces.md`, `static_analysis.md`, `test_results.md`
 > Agent 3 writes: `contract_inventory.md`, `attack_surface.md`, `detected_patterns.md`, `setter_list.md`, `emit_list.md`, `constraint_variables.md`, `template_recommendations.md`
-> Orchestrator writes: `recon_summary.md` (after Agents 1B, 2, 3 complete — NOT waiting for 1A)
+> Orchestrator writes: `recon_summary.md` (after Agents 1B, 2, 3 complete - NOT waiting for 1A)
 
 ```
 Task(subagent_type="general-purpose", prompt="
@@ -41,7 +41,7 @@ SCOPE_NOTES: {scope_notes_if_provided}
 
 ## RESILIENCE RULES (apply to ALL tasks)
 1. **MCP call fails/times out?** → Document the failure in the relevant output file and CONTINUE to the next task. Never retry more than once.
-2. **Web search (Tavily/Solodit) fails?** → Note "UNAVAILABLE — web search failed" in output and CONTINUE. Analysis agents will compensate.
+2. **Web search (Tavily/Solodit) fails?** → Note "UNAVAILABLE - web search failed" in output and CONTINUE. Analysis agents will compensate.
 3. **Write-first principle**: Before making any slow external call (MCP, web), write whatever results you already have to the scratchpad file FIRST. This ensures partial results survive if the agent is killed.
 4. **No task is blocking**: If any task is stuck, skip it, document why, and move to the next. Partial recon is better than no recon.
 
@@ -65,7 +65,7 @@ Execute these tasks IN ORDER:
 > **PROBE FIRST**: Before batch calls, make ONE probe call to detect MCP schema incompatibility:
 > `mcp__unified-vuln-db__get_knowledge_stats()`
 > - If probe **succeeds** → set `RAG_TOOLS_AVAILABLE = true`, proceed with batches below
-> - If probe **fails** (API error, schema error, timeout) → set `RAG_TOOLS_AVAILABLE = false`, **skip ALL unified-vuln-db calls**, append to `{SCRATCHPAD}/build_status.md`: `RAG_TOOLS_AVAILABLE: false — unified-vuln-db MCP probe failed: {error}. Phase 4b.5 RAG Sweep will use WebSearch fallback.`
+> - If probe **fails** (API error, schema error, timeout) → set `RAG_TOOLS_AVAILABLE = false`, **skip ALL unified-vuln-db calls**, append to `{SCRATCHPAD}/build_status.md`: `RAG_TOOLS_AVAILABLE: false - unified-vuln-db MCP probe failed: {error}. Phase 4b.5 RAG Sweep will use WebSearch fallback.`
 > - If probe succeeds, also append: `RAG_TOOLS_AVAILABLE: true`
 
 > **PARALLELIZATION DIRECTIVE**: Make MCP calls in PARALLEL batches, not sequentially.
@@ -73,26 +73,26 @@ Execute these tasks IN ORDER:
 > **Batch 2** (single message, all in parallel): calls 4-5 below.
 > Do NOT wait for Batch 1 results before starting Batch 2 unless results from Batch 1 determine Batch 2 parameters.
 
-**If RAG_TOOLS_AVAILABLE = false**: Skip Batch 1 and Batch 2 entirely. Write to `{SCRATCHPAD}/meta_buffer.md`: `## RAG: UNAVAILABLE — MCP tools failed probe. Phase 4b.5 will compensate.`
+**If RAG_TOOLS_AVAILABLE = false**: Skip Batch 1 and Batch 2 entirely. Write to `{SCRATCHPAD}/meta_buffer.md`: `## RAG: UNAVAILABLE - MCP tools failed probe. Phase 4b.5 will compensate.`
 
-**Batch 1** — call ALL of these in a single message:
+**Batch 1** - call ALL of these in a single message:
 1. mcp__unified-vuln-db__get_common_vulnerabilities(protocol_type='{TYPE}')
 2. mcp__unified-vuln-db__get_attack_vectors(bug_class='{relevant pattern}')
    → For each external dependency (e.g., 'staking receipt donation', 'cross-chain timing')
 3. mcp__unified-vuln-db__get_root_cause_analysis(bug_class='{detected pattern}')
 
-**Batch 2** — call ALL of these in a single message:
+**Batch 2** - call ALL of these in a single message:
 4. **MANDATORY**: mcp__unified-vuln-db__search_solodit_live(protocol_category=['{DeFi/Bridge/etc.}'], tags=['{relevant}'], language='Solidity', quality_score=3, sort_by='Quality', max_results=20)
 5. If SEMI_TRUSTED_ROLE detected: search_solodit_live(keywords='reward compound timing front-run keeper', impact=['HIGH','MEDIUM'], max_results=15)
 
 ### Step 6: Fork Ancestry Research
-Read ~/.claude/agents/skills/evm/FORK_ANCESTRY.md and execute all 4 steps:
+Read ~/.claude/agents/skills/evm/fork-ancestry/SKILL.md and execute all 4 steps:
 1. Detect fork indicators (grep for known parent signatures)
 2. Query known parent issues via Solodit + Tavily
 3. Analyze divergences between fork and parent
 4. Append results to {SCRATCHPAD}/meta_buffer.md under "## Fork Ancestry Analysis"
 
-> **SKIP POLICY**: If Tavily or Solodit calls fail in step 2, write "Fork ancestry: web search unavailable — manual review needed" and continue to step 3 using only code-level divergence analysis.
+> **SKIP POLICY**: If Tavily or Solodit calls fail in step 2, write "Fork ancestry: web search unavailable - manual review needed" and continue to step 3 using only code-level divergence analysis.
 
 ### Step 3: Synthesize into {SCRATCHPAD}/meta_buffer.md
 
@@ -118,7 +118,7 @@ Use this output format:
 ## Timing-Sensitive Operations (if SEMI_TRUSTED_ROLE detected)
 | Operation | Timing Pattern | User Exploitation Vector | RAG Matches |
 ## Code Patterns to Grep
-- `{pattern}` — related to {vulnerability class}
+- `{pattern}` - related to {vulnerability class}
 ```
 
 ## TASK 1: Build Environment
@@ -169,8 +169,8 @@ Slither can crash on projects with namespace imports (`import X as Y`), mixed co
 - Grep `modifier ` → {SCRATCHPAD}/modifiers.md
 - Grep `event ` → {SCRATCHPAD}/event_definitions.md
 - Grep state variable declarations → {SCRATCHPAD}/state_variables.md
-- Note "Call graph unavailable — Slither failed" in {SCRATCHPAD}/call_graph.md
-- Append to {SCRATCHPAD}/build_status.md: "SLITHER: UNAVAILABLE — {error message}. Grep fallback used. Depth agents must compensate for missing static analysis."
+- Note "Call graph unavailable - Slither failed" in {SCRATCHPAD}/call_graph.md
+- Append to {SCRATCHPAD}/build_status.md: "SLITHER: UNAVAILABLE - {error message}. Grep fallback used. Depth agents must compensate for missing static analysis."
 
 **Farofino fallback**: When SLITHER_AVAILABLE = false, also run:
 - mcp__farofino__aderyn_audit(contract_path={path_with_forward_slashes}) → append results to {SCRATCHPAD}/static_analysis.md under "## Aderyn Static Analysis"
@@ -196,7 +196,7 @@ Grep interfaces directory → {SCRATCHPAD}/external_interfaces.md (always, regar
 | 2 | {role} | SEMI_TRUSTED(bounds: {on-chain limit}) | Cannot exceed {stated bounds} | {source} |
 | 3 | - | PRECONDITION | {config state assumed at launch} | {source} |
 
-Trust levels: `FULLY_TRUSTED` (will not act maliciously — e.g., multisig, governance, DAO), `SEMI_TRUSTED(bounds: ...)` (bounded by on-chain parameters), `PRECONDITION` (deployment/config state assumption), `UNTRUSTED` (default for users, external contracts).
+Trust levels: `FULLY_TRUSTED` (will not act maliciously - e.g., multisig, governance, DAO), `SEMI_TRUSTED(bounds: ...)` (bounded by on-chain parameters), `PRECONDITION` (deployment/config state assumption), `UNTRUSTED` (default for users, external contracts).
 If no explicit trust documentation exists, infer from access control patterns (onlyOwner, role modifiers, multisig references) and note `Source: inferred`.
 
 Write to {SCRATCHPAD}/design_context.md
@@ -208,7 +208,7 @@ Write to {SCRATCHPAD}/design_context.md
 4. **Inheritance chain analysis**: For each contract, extract its `is` clause. Build a dependency tree:
    - Identify parent contracts that are NOT in scope but ARE inherited by in-scope contracts
    - For each such parent: check if it contains conditional logic (if/else, modifiers with conditions) or virtual functions that child contracts override
-   - Flag parents with conditional logic as `PARENT_CONDITIONAL_OVERRIDE` — these require standalone analysis because child behavior depends on parent branch paths that breadth agents may not trace
+   - Flag parents with conditional logic as `PARENT_CONDITIONAL_OVERRIDE` - these require standalone analysis because child behavior depends on parent branch paths that breadth agents may not trace
 5. **Parent standalone flag**: If any `PARENT_CONDITIONAL_OVERRIDE` parents exist, list them with:
    | Parent Contract | Path | In Scope? | Overridden By | Conditional Logic? | Flag |
 Write to {SCRATCHPAD}/contract_inventory.md
@@ -225,7 +225,7 @@ For EACH external dependency found in code:
 Create Token Flow Matrix:
 | Token | Type | Entry Functions | State Tracking | Accounting Queries Affected? | Unsolicited Transfer? | Side-Effect? | Return-Value? |
 
-For **Accounting Queries Affected?**: List ALL protocol queries whose return value changes if this token is transferred unsolicited — not just `balanceOf(this)` but also delegation queries, staking queries, share balance queries, reward queries, etc.
+For **Accounting Queries Affected?**: List ALL protocol queries whose return value changes if this token is transferred unsolicited - not just `balanceOf(this)` but also delegation queries, staking queries, share balance queries, reward queries, etc.
 For **Unsolicited Transfer?**: Can this token be sent to the protocol contract without calling any protocol function? (direct ERC20 transfer, staking on behalf of, delegation to)
 
 ### Signal Elevation Tags
@@ -296,7 +296,7 @@ Skip Slither detectors entirely. Instead, run targeted grep checks:
 - Grep for `/ ` followed by `* ` on same variable (divide-before-multiply)
 - Grep for loops containing `.length` on storage arrays (costly-loop)
 - Grep for external calls inside loops (calls-loop)
-Write grep results to {SCRATCHPAD}/static_analysis.md with header: "SLITHER UNAVAILABLE — grep-based fallback. Coverage is limited."
+Write grep results to {SCRATCHPAD}/static_analysis.md with header: "SLITHER UNAVAILABLE - grep-based fallback. Coverage is limited."
 
 Also grep for unused struct fields (defined but never read) → append to static_analysis.md
 Write to {SCRATCHPAD}/static_analysis.md
@@ -323,20 +323,20 @@ For EACH recommended template, provide instantiation parameters:
 2. [Protocol-specific question]
 
 Available templates (in ~/.claude/agents/skills/):
-- CROSS_CHAIN_TIMING — for cross-chain messaging, rate sync
-- STAKING_RECEIPT_TOKENS — for delegation/staking receipts
-- SEMI_TRUSTED_ROLES — for BOT/OPERATOR/KEEPER analysis
-- TOKEN_FLOW_TRACING — for balanceOf(this) dependencies
-- ZERO_STATE_RETURN — for first depositor, empty state
-- MIGRATION_ANALYSIS — for token migrations, V1/V2 upgrades, stranded assets
-- TEMPORAL_PARAMETER_STALENESS — for cached parameters in multi-step operations
-- EVENT_CORRECTNESS — for protocols with >15 events (optional, verify emit parameter accuracy)
-- SHARE_ALLOCATION_FAIRNESS — for share/token allocation fairness, late-entry attacks, queue gaming
-- FLASH_LOAN_INTERACTION — for flash loan attack modeling, atomic sequence analysis
-- ORACLE_ANALYSIS — for oracle staleness, decimals, TWAP, failure modes
-- ECONOMIC_DESIGN_AUDIT — for monetary parameter analysis, rate/emission sustainability
-- EXTERNAL_PRECONDITION_AUDIT — for external contract interface-level precondition inference
-- VERIFICATION_PROTOCOL — always used by verifiers
+- CROSS_CHAIN_TIMING - for cross-chain messaging, rate sync
+- STAKING_RECEIPT_TOKENS - for delegation/staking receipts
+- SEMI_TRUSTED_ROLES - for BOT/OPERATOR/KEEPER analysis
+- TOKEN_FLOW_TRACING - for balanceOf(this) dependencies
+- ZERO_STATE_RETURN - for first depositor, empty state
+- MIGRATION_ANALYSIS - for token migrations, V1/V2 upgrades, stranded assets
+- TEMPORAL_PARAMETER_STALENESS - for cached parameters in multi-step operations
+- EVENT_CORRECTNESS - for protocols with >15 events (optional, verify emit parameter accuracy)
+- SHARE_ALLOCATION_FAIRNESS - for share/token allocation fairness, late-entry attacks, queue gaming
+- FLASH_LOAN_INTERACTION - for flash loan attack modeling, atomic sequence analysis
+- ORACLE_ANALYSIS - for oracle staleness, decimals, TWAP, failure modes
+- ECONOMIC_DESIGN_AUDIT - for monetary parameter analysis, rate/emission sustainability
+- EXTERNAL_PRECONDITION_AUDIT - for external contract interface-level precondition inference
+- VERIFICATION_PROTOCOL - always used by verifiers
 
 ---
 
@@ -384,12 +384,12 @@ After listing all recommended templates, output this binding manifest:
 - HAS_SIGNATURES flag detected (ecrecover/ECDSA.recover/permit/EIP712/domainSeparator/nonces/isValidSignature patterns found) → SIGNATURE_VERIFICATION_AUDIT **niche agent** REQUIRED
 - HAS_MULTI_CONTRACT flag detected (2+ in-scope contracts AND constraint_variables.md shows shared parameters/formulas across contracts) → SEMANTIC_CONSISTENCY_AUDIT **niche agent** REQUIRED
 
-### Niche Agents (Phase 4b — standalone focused agents, 1 budget slot each)
+### Niche Agents (Phase 4b - standalone focused agents, 1 budget slot each)
 
 | Niche Agent | Trigger | Required? | Reason |
 |-------------|---------|-----------|--------|
 | EVENT_COMPLETENESS | MISSING_EVENT flag (setter_list.md / emit_list.md) | {YES/NO} | {if YES: N setters without events found} |
-| SIGNATURE_VERIFICATION_AUDIT | HAS_SIGNATURES flag (detected_patterns.md) | {YES/NO} | {if YES: signature patterns found — ecrecover/ECDSA/permit/EIP712} |
+| SIGNATURE_VERIFICATION_AUDIT | HAS_SIGNATURES flag (detected_patterns.md) | {YES/NO} | {if YES: signature patterns found - ecrecover/ECDSA/permit/EIP712} |
 | SEMANTIC_CONSISTENCY_AUDIT | HAS_MULTI_CONTRACT flag (contract_inventory.md + constraint_variables.md) | {YES/NO} | {if YES: N shared parameters/formulas across M contracts} |
 
 ### Manifest Summary
@@ -409,12 +409,12 @@ Write to {SCRATCHPAD}/template_recommendations.md
 
 For EACH critical external contract:
 1. **Find production address**: Search codebase for deployed addresses, configs, deployment scripts. If NETWORK is set, use it as the default network for all chain data queries. Otherwise infer from codebase (chainId, RPC URLs, deployment configs).
-2. **Fetch ABI/source**: mcp__evm-chain-data__get_contract_abi(address, network=NETWORK) — **skip if call fails**
+2. **Fetch ABI/source**: mcp__evm-chain-data__get_contract_abi(address, network=NETWORK) - **skip if call fails**
 3. **Compare mock vs production**: For each function the protocol calls:
    | Function | Mock Behavior | Production Behavior | DIFFERS? |
 4. **Document token transferability**: Can tokens be sent TO protocol unsolicited?
-5. **Use farofino if Slither MCP fails**: mcp__farofino__read_contract as fallback — **skip if call fails**
-6. **Use tavily for documentation**: mcp__tavily-search__tavily_search for protocol docs — **skip if call fails**
+5. **Use farofino if Slither MCP fails**: mcp__farofino__read_contract as fallback - **skip if call fails**
+6. **Use tavily for documentation**: mcp__tavily-search__tavily_search for protocol docs - **skip if call fails**
 
 Write to {SCRATCHPAD}/external_production_behavior.md
 
@@ -430,7 +430,7 @@ Write to {SCRATCHPAD}/external_production_behavior.md
 Write COMPLETE summary to {SCRATCHPAD}/recon_summary.md:
 1. Build Status: [success/failed]
 2. Contracts: [count] totaling [lines] lines
-3. External Dependencies: [count] — [names]
+3. External Dependencies: [count] - [names]
 4. Detected Patterns: [list flags]
 5. Recommended Templates: [list with brief reason each]
 6. Artifacts Written: [list all files]
@@ -441,7 +441,7 @@ Return: 'RECON COMPLETE: {N} contracts, {M} dependencies, {K} templates recommen
 
 ## After Recon Agent Returns
 
-1. **Verify artifacts exist**: `ls {scratchpad}/` — must have all files
+1. **Verify artifacts exist**: `ls {scratchpad}/` - must have all files
 2. **Read summary**: `{scratchpad}/recon_summary.md` (small, safe to read)
 3. **Read template recommendations**: `{scratchpad}/template_recommendations.md`
 4. **Read attack surface**: `{scratchpad}/attack_surface.md`

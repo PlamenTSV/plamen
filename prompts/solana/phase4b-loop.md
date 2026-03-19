@@ -1,4 +1,4 @@
-# Phase 4b: Adaptive Depth Loop — Solana
+# Phase 4b: Adaptive Depth Loop - Solana
 
 > **Usage**: Orchestrator reads this file and runs the Adaptive Depth Loop for Solana audits.
 > Iteration 1 spawns ALL 8 agents (4 depth + 3 blind spot + 1 validation sweep) + niche agents. Iterations 2-3 are targeted and autonomous.
@@ -14,7 +14,7 @@
 > Timeout-aware split-and-retry, severity-weighted budget, dynamic cap, loop dynamics detection, post-verification error trace feedback.
 > **Reference**: `~/.claude/rules/phase4-confidence-scoring.md` for scoring model and anti-dilution rules.
 
-## Depth Agent Domain Mapping — Solana
+## Depth Agent Domain Mapping - Solana
 
 | Agent | Solana Focus |
 |-------|-------------|
@@ -39,7 +39,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
 
   // ═══ PHASE 4a.5: Semantic Invariant Pre-Computation ═══
   // Sonnet agent enumerates write sites, semantic invariants, conditional/sync/accumulation annotations
-  // Produces {SCRATCHPAD}/semantic_invariants.md — consumed by depth-state-trace and Validation Sweep
+  // Produces {SCRATCHPAD}/semantic_invariants.md - consumed by depth-state-trace and Validation Sweep
   // See CLAUDE.md Phase 4a.5 for full prompt template
   spawn semantic_invariant_agent(model="sonnet", SCRATCHPAD, state_variables, function_list, source_files)
   await semantic_invariant_agent  // MUST complete before depth agents spawn (they consume its output)
@@ -61,15 +61,15 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
   // If missing → add it before proceeding. This gate prevents orchestrator omission.
   // Spawn ALL 8 standard agents + niche agents in a SINGLE message as parallel Task calls
   // (4 depth + 3 blind spot scanners + 1 validation sweep + N niche agents)
-  // For each niche agent: read definition from ~/.claude/agents/skills/niche/{NAME}.md, spawn as general-purpose
+  // For each niche agent: read definition from ~/.claude/agents/skills/niche/{name}/SKILL.md, spawn as general-purpose
   // Niche agents write to {SCRATCHPAD}/niche_{name}_findings.md
   //
   // ═══ MODEL DIVERSITY ═══
   // Assign models to maximize decorrelation between depth agents:
-  //   depth-token-flow: opus   (highest reasoning demand — balance invariants)
-  //   depth-state-trace: opus  (highest reasoning demand — cross-function state)
-  //   depth-edge-case: sonnet  (pattern-matching — boundary values, zero state)
-  //   depth-external: sonnet   (pattern-matching — external call effects)
+  //   depth-token-flow: opus   (highest reasoning demand - balance invariants)
+  //   depth-state-trace: opus  (highest reasoning demand - cross-function state)
+  //   depth-edge-case: sonnet  (pattern-matching - boundary values, zero state)
+  //   depth-external: sonnet   (pattern-matching - external call effects)
   //   Blind Spot Scanner A: sonnet, Scanner B: sonnet, Scanner C: sonnet
   //   Validation Sweep: sonnet
   //   Niche agents: sonnet
@@ -91,7 +91,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
   // ═══ INJECTABLE INVESTIGATION AGENTS ═══
   // If an injectable skill was loaded, spawn dedicated sonnet agents for each domain
   // that has injectable investigation questions. These run IN PARALLEL with depth agents.
-  // Main depth agents no longer contain PART 4 (injectable questions) — they focus on
+  // Main depth agents no longer contain PART 4 (injectable questions) - they focus on
   // PART 1-3 only. Injectable agents get a clean context with ONLY the decomposed questions.
   // Max 4 injectable agents (one per domain with questions). Each = 1 depth budget slot.
   // When no injectable is loaded: 0 agents spawned, 0 budget cost.
@@ -106,7 +106,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
   // ═══ COMPACTION-RESILIENT MANIFEST ═══
   // Write manifest to DISK before spawning. After agents return (or after compaction
   // recovery), verify every expected output file exists. Re-spawn any missing agents.
-  // This survives orchestrator context compaction — disk state, not memory state.
+  // This survives orchestrator context compaction - disk state, not memory state.
   // Cost: 1 Write + 1 Glob verification pass. Zero context cost to agents.
   expected_outputs = [
     ("depth-token-flow", "depth_token_flow_findings.md"),
@@ -153,14 +153,14 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
   // ═══ SCORE all findings ═══
   // NOTE: Sibling Propagation merged back into Validation Sweep as CHECK 9.
   // Saves 1 depth budget slot. Validation Sweep already reads findings_inventory.md.
-  // Spawn scoring agent (haiku — use Scoring Agent Template below)
+  // Spawn scoring agent (haiku - use Scoring Agent Template below)
   // Writes {SCRATCHPAD}/confidence_scores.md
   await scoring_agent
 
   // Write confidence distribution to {SCRATCHPAD}/confidence_distribution.md:
-  //   CONFIDENT (≥0.7): N findings — [list]
-  //   UNCERTAIN (0.4-0.7): M findings — [list with domains]
-  //   LOW CONFIDENCE (<0.4): K findings — [list with domains]
+  //   CONFIDENT (≥0.7): N findings - [list]
+  //   UNCERTAIN (0.4-0.7): M findings - [list with domains]
+  //   LOW CONFIDENCE (<0.4): K findings - [list with domains]
   //   EXIT CONDITIONS: [which apply]
 
   // ═══ CHECK: Should we continue? ═══
@@ -239,7 +239,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
   DONE:
     // ═══ RESERVED: Design Stress Testing (1 slot pre-allocated) ═══
     // DST catches design-level issues (parameter bounds, constraint coherence) that depth agents
-    // structurally miss. Runs unconditionally — its 1 reserved slot has negligible depth impact.
+    // structurally miss. Runs unconditionally - its 1 reserved slot has negligible depth impact.
     spawn design_stress_agent(SCRATCHPAD, constraint_variables, function_list, attack_surface)
     depth_spawns_used += 1
 
@@ -255,8 +255,8 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
       Write to {SCRATCHPAD}/variable_finding_map.md a compact table:
       | Variable | Write Sites (with flags) | Findings | Chain Hint |
       Preserve these flags from semantic_invariants.md on each write site:
-      - CONDITIONAL(expr): write only executes when expr is true — skip path leaves variable stale
-      - SYNC_GAP(other_var): mirror variable that can diverge — note the paired variable
+      - CONDITIONAL(expr): write only executes when expr is true - skip path leaves variable stale
+      - SYNC_GAP(other_var): mirror variable that can diverge - note the paired variable
       - ACCUMULATION_EXPOSURE: time-weighted calc with controllable input
       The Chain Hint column states in one phrase why this variable may link findings
       (e.g., 'stale when condition false', 'diverges from paired_var after loss').
@@ -265,7 +265,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
     ")
     await variable_map_agent  // sonnet for chain relevance assessment quality
 
-    // — proceed to Chain Analysis (Phase 4c)
+    // - proceed to Chain Analysis (Phase 4c)
 
   // ═══ POST-VERIFICATION ERROR TRACE FEEDBACK ═══
   // After Phase 5 verification completes (orchestrator handles this AFTER chain analysis):
@@ -289,7 +289,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
 | DST Reserved | Always at DONE | Spawn Design Stress agent (1 pre-allocated slot), then proceed |
 | POST_VERIFICATION_FEEDBACK | Error traces from Phase 5 + remaining budget | Additional targeted depth, then exit |
 
-**CRITICAL**: "No progress" can ONLY trigger after iteration 2, never after iteration 1. Iteration 2 is always mandatory when uncertain findings exist. "No progress" means the iteration produced zero new evidence items — not that the scoring formula can't improve.
+**CRITICAL**: "No progress" can ONLY trigger after iteration 2, never after iteration 1. Iteration 2 is always mandatory when uncertain findings exist. "No progress" means the iteration produced zero new evidence items - not that the scoring formula can't improve.
 
 ---
 
@@ -302,7 +302,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
 ### Pre-Score: Consensus Pre-Computation (Orchestrator Inline)
 
 Before spawning scoring agents, orchestrator produces `{SCRATCHPAD}/consensus_map.md`:
-1. Read `findings_inventory.md` — extract each finding's ID, Location, Agent source
+1. Read `findings_inventory.md` - extract each finding's ID, Location, Agent source
 2. Group by Location (program:Line range). For each group:
    - Agents flagging = unique agents with finding at this location
    - Agents covering = agents whose domain scope includes this program
@@ -315,7 +315,7 @@ Split all findings into domain batches of ≤15 findings each (token-flow, state
 Spawn parallel haiku scoring agents per batch. Each receives:
 - Its batch of findings ONLY (extracted from source files)
 - `{SCRATCHPAD}/consensus_map.md` (pre-computed Axis 2, shared across all batches)
-- Scoring formula (unchanged — Axes 1,3,4 from finding data; Axis 2 from consensus_map)
+- Scoring formula (unchanged - Axes 1,3,4 from finding data; Axis 2 from consensus_map)
 
 After all return: merge `confidence_scores_batch_*.md` into `confidence_scores.md`.
 
@@ -329,10 +329,10 @@ You are the Confidence Scoring Agent (Batch: {DOMAIN}). You compute confidence s
 Read:
 - {SCRATCHPAD}/consensus_map.md (pre-computed Axis 2 scores for ALL findings)
 - Your batch of findings extracted from the relevant source files (provided below)
-{IF ITERATION 2+: - {SCRATCHPAD}/confidence_scores.md (previous scores — for monotonic check)}
+{IF ITERATION 2+: - {SCRATCHPAD}/confidence_scores.md (previous scores - for monotonic check)}
 
 ## Your Batch
-{PASTE FINDING DATA FOR THIS BATCH — max 15 findings, extracted from findings_inventory.md + depth/blind_spot/validation files}
+{PASTE FINDING DATA FOR THIS BATCH - max 15 findings, extracted from findings_inventory.md + depth/blind_spot/validation files}
 
 ## Your Task
 
@@ -351,19 +351,19 @@ Use the BEST evidence tag found for this finding:
 If finding has no explicit evidence tags, infer: code snippets from source = [CODE] = 0.8.
 
 ### Axis 2: Consensus (0.0–1.0)
-Read from `{SCRATCHPAD}/consensus_map.md` — use the pre-computed score for each finding ID.
+Read from `{SCRATCHPAD}/consensus_map.md` - use the pre-computed score for each finding ID.
 (Pre-computed by orchestrator: domain-aware agreement with specialized agent bonus.)
 
-### Axis 3: Analysis Quality (0.0–1.0) — DUAL MODE
+### Axis 3: Analysis Quality (0.0–1.0) - DUAL MODE
 
-**Mode A — Depth agent findings** (finding ID starts with [DEPTH-*], [BLIND-*], or [VS-*]):
+**Mode A - Depth agent findings** (finding ID starts with [DEPTH-*], [BLIND-*], or [VS-*]):
 Count Depth Evidence tags ([BOUNDARY:*], [VARIATION:*], [TRACE:*]):
 - 0 tags = 0.1
 - 1 tag = 0.4
 - 2 tags = 0.7
 - 3+ tags = 1.0
 
-**Mode B — All other findings** (breadth agents, chain findings, enabler findings):
+**Mode B - All other findings** (breadth agents, chain findings, enabler findings):
 From Step Execution field:
 - Count steps marked ✓ or ✗(valid reason) as COMPLETE
 - Count steps marked ✗(no reason) or ? as INCOMPLETE
@@ -372,7 +372,7 @@ If no Step Execution field: score = 0.3
 
 ### Axis 4: RAG Match (0.0–1.0)
 If finding has RAG validation result: use RAG confidence / 10
-If no RAG validation: score = 0.3 (floor — missing RAG is a coverage gap, not negative evidence)
+If no RAG validation: score = 0.3 (floor - missing RAG is a coverage gap, not negative evidence)
 
 ### Composite Score
 composite = Evidence × 0.25 + Consensus × 0.25 + Analysis_Quality × 0.3 + RAG_Match × 0.2
@@ -405,7 +405,7 @@ Write to {SCRATCHPAD}/confidence_scores.md:
 - LOW_CONFIDENCE (<0.4): {K} findings
 - Total: {N+M+K} findings scored
 
-Return: 'DONE: {total} findings scored — {N} CONFIDENT, {M} UNCERTAIN, {K} LOW_CONFIDENCE'
+Return: 'DONE: {total} findings scored - {N} CONFIDENT, {M} UNCERTAIN, {K} LOW_CONFIDENCE'
 ")
 ```
 
@@ -414,7 +414,7 @@ Return: 'DONE: {total} findings scored — {N} CONFIDENT, {M} UNCERTAIN, {K} LOW
 After iteration 1 scoring, the orchestrator checks for systematic RAG failure:
 
 **Detection**: If `confidence_scores.md` shows RAG_Match axis = 0.3 (floor) for > 80% of findings:
-1. Log to `adaptive_loop_log.md`: "MCP RAG FLOOR DETECTED — {N}% of findings at 0.3 floor"
+1. Log to `adaptive_loop_log.md`: "MCP RAG FLOOR DETECTED - {N}% of findings at 0.3 floor"
 2. For each UNCERTAIN finding, generate a targeted manual investigation question based on:
    - Fork ancestry patterns from `meta_buffer.md`
    - Protocol type common vulnerabilities (e.g., "vault: trace share price after fee harvest + loss event")
@@ -437,9 +437,9 @@ For each iteration 2+ depth agent, use this prompt structure:
 
 ```
 Task(subagent_type="depth-{type}", prompt="
-You are the {TYPE} Devil's Advocate Depth Agent — ITERATION {N} (targeted pass) for a Solana program audit.
+You are the {TYPE} Devil's Advocate Depth Agent - ITERATION {N} (targeted pass) for a Solana program audit.
 
-**YOUR ROLE**: You are the Devil's Advocate. Your PRIMARY job is to find what the previous analysis MISSED — not to re-confirm what it found. For each finding:
+**YOUR ROLE**: You are the Devil's Advocate. Your PRIMARY job is to find what the previous analysis MISSED - not to re-confirm what it found. For each finding:
 - Read the 'Prior Path' field to understand what was already explored. Your job is to explore what was NOT.
 - For each prior conclusion: ask 'what adjacent bug does this analysis OBSCURE?' What is the OPPOSITE interpretation of the same code?
 - You MUST produce at least one finding or observation that CONTRADICTS or EXTENDS the previous analysis. If you agree with everything, you have not done your job.
@@ -456,11 +456,11 @@ Do NOT read prior depth agent output files (depth_*_findings.md from iteration 1
 
 ### Finding [XX-N]: {Title}
 - **Location**: {program.rs:L45-L67}
-- **Evidence**: {[CODE] — relevant code snippet at L45}
+- **Evidence**: {[CODE] - relevant code snippet at L45}
 - **Confidence**: {0.35}
 - **Evidence Gap**: {What specific evidence is missing}
-- **Prior Path**: {1-2 sentence summary of what the previous agent explored and how — NOT what it concluded. E.g., "Traced CPI state reload path; did not explore bump seed collision or PDA derivation variant."}
-- **Investigate**: {Focused question — e.g., 'Can set_max_validators() be called with value below current validator count? Trace what happens to the loop at L120.'}
+- **Prior Path**: {1-2 sentence summary of what the previous agent explored and how - NOT what it concluded. E.g., "Traced CPI state reload path; did not explore bump seed collision or PDA derivation variant."}
+- **Investigate**: {Focused question - e.g., 'Can set_max_validators() be called with value below current validator count? Trace what happens to the loop at L120.'}
 
 {END FOR EACH}
 
@@ -470,7 +470,7 @@ For EVERY finding you re-analyze, apply at least 2 of these 3 techniques:
    Solana examples: `[BOUNDARY:lamports=0 → account garbage collected]`, `[BOUNDARY:CU=200000 → tx fails]`
 2. **Parameter Variation**: Vary inputs across valid range. Tag: `[VARIATION:param A→B → outcome]`
    Solana examples: `[VARIATION:bump 255→254 → different PDA address]`, `[VARIATION:mint Token→Token-2022 → transfer fee applied]`
-3. **Trace to Termination**: Follow execution to terminal state. When a boundary value produces weight=0, contribution=0, or amount=0 in a computation, trace whether the zero-value entry still INCREMENTS a counter or PASSES a gate that downstream code relies on for correctness. **Nested call resolution**: When tracing through a CPI, also trace what happens when control returns to the caller — does it reload account data and verify post-CPI state? Tag: `[TRACE:path→outcome at L{N}]`
+3. **Trace to Termination**: Follow execution to terminal state. When a boundary value produces weight=0, contribution=0, or amount=0 in a computation, trace whether the zero-value entry still INCREMENTS a counter or PASSES a gate that downstream code relies on for correctness. **Nested call resolution**: When tracing through a CPI, also trace what happens when control returns to the caller - does it reload account data and verify post-CPI state? Tag: `[TRACE:path→outcome at L{N}]`
 
 ## Your Task
 

@@ -1,4 +1,4 @@
-# Generic Security Rules — Aptos Move
+# Generic Security Rules - Aptos Move
 
 > **Usage**: Analysis agents and depth agents reference these rules during Aptos Move module analysis.
 > These rules cover ALL Aptos Move modules regardless of type. Rules R1-R17 are adapted from EVM equivalents. Rules MR1-MR5 are shared Move rules. Rules AR1-AR4 are Aptos-specific.
@@ -14,7 +14,7 @@
 |---------------|---------|--------|
 | `Coin<T>` type confusion | Function expects `Coin<AptosCoin>`, receives `Coin<FakeToken>` via generic | Wrong token processed, accounting corruption |
 | FungibleAsset metadata mismatch | Module reads metadata Object expecting USDC FA, passed arbitrary FA metadata | Incorrect decimals, wrong asset valued |
-| `borrow_global` type mismatch | Generic `T` resolved to unexpected struct — `borrow_global<T>(addr)` returns attacker-controlled data | State corruption, authorization bypass |
+| `borrow_global` type mismatch | Generic `T` resolved to unexpected struct - `borrow_global<T>(addr)` returns attacker-controlled data | State corruption, authorization bypass |
 | Phantom type parameter abuse | `Pool<phantom CoinA, phantom CoinB>` instantiated with swapped types | Pair confusion, LP token minting for wrong pool |
 | Object type confusion | `Object<T>` passed where `T` is not validated against actual stored type | Wrong resource read, capability escalation |
 | Legacy Coin vs FungibleAsset | Module expects `Coin<T>`, receives FA migration wrapper (or vice versa) | Transfer failures, missing hook handling |
@@ -22,7 +22,7 @@
 
 **Aptos-specific**: Move's type system prevents most type mismatches at compile time. However, generic functions (`fun process<T>(coin: Coin<T>)`) accept ANY type satisfying ability constraints. If business logic requires a SPECIFIC coin type, runtime validation via `type_info` or a whitelist registry is needed.
 
-**Action**: For every cross-module call returning resources or values: (1) trace the concrete type that the external module ACTUALLY returns, (2) verify generic type parameters are constrained and cannot be substituted with adversarial types, (3) for `Object<T>` parameters — verify `T` matches the object's stored resource type, (4) for FungibleAsset — verify metadata object matches expected asset, (5) state accessed after external calls reflects any mutations made by those calls.
+**Action**: For every cross-module call returning resources or values: (1) trace the concrete type that the external module ACTUALLY returns, (2) verify generic type parameters are constrained and cannot be substituted with adversarial types, (3) for `Object<T>` parameters - verify `T` matches the object's stored resource type, (4) for FungibleAsset - verify metadata object matches expected asset, (5) state accessed after external calls reflects any mutations made by those calls.
 
 ---
 
@@ -52,7 +52,7 @@ This includes:
 - **Object creation front-running**: Attacker creates named objects at predictable addresses (`object::create_named_object`) before the protocol
 - **APT direct transfer**: `aptos_account::transfer()` sends APT to any address, creating the account if needed
 
-**Direction 2 — Admin action impacts on user functions**: For every admin setter that modifies a parameter stored in global storage and used in user-facing function preconditions:
+**Direction 2 - Admin action impacts on user functions**: For every admin setter that modifies a parameter stored in global storage and used in user-facing function preconditions:
 1. Can an admin parameter change make a user-facing function behave unexpectedly? (e.g., setting `max_deviation = 0` disables oracle bounds, setting `cooldown = 0` removes timing protection)
 2. Does the admin change retroactively affect users in active positions? (e.g., changing withdrawal delay while users have pending withdrawals)
 
@@ -109,9 +109,9 @@ When marking any finding as CONTESTED:
 **Aptos-specific uncertainty sources**:
 - **Upgradeable modules**: Modules with `can_change_* = true` in `PackageMetadata` may change behavior after audit. Check upgrade policy via `aptos_framework::code`.
 - **Dispatchable function hooks**: FungibleAsset hooks in external modules may change if the hook module is upgradeable
-- **Generic type parameters**: Unknown concrete types supplied at call time — behavior depends on what type the caller provides
+- **Generic type parameters**: Unknown concrete types supplied at call time - behavior depends on what type the caller provides
 - **Object references**: `Object<T>` references may point to objects controlled by external modules
-- **Resource account behavior**: ResourceAccount with `SignerCapability` — who holds the capability? Can the holder change?
+- **Resource account behavior**: ResourceAccount with `SignerCapability` - who holds the capability? Can the holder change?
 
 **Workflow integration**:
 - CONTESTED findings receive same verification priority as HIGH findings
@@ -164,7 +164,7 @@ When a protocol manages multiple vaults, pools, markets, or user positions:
 **Both directions are equally important. Do NOT stop at Direction 1.**
 
 **Aptos-specific roles to audit**:
-- Module deployer (upgrade authority — can change module code)
+- Module deployer (upgrade authority - can change module code)
 - Capability holders (`MintRef`, `BurnRef`, `TransferRef`, `ExtendRef`)
 - `SignerCapability` holders (can sign as resource account)
 - `friend` module authors (access to `public(friend)` functions)
@@ -178,10 +178,10 @@ When a protocol manages multiple vaults, pools, markets, or user positions:
 **Check**: Can donations manipulate thresholds to block operations?
 
 **Aptos-specific attack vectors**:
-1. **APT transfer**: Anyone can send APT to any address via `aptos_account::transfer()` — creates account if needed
+1. **APT transfer**: Anyone can send APT to any address via `aptos_account::transfer()` - creates account if needed
 2. **Coin<T> transfer**: Anyone can send `Coin<T>` to any address via `aptos_account::transfer_coins<T>()` or `coin::deposit()` if `CoinStore<T>` exists
-3. **FungibleAsset deposit**: `primary_fungible_store::deposit()` deposits FA to any address, creating a store if needed — no recipient consent required
-4. **Resource creation blocking**: `move_to` aborts if resource already exists at address — attacker creates resource first to block legitimate initialization
+3. **FungibleAsset deposit**: `primary_fungible_store::deposit()` deposits FA to any address, creating a store if needed - no recipient consent required
+4. **Resource creation blocking**: `move_to` aborts if resource already exists at address - attacker creates resource first to block legitimate initialization
 5. **Object creation front-running**: Attacker creates named objects at predictable addresses before the protocol
 6. **Counter-based gate inflation**: For every counter-based gate (e.g., `count >= minimum`), check: can entries be added that increment the counter but contribute zero/negligible value to the guarded computation? If yes, the gate passes but the guarded computation produces a meaningless or manipulable result (e.g., TWAP accepting zero-weight snapshots to satisfy minimum count requirement).
 
@@ -203,7 +203,7 @@ When a protocol manages multiple vaults, pools, markets, or user positions:
 **Aptos-specific additions**:
 - **Resource snapshot staleness**: A module reads `borrow_global<Config>(addr).rate` and stores the value in a user's pending operation resource. Between the request and claim transactions, `Config.rate` changes.
 - **Object ownership staleness**: An `Object<T>` ownership is checked in transaction 1 and stored. Object is transferred by the owner between transactions.
-- **Global storage mutation during execution**: A resource read via `borrow_global` at function start may be mutated by an external module call during the same function execution (if the external module has `borrow_global_mut` access to the same resource — only possible for resources under a different address or of a different type)
+- **Global storage mutation during execution**: A resource read via `borrow_global` at function start may be mutated by an external module call during the same function execution (if the external module has `borrow_global_mut` access to the same resource - only possible for resources under a different address or of a different type)
 - **Module upgrade between steps**: If an external module is upgraded between transaction 1 and transaction 2 of a multi-step operation, its behavior may change entirely.
 
 **Action**: For multi-step operations (request -> wait -> claim) AND for any function that stores a snapshot of external module state in global storage, verify all cached/stored state remains valid or is re-validated at each subsequent consumption point.
@@ -216,13 +216,13 @@ When a protocol manages multiple vaults, pools, markets, or user positions:
 **Check**: Can ALL asset types the protocol holds be recovered?
 
 **Aptos-specific stranding scenarios**:
-- **Immutable module**: Module published with immutable upgrade policy (`can_change_* = false`) — if no withdrawal function exists, assets are permanently locked
-- **Resource account without signer capability**: Assets in a resource account where `SignerCapability` is lost or never stored — no way to sign transactions for the account
-- **FungibleStore without withdraw path**: A `FungibleStore` owned by a module's resource account with no function that calls `fungible_asset::withdraw` — tokens locked
-- **`move_from` missing**: A resource containing value (coins, tokens) with no function that calls `move_from` to extract it — resource permanently stored
-- **Object without `DeleteRef`**: An `Object` containing assets with no stored `DeleteRef` and no transfer/extraction function — assets locked in the object
-- **Object without `TransferRef` and ungated_transfer disabled**: Object is non-transferable — resources inside the object are stranded
-- **Frozen FungibleStore**: Store frozen with no unfreeze path — assets locked
+- **Immutable module**: Module published with immutable upgrade policy (`can_change_* = false`) - if no withdrawal function exists, assets are permanently locked
+- **Resource account without signer capability**: Assets in a resource account where `SignerCapability` is lost or never stored - no way to sign transactions for the account
+- **FungibleStore without withdraw path**: A `FungibleStore` owned by a module's resource account with no function that calls `fungible_asset::withdraw` - tokens locked
+- **`move_from` missing**: A resource containing value (coins, tokens) with no function that calls `move_from` to extract it - resource permanently stored
+- **Object without `DeleteRef`**: An `Object` containing assets with no stored `DeleteRef` and no transfer/extraction function - assets locked in the object
+- **Object without `TransferRef` and ungated_transfer disabled**: Object is non-transferable - resources inside the object are stranded
+- **Frozen FungibleStore**: Store frozen with no unfreeze path - assets locked
 
 **Severity floor enforcement**:
 - If NO recovery path exists (no sweep, no admin rescue, no migration function) AND assets are currently held -> minimum **MEDIUM**
@@ -276,9 +276,9 @@ Rationale: Protocol designed for up to 10,000 users per documentation
 **Check**: What happens if tokens arrive unsolicited?
 
 **Aptos-specific vectors**:
-- **APT transfer**: Anyone can send APT to any address via `aptos_account::transfer()` — creates account if needed
+- **APT transfer**: Anyone can send APT to any address via `aptos_account::transfer()` - creates account if needed
 - **Coin<T> transfer**: Anyone can send `Coin<T>` to any address with a registered `CoinStore<T>` via `aptos_account::transfer_coins<T>()` or `coin::deposit()`
-- **FungibleAsset deposit**: Anyone can deposit FA to any address's primary store via `primary_fungible_store::deposit()` — auto-creates the store if needed
+- **FungibleAsset deposit**: Anyone can deposit FA to any address's primary store via `primary_fungible_store::deposit()` - auto-creates the store if needed
 - **Object creation**: Anyone can create objects whose existence might be checked by the protocol
 - **Object transfer**: `object::transfer()` sends objects to any address
 
@@ -298,7 +298,7 @@ Rationale: Protocol designed for up to 10,000 users per documentation
 - Gas DoS via unbounded collection growth -> minimum MEDIUM
 - Profitable extraction via accounting manipulation -> standard matrix (usually HIGH)
 
-**Action**: For every external token/asset the protocol interacts with, check if it can be transferred TO the protocol unsolicited, and trace the impact through all 5 dimensions. This includes assets returned by external module calls (LP tokens, reward tokens, receipt objects) — not just the protocol's primary token.
+**Action**: For every external token/asset the protocol interacts with, check if it can be transferred TO the protocol unsolicited, and trace the impact through all 5 dimensions. This includes assets returned by external module calls (LP tokens, reward tokens, receipt objects) - not just the protocol's primary token.
 
 ---
 
@@ -344,7 +344,7 @@ Before marking any behavior as non-issue because it appears intentional:
 2. **Can affected users avoid** the harm through their own actions? (or is it imposed on them?)
 3. **Is the harm documented** in protocol documentation, comments, or UI? (informed consent?)
 4. **Could the protocol achieve the same goal** without this harm? (alternative designs exist?)
-5. **Does the function fulfill its stated purpose completely?** (e.g., an `emergency_withdraw` that only withdraws `Coin<AptosCoin>` but not `FungibleAsset` tokens is incomplete — users with FA deposits cannot emergency-exit)
+5. **Does the function fulfill its stated purpose completely?** (e.g., an `emergency_withdraw` that only withdraws `Coin<AptosCoin>` but not `FungibleAsset` tokens is incomplete - users with FA deposits cannot emergency-exit)
 
 **Verdict rules**:
 - Harmed AND unavoidable AND undocumented -> FINDING (design flaw category, apply severity matrix)
@@ -353,13 +353,13 @@ Before marking any behavior as non-issue because it appears intentional:
 - No one harmed -> genuinely non-issue
 
 **Aptos-specific "by design" patterns to challenge**:
-- "Objects are non-deletable" — true by default, but does the protocol trap assets in non-deletable objects without extraction functions?
-- "Resource accounts have no private key" — true, but was `SignerCapability` properly stored and is it accessible for all needed operations?
-- "Module is immutable after publish" — true, but were all necessary admin functions included before immutability?
-- "Capability pattern ensures safety" — true if capabilities are properly guarded, but are `MintRef`/`BurnRef`/`TransferRef` stored in extractable locations?
-- "Module is upgradeable, admin can fix it" — upgradeability itself is a trust assumption; assess admin risk
-- "FungibleAsset handles this" — does it really? Check if dispatchable hooks are registered and what they do
-- "The framework handles validation" — verify: does the framework function actually check what the protocol assumes?
+- "Objects are non-deletable" - true by default, but does the protocol trap assets in non-deletable objects without extraction functions?
+- "Resource accounts have no private key" - true, but was `SignerCapability` properly stored and is it accessible for all needed operations?
+- "Module is immutable after publish" - true, but were all necessary admin functions included before immutability?
+- "Capability pattern ensures safety" - true if capabilities are properly guarded, but are `MintRef`/`BurnRef`/`TransferRef` stored in extractable locations?
+- "Module is upgradeable, admin can fix it" - upgradeability itself is a trust assumption; assess admin risk
+- "FungibleAsset handles this" - does it really? Check if dispatchable hooks are registered and what they do
+- "The framework handles validation" - verify: does the framework function actually check what the protocol assumes?
 
 ### Passive Attack Modeling
 
@@ -388,14 +388,14 @@ Model BOTH attack types:
 **Check**: Can any function, admin setter, or state transition break the invariant?
 
 **Methodology**:
-1. For each aggregate variable (total, count, sum, length), identify ALL individual variables it should track — these may live in DIFFERENT resources at DIFFERENT addresses
+1. For each aggregate variable (total, count, sum, length), identify ALL individual variables it should track - these may live in DIFFERENT resources at DIFFERENT addresses
 2. For each function that modifies individual variables, verify the aggregate is updated atomically
 3. For each function that modifies the aggregate directly, verify individual variables are consistent
 4. Check: can the aggregate and individuals be modified through DIFFERENT code paths that desync them?
 5. **Constraint coherence**: For independently-settable limits that must satisfy a mathematical relationship (e.g., `max_total == sum(max_per_pool)`), can one be changed without the other?
-6. **Setter regression**: For each admin setter of a limit/bound/capacity — can the new value be set BELOW already-accumulated state? If yes, check loops (infinite iteration), comparisons (bypass), arithmetic (abort on overflow/underflow). Also check `>` vs `>=` boundary precision.
+6. **Setter regression**: For each admin setter of a limit/bound/capacity - can the new value be set BELOW already-accumulated state? If yes, check loops (infinite iteration), comparisons (bypass), arithmetic (abort on overflow/underflow). Also check `>` vs `>=` boundary precision.
 
-**Aptos-specific**: State may be spread across multiple resources under DIFFERENT addresses. Cross-resource invariants (e.g., `pool_resource.total_deposited == sum(user_position_resource.deposited)` across all users) are extremely hard to enforce atomically. Each `move_to`/`move_from`/`borrow_global_mut` operates on a single resource — multi-resource atomic updates require careful ordering and error handling. Within a single function execution, all changes are atomic (Move transaction atomicity), but multi-transaction state transitions can leave partial updates.
+**Aptos-specific**: State may be spread across multiple resources under DIFFERENT addresses. Cross-resource invariants (e.g., `pool_resource.total_deposited == sum(user_position_resource.deposited)` across all users) are extremely hard to enforce atomically. Each `move_to`/`move_from`/`borrow_global_mut` operates on a single resource - multi-resource atomic updates require careful ordering and error handling. Within a single function execution, all changes are atomic (Move transaction atomicity), but multi-transaction state transitions can leave partial updates.
 
 **Common invariant classes in Aptos**:
 - Sum invariants: `total_supply == sum(all user balances)` across `Table<address, u64>` entries
@@ -406,7 +406,7 @@ Model BOTH attack types:
 - Constraint coherence: `global_cap >= sum(pool_caps)` across independently-settable pool config resources
 - Object-resource consistency: `Object<T>` existence matches resource existence at the object address
 
-**Action**: For every aggregate/total variable, trace ALL modification paths for both the aggregate AND its components — especially when they live in different resources or are accessed through different functions. If any path modifies one without the other -> FINDING. For every admin setter of a limit/bound, verify it cannot regress below accumulated state.
+**Action**: For every aggregate/total variable, trace ALL modification paths for both the aggregate AND its components - especially when they live in different resources or are accessed through different functions. If any path modifies one without the other -> FINDING. For every admin setter of a limit/bound, verify it cannot regress below accumulated state.
 
 ---
 
@@ -415,7 +415,7 @@ Model BOTH attack types:
 **Pattern**: Any function precondition that depends on state manipulable via borrowed capital within a single transaction
 **Check**: Can the precondition be satisfied/bypassed atomically within a single transaction?
 
-**Aptos flash loan patterns**: Unlike EVM's callback model, Aptos flash loans typically use the **hot potato pattern** — a resource struct without `drop` or `store` ability that MUST be consumed (returned) before the transaction completes:
+**Aptos flash loan patterns**: Unlike EVM's callback model, Aptos flash loans typically use the **hot potato pattern** - a resource struct without `drop` or `store` ability that MUST be consumed (returned) before the transaction completes:
 
 ```move
 // Borrow: returns Coin + FlashLoanReceipt (no drop, no store)
@@ -434,11 +434,11 @@ public fun flash_repay<T>(pool: &mut Pool<T>, coin: Coin<T>, receipt: FlashLoanR
 | Collateral ratio | Deposit collateral temporarily | YES | Can temporary collateral enable actions? |
 
 **Mandatory sequence modeling**: For each flash-accessible state, model the full atomic sequence:
-1. BORROW (flash_borrow — hot potato receipt created) -> 2. MANIPULATE (deposit/trade to inflate target state) -> 3. CALL target function (exploit) -> 4. EXTRACT value -> 5. RESTORE state -> 6. REPAY (flash_repay — consume receipt)
+1. BORROW (flash_borrow - hot potato receipt created) -> 2. MANIPULATE (deposit/trade to inflate target state) -> 3. CALL target function (exploit) -> 4. EXTRACT value -> 5. RESTORE state -> 6. REPAY (flash_repay - consume receipt)
 7. Compute: profit = extracted_value - flash_fee - gas. If profit > 0 -> FINDING.
 
 **Hot potato enforcement check**: Verify flash loan receipts:
-- Have NO `drop` ability (cannot be silently discarded — skipping repayment)
+- Have NO `drop` ability (cannot be silently discarded - skipping repayment)
 - Have NO `store` ability (cannot be stored to persist across transactions)
 - Are consumed ONLY by the repayment function with correct amount validation
 - Repayment function validates amount repaid >= amount borrowed + fee
@@ -464,7 +464,7 @@ public fun flash_repay<T>(pool: &mut Pool<T>, coin: Coin<T>, receipt: FlashLoanR
 | Fallback | What happens if Pyth module aborts? | What happens if Switchboard aborts? | What happens if oracle read aborts? |
 | Config bounds | Oracle config setters (window size, deviation, heartbeat) have meaningful min/max | Same | Same |
 
-**Pyth on Aptos specifics**: Pyth uses a **pull model** — price feeds must be updated within the same transaction via `pyth::update_price_feeds`. Check: (1) what if the update instruction is omitted from the transaction? Does the module use stale cached data? (2) is `max_age` enforced? (3) is the Pyth state object address validated against a known constant?
+**Pyth on Aptos specifics**: Pyth uses a **pull model** - price feeds must be updated within the same transaction via `pyth::update_price_feeds`. Check: (1) what if the update instruction is omitted from the transaction? Does the module use stale cached data? (2) is `max_age` enforced? (3) is the Pyth state object address validated against a known constant?
 
 **Action**: For every oracle data consumption point, verify ALL applicable checks from the table above. Missing checks -> FINDING at severity based on impact. See ORACLE_ANALYSIS skill for full methodology.
 - For every oracle configuration setter (window size, max deviation, heartbeat), check: can the parameter be set to a value that effectively disables the oracle validation? If yes -> FINDING (Rule 14 setter regression applies).
@@ -473,14 +473,14 @@ public fun flash_repay<T>(pool: &mut Pool<T>, coin: Coin<T>, receipt: FlashLoanR
 
 ## Rule R17: State Transition Completeness
 
-**Pattern**: Operations with symmetric branches — profit/loss, deposit/withdraw, mint/burn, stake/unstake, increase/decrease
+**Pattern**: Operations with symmetric branches - profit/loss, deposit/withdraw, mint/burn, stake/unstake, increase/decrease
 **Check**: All state fields modified in one branch are either (a) also modified in the other branch, or (b) explicitly documented as intentionally asymmetric.
 
 **Methodology**:
 1. For each pair of symmetric operations, list ALL state fields modified by the "positive" branch (profit, deposit, mint, stake, increase)
 2. For the "negative" branch (loss, withdraw, burn, unstake, decrease), verify each field from step 1 is also handled
 3. If a field is missing from the negative branch: trace what happens to dependent computations when that field retains its old value while other fields changed
-4. Flag branch size asymmetry > 3x in code volume (lines of code) as a review trigger — large asymmetry often indicates incomplete handling
+4. Flag branch size asymmetry > 3x in code volume (lines of code) as a review trigger - large asymmetry often indicates incomplete handling
 
 **Common miss patterns**:
 - Profit branch updates `locked_profit` + `total_value` + `high_water_mark`, loss branch updates only `total_value` -> `locked_profit` can exceed `total_value` -> arithmetic abort
@@ -500,10 +500,10 @@ public fun flash_repay<T>(pool: &mut Pool<T>, coin: Coin<T>, receipt: FlashLoanR
 
 | Ability | Grants | Security Risk If Misapplied |
 |---------|--------|-----------------------------|
-| `copy` | Value can be duplicated via implicit/explicit copy | Token/receipt/capability duplication — value created from nothing |
-| `drop` | Value can be silently discarded (goes out of scope without consumption) | Obligation bypass — hot-potato receipt silently dropped instead of consumed |
-| `store` | Value can be placed in global storage by any module with `key` access | Value escapes module control — can be stored in attacker-controlled resources |
-| `key` | Value can exist as top-level resource in global storage via `move_to` | Resource can be `move_to`/`move_from`'d — unauthorized storage or extraction |
+| `copy` | Value can be duplicated via implicit/explicit copy | Token/receipt/capability duplication - value created from nothing |
+| `drop` | Value can be silently discarded (goes out of scope without consumption) | Obligation bypass - hot-potato receipt silently dropped instead of consumed |
+| `store` | Value can be placed in global storage by any module with `key` access | Value escapes module control - can be stored in attacker-controlled resources |
+| `key` | Value can exist as top-level resource in global storage via `move_to` | Resource can be `move_to`/`move_from`'d - unauthorized storage or extraction |
 
 **Mandatory checks per struct category**:
 
@@ -563,7 +563,7 @@ let result = 1u128 << amount; // If amount >= 128, ABORTS (DoS) or produces 0 (o
 | `u256` | 256 | 255 | `assert!(shift_amount < 256, E_SHIFT_OVERFLOW)` |
 
 **Mandatory checks**:
-1. Is the shift amount a literal constant? (SAFE — compiler validates)
+1. Is the shift amount a literal constant? (SAFE - compiler validates)
 2. Is the shift amount derived from user input or computed from state? (CHECK bounds)
 3. Is the shift amount bounded by an explicit check before the shift operation? (SAFE if bound < bit width)
 4. Can the computation path produce a shift amount >= bit width under ANY input? (FINDING if yes)
@@ -575,7 +575,7 @@ let result = 1u128 << amount; // If amount >= 128, ABORTS (DoS) or produces 0 (o
 
 ---
 
-## Rule MR3: Type Safety — Generic and Phantom Type Parameters (Shared Move Rule)
+## Rule MR3: Type Safety - Generic and Phantom Type Parameters (Shared Move Rule)
 
 **Pattern**: Functions or structs with generic type parameters (`<T>`, `<phantom T>`)
 **Check**: Can an attacker substitute unexpected types to bypass security invariants?
@@ -629,17 +629,17 @@ Move's type system is strong at compile time but generic functions can be instan
 1. **Upgrade policy assessment**: For each dependency, determine upgrade policy:
    | Policy | Risk | Check |
    |--------|------|-------|
-   | Immutable | None — code cannot change | Safe |
-   | Compatible | Can add functions, cannot change existing signatures | Low — new functions could create unexpected entry points |
-   | Arbitrary | Can change anything | HIGH — all assumptions about behavior may break |
+   | Immutable | None - code cannot change | Safe |
+   | Compatible | Can add functions, cannot change existing signatures | Low - new functions could create unexpected entry points |
+   | Arbitrary | Can change anything | HIGH - all assumptions about behavior may break |
 
 2. **Interface stability**: Does the module use the external function's EXACT signature? Compatible upgrades can add functions but not change existing signatures in Aptos.
 
-3. **Trust boundary**: Is the dependency publisher's address validated (not spoofable)? Module addresses are part of the fully-qualified name — but verify the address is the expected one.
+3. **Trust boundary**: Is the dependency publisher's address validated (not spoofable)? Module addresses are part of the fully-qualified name - but verify the address is the expected one.
 
 4. **Transitive dependencies**: Does the dependency itself depend on modules that could be upgraded? A dependency's dependency being upgradeable can also change behavior.
 
-5. **Framework dependency awareness**: Dependencies on `aptos_framework`, `aptos_std`, `aptos_token_objects` are governed by Aptos governance and can change via framework upgrades. Rare but possible — note as trust assumption.
+5. **Framework dependency awareness**: Dependencies on `aptos_framework`, `aptos_std`, `aptos_token_objects` are governed by Aptos governance and can change via framework upgrades. Rare but possible - note as trust assumption.
 
 **Action**: For every `use` statement importing from a non-framework module, assess upgrade risk and interface stability. Flag dependencies on upgradeable third-party modules as trust assumptions.
 
@@ -652,11 +652,11 @@ Move's type system is strong at compile time but generic functions can be instan
 
 | Visibility | Who Can Call | Risk Level |
 |-----------|------------|-----------|
-| (none — internal) | Only the defining module | LOWEST — fully controlled |
-| `public(friend)` | Only declared `friend` modules | LOW — controlled set of callers |
-| `entry` | External transactions only (not other modules) | MEDIUM — any user can call, but not composable by other modules |
-| `public` | Any module | HIGH — fully composable, any caller module |
-| `public entry` | Both external transactions and other modules | HIGHEST — both composable and directly callable |
+| (none - internal) | Only the defining module | LOWEST - fully controlled |
+| `public(friend)` | Only declared `friend` modules | LOW - controlled set of callers |
+| `entry` | External transactions only (not other modules) | MEDIUM - any user can call, but not composable by other modules |
+| `public` | Any module | HIGH - fully composable, any caller module |
+| `public entry` | Both external transactions and other modules | HIGHEST - both composable and directly callable |
 
 **Mandatory checks**:
 
@@ -667,13 +667,13 @@ Move's type system is strong at compile time but generic functions can be instan
 3. **`entry` vs `public` vs `public entry`**:
    - `entry` functions cannot be called via module composition. Use this when composability is NOT wanted (prevents flash loan integration, sandwich attacks via composed calls).
    - `public` functions can be called by other modules but NOT directly from transactions (unless also `entry`).
-   - `public entry` functions can be called BOTH ways — double exposure surface.
+   - `public entry` functions can be called BOTH ways - double exposure surface.
 
-4. **Missing `entry`**: Functions that should be callable by users but are only `public` (not `entry`) cannot be called directly from transactions — only via scripts or other modules.
+4. **Missing `entry`**: Functions that should be callable by users but are only `public` (not `entry`) cannot be called directly from transactions - only via scripts or other modules.
 
 5. **`#[view]` verification**: Functions marked `#[view]` are expected to be read-only. Verify they truly do not modify state (no `borrow_global_mut`, no `move_to`, no `move_from`).
 
-6. **State-modifying public functions without signer**: Functions marked `public` that modify global state without requiring `&signer` parameter — any module can call these to mutate state.
+6. **State-modifying public functions without signer**: Functions marked `public` that modify global state without requiring `&signer` parameter - any module can call these to mutate state.
 
 **Action**: For every function in scope, verify visibility is the minimum necessary. Flag `public` functions that should be `public(friend)` or `entry`-only, `public entry` functions where only `entry` was intended, and `friend` declarations that grant excessive access. Enumerate all state-modifying `public` functions without signer checks.
 
@@ -686,12 +686,12 @@ Move's type system is strong at compile time but generic functions can be instan
 
 **Capability generation chain**:
 ```
-ConstructorRef (ephemeral — no store ability)
-  |-- generates TransferRef (has store — can be persisted)
-  |-- generates MintRef (has store — can be persisted)
-  |-- generates BurnRef (has store — can be persisted)
-  |-- generates ExtendRef (has store — can be persisted)
-  |-- generates DeleteRef (has store — can be persisted)
+ConstructorRef (ephemeral - no store ability)
+  |-- generates TransferRef (has store - can be persisted)
+  |-- generates MintRef (has store - can be persisted)
+  |-- generates BurnRef (has store - can be persisted)
+  |-- generates ExtendRef (has store - can be persisted)
+  |-- generates DeleteRef (has store - can be persisted)
 ```
 
 **Security checks**:
@@ -699,14 +699,14 @@ ConstructorRef (ephemeral — no store ability)
 | Check | What to Verify | Impact if Failed |
 |-------|---------------|-----------------|
 | ConstructorRef consumed | Used only within creation function, never stored (has no `store` by design) | N/A (compiler prevents storing, but verify no workarounds via wrapping) |
-| TransferRef access | Who can access the stored TransferRef? | Unauthorized object movement — can transfer/move the object WITHOUT owner consent |
-| MintRef access | Who can access the stored MintRef? | Infinite minting — grants UNLIMITED minting of the FungibleAsset |
-| BurnRef access | Who can access the stored BurnRef? | Token destruction — grants ability to DESTROY any token of that FA from any store |
-| ExtendRef access | Who can access the stored ExtendRef? | Object control — `generate_signer_for_extending` = equivalent to having the object's private key |
-| DeleteRef access | Who can access the stored DeleteRef? | Object destruction — can delete the object and all its resources |
-| Ref wrapping | Is the Ref stored inside a struct with `copy` ability? | Capability duplication — infinite refs created from one |
+| TransferRef access | Who can access the stored TransferRef? | Unauthorized object movement - can transfer/move the object WITHOUT owner consent |
+| MintRef access | Who can access the stored MintRef? | Infinite minting - grants UNLIMITED minting of the FungibleAsset |
+| BurnRef access | Who can access the stored BurnRef? | Token destruction - grants ability to DESTROY any token of that FA from any store |
+| ExtendRef access | Who can access the stored ExtendRef? | Object control - `generate_signer_for_extending` = equivalent to having the object's private key |
+| DeleteRef access | Who can access the stored DeleteRef? | Object destruction - can delete the object and all its resources |
+| Ref wrapping | Is the Ref stored inside a struct with `copy` ability? | Capability duplication - infinite refs created from one |
 | Ref revocation | Can Refs be moved into a consuming function to destroy them? | If no revocation path, capability is permanent and irrevocable |
-| Missing Ref generation | Was a needed Ref NOT generated during construction? | Permanent inability — e.g., no `DeleteRef` means object can never be deleted, no `TransferRef` with ungated_transfer disabled means object is permanently immovable |
+| Missing Ref generation | Was a needed Ref NOT generated during construction? | Permanent inability - e.g., no `DeleteRef` means object can never be deleted, no `TransferRef` with ungated_transfer disabled means object is permanently immovable |
 
 **Critical patterns**:
 
@@ -721,7 +721,7 @@ ConstructorRef (ephemeral — no store ability)
    ```
 
 2. **TransferRef not properly guarded**: Object can be moved without owner's consent
-3. **ExtendRef leaked**: `object::generate_signer_for_extending(&extend_ref)` grants full object signer — equivalent to having the object's private key
+3. **ExtendRef leaked**: `object::generate_signer_for_extending(&extend_ref)` grants full object signer - equivalent to having the object's private key
 4. **Refs stored in transferable object**: If the object holding refs has an active `TransferRef`, transferring the object transfers all capabilities with it
 5. **Ref in copyable wrapper**: Wrapping a ref in a `copy`-able struct duplicates the capability
 
@@ -729,7 +729,7 @@ ConstructorRef (ephemeral — no store ability)
 
 ---
 
-## Rule AR2: FungibleAsset Compliance — Dispatchable Hooks (Aptos-Specific)
+## Rule AR2: FungibleAsset Compliance - Dispatchable Hooks (Aptos-Specific)
 
 **Pattern**: Modules that register or interact with dispatchable function hooks for FungibleAsset operations
 **Check**: Are hooks safe from reentrancy, complete in coverage, and bypass-resistant?
@@ -756,7 +756,7 @@ ConstructorRef (ephemeral — no store ability)
 
 6. **Store existence and metadata validation**: Before operating on a FungibleStore, verify it exists (or use `primary_fungible_store` which auto-creates). When accepting FA, validate the metadata object matches the expected asset type.
 
-7. **Frozen store handling**: Check if store is frozen before operations — frozen stores reject deposits/withdrawals.
+7. **Frozen store handling**: Check if store is frozen before operations - frozen stores reject deposits/withdrawals.
 
 8. **Primary vs secondary stores**: `primary_fungible_store` creates one default store per address per FA type; secondary stores are separate. Verify protocol checks the correct store.
 
@@ -813,7 +813,7 @@ ConstructorRef (ephemeral — no store ability)
    }
    ```
 
-2. **Borrow-across-call**: Does the module hold a `&mut` reference to a global resource while making an external module call? If Module B transitively calls back, this will abort — is this the intended defense (reentrancy guard via borrow checker) or an unintended DoS?
+2. **Borrow-across-call**: Does the module hold a `&mut` reference to a global resource while making an external module call? If Module B transitively calls back, this will abort - is this the intended defense (reentrancy guard via borrow checker) or an unintended DoS?
 
 3. **Dispatchable hook awareness**: If the module operates on FungibleAssets with dispatchable hooks, does it account for arbitrary code execution during deposit/withdraw? Are all state changes complete before the FA operation?
 
@@ -834,9 +834,9 @@ ConstructorRef (ephemeral — no store ability)
 
 | Check | What to Verify | Impact if Missing |
 |-------|---------------|-------------------|
-| `#[randomness]` attribute | Function using randomness has `#[randomness]` annotation | Undergasing attack — caller aborts tx if random result is unfavorable, biasing outcomes |
+| `#[randomness]` attribute | Function using randomness has `#[randomness]` annotation | Undergasing attack - caller aborts tx if random result is unfavorable, biasing outcomes |
 | Entry-only constraint | Randomness function should be `entry` only (NOT `public` or `public entry`) | Composable call wrapper can observe result and selectively abort |
-| No test-and-abort | Caller cannot observe randomness result and abort if unfavorable | Biased randomness — attacker only accepts favorable outcomes |
+| No test-and-abort | Caller cannot observe randomness result and abort if unfavorable | Biased randomness - attacker only accepts favorable outcomes |
 | Commit-reveal separation | If used for lottery/selection, is there a commit phase before reveal? | Front-running the randomness result |
 | Single consumption | Is the random value used exactly once? | Reuse leaks entropy, correlation attacks |
 
@@ -888,7 +888,7 @@ entry fun lottery(user: &signer) { // Only callable from transactions, not other
 
 ---
 
-## Evidence Source Tags — Aptos
+## Evidence Source Tags - Aptos
 
 | Tag | Description | Valid for REFUTED? |
 |-----|-------------|-------------------|

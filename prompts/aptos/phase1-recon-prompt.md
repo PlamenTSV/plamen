@@ -1,4 +1,4 @@
-# Phase 1: Recon Agent Prompt Template — Aptos Move
+# Phase 1: Recon Agent Prompt Template - Aptos Move
 
 > **Usage**: Orchestrator reads this file and spawns recon agents with these prompts for Aptos Move modules.
 > Replace `{path}`, `{scratchpad}`, `{docs_path_or_url_if_provided}`, `{network_if_provided}`, `{scope_file_if_provided}`, `{scope_notes_if_provided}` with actual values. Omit lines for empty placeholders.
@@ -7,26 +7,26 @@
 >
 > | Agent | Model | Tasks | Why Separate |
 > |-------|-------|-------|-------------|
-> | **1A: RAG-only** | sonnet | TASK 0 steps 1-5 (vuln-db + Solodit) | Mechanical query+format — no deep reasoning needed |
+> | **1A: RAG-only** | sonnet | TASK 0 steps 1-5 (vuln-db + Solodit) | Mechanical query+format - no deep reasoning needed |
 > | **1B: Docs + External + Fork** | opus | TASK 0 step 6 (fork ancestry), TASK 3, TASK 11 | Tavily can hang; fork ancestry needs reasoning |
-> | **2: Build + Static + Tests** | sonnet | TASK 1, 2, 8, 9 | Tool execution+output formatting — no deep reasoning needed |
+> | **2: Build + Static + Tests** | sonnet | TASK 1, 2, 8, 9 | Tool execution+output formatting - no deep reasoning needed |
 > | **3: Patterns + Surface + Templates** | opus | TASK 4, 5, 6, 7, 10 | Pure codebase analysis, fast; pattern detection needs reasoning |
 >
 >
-> **CRITICAL — RAG TIMEOUT POLICY (v9.9.6)**:
+> **CRITICAL - RAG TIMEOUT POLICY (v9.9.6)**:
 > Agent 1A is **FIRE-AND-FORGET**. The orchestrator MUST NOT block on Agent 1A completion.
 > - Spawn Agent 1A with `run_in_background: true`
 > - **DO NOT await Agent 1A** before proceeding to Phase 2. Wait ONLY for Agents 1B, 2, and 3.
 > - After Agents 1B/2/3 complete, check Agent 1A status:
 >   - If complete → read its `meta_buffer.md` output
->   - If still running → **ABANDON IT**. Write a minimal empty `meta_buffer.md` with `# Meta-Buffer\n## RAG: UNAVAILABLE — agent timed out\nPhase 4b.5 RAG Validation Sweep will compensate.`
+>   - If still running → **ABANDON IT**. Write a minimal empty `meta_buffer.md` with `# Meta-Buffer\n## RAG: UNAVAILABLE - agent timed out\nPhase 4b.5 RAG Validation Sweep will compensate.`
 > - **Rationale**: RAG MCP calls (unified-vuln-db, Solodit) can hang indefinitely (observed: 100+ minutes with 0 output). The pipeline's real RAG safety net is Phase 4b.5 (RAG Validation Sweep), which runs after depth analysis when the pipeline has time budget. Early RAG is nice-to-have, not blocking.
 >
 > Agent 1A writes: `meta_buffer.md`
 > Agent 1B writes: `design_context.md`, `external_production_behavior.md`, fork section of `meta_buffer.md`
 > Agent 2 writes: `build_status.md`, `function_list.md`, `call_graph.md`, `state_variables.md`, `modifiers.md`, `event_definitions.md`, `external_interfaces.md`, `static_analysis.md`, `test_results.md`
 > Agent 3 writes: `contract_inventory.md`, `attack_surface.md`, `detected_patterns.md`, `setter_list.md`, `emit_list.md`, `constraint_variables.md`, `template_recommendations.md`
-> Orchestrator writes: `recon_summary.md` (after Agents 1B, 2, 3 complete — NOT waiting for 1A)
+> Orchestrator writes: `recon_summary.md` (after Agents 1B, 2, 3 complete - NOT waiting for 1A)
 
 ---
 
@@ -65,12 +65,12 @@ Scan Move source files (*.move, excluding build/ and .aptos/) to determine proto
 > **PROBE FIRST**: Before batch calls, make ONE probe call to detect MCP schema incompatibility:
 > `mcp__unified-vuln-db__get_knowledge_stats()`
 > - If probe **succeeds** → set `RAG_TOOLS_AVAILABLE = true`, proceed with batches below
-> - If probe **fails** (API error, schema error, timeout) → set `RAG_TOOLS_AVAILABLE = false`, **skip ALL unified-vuln-db calls**, append to `{SCRATCHPAD}/build_status.md`: `RAG_TOOLS_AVAILABLE: false — unified-vuln-db MCP probe failed: {error}. Phase 4b.5 RAG Sweep will use WebSearch fallback.`
+> - If probe **fails** (API error, schema error, timeout) → set `RAG_TOOLS_AVAILABLE = false`, **skip ALL unified-vuln-db calls**, append to `{SCRATCHPAD}/build_status.md`: `RAG_TOOLS_AVAILABLE: false - unified-vuln-db MCP probe failed: {error}. Phase 4b.5 RAG Sweep will use WebSearch fallback.`
 > - If probe succeeds, also append: `RAG_TOOLS_AVAILABLE: true`
 
 > **PARALLELIZATION DIRECTIVE**: Make MCP calls in PARALLEL batches.
 
-**If RAG_TOOLS_AVAILABLE = false**: Skip Batch 1 and Batch 2 entirely. Write to `{SCRATCHPAD}/meta_buffer.md`: `## RAG: UNAVAILABLE — MCP tools failed probe. Phase 4b.5 will compensate.`
+**If RAG_TOOLS_AVAILABLE = false**: Skip Batch 1 and Batch 2 entirely. Write to `{SCRATCHPAD}/meta_buffer.md`: `## RAG: UNAVAILABLE - MCP tools failed probe. Phase 4b.5 will compensate.`
 
 **Batch 1** (single message, all in parallel):
 1. mcp__unified-vuln-db__get_common_vulnerabilities(protocol_type='{TYPE}')
@@ -179,7 +179,7 @@ SCOPE_NOTES: {scope_notes_if_provided}
 
 ## TASK 0 Step 6: Fork Ancestry Research -- Aptos Move Parent Programs
 
-Read ~/.claude/agents/skills/aptos/FORK_ANCESTRY.md (if it exists) or apply the FORK_ANCESTRY methodology with Aptos-specific parent detection:
+Read ~/.claude/agents/skills/aptos/fork-ancestry/SKILL.md (if it exists) or apply the FORK_ANCESTRY methodology with Aptos-specific parent detection:
 
 ### Known Aptos Move Parent Programs
 
@@ -969,7 +969,7 @@ For EACH recommended template provide: Trigger, Relevance, Instantiation Paramet
 
 ### Injectable Skills
 {List any injectable skills recommended based on protocol type classification}
-- If protocol_type == 'vault': Recommend VAULT_ACCOUNTING injectable (from ~/.claude/agents/skills/injectable/VAULT_ACCOUNTING.md)
+- If protocol_type == 'vault': Recommend VAULT_ACCOUNTING injectable (from ~/.claude/agents/skills/injectable/vault-accounting/SKILL.md)
 - Inject Into: Core state or economic design agent (M4)
 
 ### Niche Agent Binding Rules
@@ -978,7 +978,7 @@ For EACH recommended template provide: Trigger, Relevance, Instantiation Paramet
 - DOCUMENTATION is non-empty AND contains testable protocol claims (fee structures, thresholds, permissions, distribution logic) → SPEC_COMPLIANCE_AUDIT **niche agent** REQUIRED (set `HAS_DOCS` flag)
 - HAS_MULTI_CONTRACT flag detected (2+ in-scope modules AND constraint_variables.md shows shared parameters/formulas across modules) → SEMANTIC_CONSISTENCY_AUDIT **niche agent** REQUIRED
 
-### Niche Agents (Phase 4b — standalone focused agents, 1 budget slot each)
+### Niche Agents (Phase 4b - standalone focused agents, 1 budget slot each)
 
 | Niche Agent | Trigger | Required? | Reason |
 |-------------|---------|-----------|--------|

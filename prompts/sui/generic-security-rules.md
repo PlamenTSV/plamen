@@ -1,4 +1,4 @@
-# Generic Security Rules — Sui Move
+# Generic Security Rules - Sui Move
 
 > **Usage**: Analysis agents and depth agents reference these rules during Sui Move module analysis.
 > These rules cover ALL Sui Move modules regardless of type. Rules R1-R17 are adapted from EVM equivalents. Rules MR1-MR5 are shared Move rules. Rules SR1-SR4 are Sui-specific.

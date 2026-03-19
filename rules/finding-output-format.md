@@ -67,7 +67,7 @@ Every finding MUST use this format:
 - R10 violation (severity uses current snapshot) → **Recalibrate with worst-state**
 - R14 violation (setter for limit but ✗) → **Check constraint coherence and regression below accumulated state**
 - R15 violation (flash-loan-accessible state but ✗) → **MANDATORY flash loan skill analysis**
-- R13 violation (behavior marked "by design" but ✗) → **MANDATORY**: Document terminal user-facing consequence (e.g., "users lose X under condition Y") before REFUTED closure. "By design" describes mechanism, not impact — impact assessment is still required.
+- R13 violation (behavior marked "by design" but ✗) → **MANDATORY**: Document terminal user-facing consequence (e.g., "users lose X under condition Y") before REFUTED closure. "By design" describes mechanism, not impact - impact assessment is still required.
 - R16 violation (oracle dependency but ✗) → **MANDATORY oracle analysis**
 
 ---
@@ -81,4 +81,4 @@ Used by depth agents and iteration 2+ agents:
 | `[BOUNDARY:X=val]` | Agent substituted a concrete boundary value into the expression | `[BOUNDARY:windowSize=0 → weight=MAX_INT]` |
 | `[VARIATION:param A→B]` | Agent tested behavior change when a parameter varies | `[VARIATION:decimals 18→6 → price inflated 1e12x]` |
 | `[TRACE:path→outcome]` | Agent traced execution to a terminal state (revert, return, state change) | `[TRACE:withdraw(maxUint)→revert at L120 "insufficient"]` |
-| `[MEDUSA-PASS]` | Medusa fuzzer found a counterexample violating an invariant — mechanical proof (same weight as `[POC-PASS]`) | `[MEDUSA-PASS: fuzz_totalSupplyInvariant violated after 3-call sequence]` |
+| `[MEDUSA-PASS]` | Medusa fuzzer found a counterexample violating an invariant - mechanical proof (same weight as `[POC-PASS]`) | `[MEDUSA-PASS: fuzz_totalSupplyInvariant violated after 3-call sequence]` |

@@ -77,7 +77,7 @@ If two agents find related issues → boost confidence.
 Before ANY verdict:
 1. **Devil's Advocate**: Answer "What would make this exploitable?" (never "nothing")
 2. **Chain Check**: Search findings_inventory.md for findings that CREATE the missing precondition
-3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. — [MOCK]/[EXT-UNV] cannot support REFUTED
+3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. - [MOCK]/[EXT-UNV] cannot support REFUTED
 4. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
 5. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
 

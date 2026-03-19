@@ -5,7 +5,7 @@
 
 ---
 
-## ID System — MANDATORY
+## ID System - MANDATORY
 
 The report uses **clean sequential severity-prefixed IDs only**:
 - Critical: `C-01`, `C-02`, ...
@@ -15,7 +15,7 @@ The report uses **clean sequential severity-prefixed IDs only**:
 - Informational: `I-01`, `I-02`, ...
 
 **HARD RULES**:
-1. **NO internal pipeline IDs** appear anywhere in the client-facing report. This means NO hypothesis IDs (H-1 from hypotheses.md), NO chain IDs (CH-1), NO agent finding IDs (CS-1, AC-2, TF-4, BLIND-3, EN-1, SE-1, VS-1, DEPTH-X-N, SLITHER-N), and NO mapping references. These are internal audit infrastructure — the reader has never seen them.
+1. **NO internal pipeline IDs** appear anywhere in the client-facing report. This means NO hypothesis IDs (H-1 from hypotheses.md), NO chain IDs (CH-1), NO agent finding IDs (CS-1, AC-2, TF-4, BLIND-3, EN-1, SE-1, VS-1, DEPTH-X-N, SLITHER-N), and NO mapping references. These are internal audit infrastructure - the reader has never seen them.
 2. Cross-references between findings use ONLY report IDs (e.g., "see C-01" or "related to H-03").
 3. Each severity tier numbers independently starting from 01.
 4. The Index Agent (Step 6a) assigns these IDs. Tier writers and assembler use them as-is.
@@ -34,13 +34,13 @@ The report uses **clean sequential severity-prefixed IDs only**:
 **Downgrade modifiers** (applied after matrix lookup):
 - On-chain-only exploit (no UI/off-chain path) → −1 tier. NOTE: this applies ONLY when the impact is confined to on-chain state. If the impact crosses the on-chain/off-chain boundary (e.g., corrupted events affecting indexers, frontends, or monitoring systems), do NOT downgrade.
 - View-function-only impact → cap at Medium
-- Attack path requires fully-trusted actor (per project's stated trust assumptions) to act maliciously → −1 tier (floor: Informational). This applies ONLY to `FULLY_TRUSTED` actors (governance multisig, DAO, timelock). Semi-trusted actors (admin, operator, keeper, oracle) are NOT downgraded here — their likelihood is already captured by the matrix ("specific conditions" or "unlikely/complex setup"). Finding is still reported with a note: *"Severity adjusted — attack requires {actor} to violate stated trust assumption: {assumption}."*
+- Attack path requires fully-trusted actor (per project's stated trust assumptions) to act maliciously → −1 tier (floor: Informational). This applies ONLY to `FULLY_TRUSTED` actors (governance multisig, DAO, timelock). Semi-trusted actors (admin, operator, keeper, oracle) are NOT downgraded here - their likelihood is already captured by the matrix ("specific conditions" or "unlikely/complex setup"). Finding is still reported with a note: *"Severity adjusted - attack requires {actor} to violate stated trust assumption: {assumption}."*
 
 ---
 
 ## Root-Cause Consolidation Rule
 
-Findings that share the same root cause MUST be consolidated into a single finding. Same **variable** does not mean same root cause — if findings require **different fixes**, they are separate root causes.
+Findings that share the same root cause MUST be consolidated into a single finding. Same **variable** does not mean same root cause - if findings require **different fixes**, they are separate root causes.
 - Use the **highest severity** from the matrix across all sub-impacts
 - List each sub-impact as a bullet under **Impact**
 - The **Location** field lists all affected sites
@@ -58,7 +58,7 @@ Findings that share the same root cause MUST be consolidated into a single findi
 
 ---
 
-## Finding Section Format — MANDATORY FOR EVERY FINDING
+## Finding Section Format - MANDATORY FOR EVERY FINDING
 
 **Every finding gets its own full section.** No catch-all tables, no grouped summaries, no "remaining findings" dumps. A finding that only appears in a table row is effectively invisible to the reader.
 
@@ -70,13 +70,13 @@ Findings that share the same root cause MUST be consolidated into a single findi
 **Confidence**: HIGH/MEDIUM/LOW (N agents confirmed, Static Analysis: Y/N, PoC: PASS/FAIL/SKIPPED)
 
 **Description**:
-[Clear explanation of what's wrong. Include relevant code snippet. Do NOT reference any internal audit IDs — describe the bug directly.]
+[Clear explanation of what's wrong. Include relevant code snippet. Do NOT reference any internal audit IDs - describe the bug directly.]
 
 **Impact**:
 [What can happen. Quantify where possible. If multiple sub-impacts from root-cause consolidation, list each as a bullet.]
 
 **PoC Result**:
-[Test output summary, or "Verification skipped — no build environment"]
+[Test output summary, or "Verification skipped - no build environment"]
 
 **Recommendation**:
 [How to fix. Include code snippet where helpful.]
@@ -93,14 +93,14 @@ Findings that share the same root cause MUST be consolidated into a single findi
 ## Report Structure
 
 ```markdown
-# Security Audit Report — [Project Name]
+# Security Audit Report - [Project Name]
 
 **Date**: [YYYY-MM-DD]
 **Auditor**: Automated Security Analysis (Claude Opus 4.6)
 **Scope**: [description]
 **Language/Version**: [language and version]
-**Build Status**: [Compiled successfully / Failed — reason]
-**Static Analysis Status**: [Available / Unavailable — reason]
+**Build Status**: [Compiled successfully / Failed - reason]
+**Static Analysis Status**: [Available / Unavailable - reason]
 
 ---
 
@@ -162,7 +162,7 @@ Findings that share the same root cause MUST be consolidated into a single findi
 ## Low Findings
 
 ### [L-01] Title
-[Full finding section — Recommendation field optional for Low]
+[Full finding section - Recommendation field optional for Low]
 
 ### [L-02] Title
 [Full finding section]
@@ -174,7 +174,7 @@ Findings that share the same root cause MUST be consolidated into a single findi
 ## Informational Findings
 
 ### [I-01] Title
-[Full finding section — PoC Result field optional for Informational]
+[Full finding section - PoC Result field optional for Informational]
 
 [... every Informational finding gets its own section ...]
 
@@ -184,9 +184,9 @@ Findings that share the same root cause MUST be consolidated into a single findi
 
 [Numbered list from most to least urgent. Use report IDs only.]
 
-1. **C-01**: [one-line reason] — Immediate
-2. **C-02**: [one-line reason] — Immediate
-3. **H-01**: [one-line reason] — Before launch
+1. **C-01**: [one-line reason] - Immediate
+2. **C-02**: [one-line reason] - Immediate
+3. **H-01**: [one-line reason] - Before launch
 ...
 
 ---
@@ -198,14 +198,14 @@ Findings that share the same root cause MUST be consolidated into a single findi
 | Report ID | Internal Hypothesis | Chain | Verification | Agent Sources |
 |-----------|-------------------|-------|--------------|---------------|
 | C-01 | [internal ref] | [chain ref] | CONFIRMED | [agent list] |
-| H-01 | [internal ref] | — | CONFIRMED | [agent list] |
+| H-01 | [internal ref] | - | CONFIRMED | [agent list] |
 | ... | ... | ... | ... | ... |
 
 ### Excluded Findings
 
 | Internal ID | Severity | Title | Exclusion Reason |
 |-------------|----------|-------|-----------------|
-| [internal ref] | Medium | [title] | FALSE_POSITIVE — verified not exploitable |
+| [internal ref] | Medium | [title] | FALSE_POSITIVE - verified not exploitable |
 | [internal ref] | Low | [title] | Duplicate of M-03 |
 ```
 
@@ -215,8 +215,8 @@ Findings that share the same root cause MUST be consolidated into a single findi
 
 Before the report is considered complete, verify:
 
-1. **Every finding has its own section** — no finding exists only in a table row
-2. **No internal IDs in body** — search the report for patterns like `[CS-`, `[AC-`, `[TF-`, `[BLIND-`, `[EN-`, `[SE-`, `[VS-`, `[DEPTH-`, `[SLITHER-`, `CH-`, and hypothesis `H-` followed by a number in brackets. NONE should appear outside Appendix A.
-3. **Finding count matches summary** — the number of `###` sections per severity tier equals the count in the summary table
-4. **Cross-references valid** — every `see X-NN` reference points to a finding that exists in the report
-5. **Severity consistency** — if a verifier downgraded/upgraded a finding, the report reflects the FINAL severity, not the original hypothesis severity
+1. **Every finding has its own section** - no finding exists only in a table row
+2. **No internal IDs in body** - search the report for patterns like `[CS-`, `[AC-`, `[TF-`, `[BLIND-`, `[EN-`, `[SE-`, `[VS-`, `[DEPTH-`, `[SLITHER-`, `CH-`, and hypothesis `H-` followed by a number in brackets. NONE should appear outside Appendix A.
+3. **Finding count matches summary** - the number of `###` sections per severity tier equals the count in the summary table
+4. **Cross-references valid** - every `see X-NN` reference points to a finding that exists in the report
+5. **Severity consistency** - if a verifier downgraded/upgraded a finding, the report reflects the FINAL severity, not the original hypothesis severity

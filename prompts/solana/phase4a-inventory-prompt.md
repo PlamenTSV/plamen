@@ -1,9 +1,9 @@
-# Phase 4a: Inventory Agent Prompt Template — Solana
+# Phase 4a: Inventory Agent Prompt Template - Solana
 
 > **Usage**: Orchestrator reads this file and spawns the Inventory Agent for a Solana program audit.
 > Replace placeholders `{SCRATCHPAD}`, `{list...}`, etc.
 > **Includes**: CPI Side Effect Trace audit (merged from Phase 3.5 to eliminate a sequential gate).
-> **Note**: Confidence scoring is computed by the orchestrator's scoring agent AFTER Phase 4b iteration 1, not during inventory. The inventory agent's job is unchanged — it inventories findings and prepares depth candidates.
+> **Note**: Confidence scoring is computed by the orchestrator's scoring agent AFTER Phase 4b iteration 1, not during inventory. The inventory agent's job is unchanged - it inventories findings and prepares depth candidates.
 
 ---
 
@@ -17,8 +17,8 @@ Read ALL files matching {SCRATCHPAD}/analysis_*.md
 
 For each file:
 - Extract all findings and DEPTH_TARGETS
-- Extract Step Execution fields — flag findings with ✗ or ? without valid reasons
-- Extract Rules Applied field — flag missing rule applications (R1-R16, S1-S10)
+- Extract Step Execution fields - flag findings with ✗ or ? without valid reasons
+- Extract Rules Applied field - flag missing rule applications (R1-R16, S1-S10)
 
 ## TASK 1: Findings Inventory
 
@@ -54,20 +54,20 @@ Check these Solana-specific rules IN ADDITION to R1-R16:
 
 ## TASK 1.5: Assumption Dependency Cross-Reference
 
-Read {SCRATCHPAD}/design_context.md — specifically the Trust Assumption Table.
+Read {SCRATCHPAD}/design_context.md - specifically the Trust Assumption Table.
 
 For each finding in the Findings Inventory above, identify the actor required to execute the attack path, then cross-reference against the Trust Assumption Table:
 
 | Condition | Tag | Severity Effect |
 |-----------|-----|----------------|
 | Attack requires `FULLY_TRUSTED` actor to act maliciously | `[ASSUMPTION-DEP: TRUSTED-ACTOR]` | −1 tier (applied by Index Agent) |
-| Attack requires `SEMI_TRUSTED` actor to act maliciously | No tag | No change — severity matrix Likelihood axis already captures "specific conditions/complex setup" |
-| Attack requires `SEMI_TRUSTED` actor to act WITHIN stated bounds | `[ASSUMPTION-DEP: WITHIN-BOUNDS]` | Flag only — no severity change |
-| Attack requires `SEMI_TRUSTED` actor to EXCEED stated bounds | No tag | Real finding — no change |
-| Attack requires `UNTRUSTED` actor or exploits `PRECONDITION` violation | No tag | Real finding — no change |
+| Attack requires `SEMI_TRUSTED` actor to act maliciously | No tag | No change - severity matrix Likelihood axis already captures "specific conditions/complex setup" |
+| Attack requires `SEMI_TRUSTED` actor to act WITHIN stated bounds | `[ASSUMPTION-DEP: WITHIN-BOUNDS]` | Flag only - no severity change |
+| Attack requires `SEMI_TRUSTED` actor to EXCEED stated bounds | No tag | Real finding - no change |
+| Attack requires `UNTRUSTED` actor or exploits `PRECONDITION` violation | No tag | Real finding - no change |
 
 **Rules**:
-- `TRUSTED-ACTOR` tag is ONLY for `FULLY_TRUSTED` actors (e.g., governance multisig, DAO, timelock). NEVER tag `SEMI_TRUSTED` actors as `TRUSTED-ACTOR` — their findings are calibrated through the severity matrix Likelihood axis instead.
+- `TRUSTED-ACTOR` tag is ONLY for `FULLY_TRUSTED` actors (e.g., governance multisig, DAO, timelock). NEVER tag `SEMI_TRUSTED` actors as `TRUSTED-ACTOR` - their findings are calibrated through the severity matrix Likelihood axis instead.
 - Only tag if the finding's ENTIRE attack path depends on the assumption. If the attack has BOTH a trusted-actor path AND an untrusted-actor path → no tag.
 - `WITHIN-BOUNDS` means the attack's impact does not exceed what the stated bounds already allow. If the finding shows impact BEYOND stated bounds → no tag (real bug).
 - When uncertain whether impact exceeds bounds → do NOT tag. Err on the side of preserving severity.
@@ -94,7 +94,7 @@ Add promoted findings with [FENDER-N] IDs, Severity: Medium (pending verificatio
 
 ## TASK 2: Side Effect Trace Audit
 
-Read {SCRATCHPAD}/attack_surface.md (Account Inventory Matrix — look for CPI targets with mutable accounts).
+Read {SCRATCHPAD}/attack_surface.md (Account Inventory Matrix - look for CPI targets with mutable accounts).
 
 For EACH CPI where the target program may modify accounts, cross-reference against the breadth analysis files you already read:
 
@@ -121,7 +121,7 @@ Continue tracing until ONE of:
 ### Cross-Reference with Breadth
 For each trace, check if breadth agents already identified a finding covering this path:
 - If YES: note 'Covered by [XX-N]' and verify same termination point
-- If NO: this is a NEW gap — create finding [SE-N]
+- If NO: this is a NEW gap - create finding [SE-N]
 
 ### Side Effect Trace Output
 Append to {SCRATCHPAD}/findings_inventory.md:
@@ -150,7 +150,7 @@ For each `[ELEVATE]` tag:
 | 1 | {signal text} | {tag type} | YES/NO | {ID or NONE} | Flag for depth |
 
 **Rules**:
-- Every `[ELEVATE]` tag MUST be explicitly addressed — either covered by an existing finding or flagged for depth review
+- Every `[ELEVATE]` tag MUST be explicitly addressed - either covered by an existing finding or flagged for depth review
 - If NO finding addresses the signal → add to `depth_candidates.md` as HIGH priority investigation target
 - "Addressed" means a finding explicitly analyzed the risk described by the signal, not just mentioned the same code location
 
@@ -182,7 +182,7 @@ For each finding with Severity=Low AND a non-empty Postcondition Type in the Cha
 1. Search ALL findings with Severity >= Medium that have a Missing Precondition matching this Low finding's Postcondition Type
 2. If MATCH FOUND (same type AND compatible description):
    - Tag the Low finding as `CHAIN_ESCALATED: enables {Medium+ finding ID}`
-   - Set `effective_severity = Medium` (for depth budget allocation ONLY — reported severity unchanged)
+   - Set `effective_severity = Medium` (for depth budget allocation ONLY - reported severity unchanged)
 3. Write escalated findings to depth_candidates.md under '## Chain-Escalated Findings'
 
 | Low Finding | Postcondition | Matching Medium+ Finding | Missing Precondition | Escalation |

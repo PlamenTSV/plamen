@@ -6,12 +6,12 @@ Thank you for your interest in contributing to Plamen! This guide will help you 
 
 Plamen is a multi-agent security auditing pipeline built on Claude Code. It consists of:
 
-- **Orchestration rules** (`rules/`) — Phase definitions, scoring models, report templates
-- **Language prompts** (`prompts/{evm,solana,aptos,sui}/`) — Per-chain agent prompts and templates
-- **Skills** (`agents/skills/`) — Methodology files that agents read at audit time
-- **Agent definitions** (`agents/depth-*.md`) — Depth agent role definitions
-- **MCP servers** (`custom-mcp/`) — Tool servers (RAG database, static analyzers)
-- **CLI wrapper** (`plamen.py`) — Terminal UI that launches audits
+- **Orchestration rules** (`rules/`) - Phase definitions, scoring models, report templates
+- **Language prompts** (`prompts/{evm,solana,aptos,sui}/`) - Per-chain agent prompts and templates
+- **Skills** (`agents/skills/`) - Methodology files that agents read at audit time
+- **Agent definitions** (`agents/depth-*.md`) - Depth agent role definitions
+- **MCP servers** (`custom-mcp/`) - Tool servers (RAG database, static analyzers)
+- **CLI wrapper** (`plamen.py`) - Terminal UI that launches audits
 
 ## Ways to Contribute
 
@@ -20,19 +20,19 @@ Plamen is a multi-agent security auditing pipeline built on Claude Code. It cons
 Skills are methodology files that teach agents HOW to analyze specific vulnerability classes. They live in `agents/skills/`.
 
 **Types:**
-- **Regular skills** (`agents/skills/{language}/`) — Flag-triggered, loaded when code patterns are detected
-- **Injectable skills** (`agents/skills/injectable/`) — Protocol-type-triggered, loaded for specific protocol categories
-- **Niche agents** (`agents/skills/niche/`) — Standalone agents for focused analysis
+- **Regular skills** (`agents/skills/{language}/{skill-name}/`) - Flag-triggered, loaded when code patterns are detected
+- **Injectable skills** (`agents/skills/injectable/{skill-name}/`) - Protocol-type-triggered, loaded for specific protocol categories
+- **Niche agents** (`agents/skills/niche/{skill-name}/`) - Standalone agents for focused analysis
 
 **Skill quality bar:**
 - Teaches methodology (HOW to look), not patterns (WHAT to find)
 - Has clear trigger conditions (when should it activate?)
 - Includes a step execution checklist
 - Includes common false positives section
-- Under 300 lines (hard cap — context budget)
+- Under 300 lines (hard cap - context budget)
 - Has been tested on at least one real codebase
 
-**Format:** See any existing skill in `agents/skills/evm/` for the template.
+**Format:** Each skill lives in a named folder: `agents/skills/{language}/{skill-name}/SKILL.md`. For skills over 500 lines, split into `SKILL.md` (core workflow) + reference files (`templates.md`, `advanced.md`) that `SKILL.md` points to. See any existing skill in `agents/skills/evm/` for the template.
 
 ### 2. Scanner Checks
 

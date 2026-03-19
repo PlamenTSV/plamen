@@ -1,4 +1,4 @@
-# Generic Security Rules — Solana
+# Generic Security Rules - Solana
 
 > **Usage**: Analysis agents and depth agents reference these rules during Solana program analysis.
 > These rules cover ALL Solana programs regardless of type. Rules R1-R16 are adapted from EVM equivalents. Rules S1-S10 are Solana-specific.
@@ -31,7 +31,7 @@ This includes:
 - Permissionless instructions with oracle-dependent preconditions
 - Any instruction reading token account balances that can be donated to
 
-**Direction 2 — Admin action impacts on user functions**: For every admin instruction that modifies a parameter used in user-facing instruction preconditions:
+**Direction 2 - Admin action impacts on user functions**: For every admin instruction that modifies a parameter used in user-facing instruction preconditions:
 - Can an admin parameter change make a user instruction behave unexpectedly?
 - Does the admin change retroactively affect users in active positions?
 
@@ -66,7 +66,7 @@ This includes:
 
 ---
 
-## Rule R4: Uncertainty Handling — Adversarial Assumption 
+## Rule R4: Uncertainty Handling - Adversarial Assumption 
 **CONTESTED is a TRIGGER, not a TERMINAL state.**
 
 When marking any finding as CONTESTED:
@@ -98,7 +98,7 @@ When marking any finding as CONTESTED:
 For any automated role (cranks, bots, operators):
 
 **Direction 1**: How can ROLE harm USERS?
-- Timing attacks (400ms slot time on Solana — much faster than EVM)
+- Timing attacks (400ms slot time on Solana - much faster than EVM)
 - Parameter manipulation
 - Omission (failing to crank when needed)
 
@@ -128,7 +128,7 @@ For any automated role (cranks, bots, operators):
 **Check**: Can parameters change between operation start and completion?
 
 **Solana-specific additions**:
-- **Intra-transaction CPI staleness**: Account data cached by instruction 1, modified by CPI in instruction 2, read stale by instruction 3 — all in same transaction
+- **Intra-transaction CPI staleness**: Account data cached by instruction 1, modified by CPI in instruction 2, read stale by instruction 3 - all in same transaction
 - **Slot-based timing**: Parameters keyed to slot numbers vs wall clock time
 - **Cross-instruction staleness**: Multiple instructions in same tx share account state; CPI in earlier instruction changes state that later instruction reads stale
 - **Cross-transaction external state**: External account state (ownership, delegation, program status) read and stored in one transaction, relied upon in a later transaction without re-checking the account
@@ -189,7 +189,7 @@ For EACH dangerous precondition state, fill the 5-actor-category table. Solana-s
 
 ---
 
-## Rule R13: User Impact Evaluation — Anti-Normalization 
+## Rule R13: User Impact Evaluation - Anti-Normalization 
 5-question test for any finding marked "by design":
 1. **Who is harmed** by this design gap?
 2. **Can affected users avoid** the harm?
@@ -198,9 +198,9 @@ For EACH dangerous precondition state, fill the 5-actor-category table. Solana-s
 5. **Does the instruction fulfill its stated purpose completely?**
 
 **Solana-specific "by design" patterns to challenge**:
-- "Users must pay rent for accounts" — true, but does the protocol unnecessarily burden users with account creation costs?
-- "CU limits prevent this" — true in current version, but CU limits change; assess if protocol degrades gracefully
-- "Program is upgradeable, admin can fix it" — upgradeability itself is a trust assumption; assess admin risk
+- "Users must pay rent for accounts" - true, but does the protocol unnecessarily burden users with account creation costs?
+- "CU limits prevent this" - true in current version, but CU limits change; assess if protocol degrades gracefully
+- "Program is upgradeable, admin can fix it" - upgradeability itself is a trust assumption; assess admin risk
 
 ---
 
@@ -227,13 +227,13 @@ For EACH dangerous precondition state, fill the 5-actor-category table. Solana-s
 3. Instruction 3: Extract value from target
 4. Instruction 4: Repay lending protocol
 
-**Any lending protocol on Solana is a potential flash loan source** — no special flash loan interface needed.
+**Any lending protocol on Solana is a potential flash loan source** - no special flash loan interface needed.
 
 **Action**: For every instruction with a balance/oracle/threshold precondition, check if instruction composition within one transaction can satisfy it atomically.
 
 ---
 
-## Rule R16: Oracle Integrity — Solana Adaptation (adapted from EVM R16)
+## Rule R16: Oracle Integrity - Solana Adaptation (adapted from EVM R16)
 
 **Pattern**: Any program logic that consumes oracle data
 **Check**: Is the oracle data validated for all failure modes?
@@ -249,7 +249,7 @@ For EACH dangerous precondition state, fill the 5-actor-category table. Solana-s
 | TWAP window | If using EMA price: window length vs liquidity | N/A | N/A |
 | Fallback | What happens if Pyth program reverts? | What happens if Switchboard reverts? | Same |
 
-**Pyth pull model**: Price must be updated within the same transaction (or recently) — adds instruction to tx. Check: what if the Pyth update instruction is omitted?
+**Pyth pull model**: Price must be updated within the same transaction (or recently) - adds instruction to tx. Check: what if the Pyth update instruction is omitted?
 
 ---
 
@@ -378,12 +378,12 @@ For EACH dangerous precondition state, fill the 5-actor-category table. Solana-s
 **Check**: Extension handling for all relevant extensions
 
 **Critical extensions**:
-- **PermanentDelegate**: Can drain ANY token account of that mint — vault risk
-- **TransferHook**: Executes arbitrary code on every transfer — CU budget, revert risk
-- **TransferFee**: Fee deducted from transfer amount — accounting mismatch
-- **CPI Guard**: Blocks delegated transfers via CPI — integration failure
-- **MintCloseAuthority**: Mint can be closed — reading zeroed mint data
-- **DefaultAccountState**: New accounts start frozen — initialization failure
+- **PermanentDelegate**: Can drain ANY token account of that mint - vault risk
+- **TransferHook**: Executes arbitrary code on every transfer - CU budget, revert risk
+- **TransferFee**: Fee deducted from transfer amount - accounting mismatch
+- **CPI Guard**: Blocks delegated transfers via CPI - integration failure
+- **MintCloseAuthority**: Mint can be closed - reading zeroed mint data
+- **DefaultAccountState**: New accounts start frozen - initialization failure
 
 **Action**: For every mint the program interacts with, verify extension handling.
 
@@ -408,7 +408,7 @@ For EACH dangerous precondition state, fill the 5-actor-category table. Solana-s
 **Pattern**: Any account using `#[account(zero_copy(unsafe))]` with `#[repr(C)]`
 **Check**: Explicit padding, alignment correctness, total size match
 
-Solana zero_copy accounts bypass Borsh serialization and map directly to memory. `repr(C)` uses C-style layout with alignment requirements — implicit padding can cause:
+Solana zero_copy accounts bypass Borsh serialization and map directly to memory. `repr(C)` uses C-style layout with alignment requirements - implicit padding can cause:
 - UB if Anchor reads memory at wrong offsets
 - Data corruption if field alignment assumptions are wrong
 - Account size mismatch if INIT_SPACE doesn't account for padding
@@ -428,14 +428,14 @@ Solana zero_copy accounts bypass Borsh serialization and map directly to memory.
 
 ## Rule R17: State Transition Completeness
 
-**Pattern**: Operations with symmetric branches — profit/loss, deposit/withdraw, mint/burn, stake/unstake, increase/decrease
+**Pattern**: Operations with symmetric branches - profit/loss, deposit/withdraw, mint/burn, stake/unstake, increase/decrease
 **Check**: All state fields modified in one branch are either (a) also modified in the other branch, or (b) explicitly documented as intentionally asymmetric.
 
 **Methodology**:
 1. For each pair of symmetric operations, list ALL state fields modified by the "positive" branch (profit, deposit, mint, stake, increase)
 2. For the "negative" branch (loss, withdraw, burn, unstake, decrease), verify each field from step 1 is also handled
 3. If a field is missing from the negative branch: trace what happens to dependent computations when that field retains its old value while other fields changed
-4. Flag branch size asymmetry > 3x in code volume (lines of code) as a review trigger — large asymmetry often indicates incomplete handling
+4. Flag branch size asymmetry > 3x in code volume (lines of code) as a review trigger - large asymmetry often indicates incomplete handling
 
 **Common miss patterns**:
 - Profit branch updates `locked_profit` + `total_value` + `high_water_mark`, loss branch updates only `total_value` → `locked_profit` can exceed `total_value` → underflow
@@ -448,7 +448,7 @@ Solana zero_copy accounts bypass Borsh serialization and map directly to memory.
 
 ---
 
-## Evidence Source Tags — Solana
+## Evidence Source Tags - Solana
 
 | Tag | Description | Valid for REFUTED? |
 |-----|-------------|-------------------|

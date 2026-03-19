@@ -1,4 +1,4 @@
-# Phase 5: Verification Prompt Template — Solana
+# Phase 5: Verification Prompt Template - Solana
 
 > **Usage**: Orchestrator reads this file and spawns verification agents for Solana program audits.
 > Replace placeholders `{SCRATCHPAD}`, `{HYPOTHESIS_ID}`, `{LOCATION}`, etc. with actual values.
@@ -34,7 +34,7 @@ Claim: {IF/THEN/BECAUSE statement}
 
 Read:
 - {SCRATCHPAD}/design_context.md
-- ~/.claude/agents/skills/solana/VERIFICATION_PROTOCOL.md
+- ~/.claude/agents/skills/solana/verification-protocol/SKILL.md
 - ~/.claude/rules/phase5-poc-execution.md
 
 ## PRECISION MODE
@@ -77,9 +77,9 @@ Before marking ANY finding FALSE_POSITIVE, check: does the same code location ha
 
 ## MANDATORY PoC EXECUTION (v9.9.5)
 
-Follow `phase5-poc-execution.md`. Compile and run every PoC — a written test with no execution output is not evidence.
+Follow `phase5-poc-execution.md`. Compile and run every PoC - a written test with no execution output is not evidence.
 
-**Solana commands**: `cargo build-sbf` or `anchor build` (compile), `cargo test test_{hypothesis_id} -- --nocapture` (run). For fuzz variants: check `build_status.md` for `trident_available`. If true (Anchor project): use Trident v0.11+ (`cd trident-tests && trident fuzz run fuzz_0` — no honggfuzz needed). If false: use proptest with bounded inputs or boundary-value parameterized tests. See `phase5-poc-execution.md` for templates and Trident commands.
+**Solana commands**: `cargo build-sbf` or `anchor build` (compile), `cargo test test_{hypothesis_id} -- --nocapture` (run). For fuzz variants: check `build_status.md` for `trident_available`. If true (Anchor project): use Trident v0.11+ (`cd trident-tests && trident fuzz run fuzz_0` - no honggfuzz needed). If false: use proptest with bounded inputs or boundary-value parameterized tests. See `phase5-poc-execution.md` for templates and Trident commands.
 
 ## ANTI-HALLUCINATION RULES
 
@@ -278,10 +278,10 @@ When verdict is CONTESTED or FALSE_POSITIVE, document:
 
 ## NEW OBSERVATIONS (MANDATORY)
 If during verification you discover a NEW bug, configuration dependency, or edge case
-NOT covered by any existing hypothesis — document it under:
+NOT covered by any existing hypothesis - document it under:
 
 ### New Observations
-- [VER-NEW-1]: {title} — {location} — {brief description}
+- [VER-NEW-1]: {title} - {location} - {brief description}
 
 These will be reviewed by the orchestrator for possible inclusion as new findings.
 
@@ -298,7 +298,7 @@ Return: CONFIRMED/FALSE_POSITIVE/CONTESTED + evidence tag + 3-sentence justifica
 
 ## Skeptic-Judge Verification (Thorough mode only, HIGH/CRIT)
 
-> **Purpose**: Challenge the standard verifier's reasoning. Nobody audits the auditor — this step does.
+> **Purpose**: Challenge the standard verifier's reasoning. Nobody audits the auditor - this step does.
 > **Trigger**: Thorough mode, findings with severity HIGH or CRITICAL, after standard Phase 5 verification completes.
 > **Architecture**: Standard verifier → Skeptic agent (sonnet) → Judge agent (haiku, only if disagreement)
 
@@ -343,7 +343,7 @@ Write to {SCRATCHPAD}/skeptic_{hypothesis_id}.md:
 
 If DISAGREE: include your counter-PoC or counter-trace.
 
-Return: '{AGREE/DISAGREE}: skeptic says {verdict} vs standard {STANDARD_VERDICT} — {1-line reason}'
+Return: '{AGREE/DISAGREE}: skeptic says {verdict} vs standard {STANDARD_VERDICT} - {1-line reason}'
 ")
 ```
 
@@ -365,8 +365,8 @@ Read BOTH verification files:
 - {SCRATCHPAD}/skeptic_{hypothesis_id}.md (skeptic verifier)
 
 ## Decision Criteria (STRICTLY mechanical)
-1. `[POC-PASS]` beats `[CODE-TRACE]` — always. Executed test > manual reasoning.
-2. `[POC-PASS]` beats `[POC-FAIL]` — the test that passes wins.
+1. `[POC-PASS]` beats `[CODE-TRACE]` - always. Executed test > manual reasoning.
+2. `[POC-PASS]` beats `[POC-FAIL]` - the test that passes wins.
 3. If both have `[POC-PASS]` (conflicting tests) → verdict = CONTESTED
 4. If both have `[CODE-TRACE]` only → whichever traces MORE concrete values with SPECIFIC line numbers wins. If roughly equal depth → CONTESTED.
 5. If one has `[MEDUSA-PASS]` → that side wins (fuzzer counterexample is mechanical proof).
@@ -379,9 +379,9 @@ Write to {SCRATCHPAD}/judge_{hypothesis_id}.md:
 - **Skeptic Verdict**: {verdict} with {evidence_tag}
 - **Ruling**: {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}
 - **Final Verdict**: {CONFIRMED/FALSE_POSITIVE/CONTESTED}
-- **Reasoning**: {2-3 sentences — which evidence was mechanically stronger}
+- **Reasoning**: {2-3 sentences - which evidence was mechanically stronger}
 
-Return: 'RULING: {final_verdict} — {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}'
+Return: 'RULING: {final_verdict} - {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}'
 ")
 ```
 

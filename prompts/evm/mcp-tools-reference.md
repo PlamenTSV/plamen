@@ -1,22 +1,22 @@
 # MCP Tools Reference
 
-> **MCP tools (`mcp__slither-analyzer__*`, `mcp__unified-vuln-db__*`) are available directly.** The servers are configured globally in `~/.claude.json` and load automatically at session start. Call them directly — no ToolSearch or loading step needed.
+> **MCP tools (`mcp__slither-analyzer__*`, `mcp__unified-vuln-db__*`) are available directly.** The servers are configured globally in `~/.claude.json` and load automatically at session start. Call them directly - no ToolSearch or loading step needed.
 >
 > **If a tool call fails with "No such tool available"**, it means the MCP server failed to start. Check with `claude mcp list` and restart the session.
 
-> **MCP tools are your PRIMARY interface to Slither and the vulnerability database.** Call `mcp__slither-analyzer__*` and `mcp__unified-vuln-db__*` tools DIRECTLY — never route through Bash or CLI unless the MCP call itself has failed. This is not a preference; it is a hard requirement. CLI is the fallback, not the default.
+> **MCP tools are your PRIMARY interface to Slither and the vulnerability database.** Call `mcp__slither-analyzer__*` and `mcp__unified-vuln-db__*` tools DIRECTLY - never route through Bash or CLI unless the MCP call itself has failed. This is not a preference; it is a hard requirement. CLI is the fallback, not the default.
 >
-> **PROHIBITED SUBSTITUTIONS**: NEVER use `mcp__farofino__slither_audit` or any `mcp__farofino__*` tool for Slither operations. `farofino` is a separate MCP server — it is NOT a substitute for `mcp__slither-analyzer__*`. The ONLY approved namespaces are `mcp__slither-analyzer__*` (for Slither) and `mcp__unified-vuln-db__*` (for vulnerability DB). Calling `farofino` instead of `slither-analyzer` is a workflow violation identical to skipping MCP entirely.
+> **PROHIBITED SUBSTITUTIONS**: NEVER use `mcp__farofino__slither_audit` or any `mcp__farofino__*` tool for Slither operations. `farofino` is a separate MCP server - it is NOT a substitute for `mcp__slither-analyzer__*`. The ONLY approved namespaces are `mcp__slither-analyzer__*` (for Slither) and `mcp__unified-vuln-db__*` (for vulnerability DB). Calling `farofino` instead of `slither-analyzer` is a workflow violation identical to skipping MCP entirely.
 
 > **Mental model**: You are good at understanding INTENT and tracing LOGIC. Tools are good at EXHAUSTIVE ENUMERATION. You miss things when scanning large files manually. Tools never skip anything but can't understand intent. **Use both.**
 
-> **MCP TIMEOUT POLICY (MANDATORY)**: When an MCP tool call returns a timeout error or fails, do NOT retry the same call. Record `[MCP: TIMEOUT]` and skip ALL remaining calls to that provider — switch immediately to fallback (code analysis, grep, WebSearch). Claude Code's default tool timeout is 60s (configurable via `MCP_TOOL_TIMEOUT` env var). You cannot cancel a pending call, but you control what happens after the error returns.
+> **MCP TIMEOUT POLICY (MANDATORY)**: When an MCP tool call returns a timeout error or fails, do NOT retry the same call. Record `[MCP: TIMEOUT]` and skip ALL remaining calls to that provider - switch immediately to fallback (code analysis, grep, WebSearch). Claude Code's default tool timeout is 60s (configurable via `MCP_TOOL_TIMEOUT` env var). You cannot cancel a pending call, but you control what happens after the error returns.
 
-## slither-analyzer — Your Systematic Safety Net (CALL VIA MCP, NOT CLI)
+## slither-analyzer - Your Systematic Safety Net (CALL VIA MCP, NOT CLI)
 
 ### Slither Failure Policy (GLOBAL)
 
-> Slither can permanently fail on certain projects (namespace imports like `import X as Y`, mixed compiler versions, unusual AST). When it fails, it will **never** succeed on that project — retrying wastes time.
+> Slither can permanently fail on certain projects (namespace imports like `import X as Y`, mixed compiler versions, unusual AST). When it fails, it will **never** succeed on that project - retrying wastes time.
 
 **Recon (Phase 1)**: The recon agent probes Slither with ONE `list_contracts` call. If it fails → `SLITHER_AVAILABLE = false` for the entire audit. All Slither tasks switch to grep fallback. See `phase1-recon-prompt.md` TASK 2 for details.
 
@@ -26,38 +26,38 @@
 
 | Tool | What It Gives You | When to Use | What You'd Miss Without It |
 |------|-------------------|-------------|---------------------------|
-| `list_functions(path, include_internal)` | Complete function inventory | Step 1b — before reading | Functions you accidentally skip |
-| `export_call_graph(path)` | Cross-contract interaction map | Step 1b — before reading | Indirect call paths, hidden dependencies |
-| `analyze_state_variables(path, contract)` | Variable lifecycle overview | Step 1b — feed to lifecycle agent | State variables you don't trace fully |
-| `analyze_modifiers(path)` | Modifier application map | Step 1b — feed to access-control agent | Unused/missing modifiers |
-| `run_detectors(path, detectors)` | Pattern-based issue detection | Step 3 — after reading | CEI violations, public library functions, dead code |
+| `list_functions(path, include_internal)` | Complete function inventory | Step 1b - before reading | Functions you accidentally skip |
+| `export_call_graph(path)` | Cross-contract interaction map | Step 1b - before reading | Indirect call paths, hidden dependencies |
+| `analyze_state_variables(path, contract)` | Variable lifecycle overview | Step 1b - feed to lifecycle agent | State variables you don't trace fully |
+| `analyze_modifiers(path)` | Modifier application map | Step 1b - feed to access-control agent | Unused/missing modifiers |
+| `run_detectors(path, detectors)` | Pattern-based issue detection | Step 3 - after reading | CEI violations, public library functions, dead code |
 | `get_function_source(path, contract, function)` | Targeted source extraction | During verification | Quick reads without loading full files |
 | `list_contracts(path)` | Contract inventory | Step 1b | Contracts you didn't know existed |
 | `get_function_callees/callers` | Call relationships per function | During reading | Who calls what, unexpected callers |
 | `find_dead_code(path)` | Unused code detection | Step 3 | Unused variables, functions, imports |
 | `analyze_events(path)` | Event definitions and emissions | Step 1b | Event audit input for Core Agent 8 |
 
-## unified-vuln-db — Your Attack Pattern Library
+## unified-vuln-db - Your Attack Pattern Library
 
 ### Local Database Tools (~3.4k indexed findings)
 
 | Tool | What It Gives You | When to Use |
 |------|-------------------|-------------|
-| `get_root_cause_analysis(bug_class)` | Why specific bug classes occur | Step 1c — prime your analysis |
-| `get_attack_vectors(bug_class)` | How exploits work mechanically | Depth agents — understand exploit mechanics |
-| `analyze_code_pattern(pattern, code_context)` | Pattern matching against known vulns | Step 6 — validate hypotheses |
-| `validate_hypothesis(hypothesis)` | Cross-reference against known bugs | Step 6 — before verification |
-| `get_similar_findings(description)` | Similar bugs from other audits | Step 6 — calibrate severity |
+| `get_root_cause_analysis(bug_class)` | Why specific bug classes occur | Step 1c - prime your analysis |
+| `get_attack_vectors(bug_class)` | How exploits work mechanically | Depth agents - understand exploit mechanics |
+| `analyze_code_pattern(pattern, code_context)` | Pattern matching against known vulns | Step 6 - validate hypotheses |
+| `validate_hypothesis(hypothesis)` | Cross-reference against known bugs | Step 6 - before verification |
+| `get_similar_findings(description)` | Similar bugs from other audits | Step 6 - calibrate severity |
 
 **Bug classes**: reentrancy, access-control, arithmetic-precision, oracle-manipulation, flash-loan, dos
 
-### Live Solodit API (50k+ findings — MANDATORY for comprehensive analysis)
+### Live Solodit API (50k+ findings - MANDATORY for comprehensive analysis)
 
 | Tool | What It Gives You | When to Use |
 |------|-------------------|-------------|
 | `search_solodit_live(...)` | Full Solodit database search | **MANDATORY** during hypothesis validation and deep dives |
 
-**MANDATORY Usage — Call `search_solodit_live` when:**
+**MANDATORY Usage - Call `search_solodit_live` when:**
 1. Local search returns < 5 results → Expand search
 2. Validating HIGH/CRITICAL hypothesis → Cross-reference comprehensively
 3. Protocol-specific deep dive → Search by protocol name
@@ -112,7 +112,7 @@ When Slither MCP fails, use this fallback chain:
 
 **Depth agent policy**: If `build_status.md` shows SLITHER_AVAILABLE = false, use Read tool for source extraction and Grep for caller/callee tracing. Do NOT attempt Slither MCP calls.
 
-## tavily-search — Web Research
+## tavily-search - Web Research
 
 | Tool | What It Gives You | When to Use |
 |------|-------------------|-------------|
@@ -135,7 +135,7 @@ When Slither MCP fails, use this fallback chain:
 | Depth agents | specialized (depth-*) | specialized (no change) |
 | Blind spot scanners | sonnet (general-purpose) | sonnet (no change) |
 | Validation sweep | sonnet (general-purpose) | sonnet (no change) |
-| Critical+High tier writer (6b) | opus | opus (no change — quality critical) |
+| Critical+High tier writer (6b) | opus | opus (no change - quality critical) |
 | Medium tier writer (6b) | sonnet | haiku (if >15 agents used) |
 | Low+Info tier writer (6b) | sonnet | haiku (if >15 agents used) |
 | Assembler (6c) | haiku (≤25 findings), sonnet (>25) | sonnet if >25 (no change) |

@@ -1,4 +1,4 @@
-# Self-Check Checklists — Sui/Move
+# Self-Check Checklists - Sui/Move
 
 > **Usage**: Orchestrator reviews these checklists at the end of each phase to ensure nothing was missed.
 

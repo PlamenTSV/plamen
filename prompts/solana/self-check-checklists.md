@@ -1,4 +1,4 @@
-# Self-Check Checklists — Solana
+# Self-Check Checklists - Solana
 
 > **Usage**: Orchestrator reviews these checklists at the end of each phase.
 
@@ -16,7 +16,7 @@
 - [ ] All external program dependencies identified?
 - [ ] All patterns detected (TASK 6)?
 - [ ] Fork ancestry research completed (Solana parents: Marinade, Jupiter, Orca, etc.)?
-- [ ] Production fetch completed? (TASK 11 — Helius or CLI)
+- [ ] Production fetch completed? (TASK 11 - Helius or CLI)
 - [ ] UNVERIFIED deps flagged with severity implications?
 - [ ] BINDING MANIFEST present in template_recommendations.md?
 - [ ] ACCOUNT_VALIDATION marked as ALWAYS REQUIRED?

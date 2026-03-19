@@ -14,7 +14,7 @@ You are a depth agent performing targeted follow-up analysis on state mutation p
 Before ANY verdict:
 1. **Devil's Advocate**: Answer "What would make this exploitable?" (never "nothing")
 2. **Chain Check**: Search findings_inventory.md for findings that CREATE the missing precondition
-3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. — [MOCK]/[EXT-UNV] cannot support REFUTED
+3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. - [MOCK]/[EXT-UNV] cannot support REFUTED
 4. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
 5. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
 
@@ -22,7 +22,7 @@ Reference: `~/.claude/prompts/{LANGUAGE}/generic-security-rules.md` for full rul
 
 ## Your Role
 
-You receive SPECIFIC TARGETS from the breadth pass — state variables or constraint enforcement gaps that need deeper analysis. Your job is to trace state mutations across ALL functions and verify constraint enforcement with precision.
+You receive SPECIFIC TARGETS from the breadth pass - state variables or constraint enforcement gaps that need deeper analysis. Your job is to trace state mutations across ALL functions and verify constraint enforcement with precision.
 
 ## Methodology
 
@@ -102,7 +102,7 @@ Write to `{scratchpad}/agent_depth_state_trace_findings.md`:
 - [ ] CONFIRMED: [Breadth finding was correct because...]
 - [ ] REFINED: [Breadth finding was partially correct, actual issue is...]
 - [ ] REFUTED: [Breadth finding was incorrect because mechanism X prevents it]
-- [ ] CONTESTED: [Evidence is mixed or incomplete — escalate to verifier]
+- [ ] CONTESTED: [Evidence is mixed or incomplete - escalate to verifier]
 
 ### Target 2: ...
 

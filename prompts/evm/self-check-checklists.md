@@ -11,7 +11,7 @@
 - [ ] All artifacts in scratchpad?
 - [ ] meta_buffer.md populated with RAG results?
 - [ ] Fork ancestry research completed? (TASK 0 step 6)
-- [ ] Production fetch completed? (TASK 11 — MANDATORY)
+- [ ] Production fetch completed? (TASK 11 - MANDATORY)
 - [ ] Farofino fallback used if Slither probe failed? (Aderyn + Pattern Analysis)
 - [ ] UNVERIFIED deps flagged with severity implications?
 - [ ] BINDING MANIFEST present in template_recommendations.md?
@@ -30,7 +30,7 @@
 - [ ] ECONOMIC_DESIGN_AUDIT skill instantiated if MONETARY_PARAMETER flag detected?
 - [ ] EXTERNAL_PRECONDITION_AUDIT skill instantiated if external interactions detected?
 
-## After Inventory (Phase 4a — includes side effect trace audit)
+## After Inventory (Phase 4a - includes side effect trace audit)
 
 - [ ] phase4_gates.md created?
 - [ ] Slither findings promoted? (calls-loop, reentrancy, unchecked-transfer, divide-before-multiply)
@@ -79,7 +79,7 @@
 - [ ] Anti-dilution: iteration 2+ agents made their own MCP tool calls?
 - [ ] Anti-dilution: max 5 findings per agent per iteration?
 - [ ] If iteration 2 ran: re-scoring completed with new-evidence-only rule?
-- [ ] If iteration 2 ran: progress check — did any confidence improve?
+- [ ] If iteration 2 ran: progress check - did any confidence improve?
 - [ ] If no progress: remaining uncertain findings forced to CONTESTED?
 - [ ] If iteration 3 ran: final re-scoring completed?
 - [ ] If iteration 3 ran: remaining findings < 0.4 forced to CONTESTED?
@@ -119,7 +119,7 @@
 - [ ] Initialization ordering checked for multi-contract systems? (depth-edge-case)
 - [ ] Inherited capability configurability checked? (Blind Spot B Check 5)
 
-## After Chain Analysis (Phase 4c — includes enabler enumeration)
+## After Chain Analysis (Phase 4c - includes enabler enumeration)
 
 - [ ] PARTIAL/REFUTED findings documented preconditions?
 - [ ] Enabler enumeration completed within chain analysis agent?
@@ -155,13 +155,13 @@
 - [ ] Verifiers used real contract constants?
 - [ ] Fork testing MANDATORY for CONTESTED findings? (not just preferred)
 - [ ] Fork testing used for external dep hypotheses?
-- [ ] Post-verification finding extraction completed? (Phase 5.5 — scan verify_*.md for [VER-NEW-*])
+- [ ] Post-verification finding extraction completed? (Phase 5.5 - scan verify_*.md for [VER-NEW-*])
 - [ ] Error traces extracted from CONTESTED/FALSE_POSITIVE verifiers? (verification_error_traces.md)
 - [ ] Post-verification depth spawned if budget remains AND error traces exist? (AD-6)
 
 ## After Report Generation (Phase 6)
 
-- [ ] Step 6a: Index Agent completed — report_index.md exists with clean IDs?
+- [ ] Step 6a: Index Agent completed - report_index.md exists with clean IDs?
 - [ ] Step 6a.1: Completeness assert passed? (hypothesis count == report IDs + excluded)
 - [ ] Step 6a: Every hypothesis assigned to exactly one tier?
 - [ ] Step 6a: Verification verdicts reflected in final severities?
@@ -170,7 +170,7 @@
 - [ ] Step 6b: report_medium.md exists and is non-empty?
 - [ ] Step 6b: report_low_info.md exists and is non-empty?
 - [ ] Step 6c: Assembler model escalated to sonnet if >25 findings?
-- [ ] Step 6c: Assembler completed — AUDIT_REPORT.md exists in project root?
+- [ ] Step 6c: Assembler completed - AUDIT_REPORT.md exists in project root?
 - [ ] Quality: Every finding has its own ### section (no catch-all tables)?
 - [ ] Quality: NO internal pipeline IDs in report body (check CS-, AC-, TF-, BLIND-, EN-, SE-, VS-, DEPTH-, SLITHER-, CH-, hypothesis H-)?
 - [ ] Quality: Finding counts match summary table?

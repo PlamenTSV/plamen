@@ -1,7 +1,7 @@
 # Post-Audit Improvement Protocol
 
 > **When**: Optionally, after an audit completes AND a human/ground-truth report exists for comparison.
-> **Who**: The orchestrator runs this as a standalone session — NOT during the audit itself.
+> **Who**: The orchestrator runs this as a standalone session - NOT during the audit itself.
 > **Goal**: Identify gaps, classify root causes, propose minimal targeted fixes, and prevent regression and bloat.
 > **Principle**: The pipeline should grow logarithmically, not linearly, with each post-mortem.
 
@@ -17,19 +17,19 @@
 - **Cross-tree duplication**: Each fix must be applied to 4-9 files (EVM, Solana, Aptos, Sui)
 
 ### Failure modes this protocol prevents
-1. **Prompt bloat** — scanner templates growing from 300→500+ lines, agent context windows saturating
-2. **Regression** — a fix for Audit N's gap breaks detection of Audit N-1's findings
-3. **Overfitting** — encoding a specific bug pattern rather than the methodology to find a class of bugs
-4. **Duplication tax** — every 2-line fix costs 8-18 lines across trees (4× scanner + 4× depth + 1× shared)
-5. **Diminishing returns** — adding the 80th scanner check produces less value than tuning the 10 most important ones
-6. **Anchoring bias** — storing past audit findings in persistent memory biases future audits toward those specific patterns
+1. **Prompt bloat** - scanner templates growing from 300→500+ lines, agent context windows saturating
+2. **Regression** - a fix for Audit N's gap breaks detection of Audit N-1's findings
+3. **Overfitting** - encoding a specific bug pattern rather than the methodology to find a class of bugs
+4. **Duplication tax** - every 2-line fix costs 8-18 lines across trees (4× scanner + 4× depth + 1× shared)
+5. **Diminishing returns** - adding the 80th scanner check produces less value than tuning the 10 most important ones
+6. **Anchoring bias** - storing past audit findings in persistent memory biases future audits toward those specific patterns
 
 ### Ephemeral-Session Principle
 
 **NOTHING from the comparison persists except approved methodology changes.** The gap analysis, finding alignment matrix, root cause evidence chains, and ground truth data all exist only within this conversation session. Only two things survive:
 
 1. **Approved edits** to rules/skills/prompts (methodology, never specific bug patterns)
-2. **One-line MEMORY.md entry** recording version, recall %, and root cause distribution (e.g., "v1.1 — 75% recall, 2×RC-DEPTH, 1×RC-METHOD")
+2. **One-line MEMORY.md entry** recording version, recall %, and root cause distribution (e.g., "v1.1 - 75% recall, 2×RC-DEPTH, 1×RC-METHOD")
 
 No benchmark directory. No ground truth files. No finding descriptions stored. The agent must approach each new audit with zero knowledge of previous audit findings.
 
@@ -39,17 +39,17 @@ No benchmark directory. No ground truth files. No finding descriptions stored. T
 
 ### Step 1: Structured Comparison (in-session only)
 
-The user provides both reports. The orchestrator creates the alignment matrix **in conversation context only** — never written to disk:
+The user provides both reports. The orchestrator creates the alignment matrix **in conversation context only** - never written to disk:
 
 ```
 Finding Alignment Matrix (ephemeral)
 
 | GT ID | GT Sev | GT Title | Match? | Pipeline ID | Pipeline Sev | Delta |
 |-------|--------|----------|--------|-------------|-------------|-------|
-| GT-1  | High   | [title]  | MATCHED | H-01       | High        | —     |
-| GT-2  | High   | [title]  | MISSED  | —          | —           | FN    |
+| GT-1  | High   | [title]  | MATCHED | H-01       | High        | -     |
+| GT-2  | High   | [title]  | MISSED  | -          | -           | FN    |
 | GT-3  | Medium | [title]  | PARTIAL | M-03       | Low         | SEV   |
-| —     | —      | —        | EXTRA   | M-05       | Medium      | FP    |
+| -     | -      | -        | EXTRA   | M-05       | Medium      | FP    |
 
 Metrics:
 - Recall: {matched + partial} / {total GT} = X%
@@ -68,8 +68,8 @@ For each FALSE_NEGATIVE, classify into exactly ONE root cause:
 | **RC-DEPTH** | Depth gap | Correct area analyzed but too shallow | Adjust depth directive, add boundary/variation hint |
 | **RC-CONTEXT** | Context gap | Lacked domain knowledge or documentation | Recon doc ingestion improvements |
 | **RC-NOVEL** | Novel vector | Unprecedented vulnerability class, no prior art | RAG entry only. Escalate to RC-METHOD only if user confirms the same class appeared in 3+ audits |
-| **RC-AGENT** | Agent error | Agent had methodology but made a reasoning mistake | **NO PIPELINE CHANGE** — LLM reasoning errors are not fixable by adding rules |
-| **RC-ANCHOR** | Anchoring bias | Agent found the area but anchored on a different interpretation | **NO PIPELINE CHANGE** — inherent LLM limitation |
+| **RC-AGENT** | Agent error | Agent had methodology but made a reasoning mistake | **NO PIPELINE CHANGE** - LLM reasoning errors are not fixable by adding rules |
+| **RC-ANCHOR** | Anchoring bias | Agent found the area but anchored on a different interpretation | **NO PIPELINE CHANGE** - inherent LLM limitation |
 
 **Classification rules:**
 - RC-AGENT and RC-ANCHOR produce NO pipeline changes. They are noted in the session summary only.
@@ -101,7 +101,7 @@ RC-AGENT EXCLUSION TEST (all 3 must be YES to proceed past RC-AGENT):
      DEFAULT TO RC-AGENT. This is a reasoning error, not a gap.
 
 3. METHODOLOGY GAP PROOF: State in ONE sentence what specific
-   methodology instruction is missing — not "the agent should have
+   methodology instruction is missing - not "the agent should have
    checked X" (that's a pattern) but "no existing rule tells the
    agent HOW to systematically discover this class of bug."
    → Can you state this without referencing the specific missed finding? [YES/NO]
@@ -120,14 +120,14 @@ For each miss that PASSED the RC-AGENT Exclusion Test, document the evidence cha
 Miss: {GT finding title}
 
 RC-AGENT Exclusion Test:
-1. Methodology search: [PASS — zero coverage found for {class}] / [FAIL → RC-AGENT]
-2. Reasoning trace: [PASS — agent skipped area entirely] / [FAIL → RC-AGENT]
+1. Methodology search: [PASS - zero coverage found for {class}] / [FAIL → RC-AGENT]
+2. Reasoning trace: [PASS - agent skipped area entirely] / [FAIL → RC-AGENT]
 3. Methodology gap proof: "{the missing instruction}" / [FAIL → RC-AGENT]
 
 Classification: RC-DEPTH
 Evidence chain:
 1. Was the file in scope? YES/NO
-2. Was a relevant agent assigned? YES/NO — which one
+2. Was a relevant agent assigned? YES/NO - which one
 3. Did the agent analyze the relevant function? YES/NO
 4. What did the agent conclude?
 5. What did the agent miss?
@@ -227,7 +227,7 @@ A new check should be always-on (in scanner/depth templates) ONLY if:
 > **Added in**: v{version}
 
 ## Methodology
-[methodology steps — WHAT to analyze, not WHAT to find]
+[methodology steps - WHAT to analyze, not WHAT to find]
 
 ## Integration Point
 [which agent prompt section this appends to]
@@ -250,15 +250,15 @@ A new check should be always-on (in scanner/depth templates) ONLY if:
 
 ### How regression is prevented WITHOUT storing audit data
 
-1. **Methodology over patterns**: Changes encode HOW to analyze, never WHAT to find. "Enumerate all write sites for accumulator variables" is methodology. "Check if updateReward() is called in emergencyWithdraw()" is a pattern — it belongs in RAG, not in pipeline rules.
+1. **Methodology over patterns**: Changes encode HOW to analyze, never WHAT to find. "Enumerate all write sites for accumulator variables" is methodology. "Check if updateReward() is called in emergencyWithdraw()" is a pattern - it belongs in RAG, not in pipeline rules.
 
 2. **Anti-bloat gates**: Every change is checked for overlap, duplication, and line budget before implementation. This prevents the accumulation of redundant checks.
 
-3. **User as regression oracle**: The improvement proposal template (Part 6) asks "could this produce false positives?" — the user, who has context from multiple audits, makes this judgment. The pipeline itself stores no audit history.
+3. **User as regression oracle**: The improvement proposal template (Part 6) asks "could this produce false positives?" - the user, who has context from multiple audits, makes this judgment. The pipeline itself stores no audit history.
 
 4. **Injectable isolation**: New skills loaded conditionally cannot affect audits where they don't trigger. A vault-specific injectable can never regress a DEX audit.
 
-5. **Consolidation sweeps** (Part 7): Periodic review of the pipeline removes dead weight without requiring stored audit data — the user's experience is the input.
+5. **Consolidation sweeps** (Part 7): Periodic review of the pipeline removes dead weight without requiring stored audit data - the user's experience is the input.
 
 ### What MEMORY.md records (the only persistent trace)
 
@@ -269,7 +269,7 @@ One line per improvement version:
 {1-2 sentence description of methodology changes}. {N}×RC-{code} fixes, {R}×RC-AGENT reclassified. Recall: {X}% on {project type}.
 ```
 
-This gives enough trend data ("recall is improving on vaults") without storing any specific findings, locations, or vulnerability descriptions that could anchor future audits. The reclassification count tracks how often the orchestrator's initial classification was overridden — a persistently high count signals the exclusion test needs strengthening.
+This gives enough trend data ("recall is improving on vaults") without storing any specific findings, locations, or vulnerability descriptions that could anchor future audits. The reclassification count tracks how often the orchestrator's initial classification was overridden - a persistently high count signals the exclusion test needs strengthening.
 
 ---
 
@@ -304,10 +304,10 @@ Each proposed change goes through this template before implementation:
 - **Does this change agent behavior for non-target protocol types?**: {yes/no}
 
 ## Decision
-- [ ] APPROVED — implement
-- [ ] APPROVED AS INJECTABLE — convert to injectable skill instead of always-on
-- [ ] DEFERRED — add to RAG only, revisit if user reports recurrence
-- [ ] REJECTED — {reason}
+- [ ] APPROVED - implement
+- [ ] APPROVED AS INJECTABLE - convert to injectable skill instead of always-on
+- [ ] DEFERRED - add to RAG only, revisit if user reports recurrence
+- [ ] REJECTED - {reason}
 ```
 
 ---

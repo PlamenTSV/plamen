@@ -61,7 +61,7 @@ Before writing ANY code, answer:
 
 ## STEP 2: Write the Test
 
-Read the VERIFICATION_PROTOCOL skill from `~/.claude/agents/skills/{LANGUAGE}/VERIFICATION_PROTOCOL.md` for language-specific PoC templates and test structure. The orchestrator resolves `{LANGUAGE}` before spawning you.
+Read the VERIFICATION_PROTOCOL skill from `~/.claude/agents/skills/{LANGUAGE}/verification-protocol/SKILL.md` for language-specific PoC templates and test structure. The orchestrator resolves `{LANGUAGE}` before spawning you.
 
 **Test types** (language-agnostic structure):
 
@@ -83,7 +83,7 @@ Read the VERIFICATION_PROTOCOL skill from `~/.claude/agents/skills/{LANGUAGE}/VE
 ## STEP 3: Run the Test
 
 ```
-Shell: {language-appropriate test command — e.g., forge test for EVM, anchor test for Solana}
+Shell: {language-appropriate test command - e.g., forge test for EVM, anchor test for Solana}
 ```
 
 ## STEP 4: Return Verdict
@@ -141,7 +141,7 @@ Shell: {language-appropriate test command — e.g., forge test for EVM, anchor t
 Before ANY verdict:
 1. **Devil's Advocate**: Answer "What would make this exploitable?" (never "nothing")
 2. **Chain Check**: Search findings_inventory.md for findings that CREATE the missing precondition
-3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. — [MOCK]/[EXT-UNV] cannot support REFUTED
+3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. - [MOCK]/[EXT-UNV] cannot support REFUTED
 4. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
 5. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
 

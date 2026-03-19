@@ -1,11 +1,11 @@
 # Phase 4b: Invariant Fuzz Generator (v1.1.0)
 
-> **Purpose**: LLM-generated Foundry invariant tests targeting protocol-specific economic invariants, lifecycle correctness, and structural consistency — derived from the audited codebase's actual design, not generic templates.
-> **Model**: sonnet (mechanical generation task — translates invariants into Solidity test code)
+> **Purpose**: LLM-generated Foundry invariant tests targeting protocol-specific economic invariants, lifecycle correctness, and structural consistency - derived from the audited codebase's actual design, not generic templates.
+> **Model**: sonnet (mechanical generation task - translates invariants into Solidity test code)
 > **Budget**: 0 depth slots (runs between semantic invariants and depth agents; cost = 1 sonnet agent + forge execution)
 > **Trigger**: Always runs when `semantic_invariants.md` exists AND `foundry.toml` exists in project root.
 > **Skip**: If project uses Hardhat only (no `foundry.toml`) → skip entirely. Hardhat has no native invariant test support.
-> **Execution cost**: Forge test execution is a Bash tool call — zero token cost regardless of invariant count, handler count, or run count. There is NO reason to cap the number of invariants or handlers.
+> **Execution cost**: Forge test execution is a Bash tool call - zero token cost regardless of invariant count, handler count, or run count. There is NO reason to cap the number of invariants or handlers.
 
 ---
 
@@ -16,23 +16,23 @@ Task(subagent_type="general-purpose", model="sonnet", prompt="
 You are the Invariant Fuzz Generator. You derive protocol-specific invariants from the audit artifacts and translate them into Foundry invariant tests.
 
 ## Your Inputs
-Read ALL of these — each source contributes different invariant types:
-- {SCRATCHPAD}/design_context.md (protocol purpose, key invariants, trust model — PRIMARY source for economic invariants)
-- {SCRATCHPAD}/findings_inventory.md (critical findings — each Medium+ finding should become a fuzz target)
-- {SCRATCHPAD}/semantic_invariants.md (write sites, sync gaps, clusters — source for structural invariants)
+Read ALL of these - each source contributes different invariant types:
+- {SCRATCHPAD}/design_context.md (protocol purpose, key invariants, trust model - PRIMARY source for economic invariants)
+- {SCRATCHPAD}/findings_inventory.md (critical findings - each Medium+ finding should become a fuzz target)
+- {SCRATCHPAD}/semantic_invariants.md (write sites, sync gaps, clusters - source for structural invariants)
 - {SCRATCHPAD}/state_variables.md (variable types, contracts)
-- {SCRATCHPAD}/function_list.md (public/external functions — handler targets)
+- {SCRATCHPAD}/function_list.md (public/external functions - handler targets)
 - {SCRATCHPAD}/contract_inventory.md (contract paths, inheritance)
-- {SCRATCHPAD}/constraint_variables.md (parameter bounds, fees, limits — source for value ranges)
+- {SCRATCHPAD}/constraint_variables.md (parameter bounds, fees, limits - source for value ranges)
 - Source files referenced in the above artifacts
 
-## STEP 1: Derive Invariants (NO CAP — test everything meaningful)
+## STEP 1: Derive Invariants (NO CAP - test everything meaningful)
 
 Forge execution is zero token cost regardless of invariant count. Write as many `invariant_` functions as the protocol has meaningful properties. Do NOT artificially limit to 8 or any number.
 
 ### 1a. Protocol-Specific Economic Invariants (from design_context.md)
 
-Read the protocol's stated purpose and key invariants from design_context.md. For EACH key invariant or design goal, write a Solidity assertion. These are the MOST VALUABLE invariants — they test what the protocol is SUPPOSED to do.
+Read the protocol's stated purpose and key invariants from design_context.md. For EACH key invariant or design goal, write a Solidity assertion. These are the MOST VALUABLE invariants - they test what the protocol is SUPPOSED to do.
 
 Examples of what to derive:
 - Lending protocol: 'total borrows <= total deposits'

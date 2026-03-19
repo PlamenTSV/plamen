@@ -1,17 +1,17 @@
-# MCP Tools Reference — Solana
+# MCP Tools Reference - Solana
 
-> **MCP tools are available directly** — call them without ToolSearch or loading.
+> **MCP tools are available directly** - call them without ToolSearch or loading.
 > If a tool call fails with "No such tool available", the MCP server failed to start.
 
-> **MCP tools are your PRIMARY interface to Fender and the vulnerability database.** Call `mcp__solana-fender__*` and `mcp__unified-vuln-db__*` tools DIRECTLY — never route through Bash or CLI unless the MCP call itself has failed. This is not a preference; it is a hard requirement. CLI is the fallback, not the default.
+> **MCP tools are your PRIMARY interface to Fender and the vulnerability database.** Call `mcp__solana-fender__*` and `mcp__unified-vuln-db__*` tools DIRECTLY - never route through Bash or CLI unless the MCP call itself has failed. This is not a preference; it is a hard requirement. CLI is the fallback, not the default.
 
 > **Mental model**: You are good at understanding INTENT and tracing LOGIC. Tools are good at EXHAUSTIVE ENUMERATION. You miss things when scanning large files manually. Tools never skip anything but can't understand intent. **Use both.**
 
-> **MCP TIMEOUT POLICY (MANDATORY)**: When an MCP tool call returns a timeout error or fails, do NOT retry the same call. Record `[MCP: TIMEOUT]` and skip ALL remaining calls to that provider — switch immediately to fallback (code analysis, grep, WebSearch). Claude Code's default tool timeout is 60s (configurable via `MCP_TOOL_TIMEOUT` env var). You cannot cancel a pending call, but you control what happens after the error returns.
+> **MCP TIMEOUT POLICY (MANDATORY)**: When an MCP tool call returns a timeout error or fails, do NOT retry the same call. Record `[MCP: TIMEOUT]` and skip ALL remaining calls to that provider - switch immediately to fallback (code analysis, grep, WebSearch). Claude Code's default tool timeout is 60s (configurable via `MCP_TOOL_TIMEOUT` env var). You cannot cancel a pending call, but you control what happens after the error returns.
 
 ## Solana MCP Servers
 
-### helius — On-Chain Account Data (Production Verification)
+### helius - On-Chain Account Data (Production Verification)
 
 > **Package**: `@mcp-dockmaster/mcp-server-helius` (dcSpark). Requires `HELIUS_API_KEY`.
 
@@ -33,31 +33,31 @@
 | `mcp__helius__helius_get_latest_blockhash` | Recent blockhash | Transaction construction |
 
 **Usage**: Production verification (TASK 11), external contract verification, on-chain state checks.
-**Evidence tag**: Results tagged as `[PROD-ONCHAIN]` — valid for REFUTED verdicts.
+**Evidence tag**: Results tagged as `[PROD-ONCHAIN]` - valid for REFUTED verdicts.
 
-### solana-fender — Static Analysis (Anchor Programs)
+### solana-fender - Static Analysis (Anchor Programs)
 
 > **Package**: `anchor-mcp` + `solana_fender` (honey-guard). Installed via Cargo.
 
 | Tool | What It Gives You | When to Use |
 |------|-------------------|-------------|
-| `mcp__solana-fender__security_check_program` | Run all 19 security detectors on an Anchor program directory | TASK 2 — after build succeeds |
+| `mcp__solana-fender__security_check_program` | Run all 19 security detectors on an Anchor program directory | TASK 2 - after build succeeds |
 | `mcp__solana-fender__security_check_file` | Run detectors on a single Anchor source file | Targeted analysis during depth |
 
 **19 Fender Detectors**: missing-owner-check, arbitrary-cpi, closing-accounts, duplicate-mutable-accounts, type-cosplay, reentrancy, integer-overflow, precision-loss, seed-collision, bump-seed-canonicalization, missing-signer-check, account-validation, pda-security, signer-check, remaining-accounts, sysvar-check, authority-check, reinitialization, unsafe-math.
 
-**Failure Policy**: Same as Slither — ONE probe call. If fails, `FENDER_AVAILABLE = false` for entire audit. Grep fallback for all subsequent tasks.
+**Failure Policy**: Same as Slither - ONE probe call. If fails, `FENDER_AVAILABLE = false` for entire audit. Grep fallback for all subsequent tasks.
 
-### unified-vuln-db — Vulnerability Database
+### unified-vuln-db - Vulnerability Database
 
 > **Package**: Local SQLite + Solodit live search. No API key required.
 
 | Tool | What It Gives You | When to Use |
 |------|-------------------|-------------|
-| `mcp__unified-vuln-db__get_common_vulnerabilities(protocol_type)` | Common vulnerability patterns for a protocol category | TASK 0 — protocol classification |
+| `mcp__unified-vuln-db__get_common_vulnerabilities(protocol_type)` | Common vulnerability patterns for a protocol category | TASK 0 - protocol classification |
 | `mcp__unified-vuln-db__get_attack_vectors(bug_class)` | Specific attack vectors for a vulnerability class | Understanding exploit mechanics |
 | `mcp__unified-vuln-db__search_solodit_live(keywords, tags, impact, language, quality_score, ...)` | Live search across Solodit finding database (50k+) | Cross-referencing with historical findings. Use `language="Rust"` for Solana, `quality_score=3` for good findings |
-| `mcp__unified-vuln-db__validate_hypothesis(hypothesis)` | Confidence score for a hypothesis based on historical data | Before verification — calibrate confidence |
+| `mcp__unified-vuln-db__validate_hypothesis(hypothesis)` | Confidence score for a hypothesis based on historical data | Before verification - calibrate confidence |
 | `mcp__unified-vuln-db__get_similar_findings(description)` | Similar historical findings with severity info | Calibrate severity |
 | `mcp__unified-vuln-db__assess_hypothesis_strength(hypothesis)` | Strength assessment based on evidence | Chain analysis RAG validation |
 | `mcp__unified-vuln-db__analyze_code_pattern(pattern)` | Known vulnerability patterns matching a code structure | Depth agent pattern analysis |
@@ -65,7 +65,7 @@
 
 **Solana-specific Solodit tags**: `Account Validation`, `CPI`, `PDA`, `Anchor`, `Solana`, `Token-2022`.
 
-### tavily-search — Web Research
+### tavily-search - Web Research
 
 > **Package**: `tavily-mcp` (Tavily). Requires `TAVILY_API_KEY`.
 
@@ -79,7 +79,7 @@
 
 ---
 
-## Static Analysis Escalation Ladder — Solana
+## Static Analysis Escalation Ladder - Solana
 
 | Priority | Tool | When to Use |
 |----------|------|-------------|
@@ -89,7 +89,7 @@
 
 ---
 
-## Verification Tools — Solana
+## Verification Tools - Solana
 
 | Purpose | Tool | Notes |
 |---------|------|-------|
@@ -112,7 +112,7 @@
 | Depth agents | specialized (depth-*) | specialized (no change) |
 | Blind spot scanners | sonnet (general-purpose) | sonnet (no change) |
 | Validation sweep | sonnet (general-purpose) | sonnet (no change) |
-| Critical+High tier writer (6b) | opus | opus (no change — quality critical) |
+| Critical+High tier writer (6b) | opus | opus (no change - quality critical) |
 | Medium tier writer (6b) | sonnet | haiku (if >15 agents used) |
 | Low+Info tier writer (6b) | sonnet | haiku (if >15 agents used) |
 | Assembler (6c) | haiku (≤25 findings), sonnet (>25) | sonnet if >25 (no change) |

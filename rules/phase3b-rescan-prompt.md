@@ -1,7 +1,7 @@
 # Phase 3b/3c: Breadth Re-Scan & Per-Contract Analysis
 
 > **Purpose**: Counter LLM attention saturation by re-running breadth analysis with an exclusion list of already-found findings. Finds vulnerabilities masked by attention to prominent bugs in pass 1.
-> **Model**: sonnet (discovery task — surfaces candidates for depth loop to verify; also provides implicit model diversity vs opus pass 1)
+> **Model**: sonnet (discovery task - surfaces candidates for depth loop to verify; also provides implicit model diversity vs opus pass 1)
 > **Trigger**: Always runs at least 1 iteration after Phase 4a inventory completes.
 > **Protocol-agnostic**: No language-specific logic. Uses the same scope and artifacts as pass 1.
 
@@ -26,7 +26,7 @@ Phase 4a runs FIRST to produce the exclusion list (findings_inventory.md). Then 
 | **Hard exit** | If iteration 1 produces 0 new findings above Info severity → **skip iteration 2 unconditionally**. Do NOT spawn iteration 2 agents "just to be thorough." |
 | **Quality gate** | New findings must reference specific code locations (file:line). Vague speculation without code reference is not a valid new finding. |
 | **Agent count** | 2-3 agents per iteration (fewer than pass 1) |
-| **Scope per agent** | Broader than pass 1 — each agent covers half the codebase, not a narrow focus area. Overlapping scope is intentional. |
+| **Scope per agent** | Broader than pass 1 - each agent covers half the codebase, not a narrow focus area. Overlapping scope is intentional. |
 
 ---
 
@@ -57,7 +57,7 @@ The following findings are ALREADY KNOWN. You MUST NOT report any of these. If y
 {EXCLUSION_LIST}
 
 ## Your Scope
-{SCOPE_DESCRIPTION — half the codebase per agent, with overlap}
+{SCOPE_DESCRIPTION - half the codebase per agent, with overlap}
 
 ## Artifacts Available
 - {SCRATCHPAD}/design_context.md (protocol design)
@@ -106,7 +106,7 @@ Violation is a workflow error. Log: "Rescan exit check: {N} new findings above I
 
 ---
 
-## Iteration 2 (CONDITIONAL — only if iteration 1 found new findings)
+## Iteration 2 (CONDITIONAL - only if iteration 1 found new findings)
 
 ### Step 1: Update Exclusion List
 
@@ -155,7 +155,7 @@ Sonnet agents are ~3-5x cheaper than opus. Total re-scan cost is roughly equival
 
 1. **Discovery, not verification**: Re-scan surfaces candidates; the depth loop (iteration 1-3, potentially opus) verifies them
 2. **Cost efficiency**: Allows 2 full iterations within reasonable budget
-3. **Implicit model diversity**: If pass 1 used opus, sonnet has different attention patterns — provides some of the multi-model diversity benefit without requiring external APIs
+3. **Implicit model diversity**: If pass 1 used opus, sonnet has different attention patterns - provides some of the multi-model diversity benefit without requiring external APIs
 4. **Quality floor is acceptable**: Sonnet can identify code-level bugs with specific locations; it doesn't need opus-level reasoning for breadth discovery
 
 ---
@@ -189,8 +189,8 @@ Read `{SCRATCHPAD}/contract_inventory.md` and group contracts by inheritance/dep
 **Clustering rules**:
 - Contracts in the same inheritance chain → same cluster (e.g., base + derived)
 - Standalone contracts with no inheritance → own cluster
-- **Parent conditional override**: If `contract_inventory.md` flags any parent with `PARENT_CONDITIONAL_OVERRIDE`, include that parent in the cluster even if it is out of the primary audit scope. The per-contract agent MUST analyze the parent's conditional branches and virtual functions as part of the cluster — child contract behavior depends on parent branch paths.
-- **Parent standalone analysis (v9.9.5)**: When a parent contract is independently in the audit scope AND a child contract overrides its virtual functions, the parent MUST ALSO be analyzed as a **standalone cluster** (in addition to appearing in the child's inheritance cluster). The standalone agent examines the parent's own logic as if no child exists — this catches bugs in the parent's unconditional code paths (e.g., timestamp updates, fee calculations, state transitions that execute regardless of which child override is active) that are invisible when analyzing through the child's override lens.
+- **Parent conditional override**: If `contract_inventory.md` flags any parent with `PARENT_CONDITIONAL_OVERRIDE`, include that parent in the cluster even if it is out of the primary audit scope. The per-contract agent MUST analyze the parent's conditional branches and virtual functions as part of the cluster - child contract behavior depends on parent branch paths.
+- **Parent standalone analysis (v9.9.5)**: When a parent contract is independently in the audit scope AND a child contract overrides its virtual functions, the parent MUST ALSO be analyzed as a **standalone cluster** (in addition to appearing in the child's inheritance cluster). The standalone agent examines the parent's own logic as if no child exists - this catches bugs in the parent's unconditional code paths (e.g., timestamp updates, fee calculations, state transitions that execute regardless of which child override is active) that are invisible when analyzing through the child's override lens.
 - Cluster size cap: max 1500 lines per cluster. If a cluster exceeds this, split by logical boundary.
 - Target: 1 agent per cluster. Max 8 agents total (cap for cost control).
 
@@ -213,22 +213,22 @@ You are Per-Contract Agent #{N}: focused on {CLUSTER_NAME}.
 
 ## CRITICAL INSTRUCTION
 You are analyzing ONLY the following contract(s). Do NOT analyze other contracts.
-Your goal is MAXIMUM DEPTH on this narrow scope — find bugs that broad-scope agents miss.
+Your goal is MAXIMUM DEPTH on this narrow scope - find bugs that broad-scope agents miss.
 
 ### Your Contracts
 {CONTRACT_LIST with file paths and line ranges}
 
 ### Already-Known Findings (Exclusion List)
-{EXCLUSION_LIST — from findings_inventory.md + rescan, same format as Phase 3b}
+{EXCLUSION_LIST - from findings_inventory.md + rescan, same format as Phase 3b}
 
-### Cross-Contract Context (flags only — do NOT analyze these contracts)
-{CROSS_CONTRACT_FLAGS — inbound/outbound deps, shared state}
+### Cross-Contract Context (flags only - do NOT analyze these contracts)
+{CROSS_CONTRACT_FLAGS - inbound/outbound deps, shared state}
 
-When you find a potential issue at a cross-contract boundary, describe the issue from YOUR contract's perspective and note which external contract is involved. Do NOT attempt to trace into the external contract — that is another agent's job.
+When you find a potential issue at a cross-contract boundary, describe the issue from YOUR contract's perspective and note which external contract is involved. Do NOT attempt to trace into the external contract - that is another agent's job.
 
 ### Your Artifacts
 - {SCRATCHPAD}/design_context.md (protocol design)
-- {SCRATCHPAD}/state_variables.md (all state variables — focus on YOUR contracts' variables)
+- {SCRATCHPAD}/state_variables.md (all state variables - focus on YOUR contracts' variables)
 - Source files for YOUR cluster ONLY
 
 ## Analysis Methodology
@@ -237,14 +237,14 @@ For EACH function in your cluster:
 1. **State completeness**: Does every state-modifying path update ALL related state variables? (timestamps, accumulators, snapshots, mirrors)
 2. **Conditional branch audit**: For each if/else, what state is written in each branch? Is any state stale in the skip path?
 3. **Boundary values**: What happens at 0, 1, MAX, and type-boundary values for each parameter?
-4. **Pairing audit**: For each encode/normalize/hash operation, trace the inverse (decode/denormalize/verify) — do they use the same inputs in the same order?
+4. **Pairing audit**: For each encode/normalize/hash operation, trace the inverse (decode/denormalize/verify) - do they use the same inputs in the same order?
 5. **Fee/reward trace**: If the function involves fees or rewards, trace the full flow: accrual → accumulation → claim → transfer. At each step, verify assets and shares remain consistent.
 
 ## Output Requirements
 Write to {SCRATCHPAD}/analysis_percontract_{N}.md
 Use finding IDs: [PC{N}-1], [PC{N}-2]...
 Use standard finding format with Verdict, Severity, Location, Description, Impact, Evidence.
-Maximum 5 findings per agent — prioritize by severity.
+Maximum 5 findings per agent - prioritize by severity.
 
 ## Quality Gate
 Every finding MUST include a specific code location (file:line). Findings without code references will be discarded.
@@ -272,4 +272,4 @@ After all per-contract agents return:
 
 ### No Iteration Needed
 
-Per-contract analysis does NOT iterate. The narrow scope (single contract/cluster) IS the mechanism that provides depth — there is no attention saturation to counter via re-scanning. One pass per contract is sufficient.
+Per-contract analysis does NOT iterate. The narrow scope (single contract/cluster) IS the mechanism that provides depth - there is no attention saturation to counter via re-scanning. One pass per contract is sufficient.

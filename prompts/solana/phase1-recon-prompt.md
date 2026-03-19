@@ -1,4 +1,4 @@
-# Phase 1: Recon Agent Prompt Template — Solana
+# Phase 1: Recon Agent Prompt Template - Solana
 
 > **Usage**: Orchestrator reads this file and spawns recon agents with these prompts for Solana/Anchor programs.
 > Replace `{path}`, `{scratchpad}`, `{docs_path_or_url_if_provided}`, `{network_if_provided}`, `{scope_file_if_provided}`, `{scope_notes_if_provided}` with actual values. Omit lines for empty placeholders.
@@ -7,26 +7,26 @@
 >
 > | Agent | Model | Tasks | Why Separate |
 > |-------|-------|-------|-------------|
-> | **1A: RAG-only** | sonnet | TASK 0 steps 1-5 (vuln-db + Solodit) | Mechanical query + format — no deep reasoning needed |
+> | **1A: RAG-only** | sonnet | TASK 0 steps 1-5 (vuln-db + Solodit) | Mechanical query + format - no deep reasoning needed |
 > | **1B: Docs + External + Fork** | opus | TASK 0 step 6 (fork ancestry), TASK 3, TASK 11 | Tavily/Helius can hang; fork ancestry needs reasoning |
-> | **2: Build + Static + Tests** | sonnet | TASK 1, 2, 8, 9 | Tool execution + output formatting — no deep reasoning needed |
+> | **2: Build + Static + Tests** | sonnet | TASK 1, 2, 8, 9 | Tool execution + output formatting - no deep reasoning needed |
 > | **3: Patterns + Surface + Templates** | opus | TASK 4, 5, 6, 7, 10 | Pure codebase analysis, fast; pattern detection needs reasoning |
 >
 >
-> **CRITICAL — RAG TIMEOUT POLICY (v9.9.6)**:
+> **CRITICAL - RAG TIMEOUT POLICY (v9.9.6)**:
 > Agent 1A is **FIRE-AND-FORGET**. The orchestrator MUST NOT block on Agent 1A completion.
 > - Spawn Agent 1A with `run_in_background: true`
 > - **DO NOT await Agent 1A** before proceeding to Phase 2. Wait ONLY for Agents 1B, 2, and 3.
 > - After Agents 1B/2/3 complete, check Agent 1A status:
 >   - If complete → read its `meta_buffer.md` output
->   - If still running → **ABANDON IT**. Write a minimal empty `meta_buffer.md` with `# Meta-Buffer\n## RAG: UNAVAILABLE — agent timed out\nPhase 4b.5 RAG Validation Sweep will compensate.`
+>   - If still running → **ABANDON IT**. Write a minimal empty `meta_buffer.md` with `# Meta-Buffer\n## RAG: UNAVAILABLE - agent timed out\nPhase 4b.5 RAG Validation Sweep will compensate.`
 > - **Rationale**: RAG MCP calls (unified-vuln-db, Solodit) can hang indefinitely (observed: 100+ minutes with 0 output). The pipeline's real RAG safety net is Phase 4b.5 (RAG Validation Sweep), which runs after depth analysis when the pipeline has time budget. Early RAG is nice-to-have, not blocking.
 >
 > Agent 1A writes: `meta_buffer.md`
 > Agent 1B writes: `design_context.md`, `external_production_behavior.md`, fork section of `meta_buffer.md`
 > Agent 2 writes: `build_status.md`, `function_list.md`, `call_graph.md`, `state_variables.md`, `modifiers.md`, `event_definitions.md`, `external_interfaces.md`, `static_analysis.md`, `test_results.md`
 > Agent 3 writes: `contract_inventory.md`, `attack_surface.md`, `detected_patterns.md`, `setter_list.md`, `emit_list.md`, `constraint_variables.md`, `template_recommendations.md`
-> Orchestrator writes: `recon_summary.md` (after Agents 1B, 2, 3 complete — NOT waiting for 1A)
+> Orchestrator writes: `recon_summary.md` (after Agents 1B, 2, 3 complete - NOT waiting for 1A)
 
 ---
 
@@ -63,12 +63,12 @@ Scan program source (lib.rs or processor.rs) to determine type:
 > **PROBE FIRST**: Before batch calls, make ONE probe call to detect MCP schema incompatibility:
 > `mcp__unified-vuln-db__get_knowledge_stats()`
 > - If probe **succeeds** → set `RAG_TOOLS_AVAILABLE = true`, proceed with batches below
-> - If probe **fails** (API error, schema error, timeout) → set `RAG_TOOLS_AVAILABLE = false`, **skip ALL unified-vuln-db calls**, append to `{SCRATCHPAD}/build_status.md`: `RAG_TOOLS_AVAILABLE: false — unified-vuln-db MCP probe failed: {error}. Phase 4b.5 RAG Sweep will use WebSearch fallback.`
+> - If probe **fails** (API error, schema error, timeout) → set `RAG_TOOLS_AVAILABLE = false`, **skip ALL unified-vuln-db calls**, append to `{SCRATCHPAD}/build_status.md`: `RAG_TOOLS_AVAILABLE: false - unified-vuln-db MCP probe failed: {error}. Phase 4b.5 RAG Sweep will use WebSearch fallback.`
 > - If probe succeeds, also append: `RAG_TOOLS_AVAILABLE: true`
 
 > **PARALLELIZATION DIRECTIVE**: Make MCP calls in PARALLEL batches.
 
-**If RAG_TOOLS_AVAILABLE = false**: Skip Batch 1 and Batch 2 entirely. Write to `{SCRATCHPAD}/meta_buffer.md`: `## RAG: UNAVAILABLE — MCP tools failed probe. Phase 4b.5 will compensate.`
+**If RAG_TOOLS_AVAILABLE = false**: Skip Batch 1 and Batch 2 entirely. Write to `{SCRATCHPAD}/meta_buffer.md`: `## RAG: UNAVAILABLE - MCP tools failed probe. Phase 4b.5 will compensate.`
 
 **Batch 1** (single message, all in parallel):
 1. mcp__unified-vuln-db__get_common_vulnerabilities(protocol_type='{TYPE}')
@@ -144,7 +144,7 @@ SCOPE_NOTES: {scope_notes_if_provided}
 
 ## TASK 0 Step 6: Fork Ancestry Research -- Solana Parent Programs
 
-Read ~/.claude/agents/skills/solana/FORK_ANCESTRY.md and execute all 4 steps with Solana-specific parent detection:
+Read ~/.claude/agents/skills/solana/fork-ancestry/SKILL.md and execute all 4 steps with Solana-specific parent detection:
 
 ### Known Solana Parent Programs
 
@@ -185,7 +185,7 @@ Read ~/.claude/agents/skills/solana/FORK_ANCESTRY.md and execute all 4 steps wit
 | 2 | {role} | SEMI_TRUSTED(bounds: {on-chain limit}) | Cannot exceed {stated bounds} | {source} |
 | 3 | - | PRECONDITION | {config state assumed at launch} | {source} |
 
-Trust levels: `FULLY_TRUSTED` (will not act maliciously — e.g., multisig, governance, DAO), `SEMI_TRUSTED(bounds: ...)` (bounded by on-chain parameters), `PRECONDITION` (deployment/config state assumption), `UNTRUSTED` (default for users, external programs).
+Trust levels: `FULLY_TRUSTED` (will not act maliciously - e.g., multisig, governance, DAO), `SEMI_TRUSTED(bounds: ...)` (bounded by on-chain parameters), `PRECONDITION` (deployment/config state assumption), `UNTRUSTED` (default for users, external programs).
 If no explicit trust documentation exists, infer from signer checks and authority patterns and note `Source: inferred`.
 
 Write to {SCRATCHPAD}/design_context.md
@@ -240,10 +240,10 @@ SCRATCHPAD: {scratchpad}
 
 1. Check for Anchor.toml, Cargo.toml, package.json
 1b. Verify toolchain availability before building:
-   - `solana --version` — if missing, document as TOOLCHAIN WARNING
-   - `anchor --version` (if Anchor.toml present) — if missing, document as TOOLCHAIN WARNING
-   - `rustup target list --installed | grep -E 'bpf|sbf'` — verify BPF/SBF target installed
-   - `trident --version` (if Anchor.toml present) — record availability for Phase 4b/5 fuzz campaigns. Trident v0.11+ uses built-in TridentSVM (no honggfuzz/AFL needed, works on Linux/macOS/Windows)
+   - `solana --version` - if missing, document as TOOLCHAIN WARNING
+   - `anchor --version` (if Anchor.toml present) - if missing, document as TOOLCHAIN WARNING
+   - `rustup target list --installed | grep -E 'bpf|sbf'` - verify BPF/SBF target installed
+   - `trident --version` (if Anchor.toml present) - record availability for Phase 4b/5 fuzz campaigns. Trident v0.11+ uses built-in TridentSVM (no honggfuzz/AFL needed, works on Linux/macOS/Windows)
    If any required tool is missing, document in build_status.md and attempt build anyway (may fail gracefully).
 1c. **Dependency Recovery** (before first build attempt):
    - Run `git submodule update --init --recursive`
@@ -520,7 +520,7 @@ For EACH recommended template provide: Trigger, Relevance, Instantiation Paramet
 - DOCUMENTATION is non-empty AND contains testable protocol claims (fee structures, thresholds, permissions, distribution logic) → SPEC_COMPLIANCE_AUDIT **niche agent** REQUIRED (set `HAS_DOCS` flag)
 - HAS_MULTI_CONTRACT flag detected (2+ in-scope programs AND constraint_variables.md shows shared parameters/formulas across programs) → SEMANTIC_CONSISTENCY_AUDIT **niche agent** REQUIRED
 
-### Niche Agents (Phase 4b — standalone focused agents, 1 budget slot each)
+### Niche Agents (Phase 4b - standalone focused agents, 1 budget slot each)
 
 | Niche Agent | Trigger | Required? | Reason |
 |-------------|---------|-----------|--------|

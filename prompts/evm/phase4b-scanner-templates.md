@@ -84,7 +84,7 @@ If a relay function forwards a user-specified call without ensuring sufficient g
 
 Write to {SCRATCHPAD}/blind_spot_A_findings.md
 
-Return: 'DONE: {N} blind spots — Check1: {A} token gaps, Check2: {B} parameter gaps'
+Return: 'DONE: {N} blind spots - Check1: {A} token gaps, Check2: {B} parameter gaps'
 ")
 ```
 
@@ -120,7 +120,7 @@ From function_list.md, for each public/external function WITHOUT access control 
 |----------|----------|---------------|-----------------|---------------------|-----------|
 
 Flag if: can forge events, manipulate shared state, or should clearly be internal AND no finding covers it.
-Also flag: public/external functions that emit events but have NO access control AND do NOT modify meaningful state — these allow anyone to forge events that mislead off-chain indexers, monitoring, and UIs. Exclude standard ERC events (Transfer, Approval) which are designed to be emitted by anyone.
+Also flag: public/external functions that emit events but have NO access control AND do NOT modify meaningful state - these allow anyone to forge events that mislead off-chain indexers, monitoring, and UIs. Exclude standard ERC events (Transfer, Approval) which are designed to be emitted by anyone.
 Also flag: any `onlyOwner`/admin state-changing function that does NOT emit an event. Admin parameter changes without events are unmonitorable.
 
 ## CHECK 5: Inherited Capability Completeness
@@ -133,7 +133,7 @@ Flag if: capability is referenced in modifiers/logic but has no external exposur
 
 Also flag: capability that has a CONFIGURABLE PARAMETER (e.g., `cooldownPeriod`, `pauseDelay`, `minDelay`) but the parameter's setter is NOT exposed via any public/external function. If the parameter affects user behavior and is hardcoded at deployment, ask: is the hardcoded value appropriate for all future states? Can the protocol adapt if conditions change?
 
-## CHECK 5b: Upward Inheritance — Override Safety
+## CHECK 5b: Upward Inheritance - Override Safety
 
 For each base contract with virtual functions:
 
@@ -144,9 +144,9 @@ For each base contract with virtual functions:
 - Does the override maintain ALL base modifiers? (e.g., base has `nonReentrant` but override omits it)
 - Does the override maintain equivalent access control? (e.g., base is `onlyOwner` but override is `public`)
 - Are there virtual functions in base that SHOULD be overridden but are NOT? (default behavior may be unsafe)
-- Does the override ADD behavior the base did not have? (e.g., base `_beforeTokenTransfer` is a no-op, override adds validation that can revert — does this break callers?)
+- Does the override ADD behavior the base did not have? (e.g., base `_beforeTokenTransfer` is a no-op, override adds validation that can revert - does this break callers?)
 - Does the override REMOVE behavior the base provided? (e.g., base enforces a pause check, override silently continues)
-- Does the override change the REVERT CONDITIONS? (e.g., base reverts on X, override does not — what if another contract relies on the revert?)
+- Does the override change the REVERT CONDITIONS? (e.g., base reverts on X, override does not - what if another contract relies on the revert?)
 
 ## Output
 - Maximum 5 findings [BLIND-B1] through [BLIND-B5]
@@ -159,7 +159,7 @@ For each base contract with virtual functions:
 
 Write to {SCRATCHPAD}/blind_spot_B_findings.md
 
-Return: 'DONE: {N} blind spots — Check3: {A} admin gaps, Check4: {B} visibility gaps, Check5: {C} inheritance gaps, Check5b: {D} override gaps'
+Return: 'DONE: {N} blind spots - Check3: {A} admin gaps, Check4: {B} visibility gaps, Check5: {C} inheritance gaps, Check5b: {D} override gaps'
 ")
 ```
 
@@ -233,7 +233,7 @@ For each public/external function in all in-scope contracts:
 
 Write to {SCRATCHPAD}/blind_spot_C_findings.md
 
-Return: 'DONE: {N} blind spots — Check6: {A} role lifecycle gaps, Check7: {B} capability exposure gaps, Check8: {C} reachability gaps'
+Return: 'DONE: {N} blind spots - Check6: {A} role lifecycle gaps, Check7: {B} capability exposure gaps, Check8: {C} reachability gaps'
 ")
 ```
 
@@ -246,17 +246,17 @@ Return: 'DONE: {N} blind spots — Check6: {A} role lifecycle gaps, Check7: {B} 
 
 ```
 Task(subagent_type="general-purpose", prompt="
-You are the Validation Sweep Agent. You perform mechanical checks across every function in scope. You do NOT analyze business logic or economic attacks — you check that existing validation code is correct, reachable, and complete.
+You are the Validation Sweep Agent. You perform mechanical checks across every function in scope. You do NOT analyze business logic or economic attacks - you check that existing validation code is correct, reachable, and complete.
 
 ## Your Inputs
 Read:
 - {SCRATCHPAD}/function_list.md (complete function inventory)
-- {SCRATCHPAD}/findings_inventory.md (what was already found — avoid duplicates)
+- {SCRATCHPAD}/findings_inventory.md (what was already found - avoid duplicates)
 - {SCRATCHPAD}/modifiers.md (modifier application map)
 - Source files for all in-scope contracts
 
 ## INPUT FILTERING
-When cross-referencing against findings_inventory.md, focus on Medium+ severity findings only. Low/Info findings do not need cross-validation sweeps — the attention cost of processing 50+ findings outweighs the marginal value of sweeping Low/Info patterns.
+When cross-referencing against findings_inventory.md, focus on Medium+ severity findings only. Low/Info findings do not need cross-validation sweeps - the attention cost of processing 50+ findings outweighs the marginal value of sweeping Low/Info patterns.
 
 ## CHECK 1: Boundary Operator Precision
 
@@ -330,7 +330,7 @@ For EVERY external call that passes user-supplied or caller-controlled parameter
 **Methodology**:
 - For each external call, trace parameters backward to their source
 - If any parameter comes from msg.sender input (function args, calldata, structs) WITHOUT validation, flag it
-- Special focus: struct parameters passed through to external protocols — are ALL fields validated?
+- Special focus: struct parameters passed through to external protocols - are ALL fields validated?
 - Common pattern: `swap(FundManagement memory funds)` where `funds.recipient` is caller-controlled and passed directly to external DEX
 
 **Concrete test**: Can the caller set parameter X to an attacker-controlled value that redirects funds, changes swap direction, or modifies the recipient of external call outputs?
@@ -359,7 +359,7 @@ For EVERY internal helper that transforms values (normalization, scaling, encodi
 - For each call site: does it apply the helper to the same variable type with the same parameters as other call sites?
 - Flag: a value that is normalized at entry but not denormalized at exit (or vice versa)
 - Flag: a helper called with different parameters at different sites when the same parameters are expected
-- For paired operations that share state (create/consume, deposit/refund, lock/unlock, open/close): if either operation transforms an input before use, verify the paired operation applies the same transformation at the same logical point — not later, not earlier, not skipped
+- For paired operations that share state (create/consume, deposit/refund, lock/unlock, open/close): if either operation transforms an input before use, verify the paired operation applies the same transformation at the same logical point - not later, not earlier, not skipped
 
 **Concrete test**: If `normalizeAmount(amount, decimals)` is called at 3 deposit sites but `denormalizeAmount(amount, decimals)` is called at only 2 of 3 corresponding withdrawal sites, the missing site produces values at the wrong scale.
 
@@ -386,7 +386,7 @@ For EVERY state-modifying function that contains an if/else or early return:
 - Special focus: functions where fee accrual, timestamp updates, or checkpoint writes are inside a conditional block but downstream consumers assume they always executed
 - Special focus: functions where a "pause" or "skip" branch updates timestamps/counters but NOT accumulators, or vice versa
 
-**Concrete test**: If `functionA` writes `lastUpdate = now` inside an `if (amount > 0)` block, what value does `lastUpdate` retain when `amount == 0`? Trace all consumers of `lastUpdate` — do they produce correct results with the stale value?
+**Concrete test**: If `functionA` writes `lastUpdate = now` inside an `if (amount > 0)` block, what value does `lastUpdate` retain when `amount == 0`? Trace all consumers of `lastUpdate` - do they produce correct results with the stale value?
 
 Tag: [TRACE:branch=false → stateVar={old_value} → consumer computes {wrong_result}]
 
@@ -404,7 +404,7 @@ For each Medium+ CONFIRMED or PARTIAL finding in findings_inventory.md:
 
 ## SELF-CONSISTENCY CHECK (MANDATORY before output)
 
-For each finding you produce: if your own analysis identifies that the missing pattern/modifier/guard is FUNCTIONALLY REQUIRED to be absent (e.g., adding it would cause reverts, break composability, or make the function unreachable), your verdict MUST be REFUTED, not CONFIRMED with caveats. A finding that says "X is missing" and also explains "adding X would break Y" is self-contradictory — resolve the contradiction before outputting.
+For each finding you produce: if your own analysis identifies that the missing pattern/modifier/guard is FUNCTIONALLY REQUIRED to be absent (e.g., adding it would cause reverts, break composability, or make the function unreachable), your verdict MUST be REFUTED, not CONFIRMED with caveats. A finding that says "X is missing" and also explains "adding X would break Y" is self-contradictory - resolve the contradiction before outputting.
 
 ## Output
 Write to {SCRATCHPAD}/validation_sweep_findings.md:
@@ -443,7 +443,7 @@ Return: 'DONE: {N} functions swept, {M} boundary issues, {K} reachability gaps, 
 ```
 Task(subagent_type="general-purpose", prompt="
 You are the Design Stress Testing Agent. You analyze protocol-level design limits and constraint coherence,
-NOT individual function bugs. Per-function analysis was done by depth and breadth agents — your job is
+NOT individual function bugs. Per-function analysis was done by depth and breadth agents - your job is
 system-level design review.
 
 ## Your Inputs
@@ -461,7 +461,7 @@ For each bounded parameter (max array length, max users, capacity limits, max va
 
 1. What happens AT the design limit? (OOG? infinite loop? graceful degradation? revert?)
 2. Are administrative functions still usable at design limit? (emergency withdraw, pause, parameter update)
-3. Gas cost at limit vs block gas limit — does any function become uncallable?
+3. Gas cost at limit vs block gas limit - does any function become uncallable?
 Tag: [BOUNDARY:param=MAX_VALUE → outcome]
 
 ## CHECK 2: Rule 13 Design Adequacy
@@ -496,7 +496,7 @@ For each yield distribution, reward streaming, or vesting mechanism:
 2. Is there a cooldown, lock period, or time-weighted balance that prevents sandwich timing attacks?
 3. For streaming/vesting: can a user enter AFTER streaming starts but before it ends and capture already-vested gains at the current (inflated) share price?
 4. For multi-step distributions (vest → claim → transfer): can timing between steps be exploited?
-5. Trace: if user deposits at T, distribution occurs at T+1 block, user withdraws at T+2 — what is the user's profit vs a user who was deposited for the full period? If disproportionate → FINDING
+5. Trace: if user deposits at T, distribution occurs at T+1 block, user withdraws at T+2 - what is the user's profit vs a user who was deposited for the full period? If disproportionate → FINDING
 
 Tag: [TRACE:deposit_at=T, distribution_at=T+1, withdraw_at=T+2 → profit={X} vs long_term_user={Y} → fairness_ratio={Z}]
 

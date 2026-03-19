@@ -4,7 +4,7 @@
 > Replace placeholders `{SCRATCHPAD}`, `{HYPOTHESIS_ID}`, `{LOCATION}`, `{PROJECT_ROOT}`, etc. with actual values.
 
 > **Environment**: Before running `forge build` or `forge test`, agents MUST:
-> 1. `cd {PROJECT_ROOT}` — forge requires `foundry.toml` in the working directory
+> 1. `cd {PROJECT_ROOT}` - forge requires `foundry.toml` in the working directory
 > 2. If `forge` is not found: prefix with `export PATH="$HOME/.foundry/bin:$HOME/.cargo/bin:$PATH" &&`
 
 ---
@@ -39,7 +39,7 @@ Test type: {PoC type}
 
 Read:
 - {SCRATCHPAD}/design_context.md
-- ~/.claude/agents/skills/evm/VERIFICATION_PROTOCOL.md
+- ~/.claude/agents/skills/evm/verification-protocol/SKILL.md
 - ~/.claude/rules/phase5-poc-execution.md
 
 ## PRECISION MODE
@@ -74,7 +74,7 @@ marking FALSE_POSITIVE:
 **HARD RULE**: If the finding shows Contract A has protection X but Contract B lacks it for
 the same user action → this is a defense parity gap, NOT "by design". Minimum severity: Medium.
 A defense that exists in one contract but not another for the same action is evidence the
-protocol team intended the defense — its absence elsewhere is a bug, not a feature.
+protocol team intended the defense - its absence elsewhere is a bug, not a feature.
 
 You may NOT dismiss a defense parity gap as "Informational" or "design note".
 
@@ -84,7 +84,7 @@ Before marking ANY finding FALSE_POSITIVE, check: does the same code location ha
 
 ## MANDATORY PoC EXECUTION (v9.9.5)
 
-Follow `phase5-poc-execution.md`. Compile and run every PoC — a written test with no execution output is not evidence.
+Follow `phase5-poc-execution.md`. Compile and run every PoC - a written test with no execution output is not evidence.
 
 **EVM commands**: `forge build` (compile), `forge test --match-test test_{HYPOTHESIS_ID} -vvv` (run), `forge test --match-test test_{HYPOTHESIS_ID} --fork-url {RPC_URL} -vvv` (fork). For fuzz variants: write a `testFuzz_` function with `bound()` inputs and run `forge test --match-test testFuzz_{HYPOTHESIS_ID} -vvv`. If project uses Hardhat only (no `foundry.toml`): use `npx hardhat compile` and `npx hardhat test --grep "{HYPOTHESIS_ID}"`, skip fuzz variant.
 
@@ -121,10 +121,10 @@ If hypothesis involves external contract behavior:
 
 ## NEW OBSERVATIONS (MANDATORY)
 If during verification you discover a NEW bug, configuration dependency, or edge case
-NOT covered by any existing hypothesis — document it under:
+NOT covered by any existing hypothesis - document it under:
 
 ### New Observations
-- [VER-NEW-1]: {title} — {location} — {brief description}
+- [VER-NEW-1]: {title} - {location} - {brief description}
 
 These will be reviewed by the orchestrator for possible inclusion as new findings.
 
@@ -136,7 +136,7 @@ When verdict is CONTESTED or FALSE_POSITIVE, document the failure details for po
 - **Location**: {contract}:{function}:{line where failure occurs}
 - **Revert Reason**: {revert string or custom error, if any}
 - **State at Failure**: {key state variables and their values when the test failed}
-- **Investigation Question**: {What specific question would need to be answered to resolve this — e.g., "Does external contract X return Y under condition Z?"}
+- **Investigation Question**: {What specific question would need to be answered to resolve this - e.g., "Does external contract X return Y under condition Z?"}
 
 These error traces feed into the post-verification depth pass (AD-6) if budget remains.
 
@@ -153,7 +153,7 @@ Return: CONFIRMED/FALSE_POSITIVE/CONTESTED + evidence tag + 3-sentence justifica
 
 ## Skeptic-Judge Verification (Thorough mode only, HIGH/CRIT)
 
-> **Purpose**: Challenge the standard verifier's reasoning. Nobody audits the auditor — this step does.
+> **Purpose**: Challenge the standard verifier's reasoning. Nobody audits the auditor - this step does.
 > **Trigger**: Thorough mode, findings with severity HIGH or CRITICAL, after standard Phase 5 verification completes.
 > **Architecture**: Standard verifier → Skeptic agent (sonnet) → Judge agent (haiku, only if disagreement)
 
@@ -198,7 +198,7 @@ Write to {SCRATCHPAD}/skeptic_{hypothesis_id}.md:
 
 If DISAGREE: include your counter-PoC or counter-trace.
 
-Return: '{AGREE/DISAGREE}: skeptic says {verdict} vs standard {STANDARD_VERDICT} — {1-line reason}'
+Return: '{AGREE/DISAGREE}: skeptic says {verdict} vs standard {STANDARD_VERDICT} - {1-line reason}'
 ")
 ```
 
@@ -220,8 +220,8 @@ Read BOTH verification files:
 - {SCRATCHPAD}/skeptic_{hypothesis_id}.md (skeptic verifier)
 
 ## Decision Criteria (STRICTLY mechanical)
-1. `[POC-PASS]` beats `[CODE-TRACE]` — always. Executed test > manual reasoning.
-2. `[POC-PASS]` beats `[POC-FAIL]` — the test that passes wins.
+1. `[POC-PASS]` beats `[CODE-TRACE]` - always. Executed test > manual reasoning.
+2. `[POC-PASS]` beats `[POC-FAIL]` - the test that passes wins.
 3. If both have `[POC-PASS]` (conflicting tests) → verdict = CONTESTED
 4. If both have `[CODE-TRACE]` only → whichever traces MORE concrete values with SPECIFIC line numbers wins. If roughly equal depth → CONTESTED.
 5. If one has `[MEDUSA-PASS]` → that side wins (fuzzer counterexample is mechanical proof).
@@ -234,9 +234,9 @@ Write to {SCRATCHPAD}/judge_{hypothesis_id}.md:
 - **Skeptic Verdict**: {verdict} with {evidence_tag}
 - **Ruling**: {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}
 - **Final Verdict**: {CONFIRMED/FALSE_POSITIVE/CONTESTED}
-- **Reasoning**: {2-3 sentences — which evidence was mechanically stronger}
+- **Reasoning**: {2-3 sentences - which evidence was mechanically stronger}
 
-Return: 'RULING: {final_verdict} — {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}'
+Return: 'RULING: {final_verdict} - {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}'
 ")
 ```
 

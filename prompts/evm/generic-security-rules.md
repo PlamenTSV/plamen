@@ -35,15 +35,15 @@ function keeperAction() external onlyKeeper {
 
 This includes:
 - Admin/keeper functions with user-manipulable preconditions (original scope)
-- **Permissionless functions with oracle-dependent preconditions** (e.g., rebase requires TWAP > threshold — can TWAP be manipulated via flashloan?)
-- **Permissionless functions with balance-dependent preconditions** (e.g., function requires contract balance > X — can donations trigger it?)
+- **Permissionless functions with oracle-dependent preconditions** (e.g., rebase requires TWAP > threshold - can TWAP be manipulated via flashloan?)
+- **Permissionless functions with balance-dependent preconditions** (e.g., function requires contract balance > X - can donations trigger it?)
 
 **Action**: For every function with a precondition, identify whether the precondition state can be manipulated by:
 1. Direct user action (deposit/withdraw/transfer)
 2. Flashloan-assisted manipulation (borrow → manipulate → call → repay in one tx)
 3. Donation (unsolicited token transfer changing balanceOf)
 
-**Direction 2 — Admin action impacts on user functions**: For every admin setter that modifies a parameter used in user-facing function preconditions or logic:
+**Direction 2 - Admin action impacts on user functions**: For every admin setter that modifies a parameter used in user-facing function preconditions or logic:
 4. Can an admin parameter change make a user-facing function behave unexpectedly? (e.g., setting `cooldownPeriod = 0` removes timing protection, setting `maxDeviation = 0` disables oracle bounds)
 5. Does the admin change retroactively affect users in active positions? (e.g., changing withdrawal delay while users are mid-withdrawal)
 
@@ -177,7 +177,7 @@ When protocol manages multiple validators, pools, vaults, or markets:
 | 1 | Inventory ALL asset types held pre-upgrade | Coverage gap |
 | 2 | Does post-upgrade logic handle each asset type? | Check step 3 |
 | 3 | Recovery function exists? (sweep, admin rescue, migration) | STRANDED ASSET finding |
-| 4 | Apply severity floor from above | — |
+| 4 | Apply severity floor from above | - |
 
 ---
 
@@ -226,7 +226,7 @@ This goes BEYOND `balanceOf(this)`. Any external contract whose state the protoc
 - Gas DoS via unbounded loop growth → minimum MEDIUM
 - Profitable extraction via accounting manipulation → standard matrix (usually HIGH)
 
-**Action**: For every external token the protocol interacts with, check if it can be transferred TO the protocol unsolicited, and trace the impact through all 5 dimensions. This includes tokens returned by external calls (staking receipts, LP tokens, reward tokens) — not just the protocol's primary token.
+**Action**: For every external token the protocol interacts with, check if it can be transferred TO the protocol unsolicited, and trace the impact through all 5 dimensions. This includes tokens returned by external calls (staking receipts, LP tokens, reward tokens) - not just the protocol's primary token.
 
 ---
 
@@ -272,7 +272,7 @@ Before marking any behavior as non-issue because it appears intentional:
 2. **Can affected users avoid** the harm through their own actions? (or is it imposed on them?)
 3. **Is the harm documented** in protocol documentation, comments, or UI? (informed consent?)
 4. **Could the protocol achieve the same goal** without this harm? (alternative designs exist?)
-5. **Does the function fulfill its stated purpose completely?** (e.g., an `emergencyWithdraw` that only withdraws LP tokens but not individual tokens is incomplete — users with individual token deposits cannot emergency-exit)
+5. **Does the function fulfill its stated purpose completely?** (e.g., an `emergencyWithdraw` that only withdraws LP tokens but not individual tokens is incomplete - users with individual token deposits cannot emergency-exit)
 
 **Verdict rules**:
 - Harmed AND unavoidable AND undocumented → FINDING (design flaw category, apply severity matrix)
@@ -312,7 +312,7 @@ Model BOTH attack types:
 3. For each setter that modifies the aggregate directly, verify individual variables are consistent
 4. Check: can the aggregate and individuals be modified through DIFFERENT code paths that desync them?
 5. **Constraint coherence**: For independently-settable limits that must satisfy a mathematical relationship (e.g., `max_total == sum(max_per_category)`), can one be changed without the other?
-6. **Setter regression**: For each admin setter of a limit/bound/capacity — can the new value be set BELOW already-accumulated state? If yes, check `while` loops (infinite loop), comparisons (bypass), arithmetic (overflow). Also check `>` vs `>=` boundary precision.
+6. **Setter regression**: For each admin setter of a limit/bound/capacity - can the new value be set BELOW already-accumulated state? If yes, check `while` loops (infinite loop), comparisons (bypass), arithmetic (overflow). Also check `>` vs `>=` boundary precision.
 
 **Common invariant classes**:
 - Sum invariants: `totalSupply == sum(balances)`, `totalAllocated == sum(individual_allocations)`
@@ -370,14 +370,14 @@ Model BOTH attack types:
 
 ## Rule R17: State Transition Completeness
 
-**Pattern**: Operations with symmetric branches — profit/loss, deposit/withdraw, mint/burn, stake/unstake, increase/decrease
+**Pattern**: Operations with symmetric branches - profit/loss, deposit/withdraw, mint/burn, stake/unstake, increase/decrease
 **Check**: All state fields modified in one branch are either (a) also modified in the other branch, or (b) explicitly documented as intentionally asymmetric.
 
 **Methodology**:
 1. For each pair of symmetric operations, list ALL state fields modified by the "positive" branch (profit, deposit, mint, stake, increase)
 2. For the "negative" branch (loss, withdraw, burn, unstake, decrease), verify each field from step 1 is also handled
 3. If a field is missing from the negative branch: trace what happens to dependent computations when that field retains its old value while other fields changed
-4. Flag branch size asymmetry > 3x in code volume (lines of code) as a review trigger — large asymmetry often indicates incomplete handling
+4. Flag branch size asymmetry > 3x in code volume (lines of code) as a review trigger - large asymmetry often indicates incomplete handling
 
 **Common miss patterns**:
 - Profit branch updates `locked_profit` + `total_value` + `high_water_mark`, loss branch updates only `total_value` → `locked_profit` can exceed `total_value` → underflow

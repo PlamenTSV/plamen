@@ -1,6 +1,6 @@
-# Phase 4b: Invariant Fuzz Generator — Solana/Anchor (v1.1.0)
+# Phase 4b: Invariant Fuzz Generator - Solana/Anchor (v1.1.0)
 
-> **Purpose**: LLM-generated Trident invariant tests targeting protocol-specific economic invariants, lifecycle correctness, finding-derived fuzz targets, and structural consistency — derived from the audited codebase's actual design, not generic templates.
+> **Purpose**: LLM-generated Trident invariant tests targeting protocol-specific economic invariants, lifecycle correctness, finding-derived fuzz targets, and structural consistency - derived from the audited codebase's actual design, not generic templates.
 > **Model**: sonnet | **Budget**: 0 depth slots (1 sonnet agent + Trident execution)
 > **Trigger**: `semantic_invariants.md` exists AND `trident_available: true` in `build_status.md`. **Skip** if false → proptest fallback in Phase 5.
 > **Time cap**: 5min shell timeout. Trident v0.11+ uses TridentSVM (no honggfuzz/AFL).
@@ -15,16 +15,16 @@ Task(subagent_type="general-purpose", model="sonnet", prompt="
 You are the Solana Invariant Fuzz Generator. You derive protocol-specific invariants from the audit artifacts and translate them into Trident fuzz tests, run them, and report violations.
 
 ## Your Inputs
-Read ALL of these — each source contributes different invariant types:
-- {SCRATCHPAD}/design_context.md (protocol purpose, key invariants, trust model — PRIMARY source for economic invariants)
-- {SCRATCHPAD}/findings_inventory.md (critical findings — each Medium+ finding should become a fuzz target)
-- {SCRATCHPAD}/semantic_invariants.md (write sites, sync gaps, clusters — source for structural invariants)
+Read ALL of these - each source contributes different invariant types:
+- {SCRATCHPAD}/design_context.md (protocol purpose, key invariants, trust model - PRIMARY source for economic invariants)
+- {SCRATCHPAD}/findings_inventory.md (critical findings - each Medium+ finding should become a fuzz target)
+- {SCRATCHPAD}/semantic_invariants.md (write sites, sync gaps, clusters - source for structural invariants)
 - {SCRATCHPAD}/state_variables.md (account structures, types)
-- {SCRATCHPAD}/function_list.md (program instructions — these become FuzzInstruction handlers)
+- {SCRATCHPAD}/function_list.md (program instructions - these become FuzzInstruction handlers)
 - {SCRATCHPAD}/contract_inventory.md (program paths)
-- {SCRATCHPAD}/constraint_variables.md (parameter bounds, fees, limits — source for value ranges)
+- {SCRATCHPAD}/constraint_variables.md (parameter bounds, fees, limits - source for value ranges)
 - Source files referenced in the above artifacts
-- ~/.claude/agents/skills/solana/TRIDENT_API_REFERENCE.md (correct API signatures — MUST read before writing any code)
+- ~/.claude/agents/skills/solana/trident-api-reference/SKILL.md (correct API signatures - MUST read before writing any code)
 
 ## STEP 0.5: Scope Selection
 
@@ -32,13 +32,13 @@ Read ALL of these — each source contributes different invariant types:
 - **Integration** (if CPI detected): Add cross-program sequences, CPI target handlers as FuzzInstruction variants
 - **Temporal** (if clock/timestamp usage): Add clock advancement, epoch-boundary assertions (slot 0, far-future)
 
-## STEP 1: Derive Invariants (NO CAP — test everything meaningful)
+## STEP 1: Derive Invariants (NO CAP - test everything meaningful)
 
 Write as many invariant assertions as the protocol has meaningful state properties. Do NOT artificially limit.
 
 ### 1a. Protocol-Specific Economic Invariants (from design_context.md)
 
-Read the protocol's stated purpose and key invariants from design_context.md. For EACH key invariant or design goal, write a Rust assertion. These are the MOST VALUABLE invariants — they test what the protocol is SUPPOSED to do.
+Read the protocol's stated purpose and key invariants from design_context.md. For EACH key invariant or design goal, write a Rust assertion. These are the MOST VALUABLE invariants - they test what the protocol is SUPPOSED to do.
 
 Examples of what to derive:
 - Lending protocol: `assert!(total_borrows <= total_deposits)`
@@ -83,8 +83,8 @@ For each constraint variable (min/max/cap/limit/fee/rate):
 
 ### Invariant Quality Self-Check (before writing code)
 For each selected invariant, verify:
-- **Not tautological**: Can you trace both sides of the assertion to DIFFERENT write sites? If both sides come from the same write in the same instruction, the invariant always passes trivially — discard it.
-- **Sensitive**: Would a real bug (e.g., missing state update, skipped balance check) actually violate this assertion? If the invariant holds even when the code is wrong, it detects nothing — discard it.
+- **Not tautological**: Can you trace both sides of the assertion to DIFFERENT write sites? If both sides come from the same write in the same instruction, the invariant always passes trivially - discard it.
+- **Sensitive**: Would a real bug (e.g., missing state update, skipped balance check) actually violate this assertion? If the invariant holds even when the code is wrong, it detects nothing - discard it.
 - **Testable**: Can the assertion be evaluated using only on-chain account state readable via AccountsStorage? If it requires off-chain data or complex deserialization beyond account data, skip it.
 
 ### Output Table
@@ -114,8 +114,8 @@ Customize `trident-tests/fuzz_tests/fuzz_0/fuzz_instructions.rs`:
 ### Handler Rules:
 - Bound all numeric params: `let amount = data.amount % MAX_REASONABLE_AMOUNT;`
 - Use the Snapshot pattern for pre/post state comparison (see TRIDENT_API_REFERENCE.md)
-- Add invariant checks in the `check_invariant` hook — panic on violation
-- Include ALL program instructions as FuzzInstruction variants — more handlers = better state space
+- Add invariant checks in the `check_invariant` hook - panic on violation
+- Include ALL program instructions as FuzzInstruction variants - more handlers = better state space
 - For time-dependent invariants: advance clock between instruction sequences
 - For PDA-dependent handlers: compute seeds correctly using the program's actual derivation logic
 - Use `constraint_variables.md` for protocol-specific bounds (max amounts, fee caps, rate limits)
@@ -140,11 +140,11 @@ if result.is_ok() { CALLS_SUCCEEDED.fetch_add(1, Ordering::Relaxed); }
 
 // After campaign: check success rate
 // Optimal: 40-60% success rate (some reverts expected, but state is actually changing)
-// Broken: 0% success (nothing executed — setup error)
-// Weak: <10% success (most paths blocked — missing prerequisites)
+// Broken: 0% success (nothing executed - setup error)
+// Weak: <10% success (most paths blocked - missing prerequisites)
 ```
 
-If ALL handlers revert (0% success rate), report: `[FUZZ-EMPTY] — campaign trivially empty, setup error likely. Zero confidence.`
+If ALL handlers revert (0% success rate), report: `[FUZZ-EMPTY] - campaign trivially empty, setup error likely. Zero confidence.`
 
 ### Handler Template (per instruction):
 ```rust
@@ -174,7 +174,7 @@ if [[ \"$OSTYPE\" == \"msys\" || \"$OSTYPE\" == \"cygwin\" ]] && [ -z \"$OPENSSL
 fi
 # Initialize if trident-tests/ does not exist
 pushd {PROJECT_ROOT} && trident init --skip-build 2>&1 | tail -10
-# Run campaign (v0.11+ TridentSVM — no honggfuzz needed); 5-min timeout
+# Run campaign (v0.11+ TridentSVM - no honggfuzz needed); 5-min timeout
 pushd {PROJECT_ROOT}/trident-tests && timeout 300 trident fuzz run fuzz_0 2>&1 | tail -50
 ```
 
@@ -225,7 +225,7 @@ For each violation, use standard finding format with [FUZZ-N] IDs:
 ```
 
 If NO violations found: write summary with 'No violations detected in {runs} iterations across {N} invariants' and return.
-Violations become depth agent input — they provide concrete counterexamples for investigation.
+Violations become depth agent input - they provide concrete counterexamples for investigation.
 
 Return: 'DONE: {N} invariants tested ({categories} categories), {H} handlers, {V} violations found, success rate {pct}%'
 ")
@@ -237,7 +237,7 @@ Return: 'DONE: {N} invariants tested ({categories} categories), {H} handlers, {V
 
 When `trident_available: false`, the invariant fuzz campaign is skipped entirely at this phase.
 Proptest or boundary-value parameterized tests are used instead during Phase 5 verification
-(see `~/.claude/rules/phase5-poc-execution.md` — Non-EVM Fuzz Guidance).
+(see `~/.claude/rules/phase5-poc-execution.md` - Non-EVM Fuzz Guidance).
 
-This is NOT a failure — native Solana programs without Anchor IDLs cannot use Trident.
+This is NOT a failure - native Solana programs without Anchor IDLs cannot use Trident.
 The Phase 5 proptest fallback provides per-finding fuzz coverage with bounded inputs.

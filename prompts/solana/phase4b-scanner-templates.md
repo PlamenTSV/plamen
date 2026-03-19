@@ -1,4 +1,4 @@
-# Phase 4b: Scanner & Sweep Templates — Solana
+# Phase 4b: Scanner & Sweep Templates - Solana
 
 > **Usage**: Orchestrator reads this file to spawn the 3 Blind Spot Scanners, Validation Sweep Agent, and Design Stress Testing Agent for Solana programs.
 > Replace placeholders `{SCRATCHPAD}`, etc. with actual values.
@@ -36,7 +36,7 @@ If ANY token account has findings covering ≤2 of 5 R11 dimensions AND uncovere
 If ANY token has findings covering ≤2 of 5 dimensions AND the uncovered dimensions are applicable → PARTIAL BLIND SPOT.
 Applicable = the token type supports that interaction (e.g., NFTs don't have D4:Loop/Gas unless enumerable).
 
-**Token-2022 specific**: For each mint — was Token-2022 extension possibility checked?
+**Token-2022 specific**: For each mint - was Token-2022 extension possibility checked?
 | Mint | Token-2022 Possible? | Extensions Checked? | Transfer Fee Impact? | Transfer Hook Impact? |
 
 ## CHECK 2: Governance-Changeable Parameter Coverage
@@ -58,7 +58,7 @@ Apply Rule 13: Model who is harmed in each direction. An admin decreasing a thre
 
 Write to {SCRATCHPAD}/blind_spot_A_findings.md
 
-Return: 'DONE: {N} blind spots — Check1: {A} account/token gaps, Check2: {B} parameter gaps'
+Return: 'DONE: {N} blind spots - Check1: {A} account/token gaps, Check2: {B} parameter gaps'
 ")
 ```
 
@@ -84,7 +84,7 @@ For each instruction handler with signer checks:
 |------------|-----------------|---------------|-------------------|-----------|------------|
 
 If precondition is user-manipulable AND no finding covers it → BLIND SPOT.
-Also flag: instructions that emit events but have NO signer/authority check AND do NOT modify meaningful state — these allow anyone to forge events that mislead off-chain indexers and UIs.
+Also flag: instructions that emit events but have NO signer/authority check AND do NOT modify meaningful state - these allow anyone to forge events that mislead off-chain indexers and UIs.
 Also flag: any admin/authority-gated instruction that modifies program state but does NOT emit an event (via emit! or msg!). Admin parameter changes without events are unmonitorable.
 
 ## CHECK 4: PDA Seed Collision Analysis (S2)
@@ -102,7 +102,7 @@ For each use of `ctx.remaining_accounts` or `remaining_accounts`:
 | Instruction | Remaining Accounts Usage | Owner Checked? | Type Checked? | Signer Checked? | Analyzed? |
 |------------|-------------------------|---------------|---------------|-----------------|-----------|
 
-remaining_accounts bypass Anchor's automatic validation — ALL manual checks must be present.
+remaining_accounts bypass Anchor's automatic validation - ALL manual checks must be present.
 
 ## CHECK 5b: Override Safety
 For each trait implementation (e.g., custom `Transfer`, `Close`, event handlers):
@@ -117,9 +117,9 @@ For each Associated Token Account creation in initialization paths:
 |------------|-------------------|---------|-------------|-----------------|
 
 Grep source for:
-- `associated_token::create` — NOT idempotent, will fail if ATA already exists → front-runnable
-- `associated_token::create_idempotent` — safe, succeeds even if ATA exists
-- `create_associated_token_account` — check which variant
+- `associated_token::create` - NOT idempotent, will fail if ATA already exists → front-runnable
+- `associated_token::create_idempotent` - safe, succeeds even if ATA exists
+- `create_associated_token_account` - check which variant
 
 If any initialization instruction uses non-idempotent ATA creation → BLIND SPOT (front-running DoS).
 
@@ -132,7 +132,7 @@ If any initialization instruction uses non-idempotent ATA creation → BLIND SPO
 
 Write to {SCRATCHPAD}/blind_spot_B_findings.md
 
-Return: 'DONE: {N} blind spots — Check3: {A} access control gaps, Check4: {B} PDA gaps, Check5: {C} remaining_accounts gaps, Check5b: {D} override gaps, Check5c: {E} ATA creation gaps'
+Return: 'DONE: {N} blind spots - Check3: {A} access control gaps, Check4: {B} PDA gaps, Check5: {C} remaining_accounts gaps, Check5b: {D} override gaps, Check5c: {E} ATA creation gaps'
 ")
 ```
 
@@ -194,20 +194,20 @@ For each instruction handler:
 
 Write to {SCRATCHPAD}/blind_spot_C_findings.md
 
-Return: 'DONE: {N} blind spots — Check6: {A} authority lifecycle gaps, Check7: {B} CPI validation gaps, Check8: {C} reachability gaps'
+Return: 'DONE: {N} blind spots - Check6: {A} authority lifecycle gaps, Check7: {B} CPI validation gaps, Check8: {C} reachability gaps'
 ")
 ```
 
 ---
 
-## Validation Sweep Agent — Solana
+## Validation Sweep Agent - Solana
 
 ```
 Task(subagent_type="general-purpose", prompt="
 You are the Validation Sweep Agent for a Solana program audit. You perform mechanical checks across every instruction in scope.
 
 ## INPUT FILTERING
-When cross-referencing against findings_inventory.md, focus on Medium+ severity findings only. Low/Info findings do not need cross-validation sweeps — the attention cost of processing 50+ findings outweighs the marginal value of sweeping Low/Info patterns.
+When cross-referencing against findings_inventory.md, focus on Medium+ severity findings only. Low/Info findings do not need cross-validation sweeps - the attention cost of processing 50+ findings outweighs the marginal value of sweeping Low/Info patterns.
 
 ## Your Inputs
 Read:
@@ -272,7 +272,7 @@ For EVERY internal helper that transforms values (normalization, scaling, encodi
 - For each call site: does it apply the helper to the same variable type with the same parameters as other call sites?
 - Flag: a value that is normalized at entry but not denormalized at exit (or vice versa)
 - Flag: a helper called with different parameters at different sites when the same parameters are expected
-- For paired operations that share state (create/consume, deposit/refund, lock/unlock, open/close): if either operation transforms an input before use, verify the paired operation applies the same transformation at the same logical point — not later, not earlier, not skipped
+- For paired operations that share state (create/consume, deposit/refund, lock/unlock, open/close): if either operation transforms an input before use, verify the paired operation applies the same transformation at the same logical point - not later, not earlier, not skipped
 
 **Concrete test**: If `normalize_amount(amount, decimals)` is called at 3 deposit sites but `denormalize_amount(amount, decimals)` is called at only 2 of 3 corresponding withdrawal sites, the missing site produces values at the wrong scale.
 
@@ -299,7 +299,7 @@ For EVERY state-modifying instruction that contains an if/else, match arms, or e
 - Special focus: instructions where fee accrual, timestamp updates, or checkpoint writes are inside a conditional block but downstream consumers assume they always executed
 - Special focus: instructions where a "pause" or "skip" branch updates timestamps/counters but NOT accumulators, or vice versa
 
-**Concrete test**: If `instruction_a` writes `last_update = now` inside an `if amount > 0` block, what value does `last_update` retain when `amount == 0`? Trace all consumers of `last_update` — do they produce correct results with the stale value?
+**Concrete test**: If `instruction_a` writes `last_update = now` inside an `if amount > 0` block, what value does `last_update` retain when `amount == 0`? Trace all consumers of `last_update` - do they produce correct results with the stale value?
 
 Tag: [TRACE:branch=false → stateVar={old_value} → consumer computes {wrong_result}]
 
@@ -317,7 +317,7 @@ For each Medium+ CONFIRMED or PARTIAL finding in findings_inventory.md:
 
 ## SELF-CONSISTENCY CHECK (MANDATORY before output)
 
-For each finding you produce: if your own analysis identifies that the missing pattern/modifier/guard is FUNCTIONALLY REQUIRED to be absent (e.g., adding it would cause reverts, break composability, or make the function unreachable), your verdict MUST be REFUTED, not CONFIRMED with caveats. A finding that says "X is missing" and also explains "adding X would break Y" is self-contradictory — resolve the contradiction before outputting.
+For each finding you produce: if your own analysis identifies that the missing pattern/modifier/guard is FUNCTIONALLY REQUIRED to be absent (e.g., adding it would cause reverts, break composability, or make the function unreachable), your verdict MUST be REFUTED, not CONFIRMED with caveats. A finding that says "X is missing" and also explains "adding X would break Y" is self-contradictory - resolve the contradiction before outputting.
 
 ## Output
 Write to {SCRATCHPAD}/validation_sweep_findings.md:
@@ -337,7 +337,7 @@ Return: 'DONE: {N} instructions swept, {M} boundary issues, {K} reachability gap
 
 ---
 
-## Design Stress Testing Agent — Solana (Budget Redirect)
+## Design Stress Testing Agent - Solana (Budget Redirect)
 
 ```
 Task(subagent_type="general-purpose", prompt="
@@ -382,7 +382,7 @@ For each yield distribution, reward streaming, or vesting mechanism:
 2. Is there a cooldown, lock period, or time-weighted balance that prevents sandwich timing attacks?
 3. For streaming/vesting: can a user enter AFTER streaming starts but before it ends and capture already-vested gains at the current (inflated) share price?
 4. For multi-step distributions (vest → claim → transfer): can timing between steps be exploited?
-5. Trace: if user deposits at T, distribution occurs at T+1 block, user withdraws at T+2 — what is the user's profit vs a user who was deposited for the full period? If disproportionate → FINDING
+5. Trace: if user deposits at T, distribution occurs at T+1 block, user withdraws at T+2 - what is the user's profit vs a user who was deposited for the full period? If disproportionate → FINDING
 
 Tag: [TRACE:deposit_at=T, distribution_at=T+1, withdraw_at=T+2 → profit={X} vs long_term_user={Y} → fairness_ratio={Z}]
 

@@ -410,7 +410,7 @@ For EVERY internal helper that transforms values (normalization, scaling, encodi
 - For each call site: does it apply the helper to the same variable type with the same parameters as other call sites?
 - Flag: a value that is normalized at entry but not denormalized at exit (or vice versa)
 - Flag: a helper called with different parameters at different sites when the same parameters are expected
-- For paired operations that share state (create/consume, deposit/refund, lock/unlock, open/close): if either operation transforms an input before use, verify the paired operation applies the same transformation at the same logical point — not later, not earlier, not skipped
+- For paired operations that share state (create/consume, deposit/refund, lock/unlock, open/close): if either operation transforms an input before use, verify the paired operation applies the same transformation at the same logical point - not later, not earlier, not skipped
 
 **Concrete test**: If `to_shares(amount, total_supply, total_assets)` is called at 3 deposit sites but `to_assets(shares, total_supply, total_assets)` is called at only 2 of 3 corresponding withdrawal sites, the missing site produces values at the wrong scale.
 

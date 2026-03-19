@@ -10,7 +10,7 @@
 
 ## Step 6a: Index Agent
 
-> **Model**: haiku (mechanical task — fast, cheap)
+> **Model**: haiku (mechanical task - fast, cheap)
 > **Purpose**: Creates master index mapping internal hypothesis IDs to clean report IDs. Assigns each hypothesis to exactly one tier.
 
 ```
@@ -36,14 +36,14 @@ For each hypothesis, apply this priority order:
 1. If a verifier returned a verdict → use verifier's final severity
 2. If chain analysis upgraded severity → use upgraded severity
 3. Otherwise → use the severity from hypotheses.md
-4. **Apply trust assumption downgrades**: Check {SCRATCHPAD}/findings_inventory.md for `[ASSUMPTION-DEP: TRUSTED-ACTOR]` tags. For tagged findings, apply −1 tier severity downgrade (floor: Informational). Note the original severity and downgrade reason in the Master Finding Index under a "Trust Adj." column. For `[ASSUMPTION-DEP: WITHIN-BOUNDS]` tags: do NOT change severity, but note the flag in the index for tier writers to include as context. **Mechanical enforcement**: The Index Agent MUST NOT override, remove, or selectively skip Inventory Agent tags. If a finding has the `TRUSTED-ACTOR` tag, apply the downgrade. If it does not have the tag, do not downgrade. No exceptions for chain upgrades, verification results, or analytical reasoning — the Inventory Agent is the sole authority on trust tagging.
+4. **Apply trust assumption downgrades**: Check {SCRATCHPAD}/findings_inventory.md for `[ASSUMPTION-DEP: TRUSTED-ACTOR]` tags. For tagged findings, apply −1 tier severity downgrade (floor: Informational). Note the original severity and downgrade reason in the Master Finding Index under a "Trust Adj." column. For `[ASSUMPTION-DEP: WITHIN-BOUNDS]` tags: do NOT change severity, but note the flag in the index for tier writers to include as context. **Mechanical enforcement**: The Index Agent MUST NOT override, remove, or selectively skip Inventory Agent tags. If a finding has the `TRUSTED-ACTOR` tag, apply the downgrade. If it does not have the tag, do not downgrade. No exceptions for chain upgrades, verification results, or analytical reasoning - the Inventory Agent is the sole authority on trust tagging.
 5. **Proven-only demotion** (if `PROVEN_ONLY = true`): For each finding whose BEST evidence tag is `[CODE-TRACE]` (no `[POC-PASS]`, `[MEDUSA-PASS]`, `[PROD-ONCHAIN]`, `[PROD-SOURCE]`, or `[PROD-FORK]`), cap severity at Low. Record the original severity in the "Trust Adj." column as `PROVEN(original_sev)`. Count total demotions for the report header note: *"Proven-only mode enabled: {N} findings capped at Low from {severities} due to unproven evidence ([CODE-TRACE] only)."*
 
 ### STEP 1.5: Root-Cause Consolidation (MANDATORY)
 
 Before assigning report IDs, consolidate hypotheses that share the same root cause into single report findings. This prevents inflated finding counts from pipeline fragmentation.
 
-**Consolidation test** — merge two hypotheses into ONE report finding if ALL of these are true:
+**Consolidation test** - merge two hypotheses into ONE report finding if ALL of these are true:
 1. **Same fix pattern**: Both require the same TYPE of code change (e.g., both need "add zero-value validation to admin setter", both need "emit event on state change")
 2. **Same severity tier**: Both are in the same tier after STEP 1 adjustments
 3. **Same vulnerability class**: Both are instances of the same bug pattern (e.g., "missing event", "missing input validation", "no staleness check")
@@ -51,7 +51,7 @@ Before assigning report IDs, consolidate hypotheses that share the same root cau
 
 **Do NOT merge if**:
 - Findings are in different severity tiers (a Medium and a Low stay separate even if same class)
-- The root causes are genuinely different (e.g., "missing event" vs "wrong event parameters" — different fixes)
+- The root causes are genuinely different (e.g., "missing event" vs "wrong event parameters" - different fixes)
 - Merging would exceed 6 locations per finding (split into 2 findings for readability)
 
 **Common consolidation patterns**:
@@ -137,8 +137,8 @@ Write to {SCRATCHPAD}/report_index.md:
 
 | Report ID | Title | Severity | Location | Verification | Trust Adj. | Internal Hypothesis | Agent Sources |
 |-----------|-------|----------|----------|--------------|-----------|--------------------|--------------|
-| C-01 | [title] | Critical | [location] | VERIFIED | — | [internal ref] | [agents] |
-| H-01 | [title] | High | [location] | VERIFIED | — | [internal ref] | [agents] |
+| C-01 | [title] | Critical | [location] | VERIFIED | - | [internal ref] | [agents] |
+| H-01 | [title] | High | [location] | VERIFIED | - | [internal ref] | [agents] |
 | M-01 | [title] | Medium↓H | [location] | UNVERIFIED | TRUSTED-ACTOR | [internal ref] | [agents] |
 | ... | ... | ... | ... | ... | ... | ... | ... |
 
@@ -168,7 +168,7 @@ Write to {SCRATCHPAD}/report_index.md:
 | Internal ID | Severity | Title | Exclusion Reason (FALSE_POSITIVE or DUPLICATE OF X-NN only) |
 ```
 
-Return: 'DONE: {N_total} findings indexed ({N_consolidated} consolidated from {N_original} hypotheses) — {C} Critical, {H} High, {M} Medium, {L} Low, {I} Info'
+Return: 'DONE: {N_total} findings indexed ({N_consolidated} consolidated from {N_original} hypotheses) - {C} Critical, {H} High, {M} Medium, {L} Low, {I} Info'
 ")
 ```
 
@@ -188,7 +188,7 @@ After Index Agent returns, orchestrator performs:
    - Re-spawn Index Agent with: `"Assign report IDs to these missing hypotheses: {list}"`
    - Re-run this verification after re-spawn
 
-> **This is a mechanical check — the orchestrator does it inline, no new agent needed.**
+> **This is a mechanical check - the orchestrator does it inline, no new agent needed.**
 
 ---
 
@@ -201,10 +201,10 @@ After Index Agent returns, orchestrator performs:
 
 All tier writers MUST follow these rules:
 1. **NO internal IDs** (hypothesis IDs, chain IDs, agent IDs) anywhere in output
-2. **Every finding gets its own ### section** — no tables, no groups, no summaries, no catch-all dumps
-3. **Write as if the reader has never seen the audit pipeline** — no references to breadth agents, chain analysis, etc.
-4. **Cross-references use report IDs only** — include finding title in parentheses for context: `see H-03 (example title)`
-5. **Trust assumption context**: If report_index.md marks a finding with `TRUSTED-ACTOR` in the Trust Adj. column, include after Severity: *"Severity adjusted from {original} — attack requires {actor} to violate stated trust assumption: {assumption}."* For `WITHIN-BOUNDS` flags: include a note in Description that the impact falls within the protocol's stated operational bounds for the semi-trusted actor. Do NOT change the severity for WITHIN-BOUNDS — flag only.
+2. **Every finding gets its own ### section** - no tables, no groups, no summaries, no catch-all dumps
+3. **Write as if the reader has never seen the audit pipeline** - no references to breadth agents, chain analysis, etc.
+4. **Cross-references use report IDs only** - include finding title in parentheses for context: `see H-03 (example title)`
+5. **Trust assumption context**: If report_index.md marks a finding with `TRUSTED-ACTOR` in the Trust Adj. column, include after Severity: *"Severity adjusted from {original} - attack requires {actor} to violate stated trust assumption: {assumption}."* For `WITHIN-BOUNDS` flags: include a note in Description that the impact falls within the protocol's stated operational bounds for the semi-trusted actor. Do NOT change the severity for WITHIN-BOUNDS - flag only.
 
 ### Critical+High Tier Writer
 
@@ -228,9 +228,9 @@ Read:
 For EACH finding assigned to your tier in report_index.md:
 
 1. Write a full finding section using the EXACT format from report-template.md
-2. Use the report ID from report_index.md (C-01, H-01, etc.) — NEVER use internal pipeline IDs
+2. Use the report ID from report_index.md (C-01, H-01, etc.) - NEVER use internal pipeline IDs
 3. Include code snippets from the actual source files
-4. For chain findings: describe the COMPLETE attack sequence in the Description — the reader should understand the full attack without reading other findings
+4. For chain findings: describe the COMPLETE attack sequence in the Description - the reader should understand the full attack without reading other findings
 5. For verified findings: include PoC results from verify_*.md
 6. Cross-reference other findings using ONLY report IDs from report_index.md
 
@@ -285,12 +285,12 @@ For each finding, also read the relevant analysis_*.md file(s) listed in the age
 For EACH finding assigned to your tier in report_index.md:
 
 1. Write a full finding section using the EXACT format from report-template.md
-2. Use the report ID from report_index.md (M-01, M-02, etc.) — NEVER use internal pipeline IDs
+2. Use the report ID from report_index.md (M-01, M-02, etc.) - NEVER use internal pipeline IDs
 3. Include code snippets from the actual source files
 4. Include a clear Recommendation with fix guidance
 
 ## HARD RULES
-Follow ALL Tier Writer Common Rules above. Additionally: do NOT create catch-all sections — every finding is equally important.
+Follow ALL Tier Writer Common Rules above. Additionally: do NOT create catch-all sections - every finding is equally important.
 
 ## Output
 
@@ -335,7 +335,7 @@ For each finding, also read the relevant analysis_*.md file(s) listed in the age
 For EACH finding assigned to your tier in report_index.md:
 
 1. Write a full finding section using the EXACT format from report-template.md
-2. Use the report ID from report_index.md (L-01, I-01, etc.) — NEVER use internal pipeline IDs
+2. Use the report ID from report_index.md (L-01, I-01, etc.) - NEVER use internal pipeline IDs
 3. Include code snippets where relevant
 4. For Low findings: Recommendation field is optional but preferred
 5. For Informational: PoC Result field is optional
@@ -394,26 +394,26 @@ Read:
 ### STEP 1: Assemble Report
 
 Combine sections in this order:
-1. **Report Header** — from report_index.md header info
-2. **Executive Summary** — 2-3 paragraphs summarizing the audit (write this yourself based on the findings)
-3. **Summary Table** — from report_index.md counts
-4. **Components Audited Table** — from report_index.md
-5. **Critical Findings** — paste from report_critical_high.md (Critical section)
-6. **High Findings** — paste from report_critical_high.md (High section)
-7. **Medium Findings** — paste from report_medium.md
-8. **Low Findings** — paste from report_low_info.md (Low section)
-9. **Informational Findings** — paste from report_low_info.md (Informational section)
-10. **Priority Remediation Order** — generate from report_index.md, ordered: Critical → High → Medium
-11. **Appendix A: Internal Audit Traceability** — from report_index.md (Master Finding Index + Excluded Findings)
+1. **Report Header** - from report_index.md header info
+2. **Executive Summary** - 2-3 paragraphs summarizing the audit (write this yourself based on the findings)
+3. **Summary Table** - from report_index.md counts
+4. **Components Audited Table** - from report_index.md
+5. **Critical Findings** - paste from report_critical_high.md (Critical section)
+6. **High Findings** - paste from report_critical_high.md (High section)
+7. **Medium Findings** - paste from report_medium.md
+8. **Low Findings** - paste from report_low_info.md (Low section)
+9. **Informational Findings** - paste from report_low_info.md (Informational section)
+10. **Priority Remediation Order** - generate from report_index.md, ordered: Critical → High → Medium
+11. **Appendix A: Internal Audit Traceability** - from report_index.md (Master Finding Index + Excluded Findings)
 
 ### STEP 2: Quality Checks
 
 Before writing, verify:
-1. **Finding count matches summary** — count ### sections per severity tier, must equal summary table
-2. **No internal IDs in body** — scan for [CS-, [AC-, [TF-, [BLIND-, [EN-, [SE-, [VS-, [DEPTH-, [SLITHER-, CH-, and bracketed H- followed by numbers. NONE should appear outside Appendix A.
-3. **Cross-references valid** — check the cross-reference map from report_index.md, ensure referenced IDs exist
-4. **No duplicate findings** — no two sections describe the same bug
-5. **All tier files present** — if any tier file is missing or empty, note it as 'Section pending'
+1. **Finding count matches summary** - count ### sections per severity tier, must equal summary table
+2. **No internal IDs in body** - scan for [CS-, [AC-, [TF-, [BLIND-, [EN-, [SE-, [VS-, [DEPTH-, [SLITHER-, CH-, and bracketed H- followed by numbers. NONE should appear outside Appendix A.
+3. **Cross-references valid** - check the cross-reference map from report_index.md, ensure referenced IDs exist
+4. **No duplicate findings** - no two sections describe the same bug
+5. **All tier files present** - if any tier file is missing or empty, note it as 'Section pending'
 
 If any quality check fails, fix the issue in the assembled output. Document what was fixed.
 
@@ -428,15 +428,15 @@ Write to {PROJECT_ROOT}/AUDIT_REPORT.md
 Also write quality check results to {SCRATCHPAD}/report_quality.md:
 ```markdown
 # Report Quality Check
-- Finding count: {matches/mismatch} — Summary says X, sections have Y
-- Internal ID leak: {CLEAN/FOUND} — [list any found]
-- Cross-references: {VALID/BROKEN} — [list any broken]
-- Duplicates: {NONE/FOUND} — [list any found]
+- Finding count: {matches/mismatch} - Summary says X, sections have Y
+- Internal ID leak: {CLEAN/FOUND} - [list any found]
+- Cross-references: {VALID/BROKEN} - [list any broken]
+- Duplicates: {NONE/FOUND} - [list any found]
 - Missing tiers: {NONE/list}
 - Fixes applied: [list any automatic fixes]
 ```
 
-Return: 'DONE: Report assembled — {N} Critical, {N} High, {N} Medium, {N} Low, {N} Info — Quality: {PASS/ISSUES}'
+Return: 'DONE: Report assembled - {N} Critical, {N} High, {N} Medium, {N} Low, {N} Info - Quality: {PASS/ISSUES}'
 ")
 ```
 

@@ -35,7 +35,7 @@ Test type: {PoC type}
 
 Read:
 - {SCRATCHPAD}/design_context.md
-- ~/.claude/agents/skills/aptos/VERIFICATION_PROTOCOL.md
+- ~/.claude/agents/skills/aptos/verification-protocol/SKILL.md
 - ~/.claude/rules/phase5-poc-execution.md
 
 ## PRECISION MODE
@@ -80,9 +80,9 @@ Before marking ANY finding FALSE_POSITIVE, check: does the same code location ha
 
 ## MANDATORY PoC EXECUTION (v9.9.5)
 
-Follow `phase5-poc-execution.md`. Compile and run every PoC — a written test with no execution output is not evidence.
+Follow `phase5-poc-execution.md`. Compile and run every PoC - a written test with no execution output is not evidence.
 
-**Aptos commands**: `aptos move compile` (compile), `aptos move test --filter test_{hypothesis_id}` (run). For fuzz variants: Move has no built-in fuzzer — write boundary-value parameterized tests with 3+ concrete value sets (min/mid/max). See `phase5-poc-execution.md` for template.
+**Aptos commands**: `aptos move compile` (compile), `aptos move test --filter test_{hypothesis_id}` (run). For fuzz variants: Move has no built-in fuzzer - write boundary-value parameterized tests with 3+ concrete value sets (min/mid/max). See `phase5-poc-execution.md` for template.
 
 ## ANTI-HALLUCINATION RULES
 
@@ -238,7 +238,7 @@ Return: CONFIRMED/FALSE_POSITIVE/CONTESTED + evidence tag + 3-sentence justifica
 
 ## Skeptic-Judge Verification (Thorough mode only, HIGH/CRIT)
 
-> **Purpose**: Challenge the standard verifier's reasoning. Nobody audits the auditor — this step does.
+> **Purpose**: Challenge the standard verifier's reasoning. Nobody audits the auditor - this step does.
 > **Trigger**: Thorough mode, findings with severity HIGH or CRITICAL, after standard Phase 5 verification completes.
 > **Architecture**: Standard verifier → Skeptic agent (sonnet) → Judge agent (haiku, only if disagreement)
 
@@ -283,7 +283,7 @@ Write to {SCRATCHPAD}/skeptic_{hypothesis_id}.md:
 
 If DISAGREE: include your counter-PoC or counter-trace.
 
-Return: '{AGREE/DISAGREE}: skeptic says {verdict} vs standard {STANDARD_VERDICT} — {1-line reason}'
+Return: '{AGREE/DISAGREE}: skeptic says {verdict} vs standard {STANDARD_VERDICT} - {1-line reason}'
 ")
 ```
 
@@ -305,8 +305,8 @@ Read BOTH verification files:
 - {SCRATCHPAD}/skeptic_{hypothesis_id}.md (skeptic verifier)
 
 ## Decision Criteria (STRICTLY mechanical)
-1. `[POC-PASS]` beats `[CODE-TRACE]` — always. Executed test > manual reasoning.
-2. `[POC-PASS]` beats `[POC-FAIL]` — the test that passes wins.
+1. `[POC-PASS]` beats `[CODE-TRACE]` - always. Executed test > manual reasoning.
+2. `[POC-PASS]` beats `[POC-FAIL]` - the test that passes wins.
 3. If both have `[POC-PASS]` (conflicting tests) → verdict = CONTESTED
 4. If both have `[CODE-TRACE]` only → whichever traces MORE concrete values with SPECIFIC line numbers wins. If roughly equal depth → CONTESTED.
 5. If one has `[MEDUSA-PASS]` → that side wins (fuzzer counterexample is mechanical proof).
@@ -319,9 +319,9 @@ Write to {SCRATCHPAD}/judge_{hypothesis_id}.md:
 - **Skeptic Verdict**: {verdict} with {evidence_tag}
 - **Ruling**: {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}
 - **Final Verdict**: {CONFIRMED/FALSE_POSITIVE/CONTESTED}
-- **Reasoning**: {2-3 sentences — which evidence was mechanically stronger}
+- **Reasoning**: {2-3 sentences - which evidence was mechanically stronger}
 
-Return: 'RULING: {final_verdict} — {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}'
+Return: 'RULING: {final_verdict} - {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}'
 ")
 ```
 

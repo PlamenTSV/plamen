@@ -1,4 +1,4 @@
-# Phase 5: Verification Prompt Template — Sui/Move
+# Phase 5: Verification Prompt Template - Sui/Move
 
 > **Usage**: Orchestrator reads this file and spawns verification agents.
 > Replace placeholders `{SCRATCHPAD}`, `{HYPOTHESIS_ID}`, `{LOCATION}`, etc. with actual values.
@@ -35,7 +35,7 @@ Test type: {PoC type}
 
 Read:
 - {SCRATCHPAD}/design_context.md
-- ~/.claude/agents/skills/sui/VERIFICATION_PROTOCOL.md
+- ~/.claude/agents/skills/sui/verification-protocol/SKILL.md
 - ~/.claude/rules/phase5-poc-execution.md
 
 ## PRECISION MODE
@@ -73,7 +73,7 @@ marking FALSE_POSITIVE:
 **HARD RULE**: If the finding shows Module A has protection X but Module B lacks it for
 the same user action -> this is a defense parity gap, NOT 'by design'. Minimum severity: Medium.
 A defense that exists in one module but not another for the same action is evidence the
-protocol team intended the defense — its absence elsewhere is a bug, not a feature.
+protocol team intended the defense - its absence elsewhere is a bug, not a feature.
 
 You may NOT dismiss a defense parity gap as 'Informational' or 'design note'.
 
@@ -83,9 +83,9 @@ Before marking ANY finding FALSE_POSITIVE, check: does the same code location ha
 
 ## MANDATORY PoC EXECUTION (v9.9.5)
 
-Follow `phase5-poc-execution.md`. Compile and run every PoC — a written test with no execution output is not evidence.
+Follow `phase5-poc-execution.md`. Compile and run every PoC - a written test with no execution output is not evidence.
 
-**Sui commands**: `sui move build` (compile), `sui move test --filter test_{hypothesis_id}` (run). For fuzz variants: Move has no built-in fuzzer — write boundary-value parameterized tests with 3+ concrete value sets (min/mid/max). See `phase5-poc-execution.md` for template.
+**Sui commands**: `sui move build` (compile), `sui move test --filter test_{hypothesis_id}` (run). For fuzz variants: Move has no built-in fuzzer - write boundary-value parameterized tests with 3+ concrete value sets (min/mid/max). See `phase5-poc-execution.md` for template.
 
 ## ANTI-HALLUCINATION RULES
 
@@ -117,7 +117,7 @@ Consider:
 ## SUI TEST FRAMEWORK
 
 Use `sui move test` with `test_scenario` for state simulation. There is NO fork testing
-on Sui — all verification uses Move unit tests with `test_scenario`.
+on Sui - all verification uses Move unit tests with `test_scenario`.
 
 **MANDATORY** for CONTESTED findings and any hypothesis involving cross-module interactions.
 **PREFERRED** for all other HIGH/CRITICAL hypotheses.
@@ -132,14 +132,14 @@ fun test_hypothesis_N() {
     let attacker = @0xAA;
     let mut scenario = test_scenario::begin(admin);
 
-    // 1. SETUP — publish packages, create shared objects
+    // 1. SETUP - publish packages, create shared objects
     test_scenario::next_tx(&mut scenario, admin);
     {
         // Initialize protocol state
         // Create and share objects: transfer::public_share_object(obj)
     };
 
-    // 2. PRECONDITION — establish any required state
+    // 2. PRECONDITION - establish any required state
     test_scenario::next_tx(&mut scenario, admin);
     {
         // Configure protocol parameters
@@ -148,7 +148,7 @@ fun test_hypothesis_N() {
         // test_scenario::return_shared(obj);
     };
 
-    // 3. ATTACK — execute exploit via PTB-like sequence
+    // 3. ATTACK - execute exploit via PTB-like sequence
     test_scenario::next_tx(&mut scenario, attacker);
     {
         // Execute exploit steps
@@ -157,7 +157,7 @@ fun test_hypothesis_N() {
         // test_scenario::return_shared(obj);
     };
 
-    // 4. VERIFY — assert impact
+    // 4. VERIFY - assert impact
     test_scenario::next_tx(&mut scenario, attacker);
     {
         // Assert vulnerability demonstrated
@@ -176,7 +176,7 @@ fun test_hypothesis_N() {
 For hypotheses involving shared objects:
 - Use `test_scenario::take_shared<T>(&scenario)` to access shared objects
 - Use `test_scenario::return_shared(obj)` to return them
-- Each `next_tx` simulates a new transaction — use this to model PTB boundaries
+- Each `next_tx` simulates a new transaction - use this to model PTB boundaries
 - To simulate concurrent access patterns, alternate senders between `next_tx` calls
 
 ### Object Ownership Testing Pattern
@@ -196,10 +196,10 @@ document why and keep verdict as CONTESTED (not FALSE_POSITIVE).
 
 ## NEW OBSERVATIONS (MANDATORY)
 If during verification you discover a NEW bug, configuration dependency, or edge case
-NOT covered by any existing hypothesis — document it under:
+NOT covered by any existing hypothesis - document it under:
 
 ### New Observations
-- [VER-NEW-1]: {title} — {location} — {brief description}
+- [VER-NEW-1]: {title} - {location} - {brief description}
 
 These will be reviewed by the orchestrator for possible inclusion as new findings.
 
@@ -211,7 +211,7 @@ When verdict is CONTESTED or FALSE_POSITIVE, document the failure details for po
 - **Location**: {module}::{function}:{line where failure occurs}
 - **Abort Code**: {abort code or custom error, if any}
 - **State at Failure**: {key object fields and their values when the test failed}
-- **Investigation Question**: {What specific question would need to be answered to resolve this — e.g., 'Does module X enforce capability check Y under condition Z?'}
+- **Investigation Question**: {What specific question would need to be answered to resolve this - e.g., 'Does module X enforce capability check Y under condition Z?'}
 
 These error traces feed into the post-verification depth pass (AD-6) if budget remains.
 
@@ -228,7 +228,7 @@ Return: CONFIRMED/FALSE_POSITIVE/CONTESTED + evidence tag + 3-sentence justifica
 
 ## Skeptic-Judge Verification (Thorough mode only, HIGH/CRIT)
 
-> **Purpose**: Challenge the standard verifier's reasoning. Nobody audits the auditor — this step does.
+> **Purpose**: Challenge the standard verifier's reasoning. Nobody audits the auditor - this step does.
 > **Trigger**: Thorough mode, findings with severity HIGH or CRITICAL, after standard Phase 5 verification completes.
 > **Architecture**: Standard verifier → Skeptic agent (sonnet) → Judge agent (haiku, only if disagreement)
 
@@ -273,7 +273,7 @@ Write to {SCRATCHPAD}/skeptic_{hypothesis_id}.md:
 
 If DISAGREE: include your counter-PoC or counter-trace.
 
-Return: '{AGREE/DISAGREE}: skeptic says {verdict} vs standard {STANDARD_VERDICT} — {1-line reason}'
+Return: '{AGREE/DISAGREE}: skeptic says {verdict} vs standard {STANDARD_VERDICT} - {1-line reason}'
 ")
 ```
 
@@ -295,8 +295,8 @@ Read BOTH verification files:
 - {SCRATCHPAD}/skeptic_{hypothesis_id}.md (skeptic verifier)
 
 ## Decision Criteria (STRICTLY mechanical)
-1. `[POC-PASS]` beats `[CODE-TRACE]` — always. Executed test > manual reasoning.
-2. `[POC-PASS]` beats `[POC-FAIL]` — the test that passes wins.
+1. `[POC-PASS]` beats `[CODE-TRACE]` - always. Executed test > manual reasoning.
+2. `[POC-PASS]` beats `[POC-FAIL]` - the test that passes wins.
 3. If both have `[POC-PASS]` (conflicting tests) → verdict = CONTESTED
 4. If both have `[CODE-TRACE]` only → whichever traces MORE concrete values with SPECIFIC line numbers wins. If roughly equal depth → CONTESTED.
 5. If one has `[MEDUSA-PASS]` → that side wins (fuzzer counterexample is mechanical proof).
@@ -309,9 +309,9 @@ Write to {SCRATCHPAD}/judge_{hypothesis_id}.md:
 - **Skeptic Verdict**: {verdict} with {evidence_tag}
 - **Ruling**: {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}
 - **Final Verdict**: {CONFIRMED/FALSE_POSITIVE/CONTESTED}
-- **Reasoning**: {2-3 sentences — which evidence was mechanically stronger}
+- **Reasoning**: {2-3 sentences - which evidence was mechanically stronger}
 
-Return: 'RULING: {final_verdict} — {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}'
+Return: 'RULING: {final_verdict} - {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}'
 ")
 ```
 

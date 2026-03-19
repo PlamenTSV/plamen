@@ -1,8 +1,8 @@
 # Skill Index
 
-> Skills are methodology files read by agents via `Read ~/.claude/agents/skills/{LANGUAGE}/{NAME}.md`.
+> Skills are methodology files read by agents via `Read ~/.claude/agents/skills/{LANGUAGE}/{name}/SKILL.md`.
 > The orchestrator resolves `{LANGUAGE}` to `evm`, `solana`, `aptos`, or `sui` based on Step 0 detection.
-> EVM has 18 skills, Solana has 19 skills, Aptos has 21 skills, Sui has 21 skills — no shared skills directory exists.
+> EVM has 18 skills, Solana has 19 skills, Aptos has 21 skills, Sui has 21 skills - no shared skills directory exists.
 
 ## EVM Skills (`~/.claude/agents/skills/evm/`)
 
@@ -116,7 +116,7 @@
 
 > Injectable skills are protocol-type-specific. They load ONLY when recon classifies the protocol as the matching type.
 > They are NOT counted in the per-tree standard skill set.
-> They merge into existing agents via the standard merge hierarchy — they do NOT spawn new agents.
+> They merge into existing agents via the standard merge hierarchy - they do NOT spawn new agents.
 
 | Skill | Protocol Type Trigger | Inject Into |
 |-------|----------------------|-------------|
@@ -126,14 +126,14 @@
 | GOVERNANCE_ATTACK_VECTORS | `governance` (Governor, Timelock, voting, proposal, quorum, delegate) | Breadth agents, depth-external, depth-edge-case |
 | OUTCOME_DETERMINISM | `outcome_determinism` (finite-pool selection with depletion fallback + time-gated actions with observable default/fallback outcomes). NOTE: callback selective revert and RNG consumption enumeration are now ALWAYS-ON in depth templates, not in this injectable. | Breadth agents, depth-edge-case |
 | LENDING_PROTOCOL_SECURITY | `lending` (liquidate/borrow/repay/collateral/lend/loan/LTV/healthFactor/interestRate/debtToken) | Breadth agents, depth-token-flow, depth-edge-case, depth-state-trace |
-| DEX_INTEGRATION_SECURITY | `dex_integration` (swap/addLiquidity/removeLiquidity/IUniswapV2Router/ISwapRouter/amountOutMin — AND protocol is NOT itself a DEX) | Breadth agents, depth-external, depth-edge-case |
+| DEX_INTEGRATION_SECURITY | `dex_integration` (swap/addLiquidity/removeLiquidity/IUniswapV2Router/ISwapRouter/amountOutMin - AND protocol is NOT itself a DEX) | Breadth agents, depth-external, depth-edge-case |
 
 ### How Injectable Skills Work
 1. Recon Agent classifies protocol type in TASK 0 Step 1
 2. Recon Agent adds injectable skill recommendations to `template_recommendations.md` under `## Injectable Skills`
 3. Orchestrator reads injectable recommendations during Phase 2 instantiation
 4. Injectable skill methodology is APPENDED to the relevant agent's prompt (not a separate agent)
-5. No new agents spawned — injectable skills increase depth of existing agents
+5. No new agents spawned - injectable skills increase depth of existing agents
 
 ## Niche Agents (`~/.claude/agents/skills/niche/`)
 
@@ -152,7 +152,7 @@
 ### How Niche Agents Work
 1. Recon Agent 3 detects trigger flag (e.g., `MISSING_EVENT` from setter_list.md/emit_list.md)
 2. Recon adds niche agent to `template_recommendations.md` → `## Niche Agents` in BINDING MANIFEST
-3. Orchestrator reads niche agent definition from `~/.claude/agents/skills/niche/{NAME}.md`
+3. Orchestrator reads niche agent definition from `~/.claude/agents/skills/niche/{name}/SKILL.md`
 4. Orchestrator spawns niche agent in Phase 4b iteration 1 alongside standard depth agents
 5. Niche agent writes to `{SCRATCHPAD}/niche_{name}_findings.md`
 6. Chain analysis reads niche agent output alongside depth/scanner findings

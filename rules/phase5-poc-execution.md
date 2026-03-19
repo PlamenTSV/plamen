@@ -8,12 +8,12 @@
 
 | Tag | Meaning |
 |-----|---------|
-| `[POC-PASS]` | Compiled, executed, assertions PASSED — mechanical proof |
-| `[POC-FAIL]` | Compiled, executed, assertions FAILED — attack does not work as described |
-| `[CODE-TRACE]` | Manual trace with concrete values, no execution — fallible |
-| `[MEDUSA-PASS]` | Medusa fuzzer found a counterexample — mechanical proof (same weight as `[POC-PASS]`) |
+| `[POC-PASS]` | Compiled, executed, assertions PASSED - mechanical proof |
+| `[POC-FAIL]` | Compiled, executed, assertions FAILED - attack does not work as described |
+| `[CODE-TRACE]` | Manual trace with concrete values, no execution - fallible |
+| `[MEDUSA-PASS]` | Medusa fuzzer found a counterexample - mechanical proof (same weight as `[POC-PASS]`) |
 
-**Rules**: `[POC-PASS]` is the only tag that supports CONFIRMED as ground truth. `[POC-FAIL]` defaults to the attack not working — to override, demonstrate the failure is test setup error, not a defense. `[CODE-TRACE]` caps at CONTESTED unless the trace is complete with real constants.
+**Rules**: `[POC-PASS]` is the only tag that supports CONFIRMED as ground truth. `[POC-FAIL]` defaults to the attack not working - to override, demonstrate the failure is test setup error, not a defense. `[CODE-TRACE]` caps at CONTESTED unless the trace is complete with real constants.
 
 ---
 
@@ -28,7 +28,7 @@
    - Foundry version incompatibility → try `--via-ir` or pin solc version
    Max 5 attempts. After 5 failures → `[CODE-TRACE]` fallback, verdict CONTESTED
 3. **Execute** using the language-specific test command. Record pass/fail/revert and paste relevant output
-4. **Fuzz variant** (Medium+ only, Thorough mode): after the specific PoC, write a second test with the key parameters fuzzed (amounts, timing, ordering) and run it. Use the language-specific fuzz command. This explores the neighborhood around the finding mechanically — catching attack variants the agent didn't manually consider. If the specific PoC failed but the fuzz variant finds a violation, report the working variant.
+4. **Fuzz variant** (Medium+ only, Thorough mode): after the specific PoC, write a second test with the key parameters fuzzed (amounts, timing, ordering) and run it. Use the language-specific fuzz command. This explores the neighborhood around the finding mechanically - catching attack variants the agent didn't manually consider. If the specific PoC failed but the fuzz variant finds a violation, report the working variant.
 5. **Record** in the verification file:
 
 ```markdown
@@ -36,7 +36,7 @@
 - **Compiled**: YES/NO (attempts: N)
 - **Result**: PASS / FAIL / REVERT / NOT_EXECUTED
 - **Fuzz variant** (Thorough only, Medium+): PASS (N runs) / VIOLATION_FOUND / SKIPPED / NOT_APPLICABLE
-- **Output**: {test output — assertions, revert reasons}
+- **Output**: {test output - assertions, revert reasons}
 - **Evidence Tag**: [POC-PASS] / [POC-FAIL] / [CODE-TRACE]
 ```
 
@@ -52,8 +52,8 @@ If execution was not attempted, explain why (no build environment, no test frame
 | **EVM (Hardhat only)** | `npx hardhat compile` | `npx hardhat test --grep "{ID}"` | Skip fuzz variant (no native invariant fuzzer) |
 | **Solana (Anchor)** | `cargo build-sbf` or `anchor build` | `cargo test test_{id} -- --nocapture` | Trident (preferred): `cd trident-tests && trident fuzz run fuzz_0`; fallback: proptest with bounded inputs |
 | **Solana (native)** | `cargo build-sbf` | `cargo test test_{id} -- --nocapture` | proptest with bounded inputs, or boundary-value parameterized tests |
-| **Aptos** | `aptos move compile` | `aptos move test --filter test_{id}` | No built-in fuzzer — write boundary-value parameterized tests (`#[test]` with multiple concrete value sets covering min/mid/max) |
-| **Sui** | `sui move build` | `sui move test --filter test_{id}` | No built-in fuzzer — write boundary-value parameterized tests (`#[test]` with multiple concrete value sets covering min/mid/max) |
+| **Aptos** | `aptos move compile` | `aptos move test --filter test_{id}` | No built-in fuzzer - write boundary-value parameterized tests (`#[test]` with multiple concrete value sets covering min/mid/max) |
+| **Sui** | `sui move build` | `sui move test --filter test_{id}` | No built-in fuzzer - write boundary-value parameterized tests (`#[test]` with multiple concrete value sets covering min/mid/max) |
 
 **Fork testing** (EVM only): `forge test --match-test test_{ID} --fork-url {RPC_URL} -vvv`
 
@@ -74,7 +74,7 @@ For mode=Thorough:
 
 For mode=Core:
   required_ids = set(h.id for h in hypotheses if h.severity >= MEDIUM) + chain_hypothesis_ids
-  // Same assertion logic — Core now verifies ALL Medium+, skips fuzz variants only
+  // Same assertion logic - Core now verifies ALL Medium+, skips fuzz variants only
 ```
 
 ---
@@ -89,15 +89,15 @@ If the variant passes → report the working variant. After 2+ variant failures 
 
 ## Non-EVM Fuzz Guidance
 
-### Solana — Trident (preferred) or proptest (fallback)
+### Solana - Trident (preferred) or proptest (fallback)
 
-**Trident** is a dedicated Solana fuzzing framework by Ackee Blockchain Security. v0.11+ uses built-in TridentSVM (no honggfuzz/AFL required — works on Linux, macOS, and Windows). Has found Critical bugs in Kamino, Marinade, and Wormhole.
+**Trident** is a dedicated Solana fuzzing framework by Ackee Blockchain Security. v0.11+ uses built-in TridentSVM (no honggfuzz/AFL required - works on Linux, macOS, and Windows). Has found Critical bugs in Kamino, Marinade, and Wormhole.
 
 **Detection**: Check `build_status.md` for `trident_available: true/false` (set by recon TASK 1).
 
 **If Trident is available** (Anchor project + `trident-cli` installed):
 ```bash
-# Initialize (if not already done — creates trident-tests/ scaffolding)
+# Initialize (if not already done - creates trident-tests/ scaffolding)
 trident init
 # Run fuzz target from trident-tests/ directory (v0.11+)
 cd trident-tests && trident fuzz run fuzz_0
@@ -121,7 +121,7 @@ proptest! {
 ```
 If proptest is also not available, fall back to boundary-value parameterized tests (3-5 concrete values covering min, typical, max).
 
-### Aptos / Sui — parameterized boundary tests
+### Aptos / Sui - parameterized boundary tests
 Move lacks a fuzzer. Write multiple `#[test]` functions with concrete boundary values:
 ```move
 #[test] fun test_hypothesis_min() { run_test(0, 1); }

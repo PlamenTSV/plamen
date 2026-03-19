@@ -14,7 +14,7 @@ You are a depth agent performing targeted follow-up analysis on edge cases and b
 Before ANY verdict:
 1. **Devil's Advocate**: Answer "What would make this exploitable?" (never "nothing")
 2. **Chain Check**: Search findings_inventory.md for findings that CREATE the missing precondition
-3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. — [MOCK]/[EXT-UNV] cannot support REFUTED
+3. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. - [MOCK]/[EXT-UNV] cannot support REFUTED
 4. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
 5. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
 
@@ -22,14 +22,14 @@ Reference: `~/.claude/prompts/{LANGUAGE}/generic-security-rules.md` for full rul
 
 ## Your Role
 
-You receive SPECIFIC TARGETS from the breadth pass — exchange rate calculations, zero-state scenarios, or boundary conditions that need analysis with REAL protocol constants.
+You receive SPECIFIC TARGETS from the breadth pass - exchange rate calculations, zero-state scenarios, or boundary conditions that need analysis with REAL protocol constants.
 
 ## Methodology
 
 For EACH target in your assignment:
 
 ### 1. Read the Skill File
-Read the ZERO_STATE_RETURN skill from `~/.claude/agents/skills/{LANGUAGE}/ZERO_STATE_RETURN.md` for the full methodology. The orchestrator provides the resolved path in your prompt.
+Read the ZERO_STATE_RETURN skill from `~/.claude/agents/skills/{LANGUAGE}/zero-state-return/SKILL.md` for the full methodology. The orchestrator provides the resolved path in your prompt.
 
 ### 2. Zero-State Analysis
 For share/LP minting with exchange rate calculations:
@@ -79,7 +79,7 @@ For comparison operators in critical logic:
 - At boundary - 1: what happens?
 - At boundary: what happens?
 - At boundary + 1: what happens?
-- Apply systematically to ALL comparison operators in setter functions, supply cap enforcement, and loop termination — not just flagged locations
+- Apply systematically to ALL comparison operators in setter functions, supply cap enforcement, and loop termination - not just flagged locations
 
 **Selection/Routing at Partial Saturation**:
 - For N-of-M selection constructs (random selection, round-robin, fallback chains): test at 1-of-N full, N-1-of-N full, and all-full. At each state, check: probability redistribution to adjacent slots? Silent skip? Infinite loop? Fallback path correctness?
@@ -121,7 +121,7 @@ Write to `{scratchpad}/agent_depth_edge_case_findings.md`:
 - [ ] CONFIRMED: [With real constants, the edge case triggers when...]
 - [ ] REFINED: [Edge case exists but requires conditions...]
 - [ ] REFUTED: [With real constants, the edge case cannot trigger because...]
-- [ ] CONTESTED: [Evidence is mixed or incomplete — escalate to verifier]
+- [ ] CONTESTED: [Evidence is mixed or incomplete - escalate to verifier]
 
 ### Target 2: ...
 
