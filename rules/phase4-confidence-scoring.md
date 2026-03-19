@@ -58,6 +58,7 @@ Spawn highest-priority domains first within remaining budget. This ensures a Cri
 
 1. **Hard iteration cap**: Maximum 3 iterations (iteration 1 = full coverage, iterations 2-3 = targeted)
 2. **Dynamic spawn cap**: `depth_floor = 12 + max(0, 4 - actual_breadth_count)`, then `max_depth_spawns = min(max(depth_floor, ceil(total_findings / 5) + 7), 20)`. Simple codebases (2 breadth agents) get floor=14. Examples: 2 breadth + 20 findings → 14, 4 breadth + 20 findings → 12, 4 breadth + 40 findings → 15, any + 68 findings → 20 (cap).
+   **SMALL_CODEBASE override** (when `build_status.md` shows `CODEBASE_SCALE: SMALL`): Use `depth_floor = 8` and `max_depth_spawns = min(max(8, ceil(total_findings/5)+5), 14)`. Phase 3b: skip re-scan (0 iterations). Phase 3c: cap per-contract agents at 3. This reduces total agent count by ~8-12 for codebases with <1500 in-scope LOC and <5 contracts.
 3. **Progress check**: If NO finding's confidence improved in an iteration → exit loop early
 3a. **Iteration 2 skip policy**: Iteration 2 may ONLY be skipped if all UNCERTAIN findings are Low/Info severity. If ANY uncertain finding is Medium or above, iteration 2 is MANDATORY. "Pragmatic" skips of iteration 2 for Medium+ findings are a workflow violation.
 4. **Zero uncertain**: If 0 findings score < 0.7 after any iteration → exit loop

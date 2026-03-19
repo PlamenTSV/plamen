@@ -78,13 +78,30 @@ If a relay function forwards a user-specified call without ensuring sufficient g
 - Use standard finding format
 - Note WHY breadth agents likely missed each
 
+## CHECK 1b: Rebasing Token — Mandatory Severity Differentiation
+
+When any accepted token slot is user-configurable (any ERC20 accepted without whitelist), check for rebasing risk SEPARATELY from FOT. Do NOT merge into one finding.
+
+| Risk Type | When Shortfall Occurs | Predictable? | Recovery Path | Severity Floor |
+|-----------|----------------------|--------------|---------------|----------------|
+| Fee-on-Transfer (FOT) | Deposit time ONLY | Yes (fixed %) | Balance before/after at deposit | **Medium** |
+| Rebasing (negative) | Continuously, post-deposit, via external event | No (slashing, contraction) | Architectural — rescue blocked for rewardToken | **High** |
+
+Escalate to **High** (separate finding) when ALL hold:
+1. Token slot is user-configurable (no whitelist/type check)
+2. Negative rebasing is possible (stETH slashing, elastic contraction, aToken depegging)
+3. Protocol stores cumulative commitments assuming static balance
+4. No pre-transfer balance guard AND no recovery path (rescue blocked for that token)
+
+→ Create a SEPARATE High finding for rebasing. FOT and rebasing have different timing, magnitude, and fix requirements — they MUST NOT be grouped.
+
 ## Chain Summary (MANDATORY)
 | Finding ID | Location | Root Cause (1-line) | Verdict | Severity | Precondition Type | Postcondition Type |
 |------------|----------|--------------------:|---------|----------|-------------------|-------------------|
 
 Write to {SCRATCHPAD}/blind_spot_A_findings.md
 
-Return: 'DONE: {N} blind spots — Check1: {A} token gaps, Check2: {B} parameter gaps'
+Return: 'DONE: {N} blind spots — Check1: {A} token gaps, Check1b: {B} rebasing gaps, Check2: {C} parameter gaps'
 ")
 ```
 

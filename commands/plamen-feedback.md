@@ -637,9 +637,77 @@ MEMORY.md updated with one-line version entry.
 
 ---
 
+## Step 6: Git Workflow — Branch, Stage, and Commit Suggestion
+
+After Step 5e completes (all pipeline changes applied), execute this git workflow on the `~/.claude` directory.
+
+### Step 6a: Determine Branch Name
+
+```
+BRANCH_NAME = feat/plamen-feedback-{YYYY-MM-DD}
+```
+(Use today's date, e.g. `feat/plamen-feedback-2026-03-19`)
+
+### Step 6b: Checkout Branch and Stage All `.claude` Changes
+
+```bash
+cd ~/.claude
+git checkout -b {BRANCH_NAME} 2>/dev/null || git checkout {BRANCH_NAME}
+git add prompts/ rules/ commands/ agents/ MEMORY.md
+```
+
+Report which files were staged (use `git status` output).
+
+### Step 6c: Suggest Commit Message
+
+Construct a commit message with:
+- **Title**: ≤72 chars, format `chore: plamen {N} improvements from feedback loop`
+- **Body**: list each modified file and the change made, then include the original user feedback prompt (first 600 chars if longer)
+
+Example format:
+```
+chore: plamen 4 improvements from feedback loop
+
+- phase4b-scanner-templates.md: CHECK 1b — rebasing vs FOT severity differentiation (High vs Medium)
+- phase4a-inventory-prompt.md: WITHIN-BOUNDS explicit-capability heuristic for semi-trusted actors
+- phase1-recon-prompt.md: CODEBASE_SCALE: SMALL detection in TASK 4
+- phase4-confidence-scoring.md: depth_floor=8 override for SMALL_CODEBASE
+
+Original feedback:
+{first 600 chars of $ARGUMENTS}
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+```
+
+### Step 6d: Confirm to User
+
+Output:
+```
+**Git workflow ready — ~/.claude**
+
+Branch: `{BRANCH_NAME}` (created, changes staged)
+Files staged: {N} files
+
+Suggested commit message:
+---
+{full commit message}
+---
+
+To commit and push:
+  cd ~/.claude
+  git commit -m "$(cat <<'EOF'
+{commit message body}
+  EOF
+  )"
+  git push -u origin {BRANCH_NAME}
+```
+
+---
+
 ## Error Handling
 
 - **Intake agent returns RC-AGENT**: Stop immediately. Explain to user why this is a reasoning error, not a pipeline gap. Output: `> **No pipeline changes needed** — the Plamen methodology covers this vulnerability class. The missed finding was a reasoning error (RC-AGENT), which cannot be fixed by adding rules.`
 - **Reflection agent fails/times out**: Mark that layer as UNKNOWN in the proposal agent input. Proceed with remaining layers.
 - **Proposal agent produces 0 approved changes**: Inform user: `> All proposed changes were either RAG-only or rejected as RC-AGENT. This finding represents either a novel vulnerability class or a reasoning error — no pipeline modifications are recommended.`
 - **Target file at line budget cap**: Proposal agent will flag this. Do NOT exceed the cap. Either compress existing content first or downgrade the change to injectable.
+- **Step 6 git failure** (no git repo in ~/.claude, or branch already exists): Report the error and provide manual instructions for staging and committing. Do not block the feedback summary.

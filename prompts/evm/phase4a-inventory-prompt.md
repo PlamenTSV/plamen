@@ -69,6 +69,17 @@ For each finding in the Findings Inventory above, identify the actor required to
 - `WITHIN-BOUNDS` means the attack's impact does not exceed what the stated bounds already allow. If the finding shows impact BEYOND stated bounds → no tag (real bug).
 - When uncertain whether impact exceeds bounds → do NOT tag. Err on the side of preserving severity.
 
+**WITHIN-BOUNDS explicit-capability test** (reverses the uncertainty default for SEMI_TRUSTED actors):
+If the attack action is EXPLICITLY LISTED verbatim in the actor's `bounds:` clause in design_context.md, presume WITHIN-BOUNDS UNLESS the impact clearly exceeds what the bound allows. Do not apply the uncertainty default for explicit-capability attacks.
+
+Examples:
+- "can pause, unpause" → finding that admin pauses indefinitely → **WITHIN-BOUNDS** (pause is listed)
+- "withdraw funds with verifier signature" → finding that admin + verifier co-sign to drain → **WITHIN-BOUNDS** (action listed)
+- "can update/clear Merkle roots" → finding that updater clears roots destroying claims → **WITHIN-BOUNDS** (clearing is listed)
+- "signs authorized stream creation" → finding that verifier sets arbitrary fee → **NOT WITHIN-BOUNDS** (bounds imply authorized params, not arbitrary ones)
+
+Note: WITHIN-BOUNDS findings are still REAL findings worth reporting — they expose that the trust model allows harmful outcomes. They should always include a recommendation. The tag tells the Index Agent to flag them for readers as design-level risks, not implementation bugs.
+
 Append to {SCRATCHPAD}/findings_inventory.md:
 
 ## Assumption Dependency Audit

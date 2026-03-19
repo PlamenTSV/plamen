@@ -5,6 +5,15 @@ All notable changes to Plamen will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-03-19
+
+### Changed
+- **Scanner A (EVM)**: Added CHECK 1b — mandatory rebasing vs FOT severity differentiation. Rebasing tokens now escalate to **High** (separate finding); FOT stays **Medium**. Prevents merging two distinct risks with different timing, magnitude, and fixes.
+- **Inventory TASK 1.5 (EVM)**: Added explicit-capability WITHIN-BOUNDS heuristic. When a SEMI_TRUSTED actor's attack action appears verbatim in their `bounds:` clause, presume WITHIN-BOUNDS. Reduces over-reporting of design-level risks as implementation bugs.
+- **Recon TASK 4 (EVM)**: Added `CODEBASE_SCALE: SMALL` detection. Codebases <1500 in-scope LOC with <5 contracts are flagged, activating reduced agent budgets downstream.
+- **Confidence scoring**: Added SMALL_CODEBASE depth floor override (`depth_floor=8`, Phase 3b skip, Phase 3c ≤3 agents). Reduces total agent count by 8-12 for small codebases.
+- **plamen-feedback command**: Added Step 6 — automatic git branch creation, staging, and commit message suggestion after applying pipeline improvements.
+
 ## [1.0.3] - 2026-03-19
 
 ### Added

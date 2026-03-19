@@ -211,6 +211,7 @@ Write to {SCRATCHPAD}/design_context.md
    - Flag parents with conditional logic as `PARENT_CONDITIONAL_OVERRIDE` — these require standalone analysis because child behavior depends on parent branch paths that breadth agents may not trace
 5. **Parent standalone flag**: If any `PARENT_CONDITIONAL_OVERRIDE` parents exist, list them with:
    | Parent Contract | Path | In Scope? | Overridden By | Conditional Logic? | Flag |
+6. **Codebase scale**: Sum LOC for all in-scope contracts only. If total_in_scope_LOC < 1500 AND total_in_scope_contracts < 5 → append `CODEBASE_SCALE: SMALL` to {SCRATCHPAD}/build_status.md. Otherwise append `CODEBASE_SCALE: STANDARD`. SMALL activates reduced agent budgets: depth_floor=8, Phase 3b iterations=0 (skip), Phase 3c cap=3 agents.
 Write to {SCRATCHPAD}/contract_inventory.md
 
 ## TASK 5: Attack Surface Discovery
