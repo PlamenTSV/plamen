@@ -17,7 +17,7 @@ Orchestrates 15-95 AI agents across 8 phases to produce audit reports with verif
 ## Install
 
 ```bash
-git clone https://github.com/PlamenTSV/plamen.git ~/.claude
+git clone https://github.com/gultekinmakif/plamen.git ~/.claude
 cd ~/.claude && git submodule update --init --recursive
 ```
 
@@ -116,6 +116,20 @@ plamen setup                                        # install tools only
 ```
 
 See [docs/usage.md](docs/usage.md) for PATH setup and all CLI options.
+
+---
+
+## Feedback Loop
+
+When Plamen misses a finding, run the backward reflection pipeline to auto-generate targeted improvements:
+
+```
+> /plamen-feedback reentrancy in withdraw() — balance updated after external call lang:evm
+```
+
+The pipeline walks backward from report → recon, asking each layer "would I have caught this?" and proposes the minimal diff needed. Changes require your approval before any files are modified.
+
+Shortcuts: `/plamen-feedback lang:evm <description>`, `/plamen-feedback lang:solana <description>`
 
 ---
 
