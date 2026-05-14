@@ -1,6 +1,6 @@
 # Plamen (v2.0.0)
 
-Autonomous Web3 security auditor for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](https://github.com/openai/codex).
+Autonomous web3 security auditor for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](https://github.com/openai/codex).
 
 Orchestrates 18-100 AI agents across 8 phases to produce audit reports with verified PoC exploits — for **smart contracts** and **L1 node-client infrastructure**.
 
@@ -332,7 +332,7 @@ plamen                              # terminal wrapper starts wizard
 $plamen-wizard                      # inside Codex CLI
 
 # Resume a crashed/interrupted audit
-python ~/.plamen/scripts/plamen_driver.py /path/to/project/.scratchpad/config.json
+python3 ~/.plamen/scripts/plamen_driver.py /path/to/project/.scratchpad/config.json
 ```
 
 The driver handles: phase scheduling, artifact gating, rate-limit pauses, retry-with-degradation, and subprocess isolation via the `plamen_home()` abstraction (resolves to `~/.claude/` or `~/.codex/plamen/` based on the configured backend). The LLM handles: agent orchestration, finding analysis, PoC execution, and report generation.
