@@ -20,17 +20,13 @@ Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **So
 > pick per-run.
 >
 > - **Claude Code**:
->   ```bash
->   npm install -g @anthropic-ai/claude-code
->   ```
-> - **OpenAI Codex CLI** — install **without `sudo`** using a user-local npm prefix to avoid `EACCES` on Homebrew/system Node installs:
+>   >   npm install -g @anthropic-ai/claude-code
+>   > - **OpenAI Codex CLI** — install **without `sudo`** using a user-local npm prefix to avoid `EACCES` on Homebrew/system Node installs:
 >
->   ```bash
->   mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global
+>   >   mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global
 >   echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
 >   npm install -g @openai/codex
->   ```
->
+>   >
 >   Codex doesn't yet support every MCP server — pure-LLM phases use a WebSearch fallback. See [docs/mcp-servers.md](docs/mcp-servers.md).
 >
 > **macOS**: Also run `xcode-select --install` (needed for C++ dependency compilation).
@@ -39,7 +35,7 @@ Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **So
 >
 > Per-language tools (Foundry, Solana CLI, etc.) are installed automatically via `plamen setup`.
 >
-> **PEP 668 / externally-managed Python**: On Homebrew Python and Ubuntu 23.04+, system `pip` refuses to write into the system site-packages. `plamen install` detects this and adds `--break-system-packages` to its pip invocations, printing a notice on stderr. If you'd rather isolate Plamen's Python deps in a virtualenv, activate one before `plamen install` and set `PIP_BREAK_SYSTEM_PACKAGES=0` to opt out.
+> **PEP 668 / externally-managed Python**: On Homebrew Python and Ubuntu 23.04+, system `pip` refuses to write into the system site-packages. `plamen install` detects this and, by default, creates a local `.plamen-venv` for Plamen dependencies. To force installation into the system Python, set `PLAMEN_ALLOW_SYSTEM_PIP=1`, which enables pip's `--break-system-packages` behavior.
 
 ---
 
@@ -66,18 +62,14 @@ build the optional vulnerability DB (~6GB RAM).
 ### Option B: Terminal
 
 **Linux / macOS:**
-```bash
 git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git ~/.plamen
 cd ~/.plamen && python3 plamen.py install
 python3 plamen.py install --codex    # optional: add Codex CLI backend
-```
 
 **Windows (PowerShell):**
-```powershell
 git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git $HOME\.plamen
 cd $HOME\.plamen; python plamen.py install
 python plamen.py install --codex     # optional: add Codex CLI backend
-```
 
 > **Use `git clone --recurse-submodules`, not "Download ZIP"**. The repo ships
 > `custom-mcp/slither-mcp/` and `custom-mcp/farofino-mcp/` as git submodules; ZIP
@@ -100,29 +92,21 @@ python plamen.py install --codex     # optional: add Codex CLI backend
 After install, add to PATH so you can run `plamen` from anywhere:
 
 **Linux (bash):**
-```bash
 echo 'export PATH="$HOME/.plamen:$PATH"' >> ~/.bashrc && source ~/.bashrc
-```
 
 **macOS (zsh):**
-```zsh
 echo 'export PATH="$HOME/.plamen:$PATH"' >> ~/.zshrc && source ~/.zshrc
-```
 
 **Windows (PowerShell, one-time):**
-```powershell
 [System.Environment]::SetEnvironmentVariable("Path", "$env:USERPROFILE\.plamen;" + [System.Environment]::GetEnvironmentVariable("Path", "User"), "User")
-```
 
 Then use `plamen` from anywhere:
-```bash
 plamen                              # interactive audit wizard
 plamen doctor                       # verify install (no audit run, no API calls)
 plamen setup                        # toolchain wizard + optional RAG build
 plamen migrate                      # upgrade a v1.x install layout
 plamen rag                          # rebuild RAG database only
 plamen uninstall                    # remove Plamen symlinks
-```
 
 > **Important**: Always use `plamen` (not `python3 plamen.py`) after PATH is set. The `python3 plamen.py` form only works from inside `~/.plamen/`.
 
@@ -131,6 +115,7 @@ The installer (`plamen install`):
 - Merges Plamen's permissions into your existing `~/.claude/settings.json` (additive only — won't remove your entries)
 - Merges MCP server definitions into `~/.claude/mcp.json` (won't overwrite your existing servers)
 - Injects Plamen instructions into `~/.claude/CLAUDE.md` between `<!-- PLAMEN:START/END -->` markers (preserves your content)
+- Installs Python dependencies in a local `.plamen-venv` when needed on externally managed Python installs; use `PLAMEN_ALLOW_SYSTEM_PIP=1` to opt into system-level pip installs with `--break-system-packages`
 - Installs Python dependencies (RAG database is built separately via `plamen rag`)
 
 For Codex CLI support, also run `plamen install --codex`. This sets up `~/.codex/plamen/` (symlinked from `~/.plamen/`) with:
@@ -164,11 +149,9 @@ When the AI runtime reads `~/.claude/agents/depth-edge-case.md` (or `~/.codex/pl
 
 > **Migrating from v1.0.x** (installed directly in `~/.claude`): Close Claude Code (and Codex CLI if running) first, then run:
 >
-> ```bash
-> cd ~/.plamen 2>/dev/null || cd ~/.claude    # cd into whichever exists
+> > cd ~/.plamen 2>/dev/null || cd ~/.claude    # cd into whichever exists
 > python3 plamen.py migrate                    # or `python plamen.py migrate` on Windows
-> ```
->
+> >
 > `plamen migrate` strips any dangling Plamen hook references from
 > `~/.claude/settings.json` (which would otherwise block PreToolUse Bash
 > and lock you out of shell commands in Claude Code), moves the repo to
@@ -188,15 +171,20 @@ When the AI runtime reads `~/.claude/agents/depth-edge-case.md` (or `~/.codex/pl
 
 > Option B handles this automatically. These commands are for reference only.
 
-```bash
 cd ~/.plamen
 
 # 1. Python deps (~2GB download — PyTorch for embeddings)
+# Recommended on PEP 668 systems: create and activate a local virtualenv first.
+python3 -m venv .plamen-venv
+source .plamen-venv/bin/activate                    # Windows PowerShell: .\.plamen-venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pip install -r custom-mcp/unified-vuln-db/requirements.txt
 pip install -e custom-mcp/solana-fender
 pip install -r custom-mcp/farofino-mcp/requirements.txt
 pip install -e custom-mcp/slither-mcp              # EVM only (needs Python 3.11+)
+
+# To force system Python on externally managed installs instead:
+# PLAMEN_ALLOW_SYSTEM_PIP=1 pip install --break-system-packages -r requirements.txt
 
 # 2. Build RAG database (~5 min)
 # IMPORTANT: a `export SOLODIT_API_KEY=...` here works for this terminal only.
@@ -222,7 +210,6 @@ pip install slither-analyzer                                       # EVM static 
 python3 plamen.py install --codex
 # This generates ~/.codex/plamen/ with AGENTS.md, config.toml, and commands/
 # from the Claude-side manifests. No additional deps needed.
-```
 
 > **Windows + Solana**: Enable Developer Mode (Settings > System > For Developers) and install OpenSSL (`winget install ShiningLight.OpenSSL.Dev`) before building. See [docs/dependencies.md](docs/dependencies.md).
 
@@ -232,10 +219,8 @@ See [docs/setup.md](docs/setup.md) for the full guide with all per-language prer
 
 ### Updating
 
-```bash
 cd ~/.plamen && git pull && plamen install
 plamen install --codex    # if using Codex backend
-```
 
 That's it. `plamen install` is idempotent — it re-links symlinks, re-injects the updated `CLAUDE.md`, and merges any new `settings.json`/`mcp.json` entries. Adding `--codex` does the same for `AGENTS.md` and `config.toml`. Neither wipes your RAG database, re-installs toolchains, or overwrites your API keys.
 
@@ -245,9 +230,7 @@ See [docs/updating.md](docs/updating.md) for details on what updates automatical
 
 ### Run your first audit
 
-```bash
 plamen                    # terminal wrapper with interactive wizard
-```
 
 Or inside Claude Code: `/plamen` · Inside Codex CLI: `$plamen core /path/to/project`
 
@@ -275,9 +258,7 @@ See [docs/audit-modes.md](docs/audit-modes.md) for the full comparison.
 
 Plamen also audits **L1 node clients and blockchain infrastructure** — consensus engines, p2p networking, mempool logic, RPC surfaces, and validator lifecycle code in Go and Rust.
 
-```bash
 plamen l1 core /path/to/node-client
-```
 
 Or inside Claude Code: `/plamen l1 core` · Inside Codex CLI: `$plamen l1 core /path/to/node-client`
 
@@ -296,26 +277,20 @@ See [docs/l1-mode/design.md](docs/l1-mode/design.md) for the full L1 architectur
 
 **Terminal wrapper** (recommended — includes setup, cost estimation):
 
-```bash
 plamen                                              # interactive wizard
 plamen core /path/to/project                        # skip wizard
 plamen thorough /path/to/project --proven-only      # strict evidence mode
 plamen setup                                        # install tools only
-```
 
 **Inside Claude Code**:
 
-```
 > /plamen core
 > /plamen thorough docs: whitepaper.pdf scope: scope.txt
-```
 
 **Inside Codex CLI**:
 
-```
 > $plamen core
 > $plamen l1 thorough /path/to/node-client
-```
 
 See [docs/usage.md](docs/usage.md) for PATH setup and all CLI options.
 
@@ -325,7 +300,6 @@ See [docs/usage.md](docs/usage.md) for PATH setup and all CLI options.
 
 The V2 pipeline (`plamen-wizard`) runs a Python driver that executes one `claude -p` (or `codex exec`) subprocess per phase. If usage runs out or the process crashes, re-run the same command — it auto-resumes from the last successful checkpoint.
 
-```bash
 # Launch via wizard (interactive)
 plamen                              # terminal wrapper starts wizard
 /plamen-wizard                      # inside Claude Code
@@ -333,7 +307,6 @@ $plamen-wizard                      # inside Codex CLI
 
 # Resume a crashed/interrupted audit
 python3 ~/.plamen/scripts/plamen_driver.py /path/to/project/.scratchpad/config.json
-```
 
 The driver handles: phase scheduling, artifact gating, rate-limit pauses, retry-with-degradation, and subprocess isolation via the `plamen_home()` abstraction (resolves to `~/.claude/` or `~/.codex/plamen/` based on the configured backend). The LLM handles: agent orchestration, finding analysis, PoC execution, and report generation.
 
@@ -343,13 +316,11 @@ The driver handles: phase scheduling, artifact gating, rate-limit pauses, retry-
 
 Plamen supports [OpenAI Codex CLI](https://github.com/openai/codex) as an alternative backend. The V2 driver translates tool calls (Write to `apply_patch`, Bash to `shell`), rewrites paths (`~/.claude/` to `~/.codex/plamen/`), and adapts sandbox constraints.
 
-```bash
 # Install Codex backend (after standard install)
 plamen install --codex
 
 # Run via Codex
 $plamen core /path/to/project       # inside Codex CLI
-```
 
 Codex shares methodology via `~/.codex/plamen/` (symlinked to `~/.plamen/`). Config files are copied to `~/.codex/`:
 
