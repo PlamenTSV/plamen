@@ -77,6 +77,7 @@ scripts/*
 !scripts/plamen_markdown.py
 !scripts/report_index_machinery.py
 !scripts/spike_mechanical_poc.py
+!scripts/plamen_monitor.sh
 sessions/
 settings.json
 shell-snapshots/
