@@ -1,5 +1,5 @@
 ﻿---
-description: "Launch the V2 deterministic Smart Contract audit pipeline (same as /plamen-wizard). Usage: /plamen [light|core|thorough] [path]"
+description: "Launch the V2 deterministic Smart Contract audit pipeline (same as /plamen-wizard). Usage: /plamen [light|core|thorough] [path] | /plamen monitor <minutes> [path]"
 ---
 
 # Plamen Audit Pipeline
@@ -11,6 +11,12 @@ description: "Launch the V2 deterministic Smart Contract audit pipeline (same as
 > works identically and is what most users type.
 
 **Routing rule** (evaluate `$ARGUMENTS` exactly once, before any other step):
+
+- If `$ARGUMENTS` contains the literal token `monitor`:
+  - **STOP processing this file.** Execute **Monitor Mode** (the "Monitor Mode"
+    section immediately after this routing block) and do nothing else. Do NOT
+    route to the wizard and do NOT launch the driver — this mode only watches an
+    audit that is **already running**; it never starts one.
 
 - If `$ARGUMENTS` is empty OR does NOT contain the literal token `wrapper-launch`:
   - **STOP processing this file.** Read and execute `~/.claude/commands/plamen-wizard.md`
@@ -40,6 +46,51 @@ description: "Launch the V2 deterministic Smart Contract audit pipeline (same as
 > with a deterministic Python driver. The interactive surface now points at
 > the V2 wizard so users get the reliable path by default, while the driver
 > still uses this file's per-phase sections as subprocess prompts.
+
+---
+
+## Monitor Mode
+
+> **Reached only when `$ARGUMENTS` contains `monitor`** (interactive use). This
+> mode arms a periodic status heartbeat over an audit that is already running in
+> another session — it does not start, resume, or modify any audit.
+>
+> **CLAUDE BACKEND ONLY.** This relies on the Claude Code `Monitor` tool, which
+> streams a script's stdout lines into the chat as notifications. The Codex
+> backend (`codex exec`) has no equivalent — under Codex, tell the user that
+> `monitor` is Claude-only and that they can instead
+> `tail -f <scratchpad>/_plamen.log`, then stop.
+
+Usage: `/plamen monitor <minutes> [path]`
+
+Steps:
+
+1. **Parse the interval.** Take the first integer token after `monitor` as
+   `<minutes>` (the heartbeat cadence). If none is given, default to `15`.
+
+2. **Locate the scratchpad** (`S`):
+   - If `$ARGUMENTS` contains a path token, use `<path>/.scratchpad` (or the
+     token itself if it already ends in `.scratchpad`).
+   - Otherwise search the current directory: prefer `./.scratchpad`, then a
+     single-level `./*/.scratchpad` (e.g. `core/.scratchpad`). The correct
+     scratchpad is the one containing `_v2_checkpoint.json`.
+   - If no scratchpad with `_v2_checkpoint.json` is found, tell the user no
+     running audit was detected and stop.
+
+3. **Arm the watch.** Call the `Monitor` tool with `persistent: true` and:
+
+   ```
+   bash ~/.claude/scripts/plamen_monitor.sh <S> <minutes>
+   ```
+
+   Use a specific `description` such as `plamen audit status (every <minutes>m)`.
+   The script emits a report immediately on arm and then every `<minutes>`,
+   plus event-driven `PROGRESS` / `ALERT-STALL` lines, and a terminal `DONE`
+   (report present) or `ALERT-DEAD` (driver gone, no report) when the run ends.
+
+4. Confirm to the user that the monitor is armed and that they can stop it any
+   time with `TaskStop` (or by ending the session). Then stop — do not proceed
+   to any audit step.
 
 ---
 
