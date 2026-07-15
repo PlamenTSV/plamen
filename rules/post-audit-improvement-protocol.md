@@ -94,6 +94,7 @@ For each FALSE_NEGATIVE, classify into exactly ONE root cause:
 - RC-SCOPE is the highest-priority fix (nothing downstream can compensate for missing scope).
 - When in doubt between RC-METHOD and RC-DEPTH, prefer RC-DEPTH (smaller change footprint).
 - **When in doubt between RC-AGENT and any fix-eligible code, default to RC-AGENT.** See Step 2.5.
+- RC-AGENT misses MAY still route to a driver-level fix (`mechanical-gate`) instead of no-fix — but ONLY through the RC-AGENT-MECHANIZABLE escape hatch in Step 2.5, gated by all 4 M-gates. This is not a reclassification of root cause; RC-AGENT stands.
 
 ### Step 2.5: RC-AGENT Presumption Gate (MANDATORY)
 
@@ -128,6 +129,46 @@ RC-AGENT EXCLUSION TEST (all 3 must be YES to proceed past RC-AGENT):
 **If any answer is NO → classify as RC-AGENT. No pipeline change.**
 
 **Reclassification rule**: If the user challenges a non-RC-AGENT classification during the session, re-run the exclusion test. The user's challenge is evidence that the orchestrator's bias is active. Track reclassifications in the session summary: *"Reclassified: {N} findings from RC-{original} → RC-AGENT after user challenge."*
+
+#### RC-AGENT-MECHANIZABLE Escape Hatch (NARROW — does not weaken RC-AGENT)
+
+A miss classified RC-AGENT still gets **no prose/methodology-instruction
+change** — Step 2.5's "no pipeline change" holds. But a small number of
+RC-AGENT misses are not "the LLM should try harder next time" — they are
+cases where the correct disposition is **fully computable from artifacts the
+pipeline already produces** (PoC ledgers, verification verdicts, disposition
+tags) without any agent judgment call at all. For exactly this narrow case,
+reclassify the FIX (not the root cause) as **RC-AGENT-MECHANIZABLE** and
+route it to `[CHANGE TYPE: mechanical-gate]` (Part 3a) instead of "no
+pipeline change" — ONLY if ALL four gates below pass. Root cause stays
+RC-AGENT in the session summary; only the fix disposition changes.
+
+**M-Gates (all 4 required — any NO keeps the miss at RC-AGENT / no fix):**
+
+- **M1 — Recurring ≥3 audits**: The same failure PATTERN (not the same
+  finding) has been observed independently in 3+ prior audits. A one-off is
+  RC-AGENT with no fix, full stop — same bar as RC-NOVEL escalation.
+- **M2 — Deterministic without agent judgment**: The correct disposition can
+  be computed by a Python driver check reading structured artifacts already
+  on disk (PoC ledger, verify verdict, disposition tag, citation ledger) —
+  with NO step that asks an LLM agent to "remember," "apply judgment," or
+  "try harder." If the fix is still a sentence added to an agent prompt, it
+  is prose, not mechanizable — reject to RC-AGENT.
+- **M3 — Generic**: The gate keys ONLY on structural/evidence relations
+  (e.g. confirmed-in-scope-mechanism, external-gated-demotion,
+  citation-ledger-stub, PoC-not-attempted-taxonomy) — never a
+  protocol/token/contract/function name. Must independently pass Part 0.
+- **M4 — Verify-filtered**: The gate fires only on findings that have already
+  passed through the verification funnel (has a verify verdict / PoC ledger
+  entry) — never a raw, pre-verification severity or disposition assignment.
+
+If all four pass, the fix is a `mechanical-gate` change: driver code
+(`plamen_contracts.py`/`plamen_markdown.py` or the phase's computed-ledger
+layer, e.g. `severity_binding.md`/`disposition.md`-style outputs), never a
+rule/skill/prompt sentence. This is why it does not contradict "RC-AGENT = no
+pipeline change" — that prohibition targets prose instructions the agent must
+apply via judgment, which is precisely the class of fix Step 2.5 exists to
+block.
 
 ### Step 3: Root Cause Evidence (in-session only)
 
@@ -183,6 +224,25 @@ Is the gap covered by an EXISTING rule/skill/check?
               [CHANGE TYPE: rag-entry, 0 pipeline lines, zero risk]
 ```
 
+### Part 3a: RC-AGENT-MECHANIZABLE Path (bypasses the tree above)
+
+This path does NOT enter the Fix Decision Tree above — that tree is scoped to
+fix-eligible root causes (RC-SCOPE/RC-METHOD/RC-DEPTH/RC-CONTEXT). A miss that
+cleared the RC-AGENT-MECHANIZABLE escape hatch (Step 2.5) routes directly to:
+
+```
+RC-AGENT miss + M1 + M2 + M3 + M4 all PASS
+  → [CHANGE TYPE: mechanical-gate, ~10-30 lines, low risk — isolated to driver code]
+```
+
+`mechanical-gate` changes are implemented ONLY in the Python driver layer
+(computed ledgers such as `severity_binding.md`/`disposition.md`/
+`status_binding.md`, or an equivalent mechanical gate) — never as an addition
+to an agent prompt, skill, or rule file. If implementation requires touching
+an agent prompt to explain a NEW concept the agent must apply, the change is
+not `mechanical-gate` — reclassify under the normal tree (most likely
+`new-rule`) or back it out to RC-AGENT/no-fix.
+
 ### Change Type Risk Tiers
 
 | Type | Lines | Files Modified | Regression Risk |
@@ -192,6 +252,7 @@ Is the gap covered by an EXISTING rule/skill/check?
 | extend | ~3-10 | 1-9 (per-tree) | Medium |
 | new-injectable | ~50-100 | 1 new + skill-index | Medium (isolated) |
 | new-rule | ~20-40 | 4-8 (security-rules + enforcement) | High |
+| mechanical-gate | ~10-30 | 1 (driver only) | Low (isolated, no agent judgment) |
 
 ### Anti-Bloat Gates (MANDATORY before any `extend` or higher)
 
@@ -304,7 +365,7 @@ Each proposed change goes through this template before implementation:
 - **Missed class** (generic): {e.g., "missing state update in asymmetric operations"}
 
 ## Proposed Change
-- **Type**: {trigger-fix | extend | new-injectable | new-rule | rag-entry}
+- **Type**: {trigger-fix | extend | new-injectable | new-rule | rag-entry | mechanical-gate}
 - **Files modified**: {list with line count deltas}
 - **Total lines added/removed**: +{N} / -{N}
 
@@ -418,4 +479,5 @@ When running this protocol after an audit:
 | extend (per-tree) | 4-9 | 12-90 | Yes | Medium |
 | new-injectable | 1-5 new | 50-100 | Per-language | Low (isolated) |
 | new-rule | 4-8 | 80-320 | Yes | High |
+| mechanical-gate | 1 (driver) | 10-30 | No | Low (isolated) |
 | new-scanner-check | 4 | 12-40 | Yes | Medium |
