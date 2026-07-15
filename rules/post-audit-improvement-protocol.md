@@ -246,9 +246,15 @@ not `mechanical-gate` — reclassify under the normal tree (most likely
 
 #### Mandatory Mechanical-Gate Lifecycle Registry and Review Contract
 
-Every proposed or shipped mechanical gate MUST have exactly one registry record
-in the improvement proposal or the canonical gate registry. Do not create a
-per-gate methodology document. A gate is a protocol component, not a presumed
+Every proposed or shipped mechanical gate MUST have exactly one authoritative
+record in `rules/mechanical-gate-registry.json`. The approved proposal carries
+the proposed values and registry ID for review; after approval its generic
+lifecycle metadata is persisted in that canonical file. This narrow metadata
+carve-out is an allowed persistent methodology artifact under the Ephemeral-
+Session Principle: it MUST NOT contain protocol names, finding descriptions,
+target locations, or motivating-audit answers. Copies elsewhere are non-
+authoritative. Do not create a per-gate methodology document. A gate is a
+protocol component, not a presumed
 10–30-line/low-risk patch: identity joins, parser changes, phase ordering, and
 report disposition can make a short predicate system-wide and high risk.
 
@@ -282,6 +288,50 @@ Each registry record MUST define:
 10. **Review and sunset** — lifecycle state, review date/owner, telemetry to
     inspect, and explicit retirement criteria (superseded, persistently noisy,
     unused, or no longer justified by recurrence evidence).
+11. **Gate-count budget** — use exactly one owning seam from the closed taxonomy
+    `STARTUP_RESUME`, `PRE_DISCOVERY`, `POST_DISCOVERY`, `PRE_VERIFY`,
+    `POST_VERIFY`, or `REPORT_ASSEMBLY`. Record numeric `active_gate_count`,
+    `activated_or_shadow_additions`, `approved_slot_releases`,
+    `gate_budget_ceiling`, and `post_change_gate_count`, where
+    `post_change_gate_count = active_gate_count + activated_or_shadow_additions
+    - approved_slot_releases`. Count every runtime-executed predicate in
+    `SHADOW/REPLAY` or `ACTIVE`; a predicate is one independently fireable
+    disposition or obligation decision, not a source file, adapter, conjunct,
+    or dispatcher. Separate ecosystem adapters for the same decision count
+    once; independently fireable decisions count separately even when hidden
+    behind one dispatcher.
+
+    The record MUST cite a gate-inventory artifact and digest for the baseline
+    and list stable `baseline_gate_ids`, `addition_gate_ids`, and
+    `release_gate_ids`. Counts MUST equal the cardinality of those sets; all
+    counts are non-negative integers; the sets are pairwise disjoint;
+    `release_gate_ids` MUST be a subset of the cited baseline inventory; and
+    `approved_slot_releases <= active_gate_count`. The canonical registry's
+    `migration_status` blocks every new `SHADOW/REPLAY` or `ACTIVE` transition
+    until a complete baseline has been independently inventoried and approved;
+    an empty migration registry is not evidence of zero active gates.
+
+    The seam and ceiling MUST have been approved by the system owner in a prior
+    committed revision, before the proposal under review. A proposal cannot
+    create or rename a seam, raise its ceiling, or approve its own baseline.
+    Such a change uses the exception contract below and is reviewed separately
+    from the proposed gate. A new gate is blocked when required values are
+    absent or the equation does not balance.
+
+    A slot release by consolidation or sunset is valid only with independent
+    held-out evidence of recall parity, proof that the replacement subsumes the
+    retired predicate, and no unique true-positive contribution from the
+    retired gate. Otherwise the release is zero unless the system owner records
+    an explicit recall tradeoff. Anti-bloat never silently spends recall.
+
+    An over-ceiling exception MUST record `exception_approver`,
+    `temporary_ceiling_delta`, `exception_rationale`, `review_by`, and a
+    distinct `expires_on`, backed by held-out evidence other than the motivating
+    audit, and MUST satisfy `post_change_gate_count <= gate_budget_ceiling +
+    temporary_ceiling_delta`. At expiry the exceptional gate automatically returns to a non-runtime
+    state unless a fresh independent exception is approved, and the seam count
+    must return to its ordinary ceiling. Renewal cannot rely only on the
+    original motivating evidence.
 
 Lifecycle states are `PROPOSED → FIXTURED → SHADOW/REPLAY → ACTIVE →
 CONSOLIDATED|SUNSET`. Promotion to `ACTIVE` requires independent review of the
@@ -318,6 +368,18 @@ Before applying ANY change of type `extend` or higher:
 4. **Overlap check**: Does a similar check already exist under a different name?
    - Grep all scanner checks, depth checks, and skill steps for keyword overlap
    - If >60% overlap → merge into existing check, don't create new one
+
+5. **Mechanical gate-count check**: For a `mechanical-gate` change, does the
+   authoritative proposal record satisfy Part 3a's closed seam taxonomy,
+   independently predeclared ceiling, baseline digest, and count equation?
+   - If any value is absent, the equation does not balance, or the post-change
+     count exceeds the ordinary ceiling → block activation
+   - Slot releases require recall-parity/subsumption evidence; an approved
+     recall tradeoff must be explicit and cannot masquerade as parity
+   - Exceptions require the complete Part 3a record, including separate
+     `review_by` and hard `expires_on`; expiry disables runtime execution
+   - Do not evade the budget by seam renaming, proposal-local ceiling changes,
+     ecosystem splitting, or combining distinct decisions under one dispatcher
 
 ---
 
@@ -407,7 +469,7 @@ Each proposed change goes through this template before implementation:
 # Improvement Proposal: {title}
 
 ## Source
-- **Root cause code**: {RC-SCOPE | RC-METHOD | RC-DEPTH | RC-CONTEXT}
+- **Root cause code**: {RC-SCOPE | RC-METHOD | RC-DEPTH | RC-CONTEXT | RC-AGENT-MECHANIZABLE (M1-M4 PASS)}
 - **Missed class** (generic): {e.g., "missing state update in asymmetric operations"}
 
 ## Proposed Change
@@ -415,6 +477,28 @@ Each proposed change goes through this template before implementation:
 - **Files modified**: {list with line count deltas}
 - **Total lines added/removed**: +{N} / -{N}
 - **Mechanical-gate registry ID/state**: {required for mechanical-gate; otherwise N/A}
+
+## Mechanical-Gate Registry Record
+<!-- Required when Type = mechanical-gate; approved generic values are persisted
+     to rules/mechanical-gate-registry.json, the authoritative record. -->
+- **Gate ID / lifecycle state**: {stable ID} / {PROPOSED | FIXTURED | SHADOW/REPLAY | ACTIVE | CONSOLIDATED | SUNSET}
+- **Owning seam**: {STARTUP_RESUME | PRE_DISCOVERY | POST_DISCOVERY | PRE_VERIFY | POST_VERIFY | REPORT_ASSEMBLY}
+- **Gate-inventory baseline artifact / SHA-256 / committed revision**: {path} / {digest} / {revision}
+- **System-owner ceiling approval revision / approver**: {revision predating this proposal} / {owner}
+- **baseline_gate_ids**: {sorted stable IDs from the cited inventory}
+- **addition_gate_ids**: {sorted new IDs; disjoint from baseline and releases}
+- **release_gate_ids**: {sorted baseline IDs with approved release evidence}
+- **active_gate_count**: {integer}
+- **activated_or_shadow_additions**: {integer}
+- **approved_slot_releases**: {integer; zero unless recall-safe release evidence below is approved}
+- **gate_budget_ceiling**: {integer}
+- **post_change_gate_count**: {active + additions - releases}
+- **Slot-release recall evidence**: {held-out parity, subsumption proof, unique-TP analysis, independent reviewer; or N/A}
+- **Approved recall tradeoff**: {system-owner decision and measured loss; or N/A}
+- **Exception approver / temporary ceiling delta**: {owner} / {integer; or N/A}
+- **Exception rationale / held-out evidence**: {reason and evidence not limited to motivating audit; or N/A}
+- **review_by / expires_on**: {date} / {distinct hard-expiry date; or N/A}
+- **Expiry action**: {return gate to non-runtime state and ordinary seam ceiling; or N/A}
 
 ## Anti-Bloat Gates
 - [ ] Line budget: No file exceeds cap after change
@@ -503,6 +587,11 @@ When running this protocol after an audit:
 ---
 
 ## Appendix A: File Size Budget Caps
+
+File-size caps do **not** budget mechanical-gate count. Gate count is governed
+per lifecycle seam by the mandatory registry fields in Part 3a and Anti-Bloat
+Gate 5. A smaller implementation does not receive a lower review burden or a
+free gate slot.
 
 | File Category | Current Range | Cap | Rationale |
 |---------------|-------------|-----|-----------|

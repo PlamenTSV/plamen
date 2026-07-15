@@ -1,0 +1,14 @@
+{
+  "gate_records": [],
+  "migration_status": "BLOCK_NEW_ACTIVATIONS_PENDING_BASELINE",
+  "schema_version": "plamen.mechanical_gate_registry.v1",
+  "seam_budgets": [],
+  "seam_taxonomy": [
+    "STARTUP_RESUME",
+    "PRE_DISCOVERY",
+    "POST_DISCOVERY",
+    "PRE_VERIFY",
+    "POST_VERIFY",
+    "REPORT_ASSEMBLY"
+  ]
+}
