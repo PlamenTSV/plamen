@@ -17353,14 +17353,27 @@ _LANG_GATE_IGNORE_DIRS = {
 
 
 def _count_source_suffixes_under(
-    root: Path, recognized: set[str], file_cap: int
+    root: Path,
+    recognized: set[str],
+    file_cap: int,
+    *,
+    entry_cap: int = 50_000,
+    dir_cap: int = 2_000,
 ) -> dict[str, int]:
-    """Count recognized source suffixes under a single root (bounded, pruned).
-    Never raises."""
+    """Count recognized source suffixes under one bounded, pruned root.
+
+    ``file_cap`` bounds matched source files. ``entry_cap`` and ``dir_cap``
+    independently bound traversal when a tree contains no recognized source
+    files. The latter matters for ancestor fallback: an empty scoped project
+    must not walk an arbitrarily large temp/home directory forever. Never
+    raises; truncation is loud and yields the conservative partial counts.
+    """
     counts: dict[str, int] = {s: 0 for s in recognized}
     if not root.exists() or not root.is_dir():
         return counts
     seen = 0
+    entries_seen = 0
+    dirs_seen = 0
     try:
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [
@@ -17368,6 +17381,10 @@ def _count_source_suffixes_under(
                 if d.lower() not in _LANG_GATE_IGNORE_DIRS
                 and not d.startswith(".")
             ]
+            dirnames.sort(key=str.lower)
+            filenames.sort(key=str.lower)
+            dirs_seen += 1
+            entries_seen += len(dirnames) + len(filenames)
             for fn in filenames:
                 suffix = Path(fn).suffix.lower()
                 if suffix in recognized:
@@ -17375,6 +17392,13 @@ def _count_source_suffixes_under(
                     seen += 1
                     if seen >= file_cap:
                         return counts
+            if dirs_seen >= dir_cap or entries_seen >= entry_cap:
+                log.warning(
+                    "[startup] ecosystem source scan truncated under %s "
+                    "(dirs=%d/%d, entries=%d/%d)",
+                    root, dirs_seen, dir_cap, entries_seen, entry_cap,
+                )
+                return counts
     except Exception:
         pass
     return counts
@@ -17387,6 +17411,8 @@ def _scan_manifests_for_markers(
     *,
     max_files: int = 200,
     max_bytes: int = 200_000,
+    max_entries: int = 50_000,
+    max_dirs: int = 2_000,
 ) -> dict[str, int]:
     """Deterministically scan build manifests under ``base`` and count, per
     language, how many DISTINCT markers appear in manifest content.
@@ -17405,8 +17431,9 @@ def _scan_manifests_for_markers(
     ``Anchor.toml`` is special-cased: its mere presence anywhere counts as a
     solana filename-marker (Anchor projects are Solana programs).
 
-    Bounded by ``max_files`` (manifests read) and ``max_bytes`` (per file).
-    Wrapped in try/except; never raises. Returns ``{lang: distinct_marker_count}``.
+    Bounded by ``max_files`` (manifests read), ``max_bytes`` (per file), and
+    total directory/entry traversal budgets. Wrapped in try/except; never
+    raises. Returns ``{lang: distinct_marker_count}``.
     """
     result: dict[str, int] = {lang: 0 for lang in markers_by_lang}
     wanted = {n.lower() for n in manifest_names}
@@ -17417,6 +17444,8 @@ def _scan_manifests_for_markers(
         saw_manifest = False
         read_count = 0
         anchor_seen = False
+        entries_seen = 0
+        dirs_seen = 0
         try:
             for dirpath, dirnames, filenames in os.walk(root):
                 dirnames[:] = [
@@ -17424,6 +17453,10 @@ def _scan_manifests_for_markers(
                     if d.lower() not in _LANG_GATE_IGNORE_DIRS
                     and not d.startswith(".")
                 ]
+                dirnames.sort(key=str.lower)
+                filenames.sort(key=str.lower)
+                dirs_seen += 1
+                entries_seen += len(dirnames) + len(filenames)
                 for fn in filenames:
                     fn_lower = fn.lower()
                     # Anchor.toml presence => solana filename-marker.
@@ -17446,6 +17479,13 @@ def _scan_manifests_for_markers(
                         for marker in markers:
                             if marker and marker.lower() in content:
                                 matched[lang].add(marker.lower())
+                if dirs_seen >= max_dirs or entries_seen >= max_entries:
+                    log.warning(
+                        "[startup] ecosystem manifest scan truncated under %s "
+                        "(dirs=%d/%d, entries=%d/%d)",
+                        root, dirs_seen, max_dirs, entries_seen, max_entries,
+                    )
+                    break
         except Exception:
             pass
         if anchor_seen and "solana" in matched:

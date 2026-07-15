@@ -72,6 +72,51 @@ def test_language_gate_continues_when_indeterminate(tmp_path: Path):
     assert "indeterminate" in msg
 
 
+def test_source_suffix_scan_stops_at_total_entry_budget(
+    tmp_path: Path, monkeypatch,
+):
+    """Unrecognized files must not make the supposedly bounded walk unbounded."""
+    visited = 0
+
+    def fake_walk(_root):
+        nonlocal visited
+        for idx in range(1_000):
+            visited += 1
+            yield str(tmp_path / f"d{idx}"), [f"child{idx}"], [f"note{idx}.txt"]
+
+    monkeypatch.setattr(D.os, "walk", fake_walk)
+    counts = D._count_source_suffixes_under(
+        tmp_path, {".sol"}, file_cap=4_000, entry_cap=8, dir_cap=100,
+    )
+
+    assert counts == {".sol": 0}
+    assert visited <= 4
+
+
+def test_manifest_scan_stops_at_total_entry_budget(tmp_path: Path, monkeypatch):
+    """A found manifest must not disable the traversal budget for its tree."""
+    visited = 0
+
+    def fake_walk(_root):
+        nonlocal visited
+        for idx in range(1_000):
+            visited += 1
+            files = ["package.json"] if idx == 0 else [f"note{idx}.txt"]
+            yield str(tmp_path / f"d{idx}"), [f"child{idx}"], files
+
+    monkeypatch.setattr(D.os, "walk", fake_walk)
+    markers = D._scan_manifests_for_markers(
+        tmp_path,
+        {"package.json"},
+        {"evm": ("hardhat",)},
+        max_entries=8,
+        max_dirs=100,
+    )
+
+    assert markers == {"evm": 0}
+    assert visited <= 4
+
+
 def test_language_gate_finds_solidity_via_ancestor_walk(tmp_path: Path):
     """A scope-dir PROJECT_PATH still sees source files via the ancestor walk
     is not needed here, but the dominant-extension scan must see in-tree .sol."""

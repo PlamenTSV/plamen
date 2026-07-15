@@ -40,7 +40,8 @@ Eleven scenarios:
      degrade/halt.
   H. Verify completeness gate
      Verification queue expects 3 verifier files, phase writes only 2.
-     Assert retry and degrade/halt instead of falsely completing.
+     Assert retry, degraded exit, and deterministic missing-file recovery/stub
+     instead of falsely completing or launching an unmocked live worker.
   I. Phase-containment detector
      Inventory writes later-phase artifacts. Assert retry and degrade/halt.
   K. Inventory sharding
@@ -741,11 +742,13 @@ def stub_run_phase(phase, config, attempt):
     if phase.name == "verify_medium_a" and SCENARIO == "H":
         _write(
             scratch / "verify_F-01.md",
-            "Preferred Tag: [CODE-TRACE]\nEvidence Tag: [CODE-TRACE]\nVerdict: CONFIRMED\n"
+            "Preferred Tag: [CODE-TRACE]\nEvidence Tag: [CODE-TRACE]\n"
+            "Verdict: CONFIRMED\nEvidence details: " + "trace " * 20 + "\n"
         )
         _write(
             scratch / "verify_F-02.md",
-            "Preferred Tag: [CODE-TRACE]\nEvidence Tag: [CODE-TRACE]\nVerdict: CONFIRMED\n"
+            "Preferred Tag: [CODE-TRACE]\nEvidence Tag: [CODE-TRACE]\n"
+            "Verdict: CONFIRMED\nEvidence details: " + "trace " * 20 + "\n"
         )
         return 0
 
@@ -798,6 +801,13 @@ def stub_run_phase(phase, config, attempt):
 
 pd.run_phase = stub_run_phase
 pd.detect_rate_limit = lambda _p: False
+# Verify-recovery is an inter-phase worker subprocess, not routed through
+# run_phase. Keep this phase-loop smoke harness hermetic: return the missing IDs
+# so the deterministic stub/degrade path is exercised without launching a real
+# Claude/Codex process.
+pd._run_verify_recovery_shard = lambda _config, missing: [
+    fid for fid, _row in missing
+]
 
 sys.argv = ["plamen_driver.py", r'__CONFIG_PATH__']
 try:
@@ -829,6 +839,12 @@ def _run_driver(tmp: Path, config_path: Path, call_log: Path,
         capture_output=True,
         text=True,
         cwd=str(tmp),
+        # A production startup traversal bug once left this integration lane
+        # waiting forever and orphaned the child when only the outer pytest
+        # process was killed. Keep every scenario self-bounding so a future
+        # regression fails as a TimeoutExpired error instead of masking the
+        # rest of the integration baseline.
+        timeout=120,
     )
     sys.stdout.write(proc.stdout)
     sys.stderr.write(proc.stderr)
@@ -1163,7 +1179,7 @@ def test_scenario_h_verify_completeness_gate() -> None:
             "Medium finding three.\n",
         )
         rc = _run_driver(tmp, cfg_path, call_log, "H")
-        _assert(rc == 3, f"H exit: got {rc}, expected 3 (verify completeness halt)")
+        _assert(rc == 3, f"H exit: got {rc}, expected 3 (degraded verification)")
 
         ckpt = json.loads(
             (scratch / "_v2_checkpoint.json").read_text(encoding="utf-8")
@@ -1174,6 +1190,13 @@ def test_scenario_h_verify_completeness_gate() -> None:
                 f"H: verify_medium_a must NOT be completed; got {ckpt['completed']}")
         _assert((scratch / "verify_medium_a.degraded").exists(),
                 "H: verify_medium_a.degraded marker missing")
+        recovery_stub = scratch / "verify_F-03.md"
+        _assert(recovery_stub.exists(),
+                "H: missing F-3 must receive a deterministic unverified stub")
+        _assert("VERIFICATION NOT EXECUTED" in recovery_stub.read_text(encoding="utf-8"),
+                "H: F-3 recovery stub must disclose that verification did not run")
+        _assert("Verdict: CONFIRMED" in (scratch / "verify_F-01.md").read_text(encoding="utf-8"),
+                "H: a present verifier result must not be overwritten by recovery")
         print("[scenario H] PASS")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
