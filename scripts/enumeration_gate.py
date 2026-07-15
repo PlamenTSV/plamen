@@ -28,8 +28,18 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
+import threading
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
+
+from coverage_shortfalls import (
+    replace_producer_shortfalls,
+    shortfall,
+    unknown_shortfall,
+)
 
 try:
     from plamen_mechanical import _inventory_blocks  # type: ignore
@@ -69,6 +79,37 @@ _MAX_VARS_PER_FINDING = 5      # only the few symbols a finding most directly to
 _MAX_COREFS_PER_VAR = 6       # cap co-referencers enumerated per symbol
 _SKIP_VAR_REF_THRESHOLD = 25  # a symbol referenced by >25 fns is too common to gate on
 _MAX_ENUMGAP_PER_RUN = 40     # global cap on emitted candidates
+_CANDIDATE_TRANSACTION_LOCK = threading.RLock()
+
+
+@contextmanager
+def _candidate_transaction(scratchpad: Path):
+    """Serialize the complete inventory/key-receipt emission transaction."""
+    scratchpad = Path(scratchpad)
+    scratchpad.mkdir(parents=True, exist_ok=True)
+    lock_path = scratchpad / ".enumeration_candidates.lock"
+    with _CANDIDATE_TRANSACTION_LOCK:
+        with lock_path.open("a+b") as handle:
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 # The six generic committed-invariant SHAPES (M1). Each is a relational form
 # (HOW to interrogate a locus), never a protocol constant; symbols resolve at the
@@ -196,10 +237,41 @@ def compute_enumeration_obligations(scratchpad: Path) -> int:
     graph = _load_graph(scratchpad)
     inv = scratchpad / "findings_inventory.md"
     if graph is None or _inventory_blocks is None or not inv.exists():
+        try:
+            missing = (
+                "mechanical graph" if graph is None else
+                "inventory parser" if _inventory_blocks is None else
+                "findings inventory"
+            )
+            replace_producer_shortfalls(
+                scratchpad,
+                "enumeration.axis1",
+                [unknown_shortfall(
+                    producer="enumeration.axis1",
+                    scope="obligation-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail=f"cannot enumerate co-references: missing {missing}",
+                )],
+            )
+        except Exception:
+            pass
         return 0
     try:
         blocks = _inventory_blocks(inv.read_text(encoding="utf-8", errors="replace"))
     except Exception:
+        try:
+            replace_producer_shortfalls(
+                scratchpad,
+                "enumeration.axis1",
+                [unknown_shortfall(
+                    producer="enumeration.axis1",
+                    scope="obligation-provider",
+                    kind="PROVIDER_FAILED",
+                    detail="findings inventory could not be parsed for co-reference obligations",
+                )],
+            )
+        except Exception:
+            pass
         return 0
 
     var_refs = graph["var_refs"]
@@ -210,6 +282,7 @@ def compute_enumeration_obligations(scratchpad: Path) -> int:
             fn_to_vars.setdefault(_bare_from_descriptor(d).lower(), set()).add(vk)
 
     obligations: list[dict] = []
+    shortfalls: list[dict] = []
     for b in blocks:
         fid = b.get("id", "")
         loc = b.get("location", "")
@@ -217,16 +290,68 @@ def compute_enumeration_obligations(scratchpad: Path) -> int:
         if not fk:
             continue
         fbare = graph["functions"][fk].get("bare", fk.split(".")[-1]).lower()
-        vars_touched = list(fn_to_vars.get(fbare, set()))[: _MAX_VARS_PER_FINDING]
+        all_vars = sorted(fn_to_vars.get(fbare, set()))
+        vars_touched = all_vars[: _MAX_VARS_PER_FINDING]
+        if len(all_vars) > _MAX_VARS_PER_FINDING:
+            shortfalls.append(shortfall(
+                producer="enumeration.axis1",
+                scope=f"finding:{fid}:variables",
+                cap="MAX_VARS_PER_FINDING",
+                limit=_MAX_VARS_PER_FINDING,
+                observed=len(all_vars),
+                retained=len(vars_touched),
+                exact=True,
+                samples=all_vars[_MAX_VARS_PER_FINDING:],
+                detail="state symbols touched by the finding were not all expanded",
+            ))
+        # Popularity is a distinct skip path. Inspect it across the complete
+        # symbol set, including variables beyond MAX_VARS_PER_FINDING, so one
+        # cap cannot hide another cap's highest-fan-in accounting target.
+        high_fan_vars = {
+            vk for vk in all_vars
+            if len(var_refs.get(vk, {}).get("refs", [])) > _SKIP_VAR_REF_THRESHOLD
+        }
+        for vk in sorted(high_fan_vars):
+            vd = var_refs.get(vk, {})
+            refs = vd.get("refs", [])
+            shortfalls.append(shortfall(
+                producer="enumeration.axis1",
+                scope=f"finding:{fid}:symbol:{vd.get('bare', vk)}",
+                cap="SKIP_VAR_REF_THRESHOLD",
+                limit=_SKIP_VAR_REF_THRESHOLD,
+                observed=len(refs),
+                retained=0,
+                exact=True,
+                samples=sorted(_bare_from_descriptor(d) for d in refs),
+                detail=("high-fan-in accounting/state symbol was intentionally "
+                        "not expanded by the co-reference gate"),
+                kind="HIGH_FAN_IN_UNENUMERATED",
+            ))
         for vk in vars_touched:
             vd = var_refs.get(vk, {})
             refs = vd.get("refs", [])
-            if len(refs) > _SKIP_VAR_REF_THRESHOLD:
+            if vk in high_fan_vars:
+                # Choosing an arbitrary six-of-N subset would create noisy,
+                # order-dependent obligations. The control-plane receipt above
+                # is intentionally the only output for this symbol.
                 continue
-            corefs = sorted({
+            all_corefs = sorted({
                 _bare_from_descriptor(d) for d in refs
                 if _bare_from_descriptor(d).lower() != fbare
-            })[: _MAX_COREFS_PER_VAR]
+            })
+            corefs = all_corefs[: _MAX_COREFS_PER_VAR]
+            if len(all_corefs) > _MAX_COREFS_PER_VAR:
+                shortfalls.append(shortfall(
+                    producer="enumeration.axis1",
+                    scope=f"finding:{fid}:symbol:{vd.get('bare', vk)}:corefs",
+                    cap="MAX_COREFS_PER_VAR",
+                    limit=_MAX_COREFS_PER_VAR,
+                    observed=len(all_corefs),
+                    retained=len(corefs),
+                    exact=True,
+                    samples=all_corefs[_MAX_COREFS_PER_VAR:],
+                    detail="co-referencing functions were not all enumerated",
+                ))
             if corefs:
                 obligations.append({
                     "finding_id": fid,
@@ -234,6 +359,12 @@ def compute_enumeration_obligations(scratchpad: Path) -> int:
                     "symbol": vd.get("bare", vk),
                     "required_corefs": corefs,
                 })
+
+    try:
+        replace_producer_shortfalls(scratchpad, "enumeration.axis1", shortfalls)
+    except Exception:
+        # Haltless contract: receipt failure must not suppress candidates.
+        pass
 
     (scratchpad / "_enumeration_obligations.json").write_text(
         json.dumps({"source": graph.get("source", "?"), "obligations": obligations},
@@ -286,31 +417,86 @@ def compute_coverage_gaps(scratchpad: Path) -> list[dict]:
     return gaps
 
 
-def validate_enumeration_coverage(scratchpad: Path) -> dict:
+def _validate_enumeration_coverage_unlocked(scratchpad: Path) -> dict:
     """G2. Compute coverage gaps and append each as a low-confidence ENUMGAP
     candidate to findings_inventory.md so the verify filter adjudicates it.
     Append-only, idempotent (receipt). Returns {gaps, emitted}. Never raises."""
     scratchpad = Path(scratchpad)
+    if (_inventory_blocks is None
+            or not (scratchpad / "_enumeration_obligations.json").exists()
+            or not (scratchpad / "findings_inventory.md").exists()):
+        try:
+            replace_producer_shortfalls(
+                scratchpad,
+                "enumeration.axis1.emission",
+                [unknown_shortfall(
+                    producer="enumeration.axis1.emission",
+                    scope="coverage-diff-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="coverage gaps cannot be diffed because a required obligation/inventory artifact is missing",
+                )],
+            )
+        except Exception:
+            pass
+        return {"gaps": 0, "emitted": 0}
     try:
         gaps = compute_coverage_gaps(scratchpad)
     except Exception:
+        try:
+            replace_producer_shortfalls(
+                scratchpad,
+                "enumeration.axis1.emission",
+                [unknown_shortfall(
+                    producer="enumeration.axis1.emission",
+                    scope="coverage-diff-provider",
+                    kind="PROVIDER_FAILED",
+                    detail="co-reference coverage diff failed",
+                )],
+            )
+        except Exception:
+            pass
         return {"gaps": 0, "emitted": 0}
     if not gaps:
+        seen = _emitted_candidate_keys(scratchpad)
+        if seen != _receipt_candidate_keys(scratchpad):
+            try:
+                _write_candidate_artifact(
+                    scratchpad / "enumeration_gap_receipt.md",
+                    _candidate_receipt_text(seen),
+                )
+            except Exception as exc:
+                _record_persistence_failure(
+                    scratchpad, "enumeration.axis1.emission", sorted(seen), exc
+                )
+                return {"gaps": 0, "emitted": 0}
+        try:
+            replace_producer_shortfalls(scratchpad, "enumeration.axis1.emission", [])
+        except Exception:
+            pass
         return {"gaps": 0, "emitted": 0}
 
     inv = scratchpad / "findings_inventory.md"
     try:
         inv_text = inv.read_text(encoding="utf-8", errors="replace")
     except Exception:
+        try:
+            replace_producer_shortfalls(
+                scratchpad,
+                "enumeration.axis1.emission",
+                [unknown_shortfall(
+                    producer="enumeration.axis1.emission",
+                    scope="coverage-diff-provider",
+                    kind="PROVIDER_FAILED",
+                    detail="findings inventory could not be read for gap emission",
+                )],
+            )
+        except Exception:
+            pass
         return {"gaps": len(gaps), "emitted": 0}
 
     receipt = scratchpad / "enumeration_gap_receipt.md"
-    seen: set = set()
-    if receipt.exists():
-        try:
-            seen = set(re.findall(r"\bENUMGAP-KEY:\s*(\S+)", receipt.read_text(encoding="utf-8", errors="replace")))
-        except Exception:
-            seen = set()
+    seen = _emitted_candidate_keys(scratchpad)
+    receipt_keys = _receipt_candidate_keys(scratchpad)
 
     max_inv = 0
     for m in re.finditer(r"\bINV-(\d+)\b", inv_text):
@@ -319,14 +505,19 @@ def validate_enumeration_coverage(scratchpad: Path) -> dict:
         except ValueError:
             pass
 
-    appended: list[str] = []
-    keys: list[str] = []
-    n = 0
+    eligible: list[tuple[dict, str, str]] = []
+    eligible_keys: set[str] = set()
     for g in gaps:
         for missing_fn in g["missing"]:
             key = f"{g['finding_id']}:{g['symbol']}:{missing_fn}"
-            if key in seen or n >= _MAX_ENUMGAP_PER_RUN:
+            if key in seen or key in eligible_keys:
                 continue
+            eligible_keys.add(key)
+            eligible.append((g, missing_fn, key))
+    appended: list[str] = []
+    keys: list[str] = []
+    n = 0
+    for g, missing_fn, key in eligible[:_MAX_ENUMGAP_PER_RUN]:
             n += 1
             inv_id = f"INV-{max_inv + n:03d}"
             title = (f"Unaddressed interaction: `{missing_fn}` also references "
@@ -346,9 +537,10 @@ def validate_enumeration_coverage(scratchpad: Path) -> dict:
                 f"**Description**: Enumeration-coverage gap. The reference graph shows "
                 f"`{missing_fn}` also reads/writes `{g['symbol']}`; confirm the two "
                 "functions are consistent or report the divergence.",
-                "**Impact**: Potential cross-function inconsistency over shared state "
-                "(verifier to confirm the concrete harm).",
-                # Generic chain-matchable metadata: this gap both CREATES a
+                 "**Impact**: Potential cross-function inconsistency over shared state "
+                 "(verifier to confirm the concrete harm).",
+                 _candidate_key_marker(key),
+                 # Generic chain-matchable metadata: this gap both CREATES a
                 # shared-state divergence (postcondition) and is a candidate
                 # blocked-finding NEEDING that state to be consistent (missing
                 # precondition). STATE-typed so the chain phase can pair it.
@@ -365,6 +557,23 @@ def validate_enumeration_coverage(scratchpad: Path) -> dict:
             keys.append(key)
 
     if not appended:
+        # A prior inventory write may have succeeded while its key-receipt
+        # write failed. Repair that second durable projection before clearing
+        # the PERSISTENCE_FAILED debt.
+        if seen != receipt_keys:
+            try:
+                _write_candidate_artifact(receipt, _candidate_receipt_text(seen))
+            except Exception as exc:
+                _record_persistence_failure(
+                    scratchpad, "enumeration.axis1.emission", sorted(seen), exc
+                )
+                return {"gaps": len(gaps), "emitted": 0}
+        try:
+            replace_producer_shortfalls(
+                scratchpad, "enumeration.axis1.emission", []
+            )
+        except Exception:
+            pass
         return {"gaps": len(gaps), "emitted": 0}
 
     header = ("\n\n## Enumeration-Coverage Candidates (ENUMGAP)\n\n"
@@ -372,17 +581,63 @@ def validate_enumeration_coverage(scratchpad: Path) -> dict:
               "finding's analysis did NOT address. Low-confidence by construction — the "
               "verify phase confirms or refutes each. Recall-safe: append-only.\n\n")
     hdr = "" if "Enumeration-Coverage Candidates (ENUMGAP)" in inv_text else header
-    inv.write_text(_append_inventory_blocks(inv_text, hdr, appended), encoding="utf-8")
+    try:
+        _write_candidate_artifact(
+            inv, _append_inventory_blocks(inv_text, hdr, appended)
+        )
+        _write_candidate_artifact(
+            receipt, _candidate_receipt_text(seen | set(keys))
+        )
+    except Exception as exc:
+        _record_persistence_failure(
+            scratchpad, "enumeration.axis1.emission", keys, exc
+        )
+        return {"gaps": len(gaps), "emitted": 0}
 
-    rlines = ["# Enumeration Gap Receipt", ""]
-    rlines += [f"ENUMGAP-KEY: {k}" for k in (sorted(seen) + keys)]
-    receipt.write_text("\n".join(rlines) + "\n", encoding="utf-8")
+    # Only now are ``retained`` rows true: inventory and key receipt are both
+    # durable. A failure above records UNKNOWN instead of a false exact count.
+    cap_rows = []
+    if len(eligible) > _MAX_ENUMGAP_PER_RUN:
+        cap_rows.append(shortfall(
+            producer="enumeration.axis1.emission",
+            scope="coverage-gap-emission",
+            cap="MAX_ENUMGAP_PER_RUN",
+            limit=_MAX_ENUMGAP_PER_RUN,
+            observed=len(eligible),
+            retained=len(keys),
+            exact=True,
+            samples=[key for _g, _fn, key in eligible[_MAX_ENUMGAP_PER_RUN:]],
+            detail="co-reference coverage gaps exceeded the per-run verify budget",
+        ))
+    try:
+        replace_producer_shortfalls(
+            scratchpad, "enumeration.axis1.emission", cap_rows
+        )
+    except Exception:
+        pass
     try:
         from plamen_mechanical import _write_finding_records_from_inventory
         _write_finding_records_from_inventory(scratchpad)
     except Exception:
         pass
+    required = set(keys)
+    if not required.issubset(_inventory_candidate_keys(scratchpad)) or not required.issubset(
+        _receipt_candidate_keys(scratchpad)
+    ):
+        _record_persistence_failure(
+            scratchpad,
+            "enumeration.axis1.emission",
+            sorted(required),
+            RuntimeError("post-write candidate/receipt subset check failed"),
+        )
+        return {"gaps": len(gaps), "emitted": 0}
     return {"gaps": len(gaps), "emitted": len(keys)}
+
+
+def validate_enumeration_coverage(scratchpad: Path) -> dict:
+    """Transaction-safe public G2 entry point."""
+    with _candidate_transaction(Path(scratchpad)):
+        return _validate_enumeration_coverage_unlocked(Path(scratchpad))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -405,6 +660,146 @@ def validate_enumeration_coverage(scratchpad: Path) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MAX_PER_DERIVER = 15   # per-deriver, per-run cap (shared global budget on top)
+
+
+def _write_candidate_artifact(path: Path, text: str) -> None:
+    """Durably replace one candidate artifact via a unique same-dir temp."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _candidate_key_marker(key: object) -> str:
+    clean = re.sub(r"[\s>]+", "_", str(key or "").strip())
+    return f"<!-- ENUMGAP-KEY: {clean} -->" if clean else ""
+
+
+def _receipt_candidate_keys(scratchpad: Path) -> set[str]:
+    receipt = Path(scratchpad) / "enumeration_gap_receipt.md"
+    if not receipt.exists():
+        return set()
+    try:
+        return set(re.findall(
+            r"\bENUMGAP-KEY:\s*([^\s>`]+)",
+            receipt.read_text(encoding="utf-8", errors="replace"),
+        ))
+    except Exception:
+        return set()
+
+
+def _inventory_candidate_keys(scratchpad: Path) -> set[str]:
+    """Recover durable candidate keys from inventory markers only."""
+    inventory = Path(scratchpad) / "findings_inventory.md"
+    if not inventory.exists():
+        return set()
+    try:
+        return set(re.findall(
+            r"<!--\s*ENUMGAP-KEY:\s*([^\s>]+)\s*-->",
+            inventory.read_text(encoding="utf-8", errors="replace"),
+        ))
+    except Exception:
+        return set()
+
+
+def _emitted_candidate_keys(scratchpad: Path) -> set[str]:
+    """Recover durable keys from both the receipt and inventory markers.
+
+    Inventory markers make a receipt-write failure resumable without emitting a
+    duplicate finding. A later successful call repairs the key receipt from the
+    union before clearing PERSISTENCE_FAILED.
+    """
+    keys = _receipt_candidate_keys(scratchpad)
+    keys.update(_inventory_candidate_keys(scratchpad))
+    return keys
+
+
+def _candidate_receipt_text(keys: set[str]) -> str:
+    lines = ["# Enumeration Gap Receipt", ""]
+    lines += [f"ENUMGAP-KEY: {key}" for key in sorted(keys)]
+    return "\n".join(lines) + "\n"
+
+
+def _record_persistence_failure(
+    scratchpad: Path, producer: str, keys: list[str], exc: BaseException
+) -> None:
+    try:
+        replace_producer_shortfalls(
+            scratchpad,
+            producer,
+            [unknown_shortfall(
+                producer=producer,
+                scope="candidate-emission",
+                kind="PERSISTENCE_FAILED",
+                detail=(
+                    "candidate inventory/key receipt did not both become durable; "
+                    f"resume must reconcile before coverage is considered retained ({type(exc).__name__})"
+                ),
+                samples=keys,
+            )],
+        )
+    except Exception:
+        # The audit remains haltless even if the control-plane ledger itself is
+        # unavailable; the caller reports zero durable emissions.
+        pass
+
+
+def _unseen_candidate_count(candidates: list, emitted: set[str]) -> int:
+    return len({
+        str(c.get("key", "")) for c in candidates
+        if c.get("key") and c.get("key") not in emitted
+    })
+
+
+def _bounded_deriver_result(
+    scratchpad: Path, producer: str, candidates: list
+) -> list:
+    """Return at most ``_MAX_PER_DERIVER`` rows and expose scan truncation.
+
+    Source derivers stop after discovering the first overflow candidate to keep
+    repository scans bounded. Consequently the total is a LOWER_BOUND, not an
+    exact population. ``retained`` here means selected for return to the
+    downstream emitter, not durably persisted; the emitter owns that separate
+    persistence receipt.
+    """
+    emitted = _emitted_candidate_keys(scratchpad)
+    unseen: list[dict] = []
+    unseen_keys: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.get("key", ""))
+        if not key or key in emitted or key in unseen_keys:
+            continue
+        unseen_keys.add(key)
+        unseen.append(candidate)
+    rows: list[dict] = []
+    if len(unseen) > _MAX_PER_DERIVER:
+        rows.append(shortfall(
+            producer=producer,
+            scope="source-candidate-scan",
+            cap="MAX_PER_DERIVER",
+            limit=_MAX_PER_DERIVER,
+            observed=len(unseen),
+            retained=_MAX_PER_DERIVER,
+            exact=False,
+            samples=[c.get("key", "") for c in unseen[_MAX_PER_DERIVER:]],
+            detail=("source scan stopped after the first overflow candidate; "
+                    "retained rows were selected for return, not yet durably "
+                    "persisted, and additional candidates may exist"),
+        ))
+    try:
+        replace_producer_shortfalls(scratchpad, producer, rows)
+    except Exception:
+        pass
+    return unseen[:_MAX_PER_DERIVER]
 
 # ── Per-language signal registry ──────────────────────────────────────────────
 # The 3 obligation-derivers are bug-class SHAPES, not Solidity idioms. A language
@@ -576,8 +971,8 @@ def _iter_functions(root: Path):
                     continue
 
 
-def _emit_candidates(scratchpad: Path, candidates: list, cap: int,
-                     source_id: str = "ENUMGAP") -> int:
+def _emit_candidates_unlocked(scratchpad: Path, candidates: list, cap: int,
+                              source_id: str = "ENUMGAP", producer: str = "") -> int:
     """Shared ENUMGAP emitter for every deriver. `candidates` are dicts with:
     key, title, location, source_note, root_cause, description, impact.
     Append-only to findings_inventory.md, idempotent via the SHARED receipt,
@@ -591,21 +986,39 @@ def _emit_candidates(scratchpad: Path, candidates: list, cap: int,
     `INVARIANT:CI-3`) — a clean, greppable generator class token that overrides
     `source_id` for that block, so attribution stays machine-recoverable even
     after a downstream provenance-preserving dedup merge."""
-    if not candidates or cap <= 0:
+    scratchpad = Path(scratchpad)
+    cap = max(0, int(cap))
+    receipt_producer = producer or f"enumeration.emitter.{source_id.lower()}"
+    if not candidates:
+        seen = _emitted_candidate_keys(scratchpad)
+        if seen != _receipt_candidate_keys(scratchpad):
+            try:
+                _write_candidate_artifact(
+                    scratchpad / "enumeration_gap_receipt.md",
+                    _candidate_receipt_text(seen),
+                )
+            except Exception as exc:
+                _record_persistence_failure(
+                    scratchpad, receipt_producer, sorted(seen), exc
+                )
+                return 0
+        try:
+            replace_producer_shortfalls(scratchpad, receipt_producer, [])
+        except Exception:
+            pass
         return 0
     inv = scratchpad / "findings_inventory.md"
     try:
         inv_text = inv.read_text(encoding="utf-8", errors="replace")
-    except Exception:
+    except Exception as exc:
+        _record_persistence_failure(
+            scratchpad, receipt_producer,
+            [str(c.get("key", "")) for c in candidates], exc,
+        )
         return 0
     receipt = scratchpad / "enumeration_gap_receipt.md"
-    seen: set = set()
-    if receipt.exists():
-        try:
-            seen = set(re.findall(r"\bENUMGAP-KEY:\s*(\S+)",
-                                  receipt.read_text(encoding="utf-8", errors="replace")))
-        except Exception:
-            seen = set()
+    seen = _emitted_candidate_keys(scratchpad)
+    receipt_keys = _receipt_candidate_keys(scratchpad)
     # Intra-run dedup baseline: `seen` is the persisted (cross-run) receipt set;
     # `emitted` ALSO tracks keys appended earlier in THIS call so two candidates
     # with an identical key are not double-emitted within one run (the observed
@@ -618,12 +1031,21 @@ def _emit_candidates(scratchpad: Path, candidates: list, cap: int,
             max_inv = max(max_inv, int(m.group(1)))
         except ValueError:
             pass
+    # Determine the exact unseen population before applying the budget.  This
+    # makes the receipt an accounting fact rather than an inference from the
+    # number emitted. Preserve source order while removing duplicate keys.
+    eligible: list[dict] = []
+    eligible_keys: set[str] = set()
+    for c in candidates:
+        key = c.get("key", "")
+        if not key or key in emitted or key in eligible_keys:
+            continue
+        eligible_keys.add(key)
+        eligible.append(c)
     appended: list[str] = []
     keys: list[str] = []
     n = 0
-    for c in candidates:
-        if c["key"] in emitted or n >= cap:
-            continue
+    for c in eligible[:cap]:
         n += 1
         inv_id = f"INV-{max_inv + n:03d}"
         appended.extend([
@@ -636,6 +1058,7 @@ def _emit_candidates(scratchpad: Path, candidates: list, cap: int,
             f"**Root Cause**: {c['root_cause']}",
             f"**Description**: {c['description']}",
             f"**Impact**: {c['impact']}",
+            _candidate_key_marker(c["key"]),
             # Generic chain-matchable pre/post metadata (per-deriver class) so a
             # weak candidate can still serve as a chain enabler. Omitted when a
             # deriver supplies none.
@@ -650,22 +1073,94 @@ def _emit_candidates(scratchpad: Path, candidates: list, cap: int,
         keys.append(c["key"])
         emitted.add(c["key"])
     if not appended:
+        if seen != receipt_keys:
+            try:
+                _write_candidate_artifact(receipt, _candidate_receipt_text(seen))
+            except Exception as exc:
+                _record_persistence_failure(
+                    scratchpad, receipt_producer, sorted(seen), exc
+                )
+                return 0
+        rows = []
+        if len(eligible) > cap:
+            rows = [shortfall(
+                producer=receipt_producer,
+                scope="candidate-emission",
+                cap="EMISSION_BUDGET",
+                limit=cap,
+                observed=len(eligible),
+                retained=0,
+                exact=True,
+                samples=[c.get("key", "") for c in eligible],
+                detail="derived candidates exceeded the per-deriver verify budget",
+            )]
+        try:
+            replace_producer_shortfalls(scratchpad, receipt_producer, rows)
+        except Exception:
+            pass
         return 0
     header = ("\n\n## Enumeration-Coverage Candidates (ENUMGAP)\n\n"
               "Mechanically-derived obligations a finding's analysis did NOT "
               "address. Low-confidence by construction — the verify phase confirms "
               "or refutes each. Recall-safe: append-only.\n\n")
     hdr = "" if "Enumeration-Coverage Candidates (ENUMGAP)" in inv_text else header
-    inv.write_text(_append_inventory_blocks(inv_text, hdr, appended), encoding="utf-8")
-    rlines = ["# Enumeration Gap Receipt", ""]
-    rlines += [f"ENUMGAP-KEY: {k}" for k in (sorted(seen) + keys)]
-    receipt.write_text("\n".join(rlines) + "\n", encoding="utf-8")
+    try:
+        _write_candidate_artifact(
+            inv, _append_inventory_blocks(inv_text, hdr, appended)
+        )
+        _write_candidate_artifact(
+            receipt, _candidate_receipt_text(seen | set(keys))
+        )
+    except Exception as exc:
+        _record_persistence_failure(
+            scratchpad, receipt_producer, keys, exc
+        )
+        return 0
+
+    rows = []
+    if len(eligible) > cap:
+        rows = [shortfall(
+            producer=receipt_producer,
+            scope="candidate-emission",
+            cap="EMISSION_BUDGET",
+            limit=cap,
+            observed=len(eligible),
+            retained=len(keys),
+            exact=True,
+            samples=[c.get("key", "") for c in eligible[cap:]],
+            detail="derived candidates exceeded the per-deriver verify budget",
+        )]
+    try:
+        replace_producer_shortfalls(scratchpad, receipt_producer, rows)
+    except Exception:
+        pass
     try:
         from plamen_mechanical import _write_finding_records_from_inventory
         _write_finding_records_from_inventory(scratchpad)
     except Exception:
         pass
+    required = set(keys)
+    if not required.issubset(_inventory_candidate_keys(scratchpad)) or not required.issubset(
+        _receipt_candidate_keys(scratchpad)
+    ):
+        _record_persistence_failure(
+            scratchpad,
+            receipt_producer,
+            sorted(required),
+            RuntimeError("post-write candidate/receipt subset check failed"),
+        )
+        return 0
     return len(keys)
+
+
+def _emit_candidates(scratchpad: Path, candidates: list, cap: int,
+                     source_id: str = "ENUMGAP", producer: str = "") -> int:
+    """Transaction-safe shared candidate emitter."""
+    with _candidate_transaction(Path(scratchpad)):
+        return _emit_candidates_unlocked(
+            Path(scratchpad), candidates, cap,
+            source_id=source_id, producer=producer,
+        )
 
 
 def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
@@ -675,10 +1170,19 @@ def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
     strand every function that depends on that asset. Generic across ecosystems
     that hold movable assets; bounded to the declaring file. Go node-clients and
     DAML have no such shape and are skipped (no `mover` in their lang spec)."""
+    producer = "enumeration.deriver.critical_asset_mover.scan"
     try:
         graph = _load_graph(scratchpad)
         root = _locate_project_root(scratchpad)
         if graph is None or root is None:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="critical-asset mover scan requires both project root and mechanical graph",
+                )],
+            )
             return []
         # asset-handle match = the asset_handle pattern(s) for the language(s)
         # ACTUALLY present in the project tree (one audit is one ecosystem).
@@ -703,7 +1207,7 @@ def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
                     and 2 <= len(refs) <= _SKIP_VAR_REF_THRESHOLD):
                 crit[bare] = sorted({_bare_from_descriptor(d) for d in refs})
         if not crit:
-            return []
+            return _bounded_deriver_result(scratchpad, producer, [])
         # Same-file bound: which production file declares/holds each critical var?
         # (The source-tier graph keys var_refs by BARE name with no contract.)
         # Lang-agnostic: the file where the bare name appears as a word.
@@ -723,8 +1227,9 @@ def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
             pass
         out: list = []
         seen_pairs: set = set()
+        emitted_keys = _emitted_candidate_keys(scratchpad)
         for lang, rel, name, params, body, _line in _iter_functions(root):
-            if len(out) >= _MAX_PER_DERIVER:
+            if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                 break
             spec = _LANG[lang]
             mover = spec.get("mover")
@@ -765,10 +1270,21 @@ def compute_critical_asset_mover_candidates(scratchpad: Path) -> list:
                                       f"out of the contract, stranding dependent functions"),
                     "postcondition_type": "STATE",
                 })
-                if len(out) >= _MAX_PER_DERIVER:
+                if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                     break
-        return out
-    except Exception:
+        return _bounded_deriver_result(scratchpad, producer, out)
+    except Exception as exc:
+        try:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_FAILED",
+                    detail=f"critical-asset mover scan failed: {exc!r}",
+                )],
+            )
+        except Exception:
+            pass
         return []
 
 
@@ -776,13 +1292,23 @@ def compute_array_uniqueness_candidates(scratchpad: Path) -> list:
     """L-10 class (sol/rust/move/go). A function loops a caller-supplied array/
     vector/slice producing a per-element value effect with NO uniqueness guard →
     duplicate elements multiply the effect. Universal source-parse shape."""
+    producer = "enumeration.deriver.array_uniqueness.scan"
     try:
         root = _locate_project_root(scratchpad)
         if root is None:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="array-uniqueness scan cannot locate the project root",
+                )],
+            )
             return []
         out: list = []
+        emitted_keys = _emitted_candidate_keys(scratchpad)
         for lang, rel, name, params, body, _line in _iter_functions(root):
-            if len(out) >= _MAX_PER_DERIVER:
+            if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                 break
             spec = _LANG[lang]
             arr_re = spec.get("array_param")
@@ -834,8 +1360,19 @@ def compute_array_uniqueness_candidates(scratchpad: Path) -> list:
                                   "(accounting inflation)"),
                 "postcondition_type": "BALANCE",
             })
-        return out
-    except Exception:
+        return _bounded_deriver_result(scratchpad, producer, out)
+    except Exception as exc:
+        try:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_FAILED",
+                    detail=f"array-uniqueness scan failed: {exc!r}",
+                )],
+            )
+        except Exception:
+            pass
         return []
 
 
@@ -843,13 +1380,23 @@ def compute_unbounded_input_candidates(scratchpad: Path) -> list:
     """L-08 class (sol/rust/move/go). A caller-controlled string/bytes value is
     stored on-chain with NO length bound → storage-bloat / gas-bomb DoS. Universal
     source-parse shape (Rust String/Vec<u8>, Move vector<u8>, Go []byte)."""
+    producer = "enumeration.deriver.unbounded_input.scan"
     try:
         root = _locate_project_root(scratchpad)
         if root is None:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="unbounded-input scan cannot locate the project root",
+                )],
+            )
             return []
         out: list = []
+        emitted_keys = _emitted_candidate_keys(scratchpad)
         for lang, rel, name, params, body, _line in _iter_functions(root):
-            if len(out) >= _MAX_PER_DERIVER:
+            if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                 break
             spec = _LANG[lang]
             # Sol pure/view functions cannot write storage — the stored-input
@@ -895,10 +1442,21 @@ def compute_unbounded_input_candidates(scratchpad: Path) -> list:
                                       f"gas-bomb/liveness DoS on later execution that reads it"),
                     "postcondition_type": "EXTERNAL",
                 })
-                if len(out) >= _MAX_PER_DERIVER:
+                if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                     break
-        return out
-    except Exception:
+        return _bounded_deriver_result(scratchpad, producer, out)
+    except Exception as exc:
+        try:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_FAILED",
+                    detail=f"unbounded-input scan failed: {exc!r}",
+                )],
+            )
+        except Exception:
+            pass
         return []
 
 
@@ -1006,29 +1564,55 @@ def compute_boundary_input_candidates(scratchpad: Path) -> list:
     own prose is a coverage gap -> one VARGAP candidate per missing boundary.
     Never raises; a no-op when the graph, inventory, or source-parsed
     param-type info is absent for the finding's language (recall-neutral)."""
+    producer = "enumeration.variant.boundary.scan"
     try:
         scratchpad = Path(scratchpad)
         graph = _load_graph(scratchpad)
         inv = scratchpad / "findings_inventory.md"
         if graph is None or _inventory_blocks is None or not inv.exists():
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="boundary scan requires graph, inventory parser, and findings inventory",
+                )],
+            )
             return []
         root = _locate_project_root(scratchpad)
         if root is None:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="boundary scan cannot locate the project root",
+                )],
+            )
             return []
         try:
             blocks = _inventory_blocks(inv.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            return []
+        except Exception as exc:
+            raise RuntimeError("boundary inventory parse failed") from exc
         # bare function name (lowercased, first occurrence wins) -> (lang, params)
         fn_index: dict = {}
         for lang, _rel_path, name, params, _body, _line in _iter_functions(root):
             fn_index.setdefault(name.lower(), (lang, params))
         if not fn_index:
-            return []  # no parseable production functions -> no-op
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="boundary scan found no parseable production functions",
+                )],
+            )
+            return []
 
         out: list = []
+        emitted_keys = _emitted_candidate_keys(scratchpad)
         for b in blocks:
-            if len(out) >= _MAX_PER_DERIVER:
+            if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                 break
             if not _is_confirmed_verdict(b.get("block", "")):
                 continue
@@ -1048,7 +1632,7 @@ def compute_boundary_input_candidates(scratchpad: Path) -> list:
                 continue  # no qualifying numeric/collection/address param
             text_l = (b.get("block", "") or "").lower()
             for member in _BOUNDARY_MEMBERS:
-                if len(out) >= _MAX_PER_DERIVER:
+                if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                     break
                 if _BOUNDARY_CUES[member].search(text_l):
                     continue
@@ -1072,8 +1656,19 @@ def compute_boundary_input_candidates(scratchpad: Path) -> list:
                                       f"by {fid}'s analysis"),
                     "postcondition_type": "STATE",
                 })
-        return out
-    except Exception:
+        return _bounded_deriver_result(scratchpad, producer, out)
+    except Exception as exc:
+        try:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_FAILED",
+                    detail=f"boundary-input scan failed: {exc!r}",
+                )],
+            )
+        except Exception:
+            pass
         return []
 
 
@@ -1112,29 +1707,39 @@ def compute_symmetric_operation_candidates(scratchpad: Path) -> list:
     symmetric-operation gap -> one VARGAP for the unaddressed leg. Never
     raises; a no-op when the pairs file or inventory is absent, or when a
     pair's finding IDs are not both resolvable in the inventory."""
+    producer = "enumeration.variant.symmetric.scan"
     try:
         scratchpad = Path(scratchpad)
         pairs_path = scratchpad / "chain_candidate_pairs.md"
         inv = scratchpad / "findings_inventory.md"
         if not pairs_path.exists() or _inventory_blocks is None or not inv.exists():
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="symmetric-operation scan requires pair, parser, and inventory artifacts",
+                )],
+            )
             return []
         try:
             pairs_text = pairs_path.read_text(encoding="utf-8", errors="replace")
             inv_text = inv.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return []
+        except Exception as exc:
+            raise RuntimeError("symmetric-operation inputs could not be read") from exc
         pairs = _parse_chain_candidate_pairs(pairs_text)
         if not pairs:
-            return []
+            return _bounded_deriver_result(scratchpad, producer, [])
         try:
             blocks = {bl["id"]: bl for bl in _inventory_blocks(inv_text)}
-        except Exception:
-            return []
+        except Exception as exc:
+            raise RuntimeError("symmetric-operation inventory parse failed") from exc
 
         out: list = []
         seen_pairs: set = set()
+        emitted_keys = _emitted_candidate_keys(scratchpad)
         for p in pairs:
-            if len(out) >= _MAX_PER_DERIVER:
+            if _unseen_candidate_count(out, emitted_keys) > _MAX_PER_DERIVER:
                 break
             a_id, b_id = p["a"], p["b"]
             ba, bb = blocks.get(a_id), blocks.get(b_id)
@@ -1176,8 +1781,19 @@ def compute_symmetric_operation_candidates(scratchpad: Path) -> list:
                                   f"{confirmed_id}'s confirmed defect"),
                 "postcondition_type": "STATE",
             })
-        return out
-    except Exception:
+        return _bounded_deriver_result(scratchpad, producer, out)
+    except Exception as exc:
+        try:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="candidate-provider",
+                    kind="PROVIDER_FAILED",
+                    detail=f"symmetric-operation scan failed: {exc!r}",
+                )],
+            )
+        except Exception:
+            pass
         return []
 
 
@@ -1198,25 +1814,55 @@ def compute_variant_gaps(scratchpad: Path) -> dict:
     scratchpad = Path(scratchpad)
     result = {"axis1_emitted": 0, "axis2_emitted": 0, "axis3_emitted": 0,
               "obligations": 0, "gaps": 0, "emitted": 0}
+
+    def _pipeline_status(producer: str, exc: BaseException | None = None) -> None:
+        rows = [] if exc is None else [unknown_shortfall(
+            producer=producer,
+            scope="variant-orchestration",
+            kind="PIPELINE_FAILED",
+            detail=f"variant scan/emission orchestration failed: {type(exc).__name__}",
+        )]
+        try:
+            replace_producer_shortfalls(scratchpad, producer, rows)
+        except Exception:
+            pass
+
     try:
         result["obligations"] = compute_enumeration_obligations(scratchpad)
         axis1_res = validate_enumeration_coverage(scratchpad)
         result["gaps"] = axis1_res.get("gaps", 0)
         result["axis1_emitted"] = int(axis1_res.get("emitted", 0))
-    except Exception:
-        pass
+        _pipeline_status("enumeration.variant.axis1.orchestration")
+    except Exception as exc:
+        _pipeline_status("enumeration.variant.axis1.orchestration", exc)
     try:
         b_cands = compute_boundary_input_candidates(scratchpad)
-        result["axis2_emitted"] = _emit_candidates(scratchpad, b_cands, _MAX_PER_DERIVER,
-                                                   source_id="VARGAP")
-    except Exception:
-        pass
+        _pipeline_status("enumeration.variant.boundary.orchestration")
+    except Exception as exc:
+        b_cands = []
+        _pipeline_status("enumeration.variant.boundary.orchestration", exc)
+    try:
+        result["axis2_emitted"] = _emit_candidates(
+            scratchpad, b_cands, _MAX_PER_DERIVER, source_id="VARGAP",
+            producer="enumeration.variant.boundary.emission",
+        )
+        _pipeline_status("enumeration.variant.boundary.pipeline")
+    except Exception as exc:
+        _pipeline_status("enumeration.variant.boundary.pipeline", exc)
     try:
         s_cands = compute_symmetric_operation_candidates(scratchpad)
-        result["axis3_emitted"] = _emit_candidates(scratchpad, s_cands, _MAX_PER_DERIVER,
-                                                   source_id="VARGAP")
-    except Exception:
-        pass
+        _pipeline_status("enumeration.variant.symmetric.orchestration")
+    except Exception as exc:
+        s_cands = []
+        _pipeline_status("enumeration.variant.symmetric.orchestration", exc)
+    try:
+        result["axis3_emitted"] = _emit_candidates(
+            scratchpad, s_cands, _MAX_PER_DERIVER, source_id="VARGAP",
+            producer="enumeration.variant.symmetric.emission",
+        )
+        _pipeline_status("enumeration.variant.symmetric.pipeline")
+    except Exception as exc:
+        _pipeline_status("enumeration.variant.symmetric.pipeline", exc)
     result["emitted"] = (result["axis1_emitted"] + result["axis2_emitted"]
                          + result["axis3_emitted"])
     return result
@@ -1563,11 +2209,22 @@ def compute_hot_function_set(scratchpad: Path) -> list:
     score, lang}. Driver-owned + deterministic — the LLM cannot clobber the target
     set. Fallback: 'all external state-mutating functions' when the graph is
     absent. Never raises; empty on total failure."""
+    producer = "enumeration.hot_function_set"
     try:
         scratchpad = Path(scratchpad)
         graph = _load_graph(scratchpad)
         root = _locate_project_root(scratchpad)
         summ = _load_function_summary(scratchpad)
+        if graph is None and root is None:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="hotset-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="hot-function ranking has neither a mechanical graph nor a project root",
+                )],
+            )
+            return []
 
         # ELEVATE tags (optional recon signal in attack_surface.md). A function
         # named on a line carrying [ELEVATE] is treated as hot. Best-effort.
@@ -1636,6 +2293,25 @@ def compute_hot_function_set(scratchpad: Path) -> list:
                     "score": 1 + (1 if bare in elevate_names else 0),
                 })
             hot.sort(key=lambda h: (-h["score"], h["function"]))
+            cap_rows = []
+            if len(hot) > _MAX_HOT_FUNCTIONS:
+                cap_rows.append(shortfall(
+                    producer=producer,
+                    scope="source-fallback-hotset",
+                    cap="MAX_HOT_FUNCTIONS",
+                    limit=_MAX_HOT_FUNCTIONS,
+                    observed=len(hot),
+                    retained=_MAX_HOT_FUNCTIONS,
+                    exact=True,
+                    samples=[h.get("function", "") for h in hot[_MAX_HOT_FUNCTIONS:]],
+                    detail="source-derived hot functions were omitted from the axis matrix",
+                ))
+            try:
+                replace_producer_shortfalls(
+                    scratchpad, producer, cap_rows
+                )
+            except Exception:
+                pass
             return hot[:_MAX_HOT_FUNCTIONS]
 
         # ── PRIMARY: rank off the graph ──
@@ -1672,8 +2348,38 @@ def compute_hot_function_set(scratchpad: Path) -> list:
             })
         # Deterministic ranking: score desc, then name asc (tie-break stable).
         hot.sort(key=lambda h: (-h["score"], str(h["function"]).lower()))
+        cap_rows = []
+        if len(hot) > _MAX_HOT_FUNCTIONS:
+            cap_rows.append(shortfall(
+                producer=producer,
+                scope="mechanical-graph-hotset",
+                cap="MAX_HOT_FUNCTIONS",
+                limit=_MAX_HOT_FUNCTIONS,
+                observed=len(hot),
+                retained=_MAX_HOT_FUNCTIONS,
+                exact=True,
+                samples=[h.get("function", "") for h in hot[_MAX_HOT_FUNCTIONS:]],
+                detail="graph-ranked hot functions were omitted from the axis matrix",
+            ))
+        try:
+            replace_producer_shortfalls(
+                scratchpad, producer, cap_rows
+            )
+        except Exception:
+            pass
         return hot[:_MAX_HOT_FUNCTIONS]
-    except Exception:
+    except Exception as exc:
+        try:
+            replace_producer_shortfalls(
+                scratchpad, producer, [unknown_shortfall(
+                    producer=producer,
+                    scope="hotset-provider",
+                    kind="PROVIDER_FAILED",
+                    detail=f"hot-function ranking failed: {exc!r}",
+                )],
+            )
+        except Exception:
+            pass
         return []
 
 
@@ -2209,12 +2915,19 @@ def run_enumeration_gate(scratchpad: Path) -> dict:
         res = {"gaps": 0, "emitted": 0}
     emitted = int(res.get("emitted", 0))
     # Each deriver gets its own dedicated budget — never the co-ref gate's leftover.
-    for fn in (compute_critical_asset_mover_candidates,
-               compute_array_uniqueness_candidates,
-               compute_unbounded_input_candidates):
+    for fn, producer in (
+        (compute_critical_asset_mover_candidates,
+         "enumeration.deriver.critical_asset_mover.emission"),
+        (compute_array_uniqueness_candidates,
+         "enumeration.deriver.array_uniqueness.emission"),
+        (compute_unbounded_input_candidates,
+         "enumeration.deriver.unbounded_input.emission"),
+    ):
         try:
             cands = fn(scratchpad)
-            emitted += _emit_candidates(scratchpad, cands, _MAX_PER_DERIVER)
+            emitted += _emit_candidates(
+                scratchpad, cands, _MAX_PER_DERIVER, producer=producer
+            )
         except Exception:
             continue
     # M1 committed-invariant deriver: its OWN `_MAX_PER_DERIVER` (15) pool,
@@ -2225,8 +2938,10 @@ def run_enumeration_gate(scratchpad: Path) -> dict:
     ci_emitted = 0
     try:
         ci_cands = compute_invariant_assertion_candidates(scratchpad)
-        ci_emitted = _emit_candidates(scratchpad, ci_cands, _MAX_PER_DERIVER,
-                                      source_id="INVARIANT")
+        ci_emitted = _emit_candidates(
+            scratchpad, ci_cands, _MAX_PER_DERIVER, source_id="INVARIANT",
+            producer="enumeration.deriver.committed_invariant.emission",
+        )
         emitted += ci_emitted
     except Exception:
         ci_emitted = 0

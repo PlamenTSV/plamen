@@ -16,6 +16,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from coverage_shortfalls import (
+    coverage_shortfalls_projection,
+    replace_producer_shortfalls,
+    shortfall,
+    unknown_shortfall,
+)
+
 from plamen_types import *  # noqa: F403,F401
 from plamen_parsers import *  # noqa: F403,F401
 from plamen_parsers import (
@@ -1985,6 +1992,115 @@ _HUMAN_REVIEW_SOURCES: tuple[tuple[str, str], ...] = (
 )
 
 
+def _coverage_report_reference_map(scratchpad: Path) -> dict[str, str]:
+    """Map typed Master-Index identities to public report labels.
+
+    Status, location, trust-adjustment, and title prose can cite ID-shaped
+    tokens.  They are not lineage columns and must not manufacture a mapping.
+    Prefer the canonical header roles; use the existing assignment parser only
+    as a format-tolerance fallback when no typed Master table is available.
+    """
+    path = Path(scratchpad) / "report_index.md"
+    if not path.exists():
+        return {}
+    try:
+        text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {}
+    mapping: dict[str, str] = {}
+    scope = _extract_h2_section(text, "Master Finding Index") or text
+    headers: dict[str, int] = {}
+    saw_typed_master_table = False
+    lineage_header_aliases = {
+        "internal id", "internal ids", "internal finding id",
+        "internal finding ids", "internal hypothesis",
+        "internal hypothesis id", "internal hypothesis ids",
+        "hypothesis id", "hypothesis ids", "source id", "source ids",
+    }
+    for line in scope.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|") or _is_separator_row(stripped):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        normalized = [re.sub(r"[^a-z0-9]+", " ", cell.lower()).strip() for cell in cells]
+        if not headers:
+            report_cols = [i for i, name in enumerate(normalized) if name == "report id"]
+            title_cols = [i for i, name in enumerate(normalized) if name == "title"]
+            internal_cols = [
+                i for i, name in enumerate(normalized)
+                if name in lineage_header_aliases
+            ]
+            if report_cols and title_cols:
+                saw_typed_master_table = True
+            if report_cols and title_cols and internal_cols:
+                headers = {
+                    "report": report_cols[0],
+                    "title": title_cols[0],
+                    "internal": internal_cols[0],
+                }
+            continue
+        if max(headers.values()) >= len(cells):
+            continue
+        public = re.fullmatch(
+            r"[\s`*_\[]*([CHMLI]-\d{1,3})[\s`*_\]]*",
+            cells[headers["report"]],
+            re.IGNORECASE,
+        )
+        if not public:
+            continue
+        report_id = public.group(1).upper()
+        title = re.sub(r"[`*_\[\]]", "", cells[headers["title"]])
+        title = re.sub(r"\s+", " ", title).strip(" :-")[:120]
+        label = f"{report_id} ({title})" if title else report_id
+        for match in _INTERNAL_ID_RE.finditer(cells[headers["internal"]]):
+            fid = match.group(1).upper()
+            if fid != report_id:
+                mapping.setdefault(fid, label)
+    if mapping or headers or saw_typed_master_table:
+        return mapping
+
+    title_map = _report_id_title_map(scratchpad)
+    try:
+        assignments = parse_report_index_assignments(scratchpad)
+    except Exception:
+        assignments = []
+    for row in assignments:
+        report_id = str(row.get("report_id") or "").strip().upper()
+        if not report_id:
+            continue
+        title = title_map.get(report_id, "")
+        label = f"{report_id} ({title})" if title else report_id
+        for match in _INTERNAL_ID_RE.finditer(str(row.get("finding_id") or "")):
+            fid = match.group(1).upper()
+            if fid != report_id:
+                mapping.setdefault(fid, label)
+    return mapping
+
+
+def _render_actionable_coverage_references(text: str, scratchpad: Path) -> str:
+    """Resolve coverage scopes before generic client-ID sanitization.
+
+    If an internal identity has no public report assignment, retain a stable
+    opaque source reference derived from that identity. The stable receipt ID,
+    producer, and scope remain sufficient to reconcile the row without leaking
+    an internal pipeline identifier into client prose.
+    """
+    public_refs = _coverage_report_reference_map(scratchpad)
+
+    def replace(match: re.Match[str]) -> str:
+        fid = match.group(1).upper()
+        if fid in public_refs:
+            return public_refs[fid]
+        # Coverage receipts are an internal control-plane artifact. If a typed
+        # Master lineage column did not establish a public identity, preserve
+        # actionability via an opaque stable reference even for ambiguous H-NN
+        # shapes; shape alone is not public lineage evidence.
+        digest = hashlib.sha256(fid.encode("utf-8")).hexdigest()[:12].upper()
+        return f"source-ref-{digest}"
+
+    return _INTERNAL_ID_RE.sub(replace, text or "")
+
+
 def _build_human_review_appendix(scratchpad: Path) -> str:
     """Fold degrade-with-flag items (report_semantic_*.md) into a DELIVERED
     appendix.
@@ -2001,6 +2117,25 @@ def _build_human_review_appendix(scratchpad: Path) -> str:
     blocks: list[str] = []
     ordered: list[tuple[str, str]] = list(_HUMAN_REVIEW_SOURCES)
     known = {n for n, _ in ordered}
+    # The structured JSON ledger is authoritative. Consume its in-memory
+    # projection directly so a failed/stale Markdown cache cannot hide debt.
+    coverage_name = "report_semantic_coverage_shortfalls.md"
+    known.add(coverage_name)
+    try:
+        coverage_text = _render_actionable_coverage_references(
+            coverage_shortfalls_projection(scratchpad), scratchpad
+        ).strip()
+    except Exception as exc:
+        coverage_text = (
+            "# Coverage Shortfalls\n\n"
+            "`COVERAGE-SHORTFALL` projection failed; bounded mechanical "
+            f"coverage is UNKNOWN. Detail: {exc!r}"
+        )
+    if coverage_text:
+        coverage_text = re.sub(
+            r"(?m)\A#\s+[^\n]*\n+", "", coverage_text
+        ).strip()
+        blocks.append(f"### Coverage Shortfalls\n\n{coverage_text}")
     try:
         for p in sorted(scratchpad.glob("report_semantic_*.md")):
             if p.name not in known:
@@ -4499,8 +4634,8 @@ def _promo_seed_ids(scratchpad: Path) -> tuple[set[str], dict[str, str]]:
         return set(), {}
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return set(), {}
+    except Exception as exc:
+        raise OSError(f"promotion coverage seed is unreadable: {exc}") from exc
     ids: set[str] = set()
     verdicts: dict[str, str] = {}
     for line in text.splitlines():
@@ -4524,8 +4659,9 @@ def _promo_covered_locations(scratchpad: Path) -> dict[str, list[tuple[int, int]
     block whose location overlaps one of these was consolidated under a report ID and
     is therefore NOT a pipeline-loss. This is the location-based reconciliation the
     coverage seed cannot provide (the seed carries hypothesis/report IDs only, no
-    locations, and never the raw depth-agent IDs the feeders use). Bounded read, never
-    raises.
+    locations, and never the raw depth-agent IDs the feeders use). A missing inventory
+    is an ordinary empty baseline; an unreadable one raises so the caller can surface
+    UNKNOWN instead of producing silent duplicate-orphan noise.
     """
     out: dict[str, list[tuple[int, int]]] = {}
     p = Path(scratchpad) / "findings_inventory.md"
@@ -4533,8 +4669,8 @@ def _promo_covered_locations(scratchpad: Path) -> dict[str, list[tuple[int, int]
         return out
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return out
+    except Exception as exc:
+        raise OSError(f"promotion inventory locations are unreadable: {exc}") from exc
     for m in _PROMO_LOC_RE.finditer(text):
         f = m.group(1).strip().strip("`").lower()
         lo = int(m.group(2))
@@ -4863,11 +4999,42 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
     scratchpad = Path(scratchpad)
     seed_path = scratchpad / "report_index_coverage_seed.md"
     if not seed_path.exists():
+        try:
+            replace_producer_shortfalls(
+                scratchpad,
+                "promotion_gate",
+                [unknown_shortfall(
+                    producer="promotion_gate",
+                    scope="promotion-provider",
+                    kind="PROVIDER_UNAVAILABLE",
+                    detail="promotion completeness cannot reconcile without report_index_coverage_seed.md",
+                )],
+            )
+        except Exception:
+            pass
         return []
+    cap_rows: list[dict] = []
     try:
         seed_ids, _seed_verdicts = _promo_seed_ids(scratchpad)
-    except Exception:
-        seed_ids = set()
+    except Exception as exc:
+        try:
+            replace_producer_shortfalls(
+                scratchpad,
+                "promotion_gate",
+                [unknown_shortfall(
+                    producer="promotion_gate",
+                    scope="promotion-seed",
+                    kind="PROVIDER_FAILED",
+                    detail=(
+                        "promotion completeness could not read its reconciliation "
+                        f"seed ({type(exc).__name__})"
+                    ),
+                    samples=[seed_path.name],
+                )],
+            )
+        except Exception:
+            pass
+        return []
     # Location-based reconciliation against the consolidated promoted set. The coverage
     # seed tracks hypothesis/report IDs (GRP-NN/H-N) with NO locations and never the raw
     # depth-agent IDs (DE-N/DA2-N) the feeders carry, so an ID-only check re-flags every
@@ -4875,8 +5042,18 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
     # location against inventory locations catches those consolidations. Never raises.
     try:
         covered_locs = _promo_covered_locations(scratchpad)
-    except Exception:
+    except Exception as exc:
         covered_locs = {}
+        cap_rows.append(unknown_shortfall(
+            producer="promotion_gate",
+            scope="inventory-location-reconciliation",
+            kind="PROVIDER_FAILED",
+            detail=(
+                "promoted-location reconciliation could not read inventory; "
+                f"orphan harvest continued recall-safely ({type(exc).__name__})"
+            ),
+            samples=["findings_inventory.md"],
+        ))
 
     files: list[Path] = []
     seen_paths: set[Path] = set()
@@ -4887,35 +5064,75 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
                     continue
                 seen_paths.add(p)
                 files.append(p)
-        except Exception:
+        except Exception as exc:
+            cap_rows.append(unknown_shortfall(
+                producer="promotion_gate",
+                scope=f"feeder-discovery:{pat}",
+                kind="PROVIDER_FAILED",
+                detail=(
+                    "promotion feeder discovery failed for one configured pattern "
+                    f"({type(exc).__name__})"
+                ),
+            ))
             continue
-    files = files[:_PROMO_MAX_FILES]
+    all_files = files
+    files = all_files[:_PROMO_MAX_FILES]
+    if len(all_files) > _PROMO_MAX_FILES:
+        cap_rows.append(shortfall(
+            producer="promotion_gate",
+            scope="feeder-files",
+            cap="PROMO_MAX_FILES",
+            limit=_PROMO_MAX_FILES,
+            observed=len(all_files),
+            retained=len(files),
+            exact=True,
+            samples=[p.name for p in all_files[_PROMO_MAX_FILES:]],
+            detail="promotion-gate feeder artifacts were not scanned",
+        ))
 
     orphans: list[dict] = []
     already_tracked = 0
     seen_locations: set[tuple] = set()  # intra-run dedup across harvesters
+    run_cap_seen = False
     for p in files:
         try:
             text = _llm_norm(p.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
+        except Exception as exc:
+            cap_rows.append(unknown_shortfall(
+                producer="promotion_gate",
+                scope=f"feeder:{p.name}",
+                kind="PROVIDER_FAILED",
+                detail=(
+                    "promotion feeder could not be read and was not harvested "
+                    f"({type(exc).__name__})"
+                ),
+                samples=[p.name],
+            ))
             continue
         harvested: list[dict] = []
+        harvest_failed = False
         try:
             harvested.extend(_promo_harvest_finding_blocks(p, text))
         except Exception:
-            pass
+            harvest_failed = True
         try:
             harvested.extend(_promo_harvest_table_rows(p, text))
         except Exception:
-            pass
+            harvest_failed = True
         try:
             harvested.extend(_promo_harvest_excluded_stubs(p, text))
         except Exception:
-            pass
+            harvest_failed = True
+        if harvest_failed:
+            cap_rows.append(unknown_shortfall(
+                producer="promotion_gate",
+                scope=f"feeder:{p.name}:harvest",
+                kind="PROVIDER_FAILED",
+                detail="one or more promotion feeder harvesters failed",
+                samples=[p.name],
+            ))
         per_file = 0
-        for cand in harvested:
-            if per_file >= _PROMO_MAX_PER_FILE or len(orphans) >= _PROMO_MAX_PER_RUN:
-                break
+        for cand_idx, cand in enumerate(harvested):
             orig_id = cand.get("orig_id", "")
             if orig_id and orig_id in seed_ids:
                 already_tracked += 1
@@ -4926,6 +5143,39 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
             dedup_key = (cand["source_file"], cand.get("location", ""), cand["shape"])
             if dedup_key in seen_locations:
                 continue
+            # Only an ELIGIBLE, untracked, uncovered, non-duplicate orphan can
+            # prove the orphan budget overflowed. Raw candidate-shaped rows do
+            # not inflate the omission denominator.
+            if per_file >= _PROMO_MAX_PER_FILE:
+                cap_rows.append(shortfall(
+                    producer="promotion_gate",
+                    scope=f"feeder:{p.name}",
+                    cap="PROMO_MAX_PER_FILE",
+                    limit=_PROMO_MAX_PER_FILE,
+                    observed=per_file + 1,
+                    retained=per_file,
+                    exact=False,
+                    samples=[cand.get("orig_id") or cand.get("title") or ""],
+                    detail=("eligible promotion orphans exceeded the per-file budget; "
+                            "additional eligible orphans may exist"),
+                ))
+                break
+            if len(orphans) >= _PROMO_MAX_PER_RUN:
+                if not run_cap_seen:
+                    cap_rows.append(shortfall(
+                        producer="promotion_gate",
+                        scope="orphan-harvest",
+                        cap="PROMO_MAX_PER_RUN",
+                        limit=_PROMO_MAX_PER_RUN,
+                        observed=len(orphans) + 1,
+                        retained=len(orphans),
+                        exact=False,
+                        samples=[cand.get("orig_id") or cand.get("title") or ""],
+                        detail=("eligible promotion orphans exceeded the global budget; "
+                                "additional eligible orphans may exist"),
+                    ))
+                    run_cap_seen = True
+                break
             seen_locations.add(dedup_key)
             try:
                 disp, reason = _promo_disposition(cand)
@@ -4935,6 +5185,15 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
             cand["reason"] = reason
             orphans.append(cand)
             per_file += 1
+        if run_cap_seen:
+            break
+
+    try:
+        replace_producer_shortfalls(scratchpad, "promotion_gate", cap_rows)
+    except Exception:
+        # Gate P remains haltless; failure to write telemetry cannot suppress
+        # the bounded harvest itself.
+        pass
 
     for i, cand in enumerate(orphans, start=1):
         cand["candidate_id"] = f"PROMO-{i:03d}"
@@ -7509,8 +7768,8 @@ def _write_spec_expectations(scratchpad: Path, support_paths: list[str] | set[st
         pass
 
 
-def _extract_graph_attention_rows(scratchpad: Path, limit: int = 12) -> list[dict[str, str]]:
-    """Harvest uncertain graph rows that deserve a narrow repair look."""
+def _extract_graph_attention_rows(scratchpad: Path) -> list[dict[str, str]]:
+    """Harvest all uncertain graph rows; the caller owns the loud queue cap."""
     rows: list[dict[str, str]] = []
     files = (
         "field_validation_matrix.md",
@@ -7546,14 +7805,14 @@ def _extract_graph_attention_rows(scratchpad: Path, limit: int = 12) -> list[dic
                 "source": name,
                 "evidence": evidence or "row-level evidence required",
             })
-            if len(rows) >= limit:
-                return rows
     return rows
 
 
 def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
     seen_targets: set[str] = set()
+    cap_rows: list[dict] = []
+    producer = "attention_repair"
 
     def add(kind: str, target: str, reason: str, source: str, evidence: str = "") -> None:
         key = f"{kind}:{target}"
@@ -7576,7 +7835,20 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
     except Exception:
         pass
     if mode == "thorough":
-        for obligation in _parse_security_obligation_items(scratchpad)[:10]:
+        obligations = _parse_security_obligation_items(scratchpad)
+        if len(obligations) > 10:
+            cap_rows.append(shortfall(
+                producer=producer,
+                scope="security-obligations",
+                cap="ATTENTION_SECURITY_OBLIGATIONS",
+                limit=10,
+                observed=len(obligations),
+                retained=10,
+                exact=True,
+                samples=[row.get("id", "") for row in obligations[10:]],
+                detail="security obligations were omitted from the attention-repair queue",
+            ))
+        for obligation in obligations[:10]:
             add(
                 "security-obligation",
                 obligation["id"],
@@ -7585,7 +7857,20 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
                 obligation.get("signals", ""),
             )
         try:
-            for item in _extract_skill_execution_repair_items(scratchpad)[:8]:
+            skill_items = _extract_skill_execution_repair_items(scratchpad)
+            if len(skill_items) > 8:
+                cap_rows.append(shortfall(
+                    producer=producer,
+                    scope="skill-execution-repairs",
+                    cap="ATTENTION_SKILL_REPAIRS",
+                    limit=8,
+                    observed=len(skill_items),
+                    retained=8,
+                    exact=True,
+                    samples=[row.get("target", "") for row in skill_items[8:]],
+                    detail="skill-application repair obligations were omitted from the queue",
+                ))
+            for item in skill_items[:8]:
                 add(
                     item["kind"],
                     item["target"],
@@ -7608,6 +7893,10 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
             pass
 
     if mode != "thorough":
+        try:
+            replace_producer_shortfalls(scratchpad, producer, [])
+        except Exception:
+            pass
         return items[:_ATTENTION_REPAIR_MAX_ITEMS]
 
     gap_file = scratchpad / "notread_priority_gaps.md"
@@ -7631,8 +7920,33 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
             uncited,
             key=lambda p: (-_path_security_weight(str(p)), str(p)),
         )
-        for p in ranked[:16]:
+        if len(ranked) > 16:
+            cap_rows.append(shortfall(
+                producer=producer,
+                scope="uncited-security-files",
+                cap="ATTENTION_UNCITED_FILES",
+                limit=16,
+                observed=len(ranked),
+                retained=16,
+                exact=True,
+                samples=[str(path) for path in ranked[16:]],
+                detail="uncited production files were omitted from attention repair",
+            ))
+        ranked_window = ranked[:16]
+        for ranked_idx, p in enumerate(ranked_window):
             if _path_security_weight(str(p)) <= 0 and len(items) >= 8:
+                cap_rows.append(shortfall(
+                    producer=producer,
+                    scope="uncited-low-weight-policy",
+                    cap="ATTENTION_LOW_WEIGHT_QUEUE_FLOOR",
+                    limit=ranked_idx,
+                    observed=len(ranked_window),
+                    retained=ranked_idx,
+                    exact=True,
+                    samples=[str(path) for path in ranked_window[ranked_idx:]],
+                    detail="low-weight uncited files were not queued after the repair queue reached eight items",
+                    kind="POLICY_SKIP",
+                ))
                 break
             add(
                 "uncited-security-file",
@@ -7641,9 +7955,38 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
                 "scip/repo_map.md",
             )
 
-    for row in _extract_graph_attention_rows(scratchpad):
+    graph_rows = _extract_graph_attention_rows(scratchpad)
+    if len(graph_rows) > 12:
+        cap_rows.append(shortfall(
+            producer=producer,
+            scope="uncertain-graph-rows",
+            cap="ATTENTION_GRAPH_ROWS",
+            limit=12,
+            observed=len(graph_rows),
+            retained=12,
+            exact=True,
+            samples=[row.get("source", "") for row in graph_rows[12:]],
+            detail="uncertain graph-analysis rows were omitted from attention repair",
+        ))
+    for row in graph_rows[:12]:
         add(row["kind"], row["target"], row["reason"], row["source"], row["evidence"])
 
+    if len(items) > _ATTENTION_REPAIR_MAX_ITEMS:
+        cap_rows.append(shortfall(
+            producer=producer,
+            scope="final-repair-queue",
+            cap="ATTENTION_REPAIR_MAX_ITEMS",
+            limit=_ATTENTION_REPAIR_MAX_ITEMS,
+            observed=len(items),
+            retained=_ATTENTION_REPAIR_MAX_ITEMS,
+            exact=True,
+            samples=[row.get("target", "") for row in items[_ATTENTION_REPAIR_MAX_ITEMS:]],
+            detail="attention-repair obligations exceeded the final worker queue budget",
+        ))
+    try:
+        replace_producer_shortfalls(scratchpad, producer, cap_rows)
+    except Exception:
+        pass
     return items[:_ATTENTION_REPAIR_MAX_ITEMS]
 
 
