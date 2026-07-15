@@ -7532,6 +7532,37 @@ favorable state), not only active front-running.
 """
 
 
+def _load_breadth_semantic_operator_kernel() -> str:
+    """Load the single versioned SC breadth floor, or degrade loudly.
+
+    The Markdown file is the source shared with the Codex adapter. Keeping the
+    content out of this module prevents backend copies from drifting. A broken
+    install remains haltless, but cannot masquerade as complete coverage.
+    """
+    path = (
+        plamen_home()
+        / "prompts"
+        / "shared"
+        / "v2"
+        / "breadth-semantic-operator-kernel.md"
+    )
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        if (
+            "PLAMEN_BREADTH_SEMANTIC_KERNEL: BEGIN v1.0.0" not in text
+            or "PLAMEN_BREADTH_SEMANTIC_KERNEL: END v1.0.0" not in text
+        ):
+            raise ValueError("version markers missing")
+        return text
+    except Exception as exc:
+        log.error(f"[breadth] semantic-operator kernel unavailable: {exc!r}")
+        return (
+            "## [BREADTH-KERNEL-UNAVAILABLE] Human review required\n\n"
+            f"The mandatory SC breadth kernel could not be loaded from `{path}`. "
+            "Do not treat this worker as complete security-method coverage."
+        )
+
+
 # Per-program PAYABLE-IMPACT steering. Generic, names no protocol — the program
 # specifics live ONLY in the generated `impact_map.md` DATA artifact (rendered by
 # the gitignored bounty bracket into the harness/PROJECT_ROOT). This block is
@@ -7668,6 +7699,11 @@ applicable, and write the mandatory Chain Summary table.
     # test + a mandate that a matrix-cell divergence MUST be promoted to a
     # `## Finding` block. SC only (L1 carries its own anti-normalization).
     r13_block = "" if pipeline == "l1" else _BREADTH_ANTI_NORMALIZATION_DIRECTIVE
+    # R0-1: the compact security-reasoning floor survives an empty or missed
+    # recon skill selection. L1 owns a separate layer methodology.
+    semantic_kernel_block = (
+        "" if pipeline == "l1" else _load_breadth_semantic_operator_kernel()
+    )
     # Payable-impact steering (BB mode only — gated on impact_map.md presence in
     # PROJECT_ROOT; inert for paid audits). Applies to L1 and SC bounty lanes.
     impact_map_block = _impact_map_block(project_root)
@@ -7706,12 +7742,13 @@ the file above.
 {retry_block}
 ## Methodology
 
-Read `{methodology}` for breadth audit methodology and vulnerability coverage.
-Use it as analysis guidance only. You are already the worker; do not spawn
+Read `{methodology}` for breadth execution procedure and artifact discipline.
+It is not vulnerability coverage. You are already the worker; do not spawn
 Task/Agent subagents and do not follow any coordinator instructions.
 
 Read `{finding_format}` for finding format. Use recon artifacts in the
 scratchpad as needed. Use the assigned opengrep shard when present.
+{semantic_kernel_block}
 {sc_skill_block}{r13_block}{impact_map_block}
 ## Required File Contract
 

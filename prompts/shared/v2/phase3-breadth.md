@@ -2,8 +2,9 @@
 
 > **Loaded by**: The V2 driver's Phase 3 subprocess (breadth analysis).
 > **Purpose**: Parallel spawn rule, post-spawn verification, overreach handling,
-> output file conventions, and agent closeout. Self-contained methodology for the
-> breadth analysis phase.
+> output file conventions, and agent closeout. This is execution procedure, not vulnerability coverage;
+> each smart-contract worker receives the versioned semantic-operator kernel and
+> any applicable conditional skills separately.
 
 ---
 

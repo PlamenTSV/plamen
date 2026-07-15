@@ -87,6 +87,18 @@ def _verify(sp: Path, fid: str, *, severity: str, verdict: str, tag: str,
     )
 
 
+def _verdict_manifest(sp: Path, rows: list[dict[str, str]]) -> None:
+    (sp / "verdict_manifest.json").write_text(
+        json.dumps({
+            "schema_version": "plamen.verdict_manifest.v1",
+            "mechanical_source": "mechanical_verify_manifest.md",
+            "row_count": len(rows),
+            "verdicts": rows,
+        }),
+        encoding="utf-8",
+    )
+
+
 # ===========================================================================
 # Fix 1 — canonical_verification_status pure mapping
 # ===========================================================================
@@ -116,6 +128,128 @@ def test_status_map_proof_grade_is_verified(tmp_path):
     _verify(sp, "INV-1", severity="High", verdict="CONFIRMED",
             tag="[POC-PASS]", attempted="YES", result="PASS")
     assert V._expected_report_index_statuses(sp).get("INV-1") == "VERIFIED"
+
+
+def test_status_map_manifest_mechanical_unavailable_is_confirmed(tmp_path):
+    """Preserved proof prose is not execution proof when mechanics were absent."""
+    V = _v()
+    sp = _scratch(tmp_path)
+    _queue(sp, [("INV-6", "High", "unit")])
+    _verify(sp, "INV-6", severity="High", verdict="CONFIRMED",
+            tag="[POC-PASS] [MECHANICAL-UNAVAILABLE]", attempted="YES",
+            result="PASS")
+    before = {
+        "severity": V._expected_report_index_severities(sp),
+        "verdict": V._verifier_status_from_text(
+            (sp / "verify_INV-6.md").read_text(encoding="utf-8")
+        ),
+    }
+    _verdict_manifest(sp, [{
+        "finding_id": "INV-6",
+        "verify_file": "verify_INV-6.md",
+        "mechanical_status": "TOOLCHAIN_UNAVAILABLE",
+        "verifier_prose_tag": "[POC-PASS]",
+        "integrity_state": "MECHANICAL_UNAVAILABLE",
+        "effective_tag": "[POC-PASS] [MECHANICAL-UNAVAILABLE]",
+    }])
+
+    assert V._expected_report_index_statuses(sp).get("INV-6") == "CONFIRMED"
+    assert V._expected_report_index_severities(sp) == before["severity"]
+    assert V._verifier_status_from_text(
+        (sp / "verify_INV-6.md").read_text(encoding="utf-8")
+    ) == before["verdict"]
+
+
+def test_status_map_manifest_unverified_harness_is_confirmed(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _queue(sp, [("INV-7", "Medium", "unit")])
+    _verify(sp, "INV-7", severity="Medium", verdict="CONFIRMED",
+            tag="[POC-PASS] [POC-UNVERIFIED-HARNESS] [NEEDS-BUILD]",
+            attempted="YES", result="PASS")
+    _verdict_manifest(sp, [{
+        "finding_id": "INV-7",
+        "verify_file": "verify_INV-7.md",
+        "mechanical_status": "NO_TEST_FILE",
+        "verifier_prose_tag": "[POC-PASS]",
+        "integrity_state": "POC_UNVERIFIED_HARNESS",
+        "effective_tag": "[POC-PASS] [POC-UNVERIFIED-HARNESS] [NEEDS-BUILD]",
+    }])
+    assert V._expected_report_index_statuses(sp).get("INV-7") == "CONFIRMED"
+
+
+def test_status_map_manifest_effective_tag_overrides_stale_prose(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _queue(sp, [("INV-11", "Medium", "unit")])
+    _verify(sp, "INV-11", severity="Medium", verdict="CONFIRMED",
+            tag="[POC-PASS]", attempted="YES", result="PASS")
+    _verdict_manifest(sp, [{
+        "finding_id": "INV-11",
+        "verify_file": "verify_INV-11.md",
+        "mechanical_status": "NO_TEST_MATCH",
+        "verifier_prose_tag": "[POC-PASS]",
+        "integrity_state": "INFLATED_PROSE",
+        "effective_tag": "[CODE-TRACE] [INTEGRITY-DOWNGRADE]",
+    }])
+    assert V._expected_report_index_statuses(sp).get("INV-11") == "CONFIRMED"
+
+
+def test_status_map_manifest_genuine_pass_remains_verified(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _queue(sp, [("INV-8", "High", "unit")])
+    _verify(sp, "INV-8", severity="High", verdict="CONFIRMED",
+            tag="[POC-PASS]", attempted="YES", result="PASS")
+    _verdict_manifest(sp, [{
+        "finding_id": "INV-8",
+        "verify_file": "verify_INV-8.md",
+        "mechanical_status": "PASS",
+        "verifier_prose_tag": "[POC-PASS]",
+        "integrity_state": "CONSISTENT",
+        "effective_tag": "[POC-PASS]",
+    }])
+    assert V._expected_report_index_statuses(sp).get("INV-8") == "VERIFIED"
+
+
+def test_status_map_manifest_production_evidence_remains_verified(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _queue(sp, [("INV-9", "High", "integration")])
+    _verify(sp, "INV-9", severity="High", verdict="CONFIRMED",
+            tag="[PROD-ONCHAIN] [MECHANICAL-UNAVAILABLE]", attempted="NO")
+    _verdict_manifest(sp, [{
+        "finding_id": "INV-9",
+        "verify_file": "verify_INV-9.md",
+        "mechanical_status": "TOOLCHAIN_UNAVAILABLE",
+        "verifier_prose_tag": "[PROD-ONCHAIN]",
+        "integrity_state": "MECHANICAL_UNAVAILABLE",
+        "effective_tag": "[PROD-ONCHAIN] [MECHANICAL-UNAVAILABLE]",
+    }])
+    assert V._expected_report_index_statuses(sp).get("INV-9") == "VERIFIED"
+
+
+def test_status_map_legacy_unavailable_flag_fallback_is_confirmed(tmp_path):
+    """Pre-manifest resumes still interpret the explicit integrity flag honestly."""
+    V = _v()
+    sp = _scratch(tmp_path)
+    _queue(sp, [("INV-10", "Medium", "unit")])
+    _verify(sp, "INV-10", severity="Medium", verdict="CONFIRMED",
+            tag="[POC-PASS]", attempted="YES", result="PASS",
+            body="Mechanical integrity: [MECHANICAL-UNAVAILABLE]")
+    assert not (sp / "verdict_manifest.json").exists()
+    assert V._expected_report_index_statuses(sp).get("INV-10") == "CONFIRMED"
+
+
+def test_status_map_legacy_harness_flag_fallback_is_confirmed(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _queue(sp, [("INV-12", "Medium", "unit")])
+    _verify(sp, "INV-12", severity="Medium", verdict="CONFIRMED",
+            tag="[POC-PASS]", attempted="YES", result="PASS",
+            body="Harness state: [POC-UNVERIFIED-HARNESS] [NEEDS-BUILD]")
+    assert not (sp / "verdict_manifest.json").exists()
+    assert V._expected_report_index_statuses(sp).get("INV-12") == "CONFIRMED"
 
 
 def test_status_map_code_trace_is_confirmed_not_unverified(tmp_path):

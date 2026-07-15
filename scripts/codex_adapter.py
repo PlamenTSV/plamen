@@ -395,6 +395,35 @@ PLATFORM_DIRECTIVE = (
 )
 
 
+def _load_breadth_semantic_operator_kernel() -> str:
+    """Load the versioned SC breadth floor shared with the PTY driver."""
+    path = (
+        PLAMEN_HOME
+        / "prompts"
+        / "shared"
+        / "v2"
+        / "breadth-semantic-operator-kernel.md"
+    )
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        if (
+            "PLAMEN_BREADTH_SEMANTIC_KERNEL: BEGIN v1.0.0" not in text
+            or "PLAMEN_BREADTH_SEMANTIC_KERNEL: END v1.0.0" not in text
+        ):
+            raise ValueError("version markers missing")
+        return text
+    except Exception as exc:
+        print(f"  Warning: SC breadth kernel unavailable: {exc}", file=sys.stderr)
+        return (
+            "## [BREADTH-KERNEL-UNAVAILABLE] Human review required\n\n"
+            f"The mandatory SC breadth kernel could not be loaded from `{path}`. "
+            "Do not treat this worker as complete security-method coverage."
+        )
+
+
+_BREADTH_SEMANTIC_OPERATOR_KERNEL = _load_breadth_semantic_operator_kernel()
+
+
 # Tiered model mapping for Codex backend.  Imported from plamen_types.py to
 # maintain a single source of truth shared with the V2 driver.  The V1 adapter
 # previously had independent (and divergent) mappings -- that drift caused a 7x
@@ -458,6 +487,11 @@ AGENT_ROLES = [
             You are Breadth Agent #{N}. Read your full methodology from:
             ~/.codex/plamen/prompts/{LANGUAGE}/generic-security-rules.md
             ~/.codex/plamen/rules/finding-output-format.md
+
+            Apply the following exact versioned semantic floor in addition to
+            any recon-selected conditional skills:
+
+""" + _BREADTH_SEMANTIC_OPERATOR_KERNEL + """
 
             Analyze your assigned scope for security vulnerabilities.
             Use the finding output format for all findings.

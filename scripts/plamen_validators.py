@@ -27,7 +27,8 @@ from plamen_types import (
     SC_VERIFY_SHARD_MANIFESTS, SC_VERIFY_PHASE_NAMES,
     SC_VERIFY_CRITHIGH_PHASE_NAMES,
     _VALID_PIPELINES, _VALID_MODES,
-    EVIDENCE_TAGS_PROOF, EVIDENCE_TAG_NAMES_RE, has_mechanical_proof,
+    EVIDENCE_TAGS_PROOF, EVIDENCE_TAGS_PROD, EVIDENCE_TAG_NAMES_RE,
+    has_mechanical_proof,
     has_proof_grade_evidence,
     canonical_verification_status,
     FINDING_BLOCK_HEADING_RE,
@@ -17855,6 +17856,65 @@ _TAG_DOWNGRADE_ANNOTATION_RE = re.compile(
 )
 
 
+_UNEXECUTED_PROOF_FLAGS = frozenset({
+    "[MECHANICAL-UNAVAILABLE]",
+    "[POC-UNVERIFIED-HARNESS]",
+})
+
+
+def _effective_tag_is_proof_grade(
+    tag_text: str, integrity_context: str = "",
+) -> bool:
+    """Interpret an effective evidence tag for report-label purposes only.
+
+    Production evidence remains proof-grade independently of the local harness.
+    A mechanical proof tag preserved beside an explicit non-execution flag does
+    not make the report label VERIFIED; it remains useful provenance, but the
+    mechanical run did not establish it.
+    """
+    upper = (tag_text or "").upper()
+    if any(tag in upper for tag in EVIDENCE_TAGS_PROD):
+        return True
+    context_upper = (integrity_context or "").upper()
+    if any(
+        flag in upper or flag in context_upper
+        for flag in _UNEXECUTED_PROOF_FLAGS
+    ):
+        return False
+    return has_proof_grade_evidence(upper)
+
+
+def _effective_proof_grade_from_manifest_row(row: object) -> Optional[bool]:
+    """Return the structured manifest's report-label proof grade.
+
+    ``None`` means the row is unusable and the caller should use the legacy
+    verify-file fallback. This helper deliberately affects only the canonical
+    CONFIRMED/VERIFIED label; proof routing and severity retain their existing
+    evidence helpers.
+    """
+    if not isinstance(row, dict):
+        return None
+    effective_tag = str(row.get("effective_tag") or "")
+    mechanical_status = str(row.get("mechanical_status") or "").upper()
+    integrity_state = str(row.get("integrity_state") or "").upper()
+    if not (effective_tag or mechanical_status or integrity_state):
+        return None
+
+    effective_upper = effective_tag.upper()
+    if any(tag in effective_upper for tag in EVIDENCE_TAGS_PROD):
+        return True
+    if mechanical_status == "PASS" and integrity_state in {"", "CONSISTENT"}:
+        return True
+    if (
+        mechanical_status and mechanical_status != "PASS"
+        and has_mechanical_proof(effective_upper)
+    ):
+        return False
+    if integrity_state in {"MECHANICAL_UNAVAILABLE", "POC_UNVERIFIED_HARNESS"}:
+        return False
+    return _effective_tag_is_proof_grade(effective_tag)
+
+
 def _effective_proof_grade_from_verify(vtxt: str) -> bool:
     """Is the finding's EFFECTIVE (post-integrity-downgrade) best evidence
     proof-grade?
@@ -17872,14 +17932,10 @@ def _effective_proof_grade_from_verify(vtxt: str) -> bool:
     )
     m = re.search(r"\[([A-Za-z0-9\-]+)\]", field or "")
     if m:
-        return f"[{m.group(1).upper()}]" in (
-            EVIDENCE_TAGS_PROOF | frozenset({
-                "[PROD-ONCHAIN]", "[PROD-SOURCE]", "[PROD-FORK]",
-            })
-        )
+        return _effective_tag_is_proof_grade(field, stripped)
     # No evidence-tag field at all: fall back to a proof-grade scan of the
     # annotation-stripped body (still honest — the residual proof tags removed).
-    return has_proof_grade_evidence(stripped)
+    return _effective_tag_is_proof_grade(stripped)
 
 
 def _expected_report_index_statuses(scratchpad: Path) -> dict[str, str]:
@@ -17893,6 +17949,18 @@ def _expected_report_index_statuses(scratchpad: Path) -> dict[str, str]:
     by the driver so the Index Agent stops re-deriving the label from raw prose
     (which produced the 71-index / 12-body / 17-PoC collision)."""
     out: dict[str, str] = {}
+    manifest_by_id: dict[str, dict] = {}
+    try:
+        from mechanical_verify import read_verdict_manifest
+        for manifest_row in read_verdict_manifest(scratchpad):
+            if not isinstance(manifest_row, dict):
+                continue
+            manifest_id = str(manifest_row.get("finding_id") or "").strip()
+            if manifest_id:
+                manifest_by_id[manifest_id.upper()] = manifest_row
+    except Exception:
+        # Legacy/malformed resumes retain the verify-file derivation.
+        manifest_by_id = {}
     for row in parse_verification_queue_rows(scratchpad):
         fid = (row.get("finding id") or "").strip()
         if not fid:
@@ -17903,8 +17971,13 @@ def _expected_report_index_statuses(scratchpad: Path) -> dict[str, str]:
         except Exception:
             vtxt = ""
         status = _verifier_status_from_text(vtxt)
+        manifest_grade = _effective_proof_grade_from_manifest_row(
+            manifest_by_id.get(fid.upper())
+        )
         out[fid] = canonical_verification_status(
-            status, _effective_proof_grade_from_verify(vtxt)
+            status,
+            manifest_grade if manifest_grade is not None
+            else _effective_proof_grade_from_verify(vtxt),
         )
     return out
 

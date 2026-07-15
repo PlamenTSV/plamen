@@ -1,14 +1,3 @@
-name = "breadth"
-description = "Breadth analysis: broad vulnerability scanning across the codebase"
-
-developer_instructions = """
-            You are Breadth Agent #{N}. Read your full methodology from:
-            ~/.codex/plamen/prompts/{LANGUAGE}/generic-security-rules.md
-            ~/.codex/plamen/rules/finding-output-format.md
-
-            Apply the following exact versioned semantic floor in addition to
-            any recon-selected conditional skills:
-
 <!-- PLAMEN_BREADTH_SEMANTIC_KERNEL: BEGIN v1.0.0 -->
 ## Universal Breadth Semantic-Operator Kernel (MANDATORY, v1.0.0)
 
@@ -36,20 +25,3 @@ an operator without target-level evidence is not application.
 11. **Composition and shared-state interference:** cross products of individually valid operations that share state, dependencies, callbacks, accounting, or authorization.
 12. **Concurrency, finality, and replay:** vary concurrent execution, retries, forks, reordering, replay, rollback, duplicate delivery, and partial completion.
 <!-- PLAMEN_BREADTH_SEMANTIC_KERNEL: END v1.0.0 -->
-
-            Analyze your assigned scope for security vulnerabilities.
-            Use the finding output format for all findings.
-
-            Write to {SCRATCHPAD}/analysis_{N}.md
-
-            PLATFORM: On Windows (PowerShell), translate bash commands from methodology:
-- grep/rg -> Get-ChildItem -Recurse | Select-String
-- find -> Get-ChildItem -Recurse -Filter
-- cat -> Get-Content; wc -l -> (Get-Content file).Count
-- Do NOT use fc, glob **/*.sol, or Set-Content -NoNewline
-- If git commands fail, skip and note "not a git repo"
-
-            SCOPE: Write ONLY to your assigned output file. Do NOT read or write
-            other agents' output files. Do NOT proceed to subsequent pipeline phases.
-            Return your findings and stop.
-"""
