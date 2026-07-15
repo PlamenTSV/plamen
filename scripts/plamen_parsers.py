@@ -255,6 +255,7 @@ __all__ = [
     "parse_depth_manifest_count",
     "parse_inventory_shard_manifest",
     "parse_report_index_assignments",
+    "parse_finding_mapping_rows",
     "parse_report_index_counts",
     "parse_verification_queue_rows",
     # cross-module helpers imported by other modules (must be in __all__ for the
@@ -1051,6 +1052,167 @@ def _parse_markdown_tables(text: str, required_headers: list[str]) -> list[tuple
             out.append((headers, rows))
         i = max(j, i + 1)
     return out
+
+
+# R0-2a: finding_mapping.md is a typed relation, not a bag of IDs.  Header
+# aliases are deliberately exact after normalization: substring matching would
+# let unrelated tables (for example, a report-status table) masquerade as the
+# constituent mapping contract.
+_FINDING_MAPPING_HEADER_ROLES: dict[str, dict[str, int]] = {
+    "source": {
+        "finding_id": 0,
+        "source_finding_id": 0,
+        "source_id": 0,
+        "constituent_finding_id": 0,
+        "constituent_id": 0,
+        "source_finding": 1,
+        "constituent_finding": 1,
+        "constituent": 1,
+        # Legacy two-column tables use `Source | Hyp`.  This is intentionally
+        # weakest so a provenance column named Source cannot beat Finding ID.
+        "source": 2,
+    },
+    "hypothesis": {
+        "hypothesis_id": 0,
+        "mapped_hypothesis_id": 0,
+        "internal_hypothesis_id": 0,
+        "hypothesis": 1,
+        "mapped_hypothesis": 1,
+        "internal_hypothesis": 1,
+        "target_hypothesis": 1,
+        "hyp": 2,
+    },
+    "status": {
+        "mapping_status": 0,
+        "status": 1,
+        "relation": 1,
+    },
+    "notes": {
+        "notes": 0,
+        "note": 0,
+        "reason": 1,
+        "rationale": 1,
+        "details": 1,
+    },
+}
+
+
+def _finding_mapping_role_index(headers: list[str], role: str) -> int | None:
+    aliases = _FINDING_MAPPING_HEADER_ROLES[role]
+    candidates = [
+        (aliases[header], index)
+        for index, header in enumerate(headers)
+        if header in aliases
+    ]
+    if not candidates:
+        return None
+    return min(candidates)[1]
+
+
+def _finding_mapping_cell_ids(cell: str, *, hypothesis: bool) -> tuple[str, ...]:
+    """Parse only complete ID tokens from a typed mapping cell.
+
+    A cell may contain a bounded list separated by comma/semicolon/plus or
+    `and`; any prose makes the entire cell invalid.  This is intentionally
+    stricter than searching: status and Notes prose often cites other IDs and
+    must never manufacture a relation.
+    """
+    raw = _strip_md(cell)
+    if not raw:
+        return ()
+    parts = re.split(r"\s*(?:[,;+]|\band\b)\s*", raw, flags=re.IGNORECASE)
+    found: list[str] = []
+    for part in parts:
+        token = part.strip()
+        if len(token) >= 2 and token[0] == "[" and token[-1] == "]":
+            token = token[1:-1].strip()
+        if not token or not _INTERNAL_FINDING_ID_RE.fullmatch(token):
+            return ()
+        fid = token.upper()
+        if hypothesis and not re.fullmatch(_ID_HYPO_ALTS, fid, re.IGNORECASE):
+            return ()
+        if fid not in found:
+            found.append(fid)
+    return tuple(found)
+
+
+def parse_finding_mapping_rows(text: str) -> list[dict[str, object]]:
+    """Return typed constituent→hypothesis rows from finding_mapping Markdown.
+
+    Only tables with normalized source-ID and hypothesis-ID header roles plus a
+    real Markdown separator are eligible.  IDs are read exclusively from those
+    two columns; status, Notes, narrative prose, and unrelated tables cannot
+    contribute edges.  The result is directional so consumers cannot confuse a
+    hypothesis lookup alias with one of its constituent source IDs.
+    """
+    lines = _llm_norm(text).splitlines()
+    parsed: list[dict[str, object]] = []
+    i = 0
+    while i + 1 < len(lines):
+        header_line = lines[i].strip()
+        separator_line = lines[i + 1].strip()
+        if not header_line.startswith("|") or not _is_separator_row(separator_line):
+            i += 1
+            continue
+        headers = [
+            _normalize_manifest_header(cell)
+            for cell in _split_markdown_table_row(header_line)
+        ]
+        source_idx = _finding_mapping_role_index(headers, "source")
+        hypothesis_idx = _finding_mapping_role_index(headers, "hypothesis")
+        if (
+            source_idx is None
+            or hypothesis_idx is None
+            or source_idx == hypothesis_idx
+        ):
+            i += 2
+            continue
+        status_idx = _finding_mapping_role_index(headers, "status")
+        notes_idx = _finding_mapping_role_index(headers, "notes")
+        j = i + 2
+        while j < len(lines):
+            row_line = lines[j].strip()
+            if not row_line.startswith("|"):
+                break
+            # A second table can follow without a blank line.  Stop before its
+            # header so it is reclassified by its own typed column contract;
+            # otherwise the previous table's indices leak into the new rows.
+            if (
+                j + 1 < len(lines)
+                and _is_separator_row(lines[j + 1].strip())
+            ):
+                break
+            if _is_separator_row(row_line):
+                j += 1
+                continue
+            cells = _split_markdown_table_row(row_line)
+            if max(source_idx, hypothesis_idx) >= len(cells):
+                j += 1
+                continue
+            source_ids = _finding_mapping_cell_ids(
+                cells[source_idx], hypothesis=False
+            )
+            hypothesis_ids = _finding_mapping_cell_ids(
+                cells[hypothesis_idx], hypothesis=True
+            )
+            if source_ids and hypothesis_ids:
+                parsed.append({
+                    "source_ids": source_ids,
+                    "hypothesis_ids": hypothesis_ids,
+                    "status": (
+                        _strip_md(cells[status_idx])
+                        if status_idx is not None and status_idx < len(cells)
+                        else ""
+                    ),
+                    "notes": (
+                        _strip_md(cells[notes_idx])
+                        if notes_idx is not None and notes_idx < len(cells)
+                        else ""
+                    ),
+                })
+            j += 1
+        i = max(j, i + 2)
+    return parsed
 
 
 _QUEUE_HEADER_ALIASES = {

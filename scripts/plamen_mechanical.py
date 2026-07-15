@@ -2849,6 +2849,9 @@ def _dedup_source_ids_by_report_id(scratchpad: Path) -> dict[str, set[str]]:
         rows = parse_report_index_assignments(scratchpad)
     except Exception:
         rows = []
+    # Directional hypothesis alias -> constituent source IDs.  The alias is a
+    # lookup key only; including it in the value set lets two report findings
+    # appear related merely because prose repeated the same hypothesis label.
     fmap: dict[str, set[str]] = {}
     fm_path = scratchpad / "finding_mapping.md"
     if fm_path.exists():
@@ -2856,13 +2859,16 @@ def _dedup_source_ids_by_report_id(scratchpad: Path) -> dict[str, set[str]]:
             fm_text = fm_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             fm_text = ""
-        # finding_mapping rows associate a hypothesis ID with its source finding
-        # IDs. Collect all internal IDs that co-occur on a line under a hypothesis.
-        for line in fm_text.splitlines():
-            ids = _INTERNAL_FINDING_ID_RE.findall(line)
-            if len(ids) >= 2:
-                head = ids[0].upper()
-                fmap.setdefault(head, set()).update(x.upper() for x in ids)
+        for mapping_row in parse_finding_mapping_rows(fm_text):
+            source_ids = {
+                str(source_id).upper()
+                for source_id in mapping_row.get("source_ids", ())
+            }
+            for hypothesis_id in mapping_row.get("hypothesis_ids", ()):
+                alias = str(hypothesis_id).upper()
+                fmap.setdefault(alias, set()).update(
+                    source_id for source_id in source_ids if source_id != alias
+                )
     for row in rows:
         rid = _normalize_report_id(str(row.get("report_id", "") or ""))
         if not rid:
@@ -2871,8 +2877,13 @@ def _dedup_source_ids_by_report_id(scratchpad: Path) -> dict[str, set[str]]:
         src: set[str] = set()
         for tok in _INTERNAL_FINDING_ID_RE.findall(internal):
             tok = tok.upper()
-            src.add(tok)
-            src |= fmap.get(tok, set())
+            constituents = fmap.get(tok)
+            if constituents:
+                src.update(constituents)
+            else:
+                # A standalone internal ID remains its own source identity.
+                # Mapped hypothesis aliases are lookup-only and stay out.
+                src.add(tok)
         if src:
             out.setdefault(rid, set()).update(src)
     return out
