@@ -15371,6 +15371,15 @@ def _run_phase_validators(
                 f"{len(independent_caps)} finding(s) capped via "
                 "independent_severity_caps.md"
             )
+        # R10 demotion-side gate (mirror of the assert-side EXTERNAL-ASSUMPTION-CAP).
+        undemotions = _apply_external_assumption_undemotions(scratchpad, mode)
+        if undemotions:
+            log.info(
+                f"[{phase.name}] External-assumption un-demotions: "
+                f"{len(undemotions)} finding(s) floored+stamped [UNPROVEN-EXTERNAL] "
+                "(kept in body, flagged for human review) via "
+                "external_assumption_undemotions.md"
+            )
 
     # --- crossbatch: quality + full coverage + SC-mode parity/evidence ---
     if phase.name == "crossbatch" and passed:

@@ -259,6 +259,7 @@ __all__ = [
     "_validate_poc_attempt_coverage",
     "_apply_poc_fail_demotions",
     "_apply_independent_severity_caps",
+    "_apply_external_assumption_undemotions",
     "_load_independent_severity_caps",
     "_append_crossbatch_coverage_ledger",
     "_validate_report_coverage_accounting",
@@ -17492,6 +17493,113 @@ def _external_assumption_cap_applies(vtxt: str) -> bool:
     )
 
 
+# ── R10 demotion-side gate: external-best-case un-demotion veto ─────────────
+# MIRROR of the assert-side `_external_assumption_cap_applies` above. That brake
+# caps a finding whose HARM rides on an assumed worst-case external condition;
+# this gate handles the INVERSE demotion — a finding CONFIRMED-in-scope at DEPTH
+# that a verifier DEMOTED (verdict CONTESTED / harm dismissed) purely on an
+# UNCITED best-case external assumption. The disposition (not a severity number)
+# is what was silently lost; the driver-side compute hook
+# `_apply_external_assumption_undemotions` re-emits + stamps + re-queues, and
+# `external_assumption_undemotions.md` is the read-back ledger these two helpers
+# serve. Recall-safe: an absent/unparseable ledger is a strict no-op.
+
+def _floor_report_index_severity(severity: str, floor: str) -> str:
+    """Inverse of `_cap_report_index_severity`: never LOWERS; raises `severity`
+    up to `floor` when `floor` is MORE severe. (Local: `_higher_severity` lives
+    in plamen_mechanical and is not imported here.)"""
+    order = ["Critical", "High", "Medium", "Low", "Informational"]
+    sev = normalize_severity(severity)
+    fl = normalize_severity(floor)
+    return fl if order.index(fl) < order.index(sev) else sev
+
+
+def _load_external_assumption_undemotions(scratchpad: Path) -> dict[str, str]:
+    """Read the driver-computed ledger `external_assumption_undemotions.md`.
+
+    Mirrors `_load_independent_severity_caps` / `_poc_demotion_caps_for_validator`.
+    Returns {finding_id: restored_floor_severity}. Recall-safe {} on absent /
+    unparseable ledger.
+    """
+    path = scratchpad / "external_assumption_undemotions.md"
+    if not path.exists():
+        return {}
+    try:
+        text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    headers, rows = _parse_markdown_table(text, ["finding id", "restored floor"])
+    if not headers:
+        return out
+    keys = [_norm_key(h) for h in headers]
+    for row in rows:
+        d = {keys[i]: row[i].strip() for i in range(min(len(keys), len(row)))}
+        fid = _normalize_finding_id(d.get("finding id", "")) or d.get("finding id", "")
+        floor = normalize_severity(d.get("restored floor", ""))
+        if fid and floor:
+            out[fid] = floor
+    return out
+
+
+# Supplementary external-best-case-demotion cue: a verifier that DISMISSES the
+# harm because a value is assumed STABLE / INVARIANT WITHIN A WINDOW (per
+# ledger / timestamp / block) — the stale-cache-vs-fresh-read demotion shape the
+# return-trust + balance-delta `_external_assumption_promoted` regex does not
+# cover. Anchored to the within-window-stability MECHANISM, never a protocol
+# name (no-overfit). Only consulted when the finding is already DEMOTED
+# (CONTESTED/PARTIAL/UNRESOLVED) in the caller, so a finding whose BUG is
+# non-stability (which verifies CONFIRMED) is filtered out upstream.
+_EXTERNAL_STABILITY_DEMOTION_RE = re.compile(
+    r"time[- ]?invariant"
+    r"|(?:stable|constant|unchanged|fixed|does\s+not\s+change|doesn't\s+change)"
+    r"\s+(?:within|per|across|for)\s+(?:a\s+)?"
+    r"(?:ledger|timestamp|block|window|epoch|round|tx|transaction)"
+    r"|invariant\s+within\s+(?:a\s+)?(?:ledger|timestamp|block|window)"
+    r"|fresh[- ]per[- ](?:timestamp|ledger|block)"
+    r"|fresh\s+per\s+(?:timestamp|ledger|block)",
+    re.IGNORECASE,
+)
+
+
+def _external_bestcase_stability_demotion(content: str) -> bool:
+    """Supplementary external-best-case demotion cue (generic). True when the
+    verifier prose dismisses the harm on an assumed WITHIN-WINDOW STABILITY of a
+    value (per-ledger/timestamp/block time-invariance) — the stale-cache demotion
+    shape `_external_assumption_promoted` (return-trust + balance-delta) misses.
+    ANDed with `demoted` in the caller, so it is a strict recall-direction widen
+    of the external-best-case-demotion detection, never a standalone trigger."""
+    return bool(_EXTERNAL_STABILITY_DEMOTION_RE.search(_llm_norm(content or "")))
+
+
+def _external_dependency_research_surfaces_local(
+    scratchpad: Path,
+) -> list[tuple[str, str]]:
+    """Local re-parse of `external_dependency_research.md`'s Integration Surface
+    column (avoids a driver->validators->driver import cycle; the driver owns the
+    canonical `_external_dependency_research_surfaces`). Returns (dependency,
+    file:line) pairs. Never raises; [] on absent/unparseable ledger."""
+    path = scratchpad / "external_dependency_research.md"
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    row_re = re.compile(r"^\|\s*`?([^|`]+?)`?\s*\|\s*([^|]+?)\s*\|", re.MULTILINE)
+    loc_re = re.compile(r"[\w./\\-]+\.[A-Za-z]+:L?\d+")
+    out: list[tuple[str, str]] = []
+    for m in row_re.finditer(text):
+        dep = m.group(1).strip()
+        if not dep or dep.lower() in (
+            "dependency", "---", "name/namespace", "-", ""
+        ):
+            continue
+        for loc in loc_re.findall(m.group(2)):
+            out.append((dep, loc))
+    return out
+
+
 # ── Fix 2: severity-aware fork-PoC mandate (INERT-SAFE without RPC egress) ──
 # A Medium+ external-integration fund-drain/misrouting finding whose harm rides
 # on an untrusted external contract at a KNOWN deployed address is exactly the
@@ -17633,6 +17741,7 @@ def _egress_rpc_reachable(scratchpad: Path) -> bool:
 def _expected_report_index_severities(scratchpad: Path) -> dict[str, str]:
     caps = _poc_demotion_caps_for_validator(scratchpad)
     independent_caps = _load_independent_severity_caps(scratchpad)
+    undemotions = _load_external_assumption_undemotions(scratchpad)
     proven_only = _config_proven_only(scratchpad)
     out: dict[str, str] = {}
     for row in parse_verification_queue_rows(scratchpad):
@@ -17669,6 +17778,23 @@ def _expected_report_index_severities(scratchpad: Path) -> dict[str, str]:
         # `_apply_independent_severity_caps` for the full derivation.
         if fid in independent_caps:
             sev = _cap_report_index_severity(sev, independent_caps[fid])
+        # R10 demotion-side gate (MIRROR of the assert-side external-assumption
+        # CAP below). A finding CONFIRMED-in-scope at DEPTH that was DEMOTED
+        # (verdict CONTESTED / harm dismissed) by the verifier purely on an
+        # UNCITED best-case external assumption must not silently lose its
+        # disposition. FLOOR its report severity to the depth-CLAIMED (queue)
+        # severity and `continue` so the proven-only Low-cap cannot push it
+        # below. The ledger is written by the driver post-verify hook
+        # `_apply_external_assumption_undemotions` (which also stamps
+        # [UNPROVEN-EXTERNAL] + re-queues). Recall-safe: empty ledger => no-op.
+        # Placed BEFORE the CAP/UNPROVEN blocks so a general-case veto floors to
+        # FULL claimed severity (may exceed Medium), superseding their Medium
+        # floor; on a Low-claimed finding it is inert numerically but still
+        # `continue`s past the proven-only Low-cap.
+        if fid in undemotions:
+            sev = _floor_report_index_severity(sev, undemotions[fid])
+            out[fid] = sev
+            continue
         # Fix 3: NARROW always-on external-assumption severity brake. Fires
         # (regardless of proven_only) ONLY on the three-guard conjunction —
         # CODE-TRACE-only + Attempted:NO-with-external-blocker + external-
@@ -21100,6 +21226,223 @@ def _load_independent_severity_caps(scratchpad: Path) -> dict[str, str]:
         if fid and final:
             caps[fid] = final
     return caps
+
+
+def _stamp_unproven_external(vf: Path, vtxt: str) -> None:
+    """Idempotently append [EXTERNAL-ASSUMPTION] + [UNPROVEN-EXTERNAL] markers to
+    a verify file so the existing consume block (`_unproven_external_stamped`)
+    keeps the finding in body at its proven-mechanism floor even if the ledger is
+    later absent (defense in depth)."""
+    if _UNPROVEN_EXTERNAL_STAMP.upper() in (vtxt or "").upper():
+        return
+    try:
+        with open(vf, "a", encoding="utf-8") as f:
+            f.write("\n\n<!-- R10 demotion-side gate -->\n"
+                    "[EXTERNAL-ASSUMPTION: verifier demotion rests on an uncited "
+                    "best-case external condition; worst-case external behavior "
+                    "assumed per R10] [UNPROVEN-EXTERNAL]\n")
+    except Exception:
+        pass
+
+
+def _aggregate_depth_verdict(
+    fid: str,
+    inv_verdicts: dict[str, str],
+    hyp_constituents: dict[str, list[str]],
+) -> str:
+    """Depth verdict for a queue finding-id (condition 1 / G4).
+
+    Returns the DIRECT inventory verdict when the queue id IS an inventory id.
+    Otherwise the queue id is a hypothesis id (`H-NN`, incl. anti-absorption
+    `GRP-NNx` splits) whose CONSTITUENT inventory findings carry the depth
+    verdicts. Aggregate them recall-safely:
+      * CONFIRMED  if ANY constituent is CONFIRMED/PARTIAL (mechanism real in at
+        least one split),
+      * REFUTED    only when EVERY resolvable constituent was REFUTED in-scope
+        (G4 blocks the un-demotion),
+      * ''         when no constituent verdict is resolvable — falls through to
+        the verifier-side gates, preserving the prior recall-safe behavior.
+    """
+    direct = inv_verdicts.get(fid, "") or inv_verdicts.get(
+        _normalize_finding_id(fid) or fid, ""
+    )
+    if direct:
+        return direct
+    consts = hyp_constituents.get(fid) or hyp_constituents.get(fid.upper()) or []
+    verdicts: list[str] = []
+    for c in consts:
+        v = inv_verdicts.get(c, "") or inv_verdicts.get(
+            _normalize_finding_id(str(c)) or str(c), ""
+        )
+        if v:
+            verdicts.append(v)
+    if not verdicts:
+        return ""
+    if any("CONFIRM" in v or "PARTIAL" in v for v in verdicts):
+        return "CONFIRMED"
+    if all("REFUTED" in v for v in verdicts):
+        return "REFUTED"
+    return ""
+
+
+def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[dict[str, str]]:
+    """R10 demotion-side gate. For each queue finding that is CONFIRMED/PARTIAL
+    (not REFUTED) at DEPTH yet DEMOTED by the verifier purely on an UNCITED
+    best-case external assumption: (1) write a row to
+    `external_assumption_undemotions.md` (Finding ID | Depth Verdict | Verifier
+    Sev | Restored Floor | Basis), (2) STAMP [EXTERNAL-ASSUMPTION] +
+    [UNPROVEN-EXTERNAL] into the verify file (idempotent) so the existing
+    consume block keeps the finding IN BODY at proven severity, flagged for
+    human review of the external leg. Structural MIRROR of the assert-side
+    `_external_assumption_cap_applies`. Recall-safe: [] on absent/unparseable
+    input.
+    """
+    if mode == "light":
+        return []
+    rows = parse_verification_queue_rows(scratchpad)
+    if not rows:
+        return []
+
+    # Condition-1 source: depth Verdict per finding, read from inventory (queue
+    # rows carry NO verdict column). inv id == queue finding id (queue is built
+    # from inventory).
+    inv_verdicts: dict[str, str] = {}
+    inv_blocks_by_id: dict[str, str] = {}
+    inv_path = scratchpad / "findings_inventory.md"
+    if inv_path.exists():
+        try:
+            for b in _inventory_blocks(
+                inv_path.read_text(encoding="utf-8", errors="replace")
+            ):
+                bid = _normalize_finding_id(b.get("id", "")) or b.get("id", "")
+                if bid:
+                    inv_verdicts[bid] = (
+                        _field_from_markdown(b.get("block", ""), ("Verdict",)) or ""
+                    ).upper()
+                    inv_blocks_by_id[bid] = b.get("block", "")
+        except Exception:
+            pass
+
+    # Bridge queue finding-id (a hypothesis id, e.g. H-22) -> its constituent
+    # inventory ids (INV-041, ... — incl. anti-absorption GRP split sources) so
+    # condition-1 / G4 actually engage on real Thorough runs where the queue id
+    # is a hypothesis id and inventory uses INV-NNN. {} on absent mapping =>
+    # _aggregate_depth_verdict falls through to the verifier-side gates.
+    try:
+        hyp_constituents = _parse_hypothesis_constituents(scratchpad)
+    except Exception:
+        hyp_constituents = {}
+
+    # Condition-3 source: EXT-CITED grounding. Stub/empty ledger => [] => no
+    # grounding. Local re-parse avoids a driver import cycle.
+    try:
+        surfaces = _external_dependency_research_surfaces_local(scratchpad)
+    except Exception:
+        surfaces = []
+
+    fired: list[dict[str, str]] = []
+    for row in rows:
+        fid = (row.get("finding id") or "").strip()
+        claimed = normalize_severity((row.get("severity") or "").strip())
+        if not fid or not claimed:
+            continue
+        vf = _find_verify_file(scratchpad, fid)
+        if not vf:
+            continue
+        try:
+            vtxt = vf.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        # ---- Condition 1: depth-CONFIRMED / not-REFUTED (G4) ----
+        # Direct inventory lookup, else aggregate over the hypothesis's
+        # constituent inventory findings (queue id H-NN -> INV-NNN, incl. GRP
+        # anti-absorption splits). '' => unresolved mapping => fall through to
+        # the verifier-side gates (recall-safe, prior behavior preserved).
+        depth_verdict = _aggregate_depth_verdict(fid, inv_verdicts, hyp_constituents)
+        if depth_verdict == "REFUTED":            # every constituent refuted in-scope
+            continue
+        if depth_verdict and "CONFIRM" not in depth_verdict and "PARTIAL" not in depth_verdict:
+            continue                               # only CONFIRMED/PARTIAL qualify
+        # (empty depth_verdict => fall through; verifier-side signals still gate)
+
+        # ---- Guard G3 / in-scope-executed: Attempted:YES ⇒ never veto ----
+        if _poc_attempted_and_passed(vtxt):        # explicit carve-out (H-14)
+            continue
+        if not _poc_not_attempted(vtxt):           # Attempted:NO + ext/structural
+            continue                               # blocker (blocks H-14 & H-5)
+
+        # ---- Guard: proof-grade evidence ⇒ never veto ----
+        if has_proof_grade_evidence(vtxt):
+            continue
+
+        # ---- Condition 2: verifier disposition rests on external best-case ----
+        status = _verifier_status_from_text(vtxt)
+        demoted = any(t in status for t in ("CONTESTED", "PARTIAL", "UNRESOLVED"))
+        block = inv_blocks_by_id.get(fid, "")
+        has_ext_tag = (
+            "[EXTERNAL-ASSUMPTION" in vtxt or "NEEDS_DEPENDENCY_RESEARCH" in vtxt
+            or "[EXTERNAL-ASSUMPTION" in block or "NEEDS_DEPENDENCY_RESEARCH" in block
+        )
+        ext_cue = (
+            _external_assumption_promoted(vtxt)          # return-trust+external
+            or _external_bestcase_stability_demotion(vtxt)  # within-window stability
+        )
+        if not (demoted and (has_ext_tag or ext_cue)):
+            continue                                # G2: in-scope-grounded => skip
+
+        # ---- Condition 3: no EXT-CITED grounding (G1) ----
+        if "[EXT-CITED" in vtxt or "[EXT-CITED" in block:
+            # only exempt when a matching surface row actually exists
+            loc = _field_from_markdown(vtxt, ("Location",)) or ""
+            if any(surf and surf in loc for _dep, surf in surfaces):
+                continue
+
+        # ---- FIRE ----
+        restored = claimed                          # floor-to-claimed (recall-safe)
+        fired.append({
+            "finding_id": fid,
+            "depth_verdict": depth_verdict or "(inv-absent)",
+            "verifier_sev": normalize_severity(
+                _field_from_markdown(vtxt, ("Severity", "Final Severity")) or claimed
+            ),
+            "restored_floor": restored,
+            "basis": "external best-case demotion, uncited (stub/absent research ledger)",
+        })
+        _stamp_unproven_external(vf, vtxt)          # idempotent
+
+    if fired:
+        lines = [
+            "# External-Assumption Un-Demotions (R10 demotion-side gate)\n\n",
+            "Findings CONFIRMED/PARTIAL in-scope at depth but DEMOTED by the "
+            "verifier purely on an UNCITED best-case external assumption. Report "
+            "severity is FLOORED to the depth-claimed (queue) severity, the "
+            "finding is kept IN BODY, stamped [EXTERNAL-ASSUMPTION] + "
+            "[UNPROVEN-EXTERNAL], and flagged for human review of the unproven "
+            "external leg. Mirror of the assert-side EXTERNAL-ASSUMPTION-CAP "
+            "brake.\n\n",
+            "| Finding ID | Depth Verdict | Verifier Sev | Restored Floor | Basis |\n",
+            "|-----------|---------------|--------------|----------------|-------|\n",
+        ]
+        for c in fired:
+            lines.append(
+                f"| {c['finding_id']} | {c['depth_verdict']} | {c['verifier_sev']} "
+                f"| {c['restored_floor']} | {c['basis']} |\n"
+            )
+        (scratchpad / "external_assumption_undemotions.md").write_text(
+            "".join(lines), encoding="utf-8"
+        )
+        # NOTE: the in-body keep + human-review obligation is carried by the
+        # [UNPROVEN-EXTERNAL] verify-file stamp (read by the existing
+        # `_unproven_external_stamped` consume block, which floors the finding
+        # in-body at proven severity) plus this ledger. report_index runs AFTER
+        # verify, so an explicit verification_queue re-emit here could not
+        # re-verify same-run anyway; on a rerun the gate simply re-fires and
+        # re-flags. A canonical `_write_queue_subset_manifest` re-emit (never
+        # `route_promotion_orphans`, whose schema/dispositions are for
+        # promotion→report routing, not queue re-emit) is a possible future
+        # enhancement, tracked separately with its own fixture.
+    return fired
 
 
 # Per-ecosystem assertion vocabulary. Each ecosystem's "any" / "nontrivial" /
