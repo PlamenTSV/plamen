@@ -3450,10 +3450,10 @@ def _archive_orphan_stubs(
     return archive_dir
 
 
-_VERIFY_HINT_ID_RE = re.compile(
-    r"\b(?:INV|H|M|L|C|MED|LOW|INFO|CH|DCOV|SLITHER|DEPTH-[A-Z]+)-\d+\b",
-    re.IGNORECASE,
-)
+# Retry-hint sharding must understand the same identity surface as the queue
+# and mapping parsers. A narrower local expression previously truncated
+# ``L1-H-12`` to ``H-12`` and missed split/group families entirely.
+_VERIFY_HINT_ID_RE = _INTERNAL_FINDING_ID_RE
 
 
 _SEMANTIC_DEDUP_PASSTHROUGH_PREFIX = (
@@ -3679,27 +3679,9 @@ def _write_dedup_absorbed_map(
     return n
 
 
-# Column 1 = source finding ID, column 2 = mapped hypothesis ID. The hypothesis
-# column is NOT restricted to ``H-``/``CH-`` — real pipelines emit severity-
-# prefixed hypothesis IDs (``HC-01``, ``HH-01``, ``HM-01``, ``HL-``, ``HI-``,
-# ``CH-``). Accepting any ``<PREFIX>-<num>`` token here is RECALL-SAFE for the
-# coverage seed: it only ever ADDS the column-1 source IDs to the superset (a
-# narrower pattern silently dropped every INV-* source ID whenever the
-# hypothesis prefix was multi-letter, which is the common case).
-# Finding-mapping rows are `| <source-id> | <hypothesis-id> |`. IDs span many
-# formats across modes: SC `INV-041`/`H-22`/`CH-1`/`HL-05`, and L1
-# severity-encoded `H-C01`/`H-M27`/`L1-H-12`. A `[A-Za-z]+-\d+` pattern silently
-# DROPS the severity-encoded L1 forms (digits not immediately after the dash) →
-# coverage-seed under-counts an L1 report. Match the general ID shape instead:
-# starts with a letter, contains at least one dash, ends with a digit (so any
-# letter/number-segmented ID is captured), per feedback_id_regex_catalog
-# (catalog ALL formats; permissive capture, not prefix enumeration).
-_FINDING_MAPPING_ROW_RE = re.compile(
-    r"^\|\s*([A-Za-z][A-Za-z0-9-]*\d)\s*\|\s*([A-Za-z][A-Za-z0-9-]*\d)\s*\|",
-    re.MULTILINE,
-)
-
-
+# R0-2b: finding_mapping is consumed only through the canonical typed parser.
+# ID breadth comes from its central hypothesis grammar; table identity comes
+# from R0-2a's header roles, never from permissive whole-row regex scanning.
 def _write_report_index_coverage_seed(scratchpad: Path) -> int:
     """Write the driver-owned ``report_index_coverage_seed.md``.
 
@@ -3750,15 +3732,23 @@ def _write_report_index_coverage_seed(scratchpad: Path) -> int:
         pass
 
     # 3. finding_id -> hypothesis_id from finding_mapping.md (bounded).
-    hyp_map: dict[str, str] = {}
+    hyp_map: dict[str, list[str]] = {}
+    mapping_hypothesis_ids: set[str] = set()
     try:
         fm_path = scratchpad / "finding_mapping.md"
         if fm_path.is_file():
             fm_text = fm_path.read_text(encoding="utf-8", errors="replace")
-            for m in _FINDING_MAPPING_ROW_RE.finditer(fm_text):
-                hyp_map.setdefault(
-                    m.group(1).strip().upper(), m.group(2).strip().upper()
-                )
+            for row in parse_finding_mapping_rows(fm_text):
+                source_ids = [str(fid).upper() for fid in row["source_ids"]]
+                hypothesis_ids = [
+                    str(fid).upper() for fid in row["hypothesis_ids"]
+                ]
+                mapping_hypothesis_ids.update(hypothesis_ids)
+                for source_id in source_ids:
+                    targets = hyp_map.setdefault(source_id, [])
+                    for hypothesis_id in hypothesis_ids:
+                        if hypothesis_id not in targets:
+                            targets.append(hypothesis_id)
     except Exception:
         pass
 
@@ -3784,6 +3774,7 @@ def _write_report_index_coverage_seed(scratchpad: Path) -> int:
     all_ids.update(sev_map.keys())
     all_ids.update(verdict_map.keys())
     all_ids.update(hyp_map.keys())
+    all_ids.update(mapping_hypothesis_ids)
     for absorbed, info in absorbed_map.items():
         all_ids.add(absorbed)
         surv = (info or {}).get("survivor", "")
@@ -3816,7 +3807,7 @@ def _write_report_index_coverage_seed(scratchpad: Path) -> int:
     for fid in sorted(all_ids, key=lambda x: x.upper()):
         sev = sev_map.get(fid, "")
         verdict = verdict_map.get(fid, "")
-        hyp = hyp_map.get(fid, "")
+        hyp = ", ".join(hyp_map.get(fid, []))
         relation = ""
         if fid in absorbed_map:
             surv = (absorbed_map[fid] or {}).get("survivor", "")
@@ -3863,7 +3854,7 @@ def _write_report_index_coverage_seed(scratchpad: Path) -> int:
                         sev_map.get(fid, ""), queue_sev_map.get(fid, "")
                     ),
                     "verdict": verdict_map.get(fid, ""),
-                    "hyp": hyp_map.get(fid, ""),
+                    "hyp": ", ".join(hyp_map.get(fid, [])),
                     "absorbed_map": absorbed_map,
                 }
                 for fid in sorted(all_ids, key=lambda x: x.upper())
@@ -4440,23 +4431,38 @@ def _propagate_dedup_absorbed_to_finding_mapping(scratchpad: Path) -> int:
 
     # Build survivor_id -> hypothesis_id from existing finding_mapping rows:
     #   | <finding_id> | <hypothesis_id> | <status> | <notes> |
-    # Both columns use the widened / unified ID shapes so severity-encoded L1
-    # hypothesis IDs (H-C01, HC-01, L1-H-12) and multi-segment finding IDs are
-    # not silently skipped — the same ID-format-too-narrow drop class fixed for
-    # the AXIS/CI promoters. Column 2 reuses _ID_HYPO_ALTS (no capture groups).
-    row_re = re.compile(
-        r"^\|\s*([A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)\s*\|\s*(" + _ID_HYPO_ALTS + r")\s*\|",
-        re.MULTILINE,
-    )
-    survivor_to_hyp: dict[str, str] = {}
+    # The canonical typed parser supplies both column roles and the unified ID
+    # grammar. Status/Notes citations cannot manufacture a lineage edge.
+    survivor_to_hyp: dict[str, list[str]] = {}
     existing_finding_ids: set[str] = set()
-    for m in row_re.finditer(fm_text):
-        fid = m.group(1).strip().upper()
-        hid = m.group(2).strip().upper()
-        existing_finding_ids.add(fid)
-        survivor_to_hyp.setdefault(fid, hid)
+    for row in parse_finding_mapping_rows(fm_text):
+        source_ids = [str(fid).upper() for fid in row["source_ids"]]
+        hypothesis_ids = [str(fid).upper() for fid in row["hypothesis_ids"]]
+        for fid in source_ids:
+            existing_finding_ids.add(fid)
+            targets = survivor_to_hyp.setdefault(fid, [])
+            for hid in hypothesis_ids:
+                if hid not in targets:
+                    targets.append(hid)
+
+    # A survivor can be absent because chain has not assigned it an active
+    # hypothesis. Preserve those relations in a separate typed diagnostic
+    # table (the driver sidecar is authoritative) instead of inventing an
+    # invalid or collision-prone hypothesis identity.
+    fallback_relations: dict[str, str] = {}
+    for match in re.finditer(
+        r"(?im)^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*"
+        r"DEDUP_UNMAPPED_SURVIVOR\s*\|",
+        fm_text,
+    ):
+        existing = _normalize_finding_id(match.group(1))
+        survivor = _normalize_finding_id(match.group(2))
+        if existing and survivor:
+            fallback_relations[existing] = survivor
 
     new_rows: list[str] = []
+    fallback_rows: list[str] = []
+    resolved_fallback_ids: set[str] = set()
     propagated = 0
     for absorbed, info in sorted(mapping.items()):
         survivor = info.get("survivor", "")
@@ -4465,28 +4471,56 @@ def _propagate_dedup_absorbed_to_finding_mapping(scratchpad: Path) -> int:
         if absorbed in existing_finding_ids:
             # Already mapped (e.g., chain re-added it); leave as-is.
             continue
-        hid = survivor_to_hyp.get(survivor)
-        if not hid:
-            # Survivor itself isn't in finding_mapping (chain dropped/renamed
-            # it). Fall back to a self-hypothesis row so the absorbed lineage
-            # is still recorded — never silently drop.
-            hid = survivor_to_hyp.get(survivor.upper()) or "H-DEDUP"
+        hypothesis_ids = survivor_to_hyp.get(survivor.upper(), [])
+        if not hypothesis_ids:
+            if absorbed in fallback_relations:
+                # The unresolved diagnostic already durably records this edge.
+                continue
+            coupled = (info.get("coupled") or "").replace("|", "/").strip()
+            note = "survivor has no active hypothesis mapping"
+            if coupled:
+                note += f"; coupled: {coupled}"
+            fallback_rows.append(
+                f"| {absorbed} | {survivor.upper()} | "
+                f"DEDUP_UNMAPPED_SURVIVOR | {note} |"
+            )
+            propagated += 1
+            continue
+        if absorbed in fallback_relations:
+            resolved_fallback_ids.add(absorbed)
         coupled = (info.get("coupled") or "").replace("|", "/").strip()
         note = (
             f"DEDUP_CONSTITUENT of {survivor}"
             + (f"; coupled: {coupled}" if coupled else "")
         )
         new_rows.append(
-            f"| {absorbed} | {hid} | DEDUP_ABSORBED | {note} |"
+            f"| {absorbed} | {', '.join(hypothesis_ids)} | "
+            f"DEDUP_ABSORBED | {note} |"
         )
         propagated += 1
 
-    if new_rows:
-        addition = (
-            "\n<!-- dedup-absorbed constituents propagated by driver -->\n"
-            + "\n".join(new_rows)
-            + "\n"
-        )
+    if new_rows or fallback_rows:
+        for absorbed in sorted(resolved_fallback_ids):
+            fm_text = re.sub(
+                rf"(?im)^(\|\s*{re.escape(absorbed)}\s*\|\s*[^|]+\|\s*)"
+                r"DEDUP_UNMAPPED_SURVIVOR(\s*\|)",
+                r"\1DEDUP_DIAGNOSTIC_RESOLVED\2",
+                fm_text,
+            )
+        chunks = ["\n<!-- dedup-absorbed constituents propagated by driver -->"]
+        if new_rows:
+            chunks.extend([
+                "| Finding ID | Hypothesis ID(s) | Mapping Status | Notes |",
+                "|------------|------------------|----------------|-------|",
+                *new_rows,
+            ])
+        if fallback_rows:
+            chunks.extend([
+                "| Dedup Absorbed ID | Unmapped Survivor ID | Mapping Status | Notes |",
+                "|-------------------|----------------------|----------------|-------|",
+                *fallback_rows,
+            ])
+        addition = "\n".join(chunks) + "\n"
         fm_path.write_text(fm_text.rstrip("\n") + "\n" + addition, encoding="utf-8")
     return propagated
 

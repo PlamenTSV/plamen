@@ -63,6 +63,8 @@ def test_coverage_seed_includes_finding_mapping_hypotheses(tmp_path):
     _write_queue(tmp_path, [("INV-020", "High")])
     (tmp_path / "finding_mapping.md").write_text(
         "# Finding Mapping\n\n"
+        "| Finding ID | Hypothesis ID | Mapping Status | Notes |\n"
+        "|------------|---------------|----------------|-------|\n"
         "| INV-020 | H-5 | confirmed | note |\n"
         "| VS-1 | H-7 | confirmed | note |\n",
         encoding="utf-8",
@@ -80,7 +82,10 @@ def test_coverage_seed_never_drops_an_id(tmp_path):
     # distinct IDs in any single source.
     _write_queue(tmp_path, [("INV-100", "High"), ("INV-101", "Medium")])
     (tmp_path / "finding_mapping.md").write_text(
-        "# Finding Mapping\n\n| INV-102 | H-1 | confirmed | n |\n", encoding="utf-8",
+        "# Finding Mapping\n\n"
+        "| Finding ID | Hypothesis ID | Mapping Status | Notes |\n"
+        "|------------|---------------|----------------|-------|\n"
+        "| INV-102 | H-1 | confirmed | n |\n", encoding="utf-8",
     )
     (tmp_path / "dedup_decisions.md").write_text(
         "# Dedup Decisions\n\n| INV-103 | MERGED into INV-100 | c | n |\n",

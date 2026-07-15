@@ -132,7 +132,10 @@ class TestAntiAbsorption:
         if override_text:
             hyp_body += f"\n## {hyp_id} details\n\nAnti-absorption override: {override_text}\n"
         (scratch / "hypotheses.md").write_text(hyp_body, encoding="utf-8")
-        fm_lines = ["| Source | Hypothesis |\n"]
+        fm_lines = [
+            "| Source | Hypothesis |\n",
+            "|--------|------------|\n",
+        ]
         for c in constituents:
             fm_lines.append(f"| {c[0]} | {hyp_id} |\n")
         (scratch / "finding_mapping.md").write_text("".join(fm_lines), encoding="utf-8")
@@ -395,6 +398,8 @@ class TestPerConstituentDemotion:
             encoding="utf-8",
         )
         (scratch / "finding_mapping.md").write_text(
+            "| Finding ID | Hypothesis ID |\n"
+            "|------------|---------------|\n"
             "| INV-001 | GRP-M-001 |\n"
             "| INV-002 | GRP-M-001 |\n"
             "| INV-003 | GRP-M-001 |\n",

@@ -64,6 +64,13 @@ __all__ = [
     "_ID_HYPO_ALTS",
     "_ID_NICHE_ALTS",
     "_ID_TOOL_ALTS",
+    "HYPOTHESIS_ID_PATTERN",
+    "HYPOTHESIS_ID_RE",
+    "is_hypothesis_id",
+    "extract_hypothesis_ids",
+    "normalize_hypothesis_id_token",
+    "is_public_report_id",
+    "parse_split_parent_hypothesis_id",
     "_parse_skeptic_judge_table",
     "read_judge_decisions_json_sidecar",
     "write_judge_decisions_json_sidecar",
@@ -275,7 +282,7 @@ __all__ = [
 _ID_DEPTH_ALTS = (
     r"DEPTH-[A-Z]+-\d+|DEPTH-CI-\d+|DEPTH-NS-\d+|DEPTH-ST-\d+|DEPTH-EC-\d+|"
     r"DEPTH-DA[0-9]*-\d+|"
-    r"BLIND-\d+|VS-\d+|EN-\d+|SE-\d+|"
+    r"BLIND-\d+|VS-\d+|EN-\d+|SE-\d+|DS-\d+|DE-\d+|DT-\d+|"
     # CI-\d+ = committed-invariant block IDs emitted by the skeptic/depth phases
     # (M1). Cataloged explicitly so completeness gates never silently zero the
     # committed-invariant provenance carried on INVARIANT-sourced candidates.
@@ -307,10 +314,120 @@ _ID_NICHE_ALTS = (
 # constituent expansion, and 70%+ of inventory IDs appear "missing" at
 # sc_verify_queue. See ~/.plamen/rules/phase4c-chain-prompt.md for the
 # documented taxonomy.
-_ID_HYPO_ALTS = (
-    r"H-[CHMLI]?\d+|CH-\d+|L1-[CHMLI]-\d+|CC-\d+|F-\d+|[CHMLI]-\d{1,3}"
-    r"|GRP-\d+|H[CHMLI]-\d+"
+# R0-2b identity contract. Keep the BODY capture-free because it is embedded
+# in larger consumer regexes. `GRP-NN[A-Z]` is the exact identity emitted by
+# anti-absorption splits: the suffix is part of the ID, not decoration and not
+# an instruction to rewrite the ID back to its parent group.
+HYPOTHESIS_ID_PATTERN = (
+    r"(?:L1-[CHMLI]-\d+|GRP-\d+[A-Z]?|H[CHMLI]-\d+|"
+    r"H-[CHMLI]?\d+|CH-\d+|CC-\d+|F-\d+|[CHMLI]-\d{1,3})"
 )
+
+# Backward-compatible embedding name. This is deliberately an alias to the
+# canonical grammar rather than a separately maintained expression.
+_ID_HYPO_ALTS = HYPOTHESIS_ID_PATTERN
+
+_ASCII_ID_LEFT = r"(?<![A-Za-z0-9_-])"
+_ASCII_ID_RIGHT = r"(?![A-Za-z0-9_-])"
+HYPOTHESIS_ID_RE = re.compile(
+    _ASCII_ID_LEFT + r"(?P<id>" + HYPOTHESIS_ID_PATTERN + r")" + _ASCII_ID_RIGHT,
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def is_hypothesis_id(value: str) -> bool:
+    """Return whether *value* is exactly one canonical hypothesis ID.
+
+    ASCII identifier boundaries intentionally include hyphen and underscore;
+    therefore `GRP-022A-tail` and `GRP-022A_more` cannot be accepted by a
+    consumer through prefix matching.
+    """
+    return bool(HYPOTHESIS_ID_RE.fullmatch((value or "").strip()))
+
+
+def extract_hypothesis_ids(text: str) -> list[str]:
+    """Extract canonical hypothesis IDs in document order, upper-cased."""
+    return [m.group("id").upper() for m in HYPOTHESIS_ID_RE.finditer(text or "")]
+
+
+_LEGACY_GROUP_HYPOTHESIS_ID_RE = re.compile(
+    r"GRP-([CHMLI])-(\d{1,3})", re.IGNORECASE | re.ASCII
+)
+
+
+def normalize_hypothesis_id_token(value: str) -> str:
+    """Normalize a complete structured hypothesis-ID cell or return ``''``.
+
+    ``GRP-[CHMLI]-NNN`` is a deprecated serialization envelope from historical
+    typed tables.  It is accepted only through this structured-cell boundary
+    and immediately canonicalized to ``[CHMLI]-NNN``.  It is deliberately not
+    part of :data:`HYPOTHESIS_ID_PATTERN`, is never minted into the ledger, and
+    is not recognized when embedded in prose or headings.
+    """
+    token = _strip_md(value or "").strip()
+    if len(token) >= 2 and token[0] == "[" and token[-1] == "]":
+        token = token[1:-1].strip()
+    legacy_group = _LEGACY_GROUP_HYPOTHESIS_ID_RE.fullmatch(token)
+    if legacy_group:
+        token = f"{legacy_group.group(1)}-{legacy_group.group(2)}"
+    return token.upper() if is_hypothesis_id(token) else ""
+
+
+# Backward-compatible internal name used by older parser call sites.
+_normalize_hypothesis_id_token = normalize_hypothesis_id_token
+
+
+def is_public_report_id(
+    value: str,
+    *,
+    public_report_ids: set[str] | None = None,
+    internal_hypothesis_ids: set[str] | None = None,
+) -> bool:
+    """Return whether a canonical-looking severity ID is client-report shaped.
+
+    C/M/L/I numeric IDs are public report IDs.  H is intentionally narrower:
+    only the established two-digit ``H-NN`` shape is public, while ``H-N`` and
+    ``H-NNN+`` are internal hypotheses and must remain private. At artifacts
+    where namespace membership is known, explicit public membership wins and
+    explicit internal membership overrides the ambiguous H-NN shape.
+    """
+    fid = (value or "").strip().upper()
+    match = re.fullmatch(r"([CHMLI])-(\d+)", fid, re.IGNORECASE)
+    if not match:
+        return False
+    if public_report_ids is not None:
+        # Once the artifact supplies authoritative report membership, shape is
+        # no longer evidence. An undefined H-NN cross-reference remains an
+        # internal-looking leak rather than being laundered by two digits.
+        return fid in {item.upper() for item in public_report_ids}
+    if internal_hypothesis_ids is not None and fid in {
+        item.upper() for item in internal_hypothesis_ids
+    }:
+        return False
+    prefix, digits = match.groups()
+    return prefix.upper() != "H" or len(digits) == 2
+
+
+def parse_split_parent_hypothesis_id(status: str) -> str:
+    """Return the parent from an explicit ``SPLIT from <ID>`` status clause.
+
+    This is intentionally not an ID search. Status/Notes prose may cite many
+    unrelated IDs; only the machine relation creates a parent-union lookup
+    alias. The clause may be the complete status or a parenthetical qualifier
+    on a disposition, e.g. ``PRIMARY (SPLIT from H-22, anti-absorption)``.
+    """
+    clause_re = re.compile(
+        r"(?<![A-Za-z0-9_-])SPLIT\s+from\s+(?P<id>"
+        + HYPOTHESIS_ID_PATTERN
+        + r")(?![A-Za-z0-9_-])",
+        re.IGNORECASE | re.ASCII,
+    )
+    parents = {
+        match.group("id").upper() for match in clause_re.finditer(status or "")
+    }
+    if len(parents) != 1:
+        return ""
+    return next(iter(parents))
 
 # DAML/Canton internal finding-ID prefixes (DML- namespace; collision-free vs
 # the report-strip list, the DT/DS/DE/DX depth IDs, and DA=Devil's-Advocate).
@@ -1068,12 +1185,14 @@ _FINDING_MAPPING_HEADER_ROLES: dict[str, dict[str, int]] = {
         "source_finding": 1,
         "constituent_finding": 1,
         "constituent": 1,
+        "finding": 2,
         # Legacy two-column tables use `Source | Hyp`.  This is intentionally
         # weakest so a provenance column named Source cannot beat Finding ID.
         "source": 2,
     },
     "hypothesis": {
         "hypothesis_id": 0,
+        "hypothesis_id_s": 0,
         "mapped_hypothesis_id": 0,
         "internal_hypothesis_id": 0,
         "hypothesis": 1,
@@ -1126,11 +1245,14 @@ def _finding_mapping_cell_ids(cell: str, *, hypothesis: bool) -> tuple[str, ...]
         token = part.strip()
         if len(token) >= 2 and token[0] == "[" and token[-1] == "]":
             token = token[1:-1].strip()
-        if not token or not _INTERNAL_FINDING_ID_RE.fullmatch(token):
-            return ()
-        fid = token.upper()
-        if hypothesis and not re.fullmatch(_ID_HYPO_ALTS, fid, re.IGNORECASE):
-            return ()
+        if hypothesis:
+            fid = normalize_hypothesis_id_token(token)
+            if not fid:
+                return ()
+        else:
+            if not token or not _INTERNAL_FINDING_ID_RE.fullmatch(token):
+                return ()
+            fid = token.upper()
         if fid not in found:
             found.append(fid)
     return tuple(found)
@@ -1236,8 +1358,8 @@ _QUEUE_HEADER_ALIASES = {
 
 # v2.4.3: derived from unified _ID_* components above.
 _FINDING_ID_EXTRACT_RE = re.compile(
-    r"\b(" + _ID_ALL_INTERNAL + r")\b",
-    re.IGNORECASE,
+    _ASCII_ID_LEFT + r"(" + _ID_ALL_INTERNAL + r")" + _ASCII_ID_RIGHT,
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -1263,6 +1385,17 @@ def _normalize_finding_id(raw: str) -> str:
     if link:
         s = link.group(1)
     s = s.strip("`*_[]() ")
+    verify_wrapper = re.fullmatch(r"verify_(.+?)\.md", s, re.IGNORECASE)
+    if verify_wrapper:
+        # A verification filename is an explicit serialization envelope, not
+        # an identifier token boundary. Unwrap it before canonical matching so
+        # strict ASCII boundaries do not suppress its embedded exact ID.
+        s = verify_wrapper.group(1)
+    legacy_group = re.fullmatch(
+        r"GRP-([CHMLI])-(\d{1,3})", s.replace("_", "-"), re.IGNORECASE
+    )
+    if legacy_group:
+        return f"{legacy_group.group(1).upper()}-{legacy_group.group(2)}"
     m = _FINDING_ID_EXTRACT_RE.search(s.replace("_", "-"))
     return m.group(1).upper() if m else ""
 
@@ -2606,21 +2739,135 @@ def _filter_sc_verification_queue_by_mode(scratchpad: Path, mode: str) -> int:
 # ---------------------------------------------------------------------------
 
 _HYPO_HEADING_RE = re.compile(
-    r"^\s*#{2,4}\s+(?:(?:Chain\s+)?Hypothesis\s+)?"
-    r"(\bH-[CHMLI]?\d+\b|\bCH-\d+\b|\bL1-[CHMLI]-\d+\b"
-    r"|\bGRP-\d+\b|\bH[CHMLI]-\d+\b)",  # F1: SC grouped + severity-bucketed
-    re.MULTILINE | re.IGNORECASE,
+    r"^\s*#{2,4}\s+"
+    r"(?:(?:Chain\s+)?Hypothesis\s+|Finding\s+\[?)?"
+    r"(" + HYPOTHESIS_ID_PATTERN + r")" + _ASCII_ID_RIGHT,
+    re.MULTILINE | re.IGNORECASE | re.ASCII,
 )
 
 
+def _record_finding_mapping_parse_health(
+    scratchpad: Path,
+    text: str,
+    parsed_rows: list[dict[str, object]],
+) -> None:
+    """Surface every rejected mapping row without guessing relation edges.
+
+    A table with the typed source/hypothesis header contract is checked row by
+    row using the same strict cell grammar as the authoritative parser.  Any
+    nonempty row that the parser refuses is loud, including a malformed row
+    beside valid relations.  Separately, the narrow legacy/headerless signal is
+    preserved for rows whose first two cells are already complete IDs.  This
+    function records parse health only; it never returns or manufactures an
+    edge.
+    """
+    sentinel = scratchpad / "finding_mapping_parse.degraded"
+    lines = _llm_norm(text).splitlines()
+    typed_rejected = 0
+    typed_data_lines: set[int] = set()
+
+    i = 0
+    while i + 1 < len(lines):
+        header_line = lines[i].strip()
+        separator_line = lines[i + 1].strip()
+        if not header_line.startswith("|") or not _is_separator_row(separator_line):
+            i += 1
+            continue
+        headers = [
+            _normalize_manifest_header(cell)
+            for cell in _split_markdown_table_row(header_line)
+        ]
+        source_idx = _finding_mapping_role_index(headers, "source")
+        hypothesis_idx = _finding_mapping_role_index(headers, "hypothesis")
+        if (
+            source_idx is None
+            or hypothesis_idx is None
+            or source_idx == hypothesis_idx
+        ):
+            i += 2
+            continue
+
+        j = i + 2
+        while j < len(lines):
+            row_line = lines[j].strip()
+            if not row_line.startswith("|"):
+                break
+            if j + 1 < len(lines) and _is_separator_row(lines[j + 1].strip()):
+                break
+            if _is_separator_row(row_line):
+                j += 1
+                continue
+            typed_data_lines.add(j)
+            cells = _split_markdown_table_row(row_line)
+            if not any(_strip_md(cell).strip() for cell in cells):
+                j += 1
+                continue
+            if max(source_idx, hypothesis_idx) >= len(cells):
+                typed_rejected += 1
+                j += 1
+                continue
+            source_ids = _finding_mapping_cell_ids(
+                cells[source_idx], hypothesis=False
+            )
+            hypothesis_ids = _finding_mapping_cell_ids(
+                cells[hypothesis_idx], hypothesis=True
+            )
+            if not source_ids or not hypothesis_ids:
+                typed_rejected += 1
+            j += 1
+        i = max(j, i + 2)
+
+    headerless_candidates = 0
+    for line_index, line in enumerate(lines):
+        if line_index in typed_data_lines:
+            continue
+        stripped = line.strip()
+        if not stripped.startswith("|") or _is_separator_row(stripped):
+            continue
+        cells = _split_markdown_table_row(stripped)
+        if len(cells) < 2:
+            continue
+        if (
+            _finding_mapping_cell_ids(cells[0], hypothesis=False)
+            and _finding_mapping_cell_ids(cells[1], hypothesis=True)
+        ):
+            headerless_candidates += 1
+
+    if typed_rejected or headerless_candidates:
+        try:
+            sentinel.write_text(
+                "Status: DEGRADED_UNTYPED_MAPPING\n"
+                f"Accepted typed relation rows: {len(parsed_rows)}\n"
+                f"Typed mapping rejected data rows: {typed_rejected}\n"
+                f"Headerless candidate relation rows: {headerless_candidates}\n"
+                "No relation was inferred from rejected rows. Repair malformed "
+                "cells or the Markdown header and separator.\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+    elif sentinel.exists():
+        try:
+            sentinel.unlink()
+        except OSError:
+            pass
+
+
 def _parse_hypothesis_constituents(
-    scratchpad: Path, standalone_severities: dict[str, str] | None = None
+    scratchpad: Path,
+    standalone_severities: dict[str, str] | None = None,
+    *,
+    include_split_parent_aliases: bool = False,
 ) -> dict[str, list[str]]:
     """Parse hypothesis → constituent finding ID mapping.
 
     Tries finding_mapping.md first (table: constituent → hypothesis).
     Falls back to hypotheses.md (section headings + body scan for INV-* IDs).
-    Returns {hypothesis_id: [constituent_id, ...]}.
+    Returns {hypothesis_id: [constituent_id, ...]}. By default this contains
+    only exact active owners. ``include_split_parent_aliases=True`` adds the
+    union under an explicitly declared pre-split parent for lookup consumers
+    such as R10; enumeration, repair, coverage, and anti-absorption callers
+    must use the default so a retired parent cannot be re-minted.
 
     ``standalone_severities`` ({finding ID: severity} for findings that appear as
     their own rows) is forwarded to ``_parse_chain_constituents`` so a "justified"
@@ -2628,32 +2875,59 @@ def _parse_hypothesis_constituents(
     severity) is still linked for collapse (precision fix #2).
     """
     mapping: dict[str, list[str]] = {}
+    split_parent_children: dict[str, list[str]] = {}
+
+    def _finalize_split_identity() -> dict[str, list[str]]:
+        """Remove retired parents from active identity; optionally add unions.
+
+        The union is derived only after every exact child source has merged, so
+        later typed tables and hypotheses/chain links cannot be omitted. Any
+        stale parent section in hypotheses.md is replaced, never extended.
+        """
+        for parent_id, child_ids in split_parent_children.items():
+            mapping.pop(parent_id, None)
+            if not include_split_parent_aliases:
+                continue
+            union: list[str] = []
+            for child_id in child_ids:
+                for source_id in mapping.get(child_id, []):
+                    if source_id not in union:
+                        union.append(source_id)
+            if union:
+                mapping[parent_id] = union
+        return mapping
 
     # --- Source 1: finding_mapping.md (preferred, written by Chain Agent 1)
     fm = scratchpad / "finding_mapping.md"
     if fm.exists():
         try:
             text = _llm_norm(fm.read_text(encoding="utf-8", errors="replace"))
-            # Expected format: table rows with finding ID in one column,
-            # hypothesis ID in another. Scan for both.
-            for line in text.splitlines():
-                if not line.strip().startswith("|"):
-                    continue
-                cells = [c.strip() for c in line.strip("|").split("|")]
-                if len(cells) < 2:
-                    continue
-                # Find all internal IDs in the row
-                ids_in_row: list[str] = []
-                hypo_in_row: list[str] = []
-                for cell in cells:
-                    for m in re.finditer(r"\b((?:" + _ID_ALL_INTERNAL + r"))\b", cell, re.IGNORECASE):
-                        fid = m.group(1).upper()
-                        if re.match(r"^(?:" + _ID_HYPO_ALTS + r")$", fid, re.IGNORECASE):
-                            hypo_in_row.append(fid)
-                        else:
-                            ids_in_row.append(fid)
-                for h in hypo_in_row:
-                    mapping.setdefault(h, []).extend(ids_in_row)
+            parsed_mapping_rows = parse_finding_mapping_rows(text)
+            _record_finding_mapping_parse_health(
+                scratchpad, text, parsed_mapping_rows
+            )
+            for row in parsed_mapping_rows:
+                source_ids = [str(fid).upper() for fid in row["source_ids"]]
+                hypothesis_ids = [
+                    str(fid).upper() for fid in row["hypothesis_ids"]
+                ]
+                # Child split IDs own their exact constituents. The original
+                # parent remains only a union lookup alias so pre-split R10 and
+                # report references still resolve. No arbitrary status/Notes
+                # cell scanning is permitted to manufacture that relation.
+                for hypothesis_id in hypothesis_ids:
+                    existing = mapping.setdefault(hypothesis_id, [])
+                    existing.extend(
+                        fid for fid in source_ids if fid not in existing
+                    )
+                parent_id = parse_split_parent_hypothesis_id(
+                    str(row.get("status", ""))
+                )
+                if parent_id:
+                    children = split_parent_children.setdefault(parent_id, [])
+                    for hypothesis_id in hypothesis_ids:
+                        if hypothesis_id != parent_id and hypothesis_id not in children:
+                            children.append(hypothesis_id)
         except Exception:
             pass
 
@@ -2678,12 +2952,12 @@ def _parse_hypothesis_constituents(
     hyp = scratchpad / "hypotheses.md"
     if not hyp.exists():
         _merge_chain_links()
-        return mapping
+        return _finalize_split_identity()
     try:
         text = _llm_norm(hyp.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         _merge_chain_links()
-        return mapping
+        return _finalize_split_identity()
 
     # Source 2a: hypotheses.md tables. Chain hypotheses are commonly table
     # rows (`CH-1 | ... | H-10, H-11 | ...`) rather than section headings.
@@ -2698,11 +2972,11 @@ def _parse_hypothesis_constituents(
             for row in rows:
                 if max(h_idx, s_idx) >= len(row):
                     continue
-                hypo_id = _normalize_finding_id(row[h_idx]) or row[h_idx].strip().upper()
+                hypo_id = _normalize_hypothesis_id_token(row[h_idx])
                 if not hypo_id:
                     continue
                 constituents: list[str] = []
-                for m in re.finditer(r"\b(" + _ID_ALL_INTERNAL + r")\b", row[s_idx], re.IGNORECASE):
+                for m in _INTERNAL_ID_RE.finditer(row[s_idx]):
                     fid = m.group(1).upper()
                     if fid != hypo_id and fid not in constituents:
                         constituents.append(fid)
@@ -2721,9 +2995,9 @@ def _parse_hypothesis_constituents(
         section = text[start:end]
         # Extract all non-hypothesis internal IDs from the section body
         constituents: list[str] = []
-        for m in re.finditer(r"\b(" + _ID_ALL_INTERNAL + r")\b", section, re.IGNORECASE):
+        for m in _INTERNAL_ID_RE.finditer(section):
             fid = m.group(1).upper()
-            if not re.match(r"^(?:" + _ID_HYPO_ALTS + r")$", fid) and fid not in constituents:
+            if not is_hypothesis_id(fid) and fid not in constituents:
                 constituents.append(fid)
         if constituents:
             mapping.setdefault(hypo_id, []).extend(
@@ -2733,7 +3007,7 @@ def _parse_hypothesis_constituents(
     # --- Source 3 (chain): merge chain_hypotheses.md links (see closure above).
     _merge_chain_links()
 
-    return mapping
+    return _finalize_split_identity()
 
 
 # Prose anchors per phase4c-chain-prompt.md "Chain Hypothesis Format":
@@ -3099,27 +3373,30 @@ def _dedup_queue_by_hypothesis(scratchpad: Path) -> int:
     if not mapping:
         return 0
 
-    # Build reverse map: constituent_id → hypothesis_id
-    constituent_to_hypo: dict[str, str] = {}
+    # Build a reverse multimap from each constituent to every active hypothesis.
+    constituent_to_hypos: dict[str, list[str]] = {}
     for hypo_id, constituents in mapping.items():
         # Map the hypothesis/chain ID to ITSELF so a queue row carrying the
         # hypothesis ID (e.g. a CH-* chain row) joins its own group rather than
         # staying solo — otherwise an unjustified chain's inflated row survives
         # alongside the collapsed constituent representative.
-        constituent_to_hypo.setdefault(hypo_id.upper(), hypo_id)
+        self_targets = constituent_to_hypos.setdefault(hypo_id.upper(), [])
+        if hypo_id not in self_targets:
+            self_targets.append(hypo_id)
         for cid in constituents:
-            # First mapping wins (a finding shouldn't be in two hypotheses)
-            if cid not in constituent_to_hypo:
-                constituent_to_hypo[cid] = hypo_id
+            targets = constituent_to_hypos.setdefault(cid, [])
+            if hypo_id not in targets:
+                targets.append(hypo_id)
 
     # Group rows by hypothesis (unmapped rows stay solo)
     groups: dict[str, list[dict[str, str]]] = {}
     solo: list[dict[str, str]] = []
     for row in rows:
         fid = (row.get("finding id") or "").upper()
-        hypo = constituent_to_hypo.get(fid)
-        if hypo:
-            groups.setdefault(hypo, []).append(row)
+        hypos = constituent_to_hypos.get(fid, [])
+        if hypos:
+            for hypo in hypos:
+                groups.setdefault(hypo, []).append(dict(row))
         else:
             solo.append(row)
 
@@ -3182,14 +3459,17 @@ def _dedup_queue_by_hypothesis(scratchpad: Path) -> int:
 
     original_count = len(rows)
     _write_queue_subset_manifest(queue_path, final)
-    return original_count - len(final)
+    # Multi-target fan-out can make the final queue larger. This return value is
+    # a legacy "removed" metric, so never report a negative dedup count.
+    return max(0, original_count - len(final))
 
 
 # v2.4.3: derived from unified _ID_* components. Callers run this on
 # report-index table cells (non-zero positions) so [CHMLI]-\d{1,3}
 # matches internal hypothesis IDs, not report IDs in column 0.
 _INTERNAL_ID_RE = re.compile(
-    r"\b(" + _ID_ALL_INTERNAL + r")\b", re.IGNORECASE
+    _ASCII_ID_LEFT + r"(" + _ID_ALL_INTERNAL + r")" + _ASCII_ID_RIGHT,
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -3400,11 +3680,12 @@ def _parse_report_index_summary_counts(scratchpad: Path) -> dict[str, int]:
 
 
 _SKEPTIC_DOWNGRADE_RE = re.compile(
-    r"\b(L1-[CHMLI]-\d+|H-[CHMLI]?\d+|CH-\d+|CC-\d+|F-\d+)\b[^\n→]{0,160}?"
+    _ASCII_ID_LEFT + r"(" + HYPOTHESIS_ID_PATTERN + r")" + _ASCII_ID_RIGHT
+    + r"[^\n→]{0,160}?"
     r"(?:Crit(?:ical)?|High|Med(?:ium)?|Low|Info(?:rmational)?)\s*"
     r"(?:→|->|to)\s*"
     r"(Crit(?:ical)?|High|Med(?:ium)?|Low|Info(?:rmational)?)",
-    re.IGNORECASE,
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -3881,12 +4162,23 @@ def _sanitize_client_title(title: str) -> str:
     return s or "Verified finding"
 
 
-# v2.4.3: derived from _ID_ALL_NONHYPO — all internal IDs except bare
-# [CHMLI]-\d{1,3} (which are report IDs in the client-facing body).
+# R0-2b: sanitization uses the canonical internal-token matcher. Ambiguous
+# client report IDs are retained by the replacement predicate below, not by a
+# second partial hypothesis grammar.
 _CLIENT_BODY_INTERNAL_ID_RE = re.compile(
-    r"\b(" + _ID_ALL_NONHYPO + r"|CH-\d+|H-[CHMLI]\d+|H-(?:[1-9]|\d{3,}))\b",
-    re.IGNORECASE,
+    _ASCII_ID_LEFT
+    + r"(?!(?:[CMLI]-\d{1,3}|H-\d{2})" + _ASCII_ID_RIGHT + r")"
+    + r"(" + _ID_ALL_INTERNAL + r")" + _ASCII_ID_RIGHT,
+    re.IGNORECASE | re.ASCII,
 )
+
+
+def _client_internal_id_replacement(match: re.Match[str]) -> str:
+    """Sanitize internal IDs while retaining ambiguous public report IDs."""
+    fid = match.group(1).upper()
+    if is_public_report_id(fid):
+        return match.group(0)
+    return "upstream finding"
 
 
 def _sanitize_client_body(text: str) -> str:
@@ -3897,7 +4189,7 @@ def _sanitize_client_body(text: str) -> str:
         text or "",
         flags=re.IGNORECASE,
     )
-    clean = _CLIENT_BODY_INTERNAL_ID_RE.sub("upstream finding", clean)
+    clean = _CLIENT_BODY_INTERNAL_ID_RE.sub(_client_internal_id_replacement, clean)
     # Drop internal-status narration the body writer sometimes leaks into prose.
     # The manifest's report_blocked flag is meant to drive a heading tag the
     # assembler strips, NOT client-facing sentences. Remove whole sentences

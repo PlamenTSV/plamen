@@ -2193,7 +2193,9 @@ def _verification_queue_parity_sets(
     # v2.4.9: hypothesis-aware expansion.  _dedup_queue_by_hypothesis collapses
     # INV-NNN rows into H-N representative rows.  Expand H-N/CH-N back to their
     # constituent INV-NNN IDs so the parity check works across ID namespaces.
-    hypo_map = _parse_hypothesis_constituents(scratchpad)
+    hypo_map = _parse_hypothesis_constituents(
+        scratchpad, include_split_parent_aliases=True
+    )
     expanded_ids: set[str] = set(active_ids)
     mapped_hypos: set[str] = set()
     for aid in active_ids:
@@ -7105,10 +7107,6 @@ def _parse_hypothesis_id_title_pairs(text: str) -> list[tuple[str, str]]:
     """
     from plamen_parsers import _HYPO_HEADING_RE
     pairs: list[tuple[str, str]] = []
-    table_id_re = re.compile(
-        r"^(H-[CHMLI]?\d+|CH-\d+|L1-[CHMLI]-\d+|GRP-\d+|H[CHMLI]-\d+)$",
-        re.IGNORECASE,
-    )
     for line in text.splitlines():
         m = _HYPO_HEADING_RE.match(line)
         if not m:
@@ -7123,8 +7121,12 @@ def _parse_hypothesis_id_title_pairs(text: str) -> list[tuple[str, str]]:
             cells = [c.strip() for c in stripped.strip("|").split("|")]
             if not cells:
                 continue
-            tm = table_id_re.fullmatch(cells[0])
-            if not tm:
+            # Structured tables retain read compatibility with the deprecated
+            # GRP-[CHMLI]-NNN envelope; normalize it immediately and never
+            # mint the legacy spelling. Prose/headings intentionally require
+            # the canonical grammar.
+            table_id = normalize_hypothesis_id_token(cells[0])
+            if not table_id:
                 continue
             title = ""
             for cell in cells[1:]:
@@ -7135,7 +7137,7 @@ def _parse_hypothesis_id_title_pairs(text: str) -> list[tuple[str, str]]:
                     continue
                 title = cell
                 break
-            pairs.append((tm.group(1).upper(), title))
+            pairs.append((table_id, title))
             continue
         fid = m.group(1).upper()
         # Everything after the matched ID on the heading is the title;
@@ -7162,7 +7164,6 @@ def _parse_chain_agent2_id_title_pairs(text: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     seen: set[str] = set()
     ch_re = re.compile(r"^CH-\d+$", re.IGNORECASE)
-    source_re = re.compile(r"\bH-\d+\b", re.IGNORECASE)
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("|") and stripped.count("|") >= 2:
@@ -7179,8 +7180,9 @@ def _parse_chain_agent2_id_title_pairs(text: str) -> list[tuple[str, str]]:
                 continue
             source_ids: list[str] = []
             for cell in cells[1:]:
-                for m in source_re.finditer(cell):
-                    sid = m.group(0).upper()
+                for sid in extract_hypothesis_ids(cell):
+                    if sid == fid:
+                        continue
                     if sid not in source_ids:
                         source_ids.append(sid)
             title = " + ".join(source_ids) if source_ids else " | ".join(cells[1:4])
@@ -7201,6 +7203,20 @@ def _parse_chain_agent2_id_title_pairs(text: str) -> list[tuple[str, str]]:
         pairs.append((fid, title))
         seen.add(fid)
     return pairs
+
+
+def _is_chain_agent1_mint_id(finding_id: str) -> bool:
+    """Whether ``hypotheses.md`` may allocate *finding_id* for chain agent 1.
+
+    The artifact can contain appended composition rows and public report-shaped
+    references. Those are consumers, not chain-agent1 mints. This filter keeps
+    ownership phase-specific while retaining every documented hypothesis family
+    owned by agent 1, including split GRP suffixes and L1/H-prefixed forms.
+    """
+    fid = (finding_id or "").strip().upper()
+    if not is_hypothesis_id(fid):
+        return False
+    return not bool(re.fullmatch(r"(?:CH|CC|F)-\d+|[CMLI]-\d{1,3}", fid))
 
 
 def _validate_id_ledger_collisions(
@@ -7239,7 +7255,10 @@ def _validate_id_ledger_collisions(
     if phase_name == "chain_agent2":
         pairs = _parse_chain_agent2_id_title_pairs(text)
     else:
-        pairs = _parse_hypothesis_id_title_pairs(text)
+        pairs = [
+            pair for pair in _parse_hypothesis_id_title_pairs(text)
+            if _is_chain_agent1_mint_id(pair[0])
+        ]
     if not pairs:
         return []
     from plamen_parsers import _id_ledger_load, _id_ledger_save, id_ledger_register
@@ -7356,8 +7375,9 @@ def _validate_consumer_ids_in_ledger(
         r.get("id", "").upper() for r in id_ledger_all_records(scratchpad)
         if r.get("id")
     }
-    if not ledger_ids:
-        # Ledger empty — could be a legacy audit (pre-v2.0.6). Silent skip.
+    fresh_audit = scratchpad_is_fresh_audit(scratchpad)
+    if not ledger_ids and not fresh_audit:
+        # Preserve empty-ledger tolerance only for pre-marker legacy audits.
         return []
     if phase_name == "skeptic":
         referenced = _skeptic_structural_id_references(scratchpad)
@@ -7369,19 +7389,31 @@ def _validate_consumer_ids_in_ledger(
         referenced = {
             m.group(1).upper() for m in _INTERNAL_FINDING_ID_RE.finditer(text)
         }
-    # Filter out internal/report-tier IDs that this gate doesn't validate:
-    # - M-NN, L-NN, C-NN, H-NN, I-NN (report tier IDs, minted at report_index)
+    # Filter out report-tier IDs that this gate doesn't validate:
+    # - M-NN, L-NN, C-NN, I-NN (report tier IDs, minted at report_index)
+    # - H-NN only when it is structurally present in the report-ID column.
+    #   Else H-NN is an internal hypothesis and must trace to the ledger.
     # - CH-NN (chain hypothesis IDs from chain_agent2)
     # The ledger SHOULD know about CH-* but report-tier IDs are post-mapping
     # and not part of the same namespace.
     import re as _re
-    report_tier_re = _re.compile(r"^[CHMLI]-\d+$")
+    report_tier_re = _re.compile(r"^[CMLI]-\d+$")
     auxiliary_scope_re = _re.compile(r"^AB-\d+$")
-    fresh_audit = scratchpad_is_fresh_audit(scratchpad)
+    public_report_ids: set[str] = set()
+    if phase_name == "report_index":
+        try:
+            public_report_ids = {
+                str(row.get("report_id") or "").upper()
+                for row in parse_report_index_assignments(scratchpad)
+                if row.get("report_id")
+            }
+        except Exception:
+            public_report_ids = set()
     finding_refs = {
         r for r in referenced
         if (
             not report_tier_re.match(r)
+            and r not in public_report_ids
             and not auxiliary_scope_re.match(r)
             and (fresh_audit or not r.startswith("INV-"))
         )
@@ -7593,10 +7625,25 @@ _PRODUCED_ARTIFACT_GLOBS: tuple[str, ...] = (
 # launder a collision). Everything else (agent-source / breadth-worker
 # namespaces like CMI-/CC-/CCT-/CR-/DEX-/TF-/...) is minted by workers the ledger
 # does not track, so artifact presence is the legitimate registration signal.
-_LEDGER_OWNED_ID_RE = re.compile(
-    r"^(?:H-\d+|H[CHMLI]-\d+|GRP-\d+|CH-\d+|INV-\d+)$",
-    re.IGNORECASE,
-)
+def _is_ledger_owned_id(ref: str) -> bool:
+    """True for driver/chain mints that artifact presence cannot launder.
+
+    R0-2b split policy: `GRP-NN[A-Z]` is registered verbatim by the chain
+    collision gate. It is a distinct chain-owned reference/mint; the numeric
+    allocator continues to consider only unsuffixed `GRP-NN` allocations.
+    Worker-owned CC/F IDs and public report-tier C/H/M/L/I IDs retain their
+    existing handling.
+    """
+    ref = (ref or "").strip().upper()
+    if re.fullmatch(r"INV-\d+", ref, re.IGNORECASE):
+        return True
+    if not is_hypothesis_id(ref):
+        return False
+    if re.fullmatch(r"[CHMLI]-\d+", ref, re.IGNORECASE):
+        # H-NN remains ambiguous with public report IDs in consumer artifacts;
+        # preserve the pre-R0-2b consumer filtering behavior below.
+        return ref.startswith("H-")
+    return not ref.startswith(("CC-", "F-"))
 
 
 def _id_present_in_produced_artifact(
@@ -7609,13 +7656,13 @@ def _id_present_in_produced_artifact(
     is a legitimate agent-source/chain ID, not contamination — regardless of its
     prefix. The consumer's own output (`exclude_artifact`) is skipped so a
     self-reference cannot launder a hallucinated ID. Ledger-OWNED minting
-    namespaces (`_LEDGER_OWNED_ID_RE`) are NOT accepted via this path — they must
+    namespaces (`_is_ledger_owned_id`) are NOT accepted via this path — they must
     trace to the ledger so a stale artifact cannot launder a mint collision.
     """
     ref = (ref or "").strip().upper()
     if not ref:
         return None
-    if _LEDGER_OWNED_ID_RE.match(ref):
+    if _is_ledger_owned_id(ref):
         return None
     token_re = re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(ref)}(?![A-Za-z0-9_-])")
     seen: set[str] = set()
@@ -10984,8 +11031,8 @@ def _rewrite_public_report_references(
     ref_re = re.compile(
         r"(?i)\b(?:see|related to|duplicate of|duplicates|same as|"
         r"cross-reference|cross reference|absorbed by|absorbs)\b"
-        r"(?P<mid>[^\n]{0,120}?)(?P<id>H-\d{1,3}|CH-\d{1,3}|"
-        r"HM-\d{1,3}|HL-\d{1,3}|HI-\d{1,3})"
+        r"(?P<mid>[^\n]{0,120}?)(?<![A-Za-z0-9_-])"
+        r"(?P<id>" + HYPOTHESIS_ID_PATTERN + r")(?![A-Za-z0-9_-])"
     )
 
     def repl(match: re.Match[str]) -> str:
@@ -12989,6 +13036,23 @@ def _write_promotion_dropout_retry_hint(
         return None
 
 
+def _report_internal_hypothesis_ids(
+    text: str,
+    *,
+    public_report_ids: set[str] | None = None,
+    internal_hypothesis_ids: set[str] | None = None,
+) -> list[str]:
+    """Return hypotheses not proven to be public report identities."""
+    return [
+        fid for fid in extract_hypothesis_ids(text)
+        if not is_public_report_id(
+            fid,
+            public_report_ids=public_report_ids,
+            internal_hypothesis_ids=internal_hypothesis_ids,
+        )
+    ]
+
+
 def _run_report_quality_gate(
     scratchpad: Path, project_root: str
 ) -> list[str]:
@@ -13204,9 +13268,6 @@ def _run_report_quality_gate(
     from plamen_parsers import _ID_ALL_NONHYPO
     internal_id_patterns = [
         rf"\b(?:{_ID_ALL_NONHYPO})\b",
-        r"\bCH-\d+\b",
-        r"\bH-[CHMLI]\d+\b",
-        r"\bH-(?:[1-9]|\d{3,})\b",
         r"\bverify_[A-Za-z0-9_\-\[\].]+\.md\b",
     ]
     # Body-only checks still exclude Appendix A for finding-section accounting.
@@ -13258,6 +13319,24 @@ def _run_report_quality_gate(
 
     leaked = []
     valid_report_ids = {rid.upper() for rid in body_report_ids}
+    # Canonical hypothesis grammar catches GRP split suffixes and every chain
+    # form without another hand-maintained regex. The shared public-ID policy
+    # retains C/M/L/I-N and exactly two-digit H-NN report IDs; single-digit and
+    # 3+-digit H identities remain private hypotheses.
+    internal_hypothesis_ids = {
+        str(record.get("id") or "").upper()
+        for record in id_ledger_all_records(scratchpad)
+        if record.get("id")
+    }
+    for assignment in assignments:
+        internal_hypothesis_ids.update(
+            extract_hypothesis_ids(str(assignment.get("finding_id") or ""))
+        )
+    leaked.extend(_report_internal_hypothesis_ids(
+        rtxt,
+        public_report_ids=valid_report_ids,
+        internal_hypothesis_ids=internal_hypothesis_ids,
+    ))
     for pat in internal_id_patterns:
         hits = re.findall(pat, rtxt, flags=re.IGNORECASE)
         if hits:
@@ -21004,7 +21083,9 @@ def _apply_poc_fail_demotions(scratchpad: Path, mode: str) -> list[dict[str, str
     # Lazy-load hypothesis constituent mapping + inventory meta (Fix 4)
     try:
         from plamen_parsers import _parse_hypothesis_constituents
-        hyp_constituents = _parse_hypothesis_constituents(scratchpad)
+        hyp_constituents = _parse_hypothesis_constituents(
+            scratchpad, include_split_parent_aliases=True
+        )
     except Exception:
         hyp_constituents = {}
     try:
@@ -21402,7 +21483,9 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
     # is a hypothesis id and inventory uses INV-NNN. {} on absent mapping =>
     # _aggregate_depth_verdict falls through to the verifier-side gates.
     try:
-        hyp_constituents = _parse_hypothesis_constituents(scratchpad)
+        hyp_constituents = _parse_hypothesis_constituents(
+            scratchpad, include_split_parent_aliases=True
+        )
     except Exception:
         hyp_constituents = {}
 
