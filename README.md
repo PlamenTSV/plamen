@@ -313,7 +313,7 @@ normally never need to open it; `AUDIT_REPORT.md` is the deliverable. See
 
 Highlights since v2.1.0 — recall-focused mechanical gates and cross-platform hardening, not a change to *what* the agents analyze:
 
-- **M2 multi-axis coverage meta-pass, now 6 axes** — a driver-owned hot-function set is checked across orthogonal analysis axes (including a caller-identity / authorization-subject axis), detecting gaps only from the closed depth-evidence-tag vocabulary so ambiguity resolves to "gap," never to false confidence.
+- **M2 multi-axis coverage meta-pass, now 6 axes** — in Thorough mode, a deterministic driver-owned hot-function matrix checks orthogonal analysis axes (including caller identity / authorization subject). Closed structured evidence is primary and bounded Description/Impact cues are secondary; ambiguity still resolves to `GAP`. A Sonnet worker runs only when the prepass emits GAP rows.
 - **Mechanical recall gates** — sibling/variant-coverage, external-dependency research-with-citation, and pipeline promotion-completeness are now graph-grounded, append-only gates instead of advisory prose, each routing low-confidence candidates through the existing verify-then-report filter rather than asserting a body finding directly.
 - **Force-by-default PoC gate** — any finding with a concrete material harm is now forced into an executable proof-of-concept attempt unless a small closed set of code-grounded blockers applies, closing a self-declared-skip loophole across every supported ecosystem.
 - **Non-EVM PoC execution hardened** — cargo-workspace test discovery for Rust-based ecosystems, plus a fixed PoC-registry lookup that had silently missed on non-EVM dispatch.

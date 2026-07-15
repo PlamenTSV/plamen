@@ -47,6 +47,25 @@ def _setup(tmp_path: Path, finding_body: str) -> Path:
     return sp
 
 
+def _coverage_setup(tmp_path: Path, required: list[str], body: str) -> Path:
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    (sp / "_enumeration_obligations.json").write_text(
+        json.dumps({"obligations": [{
+            "finding_id": "INV-001",
+            "function": "entry",
+            "symbol": "sharedState",
+            "required_corefs": required,
+        }]}),
+        encoding="utf-8",
+    )
+    (sp / "findings_inventory.md").write_text(
+        _inv(_finding("INV-001", "Module.ext:L10", body)),
+        encoding="utf-8",
+    )
+    return sp
+
+
 def test_emits_enumgap_for_unaddressed_coreferencer(tmp_path: Path):
     eg = _eg()
     # finding about withdrawERC721 mentions lpId but NOT createMarket -> gap
@@ -69,6 +88,36 @@ def test_no_gap_when_coreferencer_is_addressed(tmp_path: Path):
     res = eg.run_enumeration_gate(sp)
     assert res["emitted"] == 0
     assert "ENUMGAP" not in (sp / "findings_inventory.md").read_text(encoding="utf-8")
+
+
+def test_coreferencer_substring_settlement_does_not_cover_settle(tmp_path: Path):
+    eg = _eg()
+    sp = _coverage_setup(tmp_path, ["settle"], "The settlement path is bounded.")
+    assert eg.compute_coverage_gaps(sp)[0]["missing"] == ["settle"]
+
+
+def test_coreferencer_identifier_suffix_does_not_cover_base_name(tmp_path: Path):
+    eg = _eg()
+    sp = _coverage_setup(tmp_path, ["foo"], "The foo_v2 path is analyzed.")
+    assert eg.compute_coverage_gaps(sp)[0]["missing"] == ["foo"]
+
+
+def test_coreferencer_exact_and_backticked_names_are_covered(tmp_path: Path):
+    eg = _eg()
+    sp = _coverage_setup(
+        tmp_path, ["settle", "foo"],
+        "The SETTLE path and the `foo` helper are both analyzed.",
+    )
+    assert eg.compute_coverage_gaps(sp) == []
+
+
+def test_coreferencer_qualified_terminal_names_are_covered(tmp_path: Path):
+    eg = _eg()
+    sp = _coverage_setup(
+        tmp_path, ["settle", "foo"],
+        "Review Module.settle() together with Namespace::foo().",
+    )
+    assert eg.compute_coverage_gaps(sp) == []
 
 
 def test_idempotent(tmp_path: Path):

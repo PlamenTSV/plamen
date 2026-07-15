@@ -83,14 +83,16 @@ One driver module extension + one soft phase decl + one deriver-worker prompt (c
 - Fallback: "all external state-mutating functions" if `function_summary.md` absent (degrade, never halt). ~55 lines.
 
 #### 2.2.2 `scripts/enumeration_gate.py` — NEW `compute_axis_coverage_gaps(scratchpad) -> list[dict]`
-- Builds the `function × axis` matrix over the hot set. Detects **axis-examined mechanically from the CLOSED depth-evidence tag vocabulary** (never prose-attested):
+- Builds the `function × axis` matrix over the hot set. The shipped implementation treats CLOSED structured depth-evidence as the primary signal and narrowly bounded Description/Impact cues as a secondary signal for tag-light findings:
   | Axis | Mechanical EXAMINED signal at f's locus |
   |------|-----------------------------------------|
   | theft | `[TRACE:…→transfer/mint/withdraw]` OR Postcondition Type `BALANCE`/`ACCESS` |
   | liveness/DoS | `[TRACE:…→revert]` OR `[BOUNDARY:…]` → revert/lock; Material-Harm names liveness |
   | accounting/arithmetic | `[VARIATION:…]` OR `[BOUNDARY:…]` on numeric param; `[REGRESS:…]` |
-  | provenance/freshness | `[EXTERNAL-ASSUMPTION:…]` OR `[CROSS-DOMAIN-DEP: external]`; staleness/oracle cite |
+  | provenance/freshness | `[EXTERNAL-ASSUMPTION:…]` OR a trace anchored to a staleness/provenance cue; `[CROSS-DOMAIN-DEP: external]` is an admission, not EXAMINED |
   | zero/boundary | `[BOUNDARY:X=0/1/MAX]` |
+  | identity | access postcondition or a caller/subject authority cue anchored to a trace |
+- Secondary coverage is limited to the existing mechanical cue regexes in Description/Impact (plus stated BALANCE/ACCESS postcondition types); arbitrary prose does not attest coverage. No cue remains `GAP`.
 - Enclosing-function mapping via `_fn_at_location` (@L137). Cell → `EXAMINED` / `N/A` (mechanically provable: pure view + no value-effect regex ⇒ theft `N/A`) / `GAP`. **Ambiguous ⇒ GAP not EXAMINED** (recall-safe default).
 - Writes `hot_function_axes.md` + `_hot_function_axes.json`. Returns the `GAP` rows. ~90 lines.
 
@@ -127,7 +129,7 @@ One driver module extension + one soft phase decl + one deriver-worker prompt (c
 ### 3.1 New artifacts
 | Artifact | Writer | Contents |
 |----------|--------|----------|
-| `hot_function_axes.md` + `_hot_function_axes.json` | driver (`compute_hot_function_set`+`compute_axis_coverage_gaps`) | one row per hot function × 5 axis cells (`EXAMINED`/`N/A`/`GAP`) |
+| `hot_function_axes.md` + `_hot_function_axes.json` | driver (`compute_hot_function_set`+`compute_axis_coverage_gaps`) | one row per hot function × 6 axis cells (`EXAMINED`/`N/A`/`GAP`) |
 | `axis_coverage_findings.md` | axis-deriver worker (or stub) | standard-format findings for GAP cells |
 | `.ci_gap`, `.axis_gap` sentinels | soft validators | visibility markers, warning-only |
 
@@ -220,9 +222,9 @@ Applying the Part-0 gating test ("teaches a general method, or names a specific 
 |---------|-----------|---------|
 | 6 invariant shapes (M1) | generic relational forms, symbols resolved at locus at runtime | HOW ✓ |
 | Falsify Class ladder | mechanism-agnostic fuzzer routing | HOW ✓ |
-| 5 orthogonal axes (M2) | question-shapes ("can value leave to an unauthorized party?") | HOW ✓ |
+| 6 orthogonal axes (M2) | question-shapes ("can value leave to an unauthorized party?") | HOW ✓ |
 | Hot-function predicate | derived from graph metrics (#callers/writes/ELEVATE/effect-regex), never a hardcoded fn list | HOW ✓ |
-| Axis-EXAMINED detection | closed depth-evidence tag vocabulary, no free-text answer | HOW ✓ |
+| Axis-EXAMINED detection | structured evidence primary; bounded generic Description/Impact cues secondary; ambiguity remains GAP | HOW ✓ |
 | CI/AXIS candidates | emitted at runtime from live graph/verdicts; nothing stored | HOW ✓ |
 - **No stored findings**: neither mechanism persists a bug description, finding ID, or file:line. Memory records only recall%/precision%/RC-counts.
 - **No same-contest priming**: validation scores against the target's own GT + `_realdata`, never a `*-judging` repo; RAG (if it fires) uses generic vuln-class queries only.

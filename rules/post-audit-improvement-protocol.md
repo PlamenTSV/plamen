@@ -232,7 +232,8 @@ cleared the RC-AGENT-MECHANIZABLE escape hatch (Step 2.5) routes directly to:
 
 ```
 RC-AGENT miss + M1 + M2 + M3 + M4 all PASS
-  → [CHANGE TYPE: mechanical-gate, ~10-30 lines, low risk — isolated to driver code]
+  → [CHANGE TYPE: mechanical-gate; scope and risk set by the owning seam and
+     lifecycle review, never inferred from line count]
 ```
 
 `mechanical-gate` changes are implemented ONLY in the Python driver layer
@@ -243,6 +244,51 @@ an agent prompt to explain a NEW concept the agent must apply, the change is
 not `mechanical-gate` — reclassify under the normal tree (most likely
 `new-rule`) or back it out to RC-AGENT/no-fix.
 
+#### Mandatory Mechanical-Gate Lifecycle Registry and Review Contract
+
+Every proposed or shipped mechanical gate MUST have exactly one registry record
+in the improvement proposal or the canonical gate registry. Do not create a
+per-gate methodology document. A gate is a protocol component, not a presumed
+10–30-line/low-risk patch: identity joins, parser changes, phase ordering, and
+report disposition can make a short predicate system-wide and high risk.
+
+Each registry record MUST define:
+
+1. **Identity and seam** — stable gate ID/name, owning phase/hook, execution
+   order, owner, and an independent reviewer who did not author the gate.
+2. **Purpose and direction** — generic miss class, whether the gate generates,
+   reconciles, caps, floors, flags, or routes, and the monotonicity claim.
+3. **Input/output contract** — authoritative artifacts and schema versions,
+   identifier/join rules, emitted artifacts/receipts, and downstream consumers.
+4. **M1–M4 evidence** — recurrence evidence, proof the predicate is
+   deterministic without model judgment, Part-0 genericity result, and the
+   verify-filter boundary. Passing M1–M4 admits design review; it does not prove
+   the implementation safe.
+5. **Failure/degrade contract** — behavior for absent, malformed, stale, split,
+   duplicate, or contradictory inputs; haltless behavior must surface UNKNOWN or
+   human review and must not masquerade as CLEAR.
+6. **Runtime and cost envelope** — expected and worst-case work, caps/truncation
+   receipts, phase budget, and any external/tool/worker cost.
+7. **Evidence for release** — fixture-first red→green cases, precision no-fire
+   controls, idempotence/resume and fault-injection coverage, blast-radius tests,
+   and held-out replay evidence separate from the audit that motivated the gate.
+8. **False-fire budget** — a measurable maximum count/rate on the named held-out
+   corpus, the observation window, and the action when exceeded (disable,
+   narrow, or return to review). Zero observed fires is evidence only for that
+   corpus, not a universal guarantee.
+9. **Consolidation relationship** — overlapping gates, shared parsers/ledgers,
+   why this belongs at this seam, and the merge/replace plan if another gate
+   subsumes it.
+10. **Review and sunset** — lifecycle state, review date/owner, telemetry to
+    inspect, and explicit retirement criteria (superseded, persistently noisy,
+    unused, or no longer justified by recurrence evidence).
+
+Lifecycle states are `PROPOSED → FIXTURED → SHADOW/REPLAY → ACTIVE →
+CONSOLIDATED|SUNSET`. Promotion to `ACTIVE` requires independent review of the
+record and diff. The motivating audit is regression evidence only; it cannot be
+the sole held-out validation. Any schema/cutover change reopens review at
+`PROPOSED`, even when the predicate itself is unchanged.
+
 ### Change Type Risk Tiers
 
 | Type | Lines | Files Modified | Regression Risk |
@@ -252,7 +298,7 @@ not `mechanical-gate` — reclassify under the normal tree (most likely
 | extend | ~3-10 | 1-9 (per-tree) | Medium |
 | new-injectable | ~50-100 | 1 new + skill-index | Medium (isolated) |
 | new-rule | ~20-40 | 4-8 (security-rules + enforcement) | High |
-| mechanical-gate | ~10-30 | 1 (driver only) | Low (isolated, no agent judgment) |
+| mechanical-gate | Measured, not presumed | Owning seam + shared schema/parser/tests as required | Seam-dependent; high for identity, disposition, or cutover changes |
 
 ### Anti-Bloat Gates (MANDATORY before any `extend` or higher)
 
@@ -368,6 +414,7 @@ Each proposed change goes through this template before implementation:
 - **Type**: {trigger-fix | extend | new-injectable | new-rule | rag-entry | mechanical-gate}
 - **Files modified**: {list with line count deltas}
 - **Total lines added/removed**: +{N} / -{N}
+- **Mechanical-gate registry ID/state**: {required for mechanical-gate; otherwise N/A}
 
 ## Anti-Bloat Gates
 - [ ] Line budget: No file exceeds cap after change
@@ -443,6 +490,7 @@ When running this protocol after an audit:
 - [ ] Determine change type
 - [ ] Run anti-bloat gates
 - [ ] Apply methodology test (HOW vs WHAT)
+- [ ] For a mechanical gate: complete its lifecycle registry record and independent review plan
 - [ ] Fill out improvement proposal
 - [ ] **User approval required** before any implementation
 
@@ -479,5 +527,5 @@ When running this protocol after an audit:
 | extend (per-tree) | 4-9 | 12-90 | Yes | Medium |
 | new-injectable | 1-5 new | 50-100 | Per-language | Low (isolated) |
 | new-rule | 4-8 | 80-320 | Yes | High |
-| mechanical-gate | 1 (driver) | 10-30 | No | Low (isolated) |
+| mechanical-gate | Owning seam + shared contracts/tests | Measured | No methodology-tree duplication | Seam-dependent; highest at identity/disposition/cutover seams |
 | new-scanner-check | 4 | 12-40 | Yes | Medium |

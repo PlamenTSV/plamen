@@ -272,8 +272,15 @@ def compute_coverage_gaps(scratchpad: Path) -> list[dict]:
         b = blocks.get(o["finding_id"])
         if not b:
             continue
-        text = (b.get("block", "") or "").lower()
-        missing = [c for c in o["required_corefs"] if c.lower() not in text]
+        text = b.get("block", "") or ""
+        missing = [
+            c for c in o["required_corefs"]
+            if not re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(c)}(?![A-Za-z0-9_])",
+                text,
+                re.IGNORECASE,
+            )
+        ]
         if missing:
             gaps.append({**o, "missing": missing})
     return gaps
@@ -1369,11 +1376,12 @@ def compute_invariant_assertion_candidates(scratchpad: Path) -> list:
 # M2 closes gaps ACROSS functions: it ranks the mechanically-hot functions, builds
 # a `function × axis` completeness matrix, and — for orthogonal risk axes that were
 # never examined at a hot function's locus — spawns a targeted deriver-worker.
-# Axis-EXAMINED is read ONLY from the CLOSED depth-evidence tag vocabulary (never
-# prose-attested); an AMBIGUOUS cell defaults to GAP (recall-safe). The hot set is
-# DRIVER-OWNED and DETERMINISTIC so the LLM cannot clobber the target set — the
-# property that makes the gate load-bearing. Generic: axes + hotness predicate are
-# question-shapes, never a protocol/token/function signature.
+# Axis-EXAMINED uses the CLOSED depth-evidence tag vocabulary as its PRIMARY
+# signal, with narrowly bounded Description/Impact cues as a SECONDARY signal
+# for tag-light findings. An AMBIGUOUS cell still defaults to GAP (recall-safe).
+# The hot set is DRIVER-OWNED and DETERMINISTIC so the LLM cannot clobber the
+# target set — the property that makes the gate load-bearing. Generic: axes +
+# hotness predicate are question-shapes, never a protocol/token/function signature.
 
 _MAX_HOT_FUNCTIONS = 40          # mirrors _MAX_ENUMGAP_PER_RUN; budget lands on core
 _CALLER_THRESHOLD = 2            # "hot" caller count floor (a fn ≥2 callers is core)
@@ -1772,8 +1780,9 @@ def _axis_na(hf: dict, axis: str) -> bool:
 def compute_axis_coverage_gaps(scratchpad: Path) -> list:
     """M2. Build the `function × axis` matrix over the hot set. For each hot
     function, map every value-bearing finding block whose locus resolves to that
-    function, and mark each axis EXAMINED / N/A / GAP from the CLOSED depth-evidence
-    tag vocabulary (ambiguous ⇒ GAP). Writes `hot_function_axes.md` +
+    function, and mark each axis EXAMINED / N/A / GAP using CLOSED structured
+    evidence as the primary signal plus bounded Description/Impact cues as a
+    secondary signal (ambiguous ⇒ GAP). Writes `hot_function_axes.md` +
     `_hot_function_axes.json`. Returns the GAP rows: list of
     {function, loc, axis, lang}. Never raises; empty on failure."""
     try:
@@ -1886,8 +1895,9 @@ def compute_axis_coverage_gaps(scratchpad: Path) -> list:
         try:
             lines = ["# Hot-Function × Axis Coverage Matrix", "",
                      f"> {len(hot)} hot function(s) ranked mechanically; {len(gaps)} "
-                     "GAP cell(s). Axis-EXAMINED is read from the CLOSED depth-evidence "
-                     "tag vocabulary only; an ambiguous cell defaults to GAP "
+                     "GAP cell(s). Axis-EXAMINED uses CLOSED structured evidence "
+                     "as the primary signal and bounded Description/Impact cues "
+                     "as a secondary signal; an ambiguous cell defaults to GAP "
                      "(recall-safe). N/A is a mechanically-provable exclusion.", "",
                      "| Function | Location | " + " | ".join(a for a in _AXES) + " |",
                      "|----------|----------|" + "|".join("---" for _ in _AXES) + "|"]

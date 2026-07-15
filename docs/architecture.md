@@ -136,7 +136,7 @@ Worker-pool phase (`_run_depth_worker_pool_pty`, `scripts/plamen_driver.py:10265
 
 **Confidence scoring** (sonnet, batched): 4-axis model (Evidence x 0.25 + Consensus x 0.25 + Analysis Quality x 0.3 + RAG Match x 0.2).
 
-**Axis-coverage meta-pass** (mechanical, no LLM, all modes): deterministically ranks the codebase's mechanically-hot functions (fan-in, state-writes, privilege, value-movement signals) and cross-checks each against a fixed risk-axis matrix (theft / liveness / accounting / provenance / boundary / identity), so a hot function never examined against a given risk axis becomes a gap candidate instead of silently passing. Part of the [Mechanical Recall Gates](#mechanical-recall-gates) layer below.
+**Axis-coverage meta-pass** (Thorough only; deterministic prepass plus a conditional Sonnet worker): the driver deterministically ranks mechanically-hot functions (fan-in, state-writes, privilege, value-movement signals), persists a fixed risk-axis matrix (theft / liveness / accounting / provenance / boundary / identity), and skips the worker when every cell is `EXAMINED` or mechanically `N/A`. Structured depth-evidence tags are the primary coverage signal; narrowly bounded cues in finding Description/Impact fields are a secondary signal for tag-light ecosystems. Ambiguous cells remain `GAP`. Only when at least one GAP exists does the Sonnet worker interrogate those cells and propose additive candidates for the normal dedup/verify funnel. Core and Light do not run this phase. Part of the [Mechanical Recall Gates](#mechanical-recall-gates) layer below.
 
 ### Phase 4b.6: Exploration-Completeness Skeptic (Thorough only)
 
@@ -188,7 +188,8 @@ verify its own compliance). Three families:
   candidates for co-referencing functions never examined, unaddressed
   boundary values, unpaired symmetric operations, and un-asserted local
   invariants a confirmed/refuted finding implicitly relies on. This family
-  includes the axis-coverage meta-pass described under Phase 4b above.
+  includes the deterministic worklist half of the Thorough-only axis-coverage
+  meta-pass; its conditional Sonnet worker proposes findings only for GAP cells.
 - **Gates** (`enumeration_gate.py`, `plamen_mechanical.py`,
   `mechanical_verify.py`) — reconcile candidate or harvested findings against
   the coverage seed or actual verifier execution and route survivors into the
