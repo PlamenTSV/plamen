@@ -1,6 +1,6 @@
 # Plamen (v2.2.4)
 
-Autonomous Web3 security auditor for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](https://github.com/openai/codex).
+Autonomous web3 security auditor for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](https://github.com/openai/codex).
 
 Orchestrates 18-100 AI agents across 40+ phases to produce audit reports with verified PoC exploits — for **smart contracts** and **L1 node-client infrastructure**.
 
