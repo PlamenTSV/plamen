@@ -213,11 +213,11 @@ def test_f1_fires(tmp_path):
 
 
 # ===========================================================================
-# F1b — FIRES via stability cue (H-22 shape: no tag, no return-trust cue,
-#       demotion rests purely on assumed within-window time-invariance)
+# F1b — NO FIRE via stability cue alone (R10.1 defect 5): no mapped external
+#       provenance means the language may describe an internal invariant.
 # ===========================================================================
 
-def test_f1b_stability_cue_fires(tmp_path):
+def test_f1b_stability_cue_without_external_provenance_no_fire(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     _queue(sp, [("INV-901", "Low", "unit")])
@@ -231,11 +231,10 @@ def test_f1b_stability_cue_fires(tmp_path):
     _research_stub(sp)
 
     fired = V._apply_external_assumption_undemotions(sp, "core")
-    assert "INV-901" in {f["finding_id"] for f in fired}
+    assert "INV-901" not in {f["finding_id"] for f in fired}
     vtxt = (sp / "verify_INV-901.md").read_text(encoding="utf-8")
-    assert "[UNPROVEN-EXTERNAL]" in vtxt
-    sev = V._expected_report_index_severities(sp)
-    assert sev.get("INV-901") == "Low"
+    assert "[UNPROVEN-EXTERNAL]" not in vtxt
+    assert not (sp / "external_assumption_undemotions.md").exists()
 
 
 # ===========================================================================

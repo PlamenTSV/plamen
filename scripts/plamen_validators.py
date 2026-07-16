@@ -17872,6 +17872,111 @@ def _external_bestcase_stability_demotion(content: str) -> bool:
     return bool(_EXTERNAL_STABILITY_DEMOTION_RE.search(_llm_norm(content or "")))
 
 
+_SOURCE_BACKED_LOCATION_RE = re.compile(
+    r"(?:^|[\s`(])(?:[A-Za-z]:)?[\w./\\-]+\.[A-Za-z0-9]+"
+    r"(?::L?\d+(?:-\d+)?)?",
+    re.IGNORECASE,
+)
+_EXTERNAL_PROVENANCE_MARKER_RE = re.compile(
+    r"\[\s*external-assumption\s*:|\bneeds_dependency_research\s*:",
+    re.IGNORECASE,
+)
+_EXTERNAL_DISMISSAL_RE = re.compile(
+    r"\b(?:safe|harmless|defensive|redundant|not\s+exploitable|"
+    r"no\s+(?:harm|impact|loss|divergence)|harm\s+(?:does\s+not|cannot)|"
+    r"cannot\s+(?:materialize|occur|differ)|does\s+not\s+materialize)\b",
+    re.IGNORECASE,
+)
+_EXTERNAL_CAUSAL_LINK_RE = re.compile(
+    r"\b(?:because|since|as\s+long\s+as|assuming|given\s+that|therefore|so)\b",
+    re.IGNORECASE,
+)
+
+
+def _mapped_inventory_blocks(
+    fid: str,
+    inv_blocks_by_id: dict[str, str],
+    hyp_constituents: dict[str, list[str]],
+) -> list[str]:
+    """Return only inventory blocks structurally mapped to ``fid``.
+
+    A queue row may carry an inventory id directly or a hypothesis/split-parent
+    id whose provenance lives in constituent INV blocks.  Free text elsewhere
+    in the scratchpad is intentionally not consulted.
+    """
+    candidate_ids = [fid]
+    candidate_ids.extend(
+        hyp_constituents.get(fid) or hyp_constituents.get(fid.upper()) or []
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw_id in candidate_ids:
+        normalized = _normalize_finding_id(str(raw_id)) or str(raw_id)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        block = inv_blocks_by_id.get(normalized, "")
+        if block:
+            out.append(block)
+    return out
+
+
+def _mapped_blocks_have_external_provenance(blocks: list[str]) -> bool:
+    """Require an explicit external marker tied to a source-located INV block.
+
+    This is the precision guard for the lexical stability route.  The words
+    "stable within a block" in verifier prose cannot manufacture external
+    provenance for an internal invariant.  The producer-owned
+    ``[EXTERNAL-ASSUMPTION]`` / ``NEEDS_DEPENDENCY_RESEARCH`` markers must
+    already exist in a mapped, source-located inventory block.
+    """
+    for block in blocks:
+        location = _field_from_markdown(block, ("Location",)) or ""
+        if (
+            _EXTERNAL_PROVENANCE_MARKER_RE.search(block)
+            and _SOURCE_BACKED_LOCATION_RE.search(location)
+        ):
+            return True
+    return False
+
+
+def _external_premise_decisive_to_disposition(
+    content: str,
+    *,
+    stability_provenance: bool,
+) -> bool:
+    """Narrow REFUTED-only guard: an external premise caused the dismissal.
+
+    A background mention of an integration is insufficient.  The verifier
+    must state a favorable external premise and connect it causally to a
+    no-harm/safe disposition.  Stability prose counts only when mapped source
+    evidence independently establishes that the value is external.
+    """
+    normalized = _llm_norm(content or "")
+    # Clause-local binding is intentional. A verify record can mention an
+    # external dependency in background analysis and still refute on an
+    # unrelated in-scope guard; whole-document keyword conjunction would call
+    # that external premise "decisive" incorrectly.
+    clauses = re.split(r"(?<=[.!?])\s+|\n+", normalized)
+    for clause in clauses:
+        explicit_external = bool(
+            _EXTERNAL_PROVENANCE_MARKER_RE.search(clause)
+            or _external_assumption_promoted(clause)
+        )
+        stability_external = (
+            stability_provenance
+            and _external_bestcase_stability_demotion(clause)
+        )
+        if not (explicit_external or stability_external):
+            continue
+        if (
+            _EXTERNAL_DISMISSAL_RE.search(clause)
+            and _EXTERNAL_CAUSAL_LINK_RE.search(clause)
+        ):
+            return True
+    return False
+
+
 def _external_dependency_research_surfaces_local(
     scratchpad: Path,
 ) -> list[tuple[str, str]]:
@@ -21743,6 +21848,11 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
         # (empty depth_verdict => fall through; verifier-side signals still gate)
 
         # ---- Guard G3 / in-scope-executed: Attempted:YES ⇒ never veto ----
+        # R10.1 defect-7 conservative interim: the current verification schema
+        # proves only that a test ran. Agent-authored prose cannot attest which
+        # external premise its assertion resolved, so any execution remains a
+        # no-fire until the general premise/disposition model binds
+        # premise -> assertion -> mechanically observed result.
         if _poc_attempted_and_passed(vtxt):        # explicit carve-out (H-14)
             continue
         if not _poc_not_attempted(vtxt):           # Attempted:NO + ext/structural
@@ -21754,21 +21864,58 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
 
         # ---- Condition 2: verifier disposition rests on external best-case ----
         status = _verifier_status_from_text(vtxt)
-        demoted = any(t in status for t in ("CONTESTED", "PARTIAL", "UNRESOLVED"))
+        if status in {"FALSE_POSITIVE", "DROP_FALSE_POSITIVE", "DUPLICATE"}:
+            continue
+        mapped_blocks = _mapped_inventory_blocks(
+            fid, inv_blocks_by_id, hyp_constituents
+        )
+        # Preserve the shipped explicit-tag route: only a direct inventory
+        # block may supply its tag. Constituent aggregation is authorized here
+        # solely to establish provenance for the stability-only cue (R10.1
+        # defect 5), not to widen every regular demotion.
         block = inv_blocks_by_id.get(fid, "")
+        mapped_block_text = "\n\n".join(mapped_blocks)
+        stability_provenance = _mapped_blocks_have_external_provenance(
+            mapped_blocks
+        )
         has_ext_tag = (
             "[EXTERNAL-ASSUMPTION" in vtxt or "NEEDS_DEPENDENCY_RESEARCH" in vtxt
             or "[EXTERNAL-ASSUMPTION" in block or "NEEDS_DEPENDENCY_RESEARCH" in block
         )
+        stability_cue = (
+            stability_provenance
+            and _external_bestcase_stability_demotion(vtxt)
+        )
         ext_cue = (
             _external_assumption_promoted(vtxt)          # return-trust+external
-            or _external_bestcase_stability_demotion(vtxt)  # within-window stability
+            or stability_cue                            # source-backed stability
         )
-        if not (demoted and (has_ext_tag or ext_cue)):
+        regular_demotion = status in {"CONTESTED", "PARTIAL", "UNRESOLVED"}
+        verifier_refuted = status == "REFUTED"
+        if verifier_refuted:
+            # Defect 8: REFUTED is eligible only with a POSITIVE depth anchor
+            # and a verifier-side external premise decisive to the dismissal.
+            # An unresolved depth join never reopens a refutation.
+            depth_positive = bool(
+                depth_verdict
+                and ("CONFIRM" in depth_verdict or "PARTIAL" in depth_verdict)
+            )
+            if not depth_positive:
+                continue
+            if not _external_premise_decisive_to_disposition(
+                vtxt,
+                stability_provenance=stability_provenance,
+            ):
+                continue
+        elif not (regular_demotion and (has_ext_tag or ext_cue)):
             continue                                # G2: in-scope-grounded => skip
 
         # ---- Condition 3: no EXT-CITED grounding (G1) ----
-        if "[EXT-CITED" in vtxt or "[EXT-CITED" in block:
+        if (
+            "[EXT-CITED" in vtxt
+            or "[EXT-CITED" in block
+            or "[EXT-CITED" in mapped_block_text
+        ):
             # only exempt when a matching surface row actually exists
             loc = _field_from_markdown(vtxt, ("Location",)) or ""
             if any(surf and surf in loc for _dep, surf in surfaces):
