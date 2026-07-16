@@ -494,7 +494,7 @@ def test_H2_depth_exit_table_form():
           repr(issues))
 
 
-def test_H3_ceremonial_step_trace_is_repaired():
+def test_H3_ceremonial_step_trace_becomes_unknown_not_posthoc_proof():
     sp = _mkscratch({
         "depth_consensus_invariant_findings.md": (
             "### Finding [DCI-7]: example\n"
@@ -508,12 +508,15 @@ def test_H3_ceremonial_step_trace_is_repaired():
         ),
     })
     issues = D._check_step_execution_traces(sp, "thorough")
-    repaired = (
+    honesty_trace = (
         sp / "step_execution_trace_consensus_invariant.md"
     ).read_text(encoding="utf-8", errors="replace")
-    check("H3 ceremonial step trace repaired from finding body",
-          issues == [] and "crates/chain/src/validation.rs:L42" in repaired,
-          f"issues={issues!r}; repaired={repaired!r}")
+    check("H3 ceremonial trace routes an UNKNOWN gap without self-certifying",
+          issues == []
+          and "| unknown |" in honesty_trace.lower()
+          and "| yes |" not in honesty_trace.lower()
+          and "crates/chain/src/validation.rs:L42" not in honesty_trace,
+          f"issues={issues!r}; trace={honesty_trace!r}")
 
 
 def test_H4_notread_basename_collision_does_not_false_cover():
@@ -2989,7 +2992,7 @@ def main():
         test_H2_match_label_bullet_and_table,
         test_H2_depth_exit_bullet_form,
         test_H2_depth_exit_table_form,
-        test_H3_ceremonial_step_trace_is_repaired,
+        test_H3_ceremonial_step_trace_becomes_unknown_not_posthoc_proof,
         test_H4_notread_basename_collision_does_not_false_cover,
         test_R1_new_l1_ids_are_harvested_for_promotion,
         test_R1b_sc_feeder_ids_are_harvested_for_promotion,

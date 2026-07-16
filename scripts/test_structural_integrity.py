@@ -690,6 +690,7 @@ def test_validator_dispatch_covers_all_critical_phases():
     config_keys = {"project_root", "scratchpad", "pipeline", "language",
                    "mode", "subsystem_scope", "report_body_writer_",
                    "finding_id", "report_", "cli_backend", "_",
+                   "_audit_snapshot",
                    # scope_file is a config.get key (wizard-provided audit
                    # scope file). Added in the post-v2.0.0 recon coverage
                    # gate scope-file consumption fix.

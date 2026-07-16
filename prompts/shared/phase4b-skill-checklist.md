@@ -22,7 +22,12 @@ You are the Skill Execution Checklist Agent. You verify that depth agents execut
 
 ## Your Inputs
 Read (in order):
-- **{SCRATCHPAD}/step_execution_gaps_mechanical.md** (driver-aggregated mechanical gap list from each depth agent's `step_execution_trace_*.md`). **If this file exists and lists gaps, those gaps are AUTHORITATIVE — do not re-infer execution status for them; they are the ground truth from the agent's own trace.** Use this as your primary input.
+- **{SCRATCHPAD}/step_execution_gaps_mechanical.md** (driver-aggregated
+  mechanical gap list from digest-bound rows embedded in each assigned depth
+  findings artifact). **If this file lists `no`, `partial`, or `unknown` gaps,
+  those gaps are authoritative — do not upgrade them from findings prose.** An
+  `agent-trace` UNKNOWN requires rerunning the original assigned role
+  methodology and injected skills; it is not evidence that any step closed.
 - {SCRATCHPAD}/template_recommendations.md (lists which skills were loaded into which agents)
 - {SCRATCHPAD}/depth_*_findings.md (all depth agent outputs)
 - {SCRATCHPAD}/step_execution_trace_*.md (per-agent traces — only needed if mechanical aggregate is missing or you need supporting context)

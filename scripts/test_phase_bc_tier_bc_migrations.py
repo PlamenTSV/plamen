@@ -456,18 +456,32 @@ def test_c_perturbation_with_block_not_flagged():
 #  TIER C / SITE — step-trace citation contract twin alignment
 # ════════════════════════════════════════════════════════════════════════════
 
-def test_c_step_trace_citation_strict_form_accepted():
-    assert V._step_trace_evidence_has_citation("src/A.sol:L42")
-    assert V._step_trace_evidence_has_citation("src/A.sol:42")
+def test_c_step_trace_citation_strict_form_accepted(tmp_path):
+    source = tmp_path / "src/A.sol"
+    source.parent.mkdir()
+    source.write_text("\n".join("line" for _ in range(42)) + "\n")
+    assert V._step_trace_evidence_has_citation("src/A.sol:L42", tmp_path)
+    assert not V._step_trace_evidence_has_citation("src/A.sol:42", tmp_path)
 
 
-def test_c_step_trace_citation_rich_forms_accepted():
-    # The twin-alignment fix: forms the STRICT ceremonial check previously
-    # rejected (forcing needless synthesis) are now accepted by BOTH twins.
-    assert V._step_trace_evidence_has_citation("src/A.sol, lines 42")
-    assert V._step_trace_evidence_has_citation("src/A.sol L42")
-    assert V._step_trace_evidence_has_citation("[TRACE: withdraw → revert at L120]")
-    assert V._step_trace_evidence_has_citation("(general) no single file applies")
+def test_c_step_trace_citation_rich_forms_accepted(tmp_path):
+    source = tmp_path / "src/A.sol"
+    source.parent.mkdir()
+    source.write_text("\n".join("line" for _ in range(120)) + "\n")
+    # R0-8b deliberately rejects prose/lenient forms as application proof.
+    assert not V._step_trace_evidence_has_citation(
+        "src/A.sol, lines 42", tmp_path
+    )
+    assert not V._step_trace_evidence_has_citation("src/A.sol L42", tmp_path)
+    assert not V._step_trace_evidence_has_citation(
+        "[TRACE: withdraw → revert at L120]", tmp_path
+    )
+    assert V._step_trace_evidence_has_citation(
+        "[TRACE: src/A.sol:L120 withdraw reverted]", tmp_path
+    )
+    assert not V._step_trace_evidence_has_citation(
+        "(general) no single file applies", tmp_path
+    )
 
 
 def test_c_step_trace_citation_negative_controls():
@@ -478,14 +492,15 @@ def test_c_step_trace_citation_negative_controls():
 
 
 def test_c_step_trace_ceremonial_twin_uses_shared_contract():
-    # A trace whose only Executed=yes row cites `file lines 42` must NOT be
-    # judged ceremonial anymore (it was under the old strict-only check).
     d = Path(tempfile.mkdtemp())
+    source = d / "src/A.sol"
+    source.parent.mkdir()
+    source.write_text("\n".join("line" for _ in range(42)) + "\n")
     p = d / "step_execution_trace_x.md"
     p.write_text(
         "| Skill | Step | Executed | Evidence |\n"
         "| --- | --- | --- | --- |\n"
-        "| S | 1 | yes | src/A.sol, lines 42 |\n",
+        "| S | 1 | yes | src/A.sol:L42 |\n",
         encoding="utf-8",
     )
     assert V._step_trace_has_ceremonial_yes(p) is False

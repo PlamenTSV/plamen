@@ -40,6 +40,11 @@ except Exception:  # pragma: no cover - standalone/fallback
 # this module's namespace for monkeypatching.
 import supply_chain_gate
 from supply_chain_gate import SupplyChainAbortError, gate_supply_chain
+from production_source_scope import (
+    PRODUCTION_SOURCE_SKIP_NAME_RE,
+    PRODUCTION_SOURCE_SKIP_PARTS,
+    is_production_source_path,
+)
 
 # Module logger. `_scip_to_graph_artifacts` emits a log.warning on the
 # large-index (>callee-node-cap) PARTIAL path; without this module-level logger
@@ -70,17 +75,6 @@ COMPILE_UNIT_SKIP_DIR_NAMES = {
     ".foundry", ".anchor", ".aptos", ".sui",
 }
 
-PRODUCTION_SOURCE_SKIP_PARTS = {
-    "test", "tests", "fuzz", "fuzzing", "script", "scripts", "fixture",
-    "fixtures", "mock", "mocks", "spec", "specs", "benchmark", "benchmarks",
-    "medusa", "echidna", "halmos", ".medusa-tests",
-}
-
-PRODUCTION_SOURCE_SKIP_NAME_RE = re.compile(
-    r"(^|[_\-.])(mock|stub|fake|fixture|test|spec|fuzz)([_\-.]|$)",
-    re.IGNORECASE,
-)
-
 def _iter_files(root: Path, suffixes: Tuple[str, ...]) -> List[Path]:
     out: List[Path] = []
     root = root.resolve()
@@ -92,20 +86,8 @@ def _iter_files(root: Path, suffixes: Tuple[str, ...]) -> List[Path]:
     return out
 
 def _is_production_source_path(path: Path, root: Path) -> bool:
-    """Return True for files worth scanning/compiling during bounded recon prepass."""
-    try:
-        rel = path.resolve().relative_to(root.resolve())
-    except Exception:
-        rel = path
-    parts = [p.lower() for p in rel.parts[:-1]]
-    if any(p in PRODUCTION_SOURCE_SKIP_PARTS for p in parts):
-        return False
-    stem = rel.stem.lower()
-    if stem.startswith(("mock", "stub", "fake")):
-        return False
-    if stem.endswith(("mock", "stub", "fake", "fixture", "test", "spec", "fuzz")):
-        return False
-    return PRODUCTION_SOURCE_SKIP_NAME_RE.search(rel.name) is None
+    """Compatibility alias for the canonical production-source predicate."""
+    return is_production_source_path(path, root)
 
 def _production_source_files(root: Path, suffixes: Tuple[str, ...]) -> List[Path]:
     return [

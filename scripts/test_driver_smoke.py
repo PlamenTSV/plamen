@@ -61,6 +61,7 @@ Run: `python test_driver_smoke.py`.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -834,11 +835,20 @@ def _run_driver(tmp: Path, config_path: Path, call_log: Path,
     # extension is too long"). A temp file has no such limit.
     runner_path = tmp / "_smoke_runner.py"
     runner_path.write_text(script, encoding="utf-8")
+    # This lane validates phase-loop behavior, not installed tool discovery.
+    # The dedicated audit-snapshot tests cover executable binding.  An empty
+    # PATH makes every optional tool deterministically UNAVAILABLE and avoids
+    # paying a real CLI startup cost in each isolated smoke subprocess.
+    empty_path = tmp / "_empty_path"
+    empty_path.mkdir(exist_ok=True)
+    child_env = dict(os.environ)
+    child_env["PATH"] = str(empty_path)
     proc = subprocess.run(
         [sys.executable, str(runner_path)],
         capture_output=True,
         text=True,
         cwd=str(tmp),
+        env=child_env,
         # A production startup traversal bug once left this integration lane
         # waiting forever and orphaned the child when only the outer pytest
         # process was killed. Keep every scenario self-bounding so a future
@@ -861,9 +871,23 @@ def _make_project(prefix: str, mode: str = "light",
                   extra_config: dict | None = None) -> tuple:
     tmp = Path(tempfile.mkdtemp(prefix=prefix))
     project = tmp / "project"
-    scratch = tmp / "scratch"
+    scratch = project / ".scratchpad"
     project.mkdir()
     scratch.mkdir()
+    source_dir = project / "src"
+    source_dir.mkdir()
+    if pipeline == "l1":
+        (source_dir / "node.rs").write_text(
+            "pub fn process_block() -> bool { true }\n",
+            encoding="utf-8",
+        )
+    else:
+        (source_dir / "Protocol.sol").write_text(
+            "// SPDX-License-Identifier: MIT\n"
+            "pragma solidity ^0.8.20;\n"
+            "contract Protocol { function ready() external pure returns (bool) { return true; } }\n",
+            encoding="utf-8",
+        )
 
     config = {
         "project_root": str(project),

@@ -6812,7 +6812,12 @@ def _validate_enumgap_exploration(scratchpad: Path, mode: str) -> list[str]:
 # The habit is recall-positive (more falsifiable candidates); its absence loses
 # no prior finding, so a gap is advisory, not fatal.
 
-_CI_BLOCK_PRESENCE_RE = re.compile(r"committed-invariant\s*\[\s*CI(?:-[A-Za-z0-9]+)+\s*\]", re.IGNORECASE)
+_CI_BLOCK_PRESENCE_RE = re.compile(
+    r"committed-invariant\s*\[\s*(?:"
+    + COMMITTED_INVARIANT_ID_PATTERN
+    + r")\s*\]",
+    re.IGNORECASE,
+)
 _CI_CLEAR_SIGNAL_RE = re.compile(r"\bNO-?GAP\b|\bDOWNGRADE\b", re.IGNORECASE)
 # Format-agnostic committed-invariant header counter. Any `committed-invariant
 # [<anything>]` header, regardless of ID shape. Compared against the harvestable
@@ -6857,6 +6862,32 @@ def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
         clears += len(_CI_CLEAR_SIGNAL_RE.findall(body))
         ci_blocks += len(_CI_BLOCK_PRESENCE_RE.findall(body))
         ci_blocks_any += len(_CI_BLOCK_ANY_RE.findall(body))
+
+    # Detection without recovery merely documents loss. The enumeration gate
+    # ran before these skeptic artifacts existed, so recover them at the
+    # validator boundary into the same append-only, receipt-backed inventory
+    # funnel. Exploration-skeptic candidates continue into verification;
+    # post-verify skeptic candidates remain explicit NEEDS_VERIFICATION review
+    # items rather than disappearing.
+    recovery_failed = False
+    try:
+        from enumeration_gate import recover_invariant_assertion_candidates
+
+        recover_invariant_assertion_candidates(scratchpad)
+        (scratchpad / "invariant_commitment.ci_recovery_gap").unlink(
+            missing_ok=True
+        )
+    except Exception as exc:
+        recovery_failed = True
+        try:
+            (scratchpad / "invariant_commitment.ci_recovery_gap").write_text(
+                "[INVARIANT_COMMITMENT_RECOVERY_GAP] Committed-invariant "
+                "candidate recovery failed; the source artifact remains but "
+                f"normal verify routing is not proven ({type(exc).__name__}).\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
     # Harvest-vs-emit reconciliation (durable guard against ID-format drift):
     # committed-invariant blocks the harvester regex can't parse are silently
     # dropped — the CI-A1-vs-`CI-\d+` class that dark-dropped 12 skeptic
@@ -6883,6 +6914,13 @@ def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
             )
         except OSError:
             pass
+    elif not recovery_failed:
+        try:
+            (scratchpad / "invariant_commitment.ci_format_gap").unlink(
+                missing_ok=True
+            )
+        except OSError:
+            pass
     if clears > 0 and ci_blocks == 0:
         import logging as _logging
         _logging.getLogger("plamen.validators").warning(
@@ -6904,6 +6942,11 @@ def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
                 "assertions should be surfaced as committed invariants.\n",
                 encoding="utf-8",
             )
+        except OSError:
+            pass
+    elif not recovery_failed:
+        try:
+            (scratchpad / "invariant_commitment.ci_gap").unlink(missing_ok=True)
         except OSError:
             pass
     return []
@@ -9190,139 +9233,322 @@ def _validate_cited_paths_in_verify(
     ]
 
 
+_STEP_TRACE_HEADING = "## Step Execution Trace"
+_STEP_TRACE_SOURCE_ARTIFACT_RE = re.compile(
+    r"<!--\s*PLAMEN_STEP_TRACE_SOURCE_ARTIFACT:\s*([^>]+?)\s*-->",
+    re.IGNORECASE,
+)
+_STEP_TRACE_SOURCE_SHA_RE = re.compile(
+    r"<!--\s*PLAMEN_STEP_TRACE_SOURCE_SHA256:\s*([0-9a-f]{64})\s*-->",
+    re.IGNORECASE,
+)
+_STEP_TRACE_VALIDATION_RE = re.compile(
+    r"<!--\s*PLAMEN_STEP_TRACE_VALIDATION:\s*(EXTRACTED|UNKNOWN)\s*-->",
+    re.IGNORECASE,
+)
+_STRICT_STEP_SOURCE_CITATION_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_./\\-]+\."
+    r"(?:rs|go|sol|move|py|c|cc|cpp|h|hpp|java|ts|js))"
+    r":L(?P<line>[1-9][0-9]*)",
+    re.IGNORECASE,
+)
+
+
+def _embedded_step_trace_table(text: str) -> tuple[list[str], list[dict[str, str]]] | None:
+    """Return the one embedded trace table, preserving every table line.
+
+    The exact H2 is part of the output contract.  Refusing fuzzy headings
+    avoids extracting an example, retrospective prose, or a similarly named
+    section.  Returned lines are written verbatim to the derived sidecar.
+    """
+    lines = text.splitlines()
+    heading_indices = [
+        i for i, line in enumerate(lines) if line.strip() == _STEP_TRACE_HEADING
+    ]
+    if len(heading_indices) != 1:
+        return None
+    start = heading_indices[0] + 1
+    end = len(lines)
+    for i in range(start, len(lines)):
+        if re.match(r"^#{1,2}\s+", lines[i].strip()):
+            end = i
+            break
+    section = lines[start:end]
+    header_index = None
+    for i, raw in enumerate(section):
+        if not raw.strip().startswith("|"):
+            continue
+        cells = [c.strip().lower() for c in raw.strip().strip("|").split("|")]
+        if cells == ["skill", "step", "executed", "evidence", "result"]:
+            header_index = i
+            break
+    if header_index is None:
+        return None
+    table_lines = [section[header_index]]
+    for raw in section[header_index + 1:]:
+        if not raw.strip():
+            if len(table_lines) > 1:
+                break
+            continue
+        if not raw.strip().startswith("|"):
+            break
+        table_lines.append(raw)
+    rows = _parse_step_trace_rows("\n".join(table_lines))
+    if len(table_lines) < 3 or not rows:
+        return None
+    return table_lines, rows
+
+
+def _step_trace_table_lines_anywhere(text: str) -> list[str] | None:
+    """Extract the one canonical trace table without changing its lines."""
+    lines = text.splitlines()
+    starts: list[int] = []
+    for i, raw in enumerate(lines):
+        if not raw.strip().startswith("|"):
+            continue
+        cells = [c.strip().lower() for c in raw.strip().strip("|").split("|")]
+        if cells == ["skill", "step", "executed", "evidence", "result"]:
+            starts.append(i)
+    if len(starts) != 1:
+        return None
+    table_lines = [lines[starts[0]]]
+    for raw in lines[starts[0] + 1:]:
+        if not raw.strip():
+            if len(table_lines) > 1:
+                break
+            continue
+        if not raw.strip().startswith("|"):
+            break
+        table_lines.append(raw)
+    if len(table_lines) < 3 or not _parse_step_trace_rows("\n".join(table_lines)):
+        return None
+    return table_lines
+
+
+def _step_trace_source_digest(findings_path: Path) -> str:
+    return hashlib.sha256(findings_path.read_bytes()).hexdigest()
+
+
+def _step_trace_binding_status(
+    trace_path: Path, findings_path: Path, source_digest: str | None = None
+) -> str:
+    """Return ``ok`` or the precise reason the sidecar is unauthenticated."""
+    try:
+        text = trace_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "unreadable trace sidecar"
+    artifact_match = _STEP_TRACE_SOURCE_ARTIFACT_RE.search(text)
+    digest_match = _STEP_TRACE_SOURCE_SHA_RE.search(text)
+    if digest_match is None:
+        return "missing source digest"
+    if artifact_match is None:
+        return "missing source artifact binding"
+    if artifact_match.group(1).strip() != findings_path.name:
+        return "source artifact mismatch"
+    if source_digest is None:
+        try:
+            source_digest = _step_trace_source_digest(findings_path)
+        except OSError:
+            return "source artifact unreadable"
+    if digest_match.group(1).lower() != source_digest:
+        return "stale source digest"
+    return "ok"
+
+
+def _write_unknown_step_trace(
+    out_path: Path,
+    findings_path: Path,
+    role: str,
+    reason: str,
+    source_digest: str | None = None,
+) -> bool:
+    """Write a digest-bound, actionable UNKNOWN without inventing steps."""
+    try:
+        if source_digest is None:
+            source_digest = _step_trace_source_digest(findings_path)
+        lines = [
+            f"# Step Execution Trace: {role}",
+            f"<!-- PLAMEN_STEP_TRACE_SOURCE_ARTIFACT: {findings_path.name} -->",
+            f"<!-- PLAMEN_STEP_TRACE_SOURCE_SHA256: {source_digest} -->",
+            "<!-- PLAMEN_STEP_TRACE_VALIDATION: UNKNOWN -->",
+            "",
+            "> **Status**: UNKNOWN / UNMEASURABLE. The driver did not infer "
+            "methodology application from findings, tags, or arbitrary prose.",
+            "",
+            "| Skill | Step | Executed | Evidence | Result |",
+            "|-------|------|----------|----------|--------|",
+            f"| agent-trace | original assigned methodology for {role} | "
+            f"unknown | - | {reason}; rerun the original assigned role "
+            "methodology and every injected skill; emit an embedded trace |",
+            "",
+        ]
+        out_path.write_text("\n".join(lines), encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
 def _synthesize_step_execution_trace(
     scratchpad: Path, role: str
 ) -> bool:
-    """Build a deterministic step_execution_trace_{role}.md from depth findings.
+    """Extract an embedded trace once, or write an honest UNKNOWN marker.
 
-    v2.3.3 — Replaces the LLM-emit-or-fail dependency with a driver-side
-    projection. Reads ``depth_{role}_findings.md`` and counts evidence-tag
-    occurrences. Each tag class becomes one (skill, step) row with
-    ``Executed=yes`` if ≥1 tag of that class appears. The first occurrence's
-    ``file:line`` (if any) goes into the Evidence cell so the ceremonial-yes
-    check still passes.
-
-    Returns True iff the role has a non-empty findings file (synthesis ran).
+    The historical name is retained for callers.  No application state is
+    synthesized: the only affirmative rows are copied verbatim from the exact
+    assigned findings artifact and bound to its SHA-256.  A pre-existing
+    sidecar with no/mismatched digest is treated as stale evidence and becomes
+    UNKNOWN; it is never silently rebound to changed findings.
     """
     findings_path = scratchpad / f"depth_{role}_findings.md"
-    if not findings_path.exists():
-        return False
     try:
-        text = findings_path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
+        source_bytes = findings_path.read_bytes()
+    except OSError:
         return False
+    text = source_bytes.decode("utf-8", errors="replace")
     if not text.strip():
         return False
-
-    # Count tag classes; sample one file:line per class for the Evidence cell.
-    tag_counts: dict[str, int] = {}
-    tag_samples: dict[str, str] = {}
-    file_line_re = re.compile(
-        r"([A-Za-z0-9_./\-]+\.(?:rs|go|sol|move|py|c|cpp|h|hpp|java|ts|js))"
-        r":L?(\d+)"
-    )
-    first_file_line = None
-    first_file_line_match = file_line_re.search(text)
-    if first_file_line_match:
-        first_file_line = (
-            f"{first_file_line_match.group(1)}:L{first_file_line_match.group(2)}"
-        )
-    for m in _DEPTH_EVIDENCE_TAG_RE.finditer(text):
-        tag = m.group(1).upper()
-        tag_counts[tag] = tag_counts.get(tag, 0) + 1
-        if tag not in tag_samples:
-            window = text[max(0, m.start() - 500):m.start() + 500]
-            fm = file_line_re.search(window)
-            if fm:
-                tag_samples[tag] = f"{fm.group(1)}:L{fm.group(2)}"
-            elif first_file_line:
-                tag_samples[tag] = first_file_line
-    finding_count = len(re.findall(r"^###\s*(?:Finding\s*)?\[", text, re.MULTILINE))
-
+    source_digest = hashlib.sha256(source_bytes).hexdigest()
     out_path = scratchpad / f"step_execution_trace_{role}.md"
-    lines = [
-        f"# Step Execution Trace: {role}",
-        "",
-        f"> **Source**: synthesized from `depth_{role}_findings.md` "
-        f"({finding_count} finding(s)) by the driver. Driver-deterministic "
-        f"projection — does not depend on agent compliance with the "
-        f"§STEP-TRACE directive.",
-        "",
-        "| Skill | Step | Executed | Evidence | Result |",
-        "|-------|------|----------|----------|--------|",
-    ]
-    if not tag_counts:
-        lines.append(
-            "| (general) | depth analysis | no | - | "
-            "no evidence tags in findings |"
+    if out_path.exists():
+        binding_status = _step_trace_binding_status(
+            out_path, findings_path, source_digest
         )
-    else:
-        # One row per tag class. Sorted for stable output.
-        for tag in sorted(tag_counts.keys()):
-            count = tag_counts[tag]
-            evidence = tag_samples.get(tag) or "-"
-            lines.append(
-                f"| (general) | `[{tag}:*]` | yes | {evidence} | "
-                f"{count} occurrence(s) |"
+        if binding_status != "ok":
+            return _write_unknown_step_trace(
+                out_path, findings_path, role, binding_status, source_digest
             )
-    lines.append("")
+        try:
+            existing_text = out_path.read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            return _write_unknown_step_trace(
+                out_path, findings_path, role, "unreadable trace sidecar",
+                source_digest,
+            )
+        validation_match = _STEP_TRACE_VALIDATION_RE.search(existing_text)
+        validation = (
+            validation_match.group(1).upper() if validation_match else ""
+        )
+        if validation == "UNKNOWN":
+            existing_rows = _parse_step_trace_rows(existing_text)
+            if existing_rows and not any(
+                row.get("executed", "").strip().lower() == "yes"
+                for row in existing_rows
+            ):
+                return False
+            return _write_unknown_step_trace(
+                out_path,
+                findings_path,
+                role,
+                "UNKNOWN sidecar contained an affirmative row",
+                source_digest,
+            )
+        embedded_existing = _embedded_step_trace_table(text)
+        if embedded_existing is None:
+            return _write_unknown_step_trace(
+                out_path,
+                findings_path,
+                role,
+                "missing or malformed embedded trace",
+                source_digest,
+            )
+        sidecar_lines = _step_trace_table_lines_anywhere(existing_text)
+        if validation != "EXTRACTED" or sidecar_lines != embedded_existing[0]:
+            return _write_unknown_step_trace(
+                out_path,
+                findings_path,
+                role,
+                "sidecar rows differ from embedded trace",
+                source_digest,
+            )
+        return False
+
+    embedded = _embedded_step_trace_table(text)
+    if embedded is None:
+        return _write_unknown_step_trace(
+            out_path, findings_path, role, "missing or malformed embedded trace",
+            source_digest,
+        )
+    table_lines, _rows = embedded
     try:
+        lines = [
+            f"# Step Execution Trace: {role}",
+            f"<!-- PLAMEN_STEP_TRACE_SOURCE_ARTIFACT: {findings_path.name} -->",
+            f"<!-- PLAMEN_STEP_TRACE_SOURCE_SHA256: {source_digest} -->",
+            "<!-- PLAMEN_STEP_TRACE_VALIDATION: EXTRACTED -->",
+            "",
+            "> Rows below were mechanically extracted verbatim from the "
+            "assigned findings artifact. The driver did not infer YES.",
+            "",
+            *table_lines,
+            "",
+        ]
         out_path.write_text("\n".join(lines), encoding="utf-8")
         return True
-    except Exception:
+    except OSError:
         return False
 
 
-def _step_trace_evidence_has_citation(ev: str) -> bool:
-    """Shared step-trace evidence citation contract (sibling-sweep aligned).
+def _step_trace_project_root(scratchpad: Path) -> Path:
+    return (
+        scratchpad.parent.resolve()
+        if scratchpad.name == ".scratchpad"
+        else scratchpad.resolve()
+    )
 
-    A step-trace Evidence cell satisfies the file:line contract when it carries
-    ANY of the citation forms the depth agents emit across backends. This is the
-    single source of truth for BOTH `_step_trace_has_ceremonial_yes` (which
-    previously accepted ONLY the strict `file:L42` form and so wrongly rejected
-    `file lines 42` / `file L42` / `[TRACE: ...]` traces, forcing needless
-    synthesis) and the validator twin in `_ensure_step_execution_traces`. The
-    accepted set is the UNION of both twins (strict superset of the old strict
-    form):
-      * `file.ext:L42` / `file.ext:42`            (strict colon form)
-      * `file.ext, lines 42` / `file.ext lines 42`(prose "line N" form)
-      * `file.ext L42`                            (space before L)
-      * `<has a .ext token> AND <has a digit>`     (lenient file+line co-mention)
-      * a depth/PoC evidence tag `[TRACE: ...]` etc.
-      * the explicit `(general)` no-file-applicable marker
+
+def _step_trace_evidence_has_citation(
+    ev: str, scratchpad: Path | None = None
+) -> bool:
+    """True only for a strict, in-project, existing ``source.ext:Lline``.
+
+    Tags do not certify execution by themselves.  A tag is accepted only when
+    its own text contains a citation that resolves to an existing source file
+    and an existing line under the audited project root.
     """
     ev = (ev or "").strip()
-    if not ev or ev == "-":
+    if not ev or ev == "-" or scratchpad is None:
         return False
-    return bool(
-        re.search(r"[A-Za-z0-9_./\-]+\.[a-z]+:L?\d+", ev)
-        or re.search(r"[A-Za-z0-9_./\-]+\.[a-z]+,?\s*lines?\s*\d+", ev, re.IGNORECASE)
-        or re.search(r"[A-Za-z0-9_./\-]+\.[a-z]+\s+L\d+", ev)
-        or (re.search(r"\.[a-z]+\b", ev) and re.search(r"\d+", ev))
-        or re.search(
-            r"\[(BOUNDARY|VARIATION|TRACE|CROSS-DOMAIN-DEP|REGRESS|"
-            r"PERTURBATION|MEDUSA-PASS|POC-PASS|POC-FAIL)[:\]]",
-            ev,
-        )
-        or ev.startswith("(general)")
-    )
+    root = _step_trace_project_root(scratchpad)
+    scratch_resolved = scratchpad.resolve()
+    for match in _STRICT_STEP_SOURCE_CITATION_RE.finditer(ev):
+        raw_path = match.group("path").replace("\\", "/")
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(root)
+            if scratchpad.name == ".scratchpad":
+                try:
+                    resolved.relative_to(scratch_resolved)
+                    continue
+                except ValueError:
+                    pass
+            if not resolved.is_file():
+                continue
+            requested_line = int(match.group("line"))
+            with resolved.open("r", encoding="utf-8", errors="replace") as handle:
+                line_count = sum(1 for _ in handle)
+            if requested_line <= line_count:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def _step_trace_has_ceremonial_yes(trace_path: Path) -> bool:
     """Return True when a step trace claims Executed=yes without file:line.
 
     Existing agent-emitted traces can be verbose and still fail the mechanical
-    contract by using finding IDs (for example `DCI-7`) as evidence. In that
-    case the deterministic synthesized trace is safer than preserving the
-    malformed trace, because it projects file:line evidence from the actual
-    depth finding body.
+    contract by using finding IDs (for example `DCI-7`) as evidence. Such a
+    trace is invalid application evidence and must become UNKNOWN; findings
+    prose cannot repair or certify the missing methodology trace after fact.
 
-    Sibling-sweep (Tier C): now uses the SHARED
-    `_step_trace_evidence_has_citation` contract — previously it accepted only
-    the strict `file:L42` form, so a richer agent-emitted trace using
-    `file lines 42` / `file L42` / `[TRACE: ...]` was wrongly judged ceremonial
-    and needlessly re-synthesized (an internal inconsistency with the twin in
-    `_ensure_step_execution_traces`).
+    The shared evidence contract is intentionally strict: prose line forms,
+    `(general)`, and bare evidence tags do not prove execution. A tag counts
+    only when it embeds a resolvable project-source `file:Lline`.
     """
     try:
         text = trace_path.read_text(encoding="utf-8", errors="replace")
@@ -9334,34 +9560,28 @@ def _step_trace_has_ceremonial_yes(trace_path: Path) -> bool:
     for row in rows:
         if row.get("executed", "").strip().lower() != "yes":
             continue
-        if not _step_trace_evidence_has_citation(row.get("evidence", "")):
+        if not _step_trace_evidence_has_citation(
+            row.get("evidence", ""), trace_path.parent
+        ):
             return True
     return False
 
 
 def _ensure_step_execution_traces(scratchpad: Path) -> int:
-    """Synthesize traces for any depth role that has findings but no
-    non-trivial agent-emitted trace. Preserves richer agent-emitted traces
-    only when they satisfy the non-ceremonial file:line evidence contract.
+    """Make missing/invalid depth traces measurable without self-certifying.
 
-    Returns count of traces synthesized (informational only).
+    Only digest-bound rows extracted from the corresponding assigned findings
+    artifact are preserved. Missing/malformed embedded traces and stale or
+    unbound sidecars become UNKNOWN. No finding tag or post-hoc projection can
+    become ``Executed=yes``.
+
+    Returns the number of UNKNOWN markers written (informational only).
     """
-    synthesized = 0
+    unknown_markers = 0
     for role in _expected_depth_agent_roles(scratchpad):
-        trace_path = scratchpad / f"step_execution_trace_{role}.md"
-        try:
-            ok = (
-                trace_path.exists()
-                and trace_path.stat().st_size > 200
-                and not _step_trace_has_ceremonial_yes(trace_path)
-            )
-        except Exception:
-            ok = False
-        if ok:
-            continue
         if _synthesize_step_execution_trace(scratchpad, role):
-            synthesized += 1
-    return synthesized
+            unknown_markers += 1
+    return unknown_markers
 
 
 def _check_step_execution_traces(
@@ -9369,18 +9589,15 @@ def _check_step_execution_traces(
 ) -> list[str]:
     """Validator: every Thorough depth agent has a step trace + non-ceremonial rows.
 
-    v2.3.3 — Auto-synthesizes traces from depth findings BEFORE running
-    checks, eliminating the agent-compliance dependency. A prior L1
-    post-mortem found that agents were not emitting traces at runtime;
-    the orchestrator was post-hoc reconstructing them inside the depth
-    subprocess to satisfy the gate. Moving that reconstruction into the
-    driver makes it deterministic and idempotent.
+    Missing or invalid traces become deterministic UNKNOWN rows before the
+    checks. This preserves haltless iteration routing while keeping application
+    evidence honest: depth finding tags are never projected into trace rows.
 
     Checks (Thorough only):
       1. Every depth_{role}_findings.md has a step_execution_trace_{role}.md
-         (auto-synthesized if missing).
-      2. Each trace contains at least one row with Executed=yes.
-      3. Each "yes" row has a non-empty Evidence cell.
+         (an UNKNOWN honesty marker is written if missing/invalid).
+      2. Every row with Executed != yes is routed into the iteration gap file.
+      3. Each unproven "yes" row is routed as UNKNOWN rather than accepted.
 
     Side effect: writes ``step_execution_gaps_mechanical.md`` for iter2.
     """
@@ -9389,7 +9606,7 @@ def _check_step_execution_traces(
     expected_roles = _expected_depth_agent_roles(scratchpad)
     if not expected_roles:
         return []
-    # v2.3.3: synthesize-first. Eliminates LLM-emit-or-fail risk.
+    # R0-8b: normalize absence/malformed traces to UNKNOWN, never inferred yes.
     _ensure_step_execution_traces(scratchpad)
     gaps, agents_with_traces = _aggregate_step_execution_gaps(scratchpad)
     issues: list[str] = []
@@ -9404,34 +9621,31 @@ def _check_step_execution_traces(
         )
 
     # Check 2: ceremonial-yes detection — yes rows without evidence
-    cere_count = 0
-    cere_samples: list[str] = []
+    invalid_yes_gaps: list[dict[str, str]] = []
     for f in sorted(scratchpad.glob(_STEP_TRACE_GLOB)):
+        agent = f.name.replace("step_execution_trace_", "").replace(".md", "")
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
         for row in _parse_step_trace_rows(text):
             if row.get("executed", "").lower() == "yes":
-                # Shared citation contract (sibling-sweep aligned with
-                # _step_trace_has_ceremonial_yes): accepts strict `file:L42`,
-                # comma/"line N", space-L, lenient file+digit, depth-tag, and
-                # `(general)` forms. GPT and Claude cite evidence differently.
                 has_citation = _step_trace_evidence_has_citation(
-                    row.get("evidence", "")
+                    row.get("evidence", ""), scratchpad
                 )
                 if not has_citation:
-                    cere_count += 1
-                    if len(cere_samples) < 3:
-                        cere_samples.append(
-                            f"{f.name.replace('step_execution_trace_','').replace('.md','')}:"
-                            f" {row.get('skill','?')}/{row.get('step','?')}"
-                        )
-    if cere_count:
-        issues.append(
-            f"step trace ceremonial: {cere_count} row(s) marked Executed=yes "
-            f"without `file:line` Evidence: {'; '.join(cere_samples)}"
-        )
+                    invalid_yes_gaps.append({
+                        "agent": agent,
+                        "skill": row.get("skill", "agent-trace"),
+                        "step": row.get("step", "invalid YES claim"),
+                        "executed": "unknown",
+                        "evidence": row.get("evidence", "-"),
+                        "result": (
+                            "invalid YES evidence; rerun the original assigned "
+                            "methodology step and cite a resolvable source:Lline"
+                        ),
+                    })
+    gaps.extend(invalid_yes_gaps)
 
     # Always write the mechanical gap aggregate (even when empty — clears
     # stale data between runs).
@@ -9443,7 +9657,9 @@ def _check_step_execution_traces(
                 "",
                 f"Aggregated from {len(agents_with_traces)} depth-agent "
                 f"step_execution_trace_*.md file(s). Each row below is a "
-                f"(skill, step) where the agent reported Executed != yes.",
+                f"(skill, step) where execution is not evidenced as yes. "
+                f"UNKNOWN rows are driver honesty markers for a missing or "
+                f"invalid agent trace, not agent application evidence.",
                 "",
                 "| Agent | Skill | Step | Executed | Evidence | Result |",
                 "|-------|-------|------|----------|----------|--------|",
@@ -9456,10 +9672,14 @@ def _check_step_execution_traces(
             lines.append("")
             lines.append(
                 "**iter2 / DA / skill-checklist directive**: Each row above "
-                "is a mandatory investigation target. An agent addressing "
-                "this list must EXECUTE the named step, cite `file:line` "
-                "evidence, and produce one finding OR an explicit "
-                "`<safe: justification>` per gap."
+                "is a mandatory investigation target. For a named skill/step, "
+                "EXECUTE that exact step, cite a resolvable `source:Lline`, "
+                "and produce one finding OR an explicit `<safe: justification>`. "
+                "For an `agent-trace` UNKNOWN, per-skill enumeration was not "
+                "mechanically trustworthy: rerun the original assigned role "
+                "methodology and every injected skill, then emit a fresh "
+                "embedded `## Step Execution Trace`; do not pretend the gap "
+                "is closed from findings prose."
             )
             gap_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         else:

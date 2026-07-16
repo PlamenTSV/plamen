@@ -71,6 +71,7 @@ __all__ = [
     "normalize_hypothesis_id_token",
     "is_public_report_id",
     "parse_split_parent_hypothesis_id",
+    "COMMITTED_INVARIANT_ID_PATTERN",
     "_parse_skeptic_judge_table",
     "read_judge_decisions_json_sidecar",
     "write_judge_decisions_json_sidecar",
@@ -278,6 +279,14 @@ __all__ = [
 # Single source of truth for ALL internal finding ID regexes. Each consumer
 # combines the subsets it needs. Adding a new agent prefix means ONE edit here.
 
+# Committed-invariant IDs are emitted both bare (CI-1 / CI-A1) and with one or
+# more shard namespaces (C1-CI-1). Keep this capture-free because it is
+# embedded in the unified internal-ID grammar and multiple parser consumers.
+COMMITTED_INVARIANT_ID_PATTERN = (
+    r"(?:[A-Z][A-Z0-9]*-)*CI(?:-[A-Z0-9]+)+"
+)
+
+
 # Depth agent structural IDs (produced by depth-*, scanners, niche agents)
 _ID_DEPTH_ALTS = (
     r"DEPTH-[A-Z]+-\d+|DEPTH-CI-\d+|DEPTH-NS-\d+|DEPTH-ST-\d+|DEPTH-EC-\d+|"
@@ -286,7 +295,7 @@ _ID_DEPTH_ALTS = (
     # CI-\d+ = committed-invariant block IDs emitted by the skeptic/depth phases
     # (M1). Cataloged explicitly so completeness gates never silently zero the
     # committed-invariant provenance carried on INVARIANT-sourced candidates.
-    r"CI-\d+|"
+    + COMMITTED_INVARIANT_ID_PATTERN + r"|"
     r"INV-\d+|DCI-\d+|DEC-\d+|DX-\d+|DN-\d+|DNS-\d+|"
     r"DA-[A-Z0-9_-]+-\d+|DA\d+-[A-Z0-9_-]+-\d+|DCOV\d*-\d+|"
     r"DST-(?:[A-Z0-9_-]+-)?\d+|PERT-\d+|PAIR-\d+|ATT-\d+|"

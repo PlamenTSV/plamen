@@ -833,6 +833,7 @@ class Checkpoint:
     degraded: list = field(default_factory=list)
     rate_limited_at: Optional[str] = None
     config: Optional[dict] = None
+    audit_snapshot: Optional[dict] = None
 
     @classmethod
     def load(cls, scratchpad: Path) -> "Checkpoint":
@@ -889,11 +890,17 @@ class Checkpoint:
         cfg = data.get("config")
         if cfg is not None and not isinstance(cfg, dict):
             cfg = None
+        audit_snapshot = data.get("audit_snapshot")
+        if audit_snapshot is not None and not isinstance(audit_snapshot, dict):
+            raise RuntimeError(
+                f"Invalid checkpoint {p}: audit_snapshot must be null or an object"
+            )
         return cls(
             completed=_string_list("completed"),
             degraded=_string_list("degraded"),
             rate_limited_at=rate_limited_at,
             config=cfg,
+            audit_snapshot=audit_snapshot,
         )
 
     def validate_phase_names(self, phase_names: set[str]) -> list[str]:
@@ -923,6 +930,10 @@ class Checkpoint:
         }
         if self.config is not None:
             data["config"] = self.config
+        if self.audit_snapshot is not None:
+            if not isinstance(self.audit_snapshot, dict):
+                raise RuntimeError("audit_snapshot must be an object before checkpoint save")
+            data["audit_snapshot"] = self.audit_snapshot
         payload = json.dumps(data, indent=2)
         try:
             tmp.write_text(payload, encoding="utf-8")

@@ -43,6 +43,23 @@ from plamen_parsers import _dedup_live_pair_cap  # noqa: F401
 from plamen_parsers import _compute_dedup_candidate_blocks  # noqa: F401
 from plamen_parsers import _compute_report_dedup_candidate_pairs  # noqa: F401
 from plamen_mechanical import _extract_dedup_absorbed_ids  # noqa: F401
+from audit_snapshot import (
+    LEGACY_UNBOUND as SNAPSHOT_LEGACY_UNBOUND,
+    MATCH as SNAPSHOT_MATCH,
+    MISMATCH as SNAPSHOT_MISMATCH,
+    NEW as SNAPSHOT_NEW,
+    SnapshotInputError,
+    archive_stale_scratchpad,
+    build_audit_snapshot,
+    classify_snapshot,
+    materialize_remote_documents,
+    snapshot_startup_guard,
+)
+from dependency_obligations import (
+    reconcile_dependency_research_ledger,
+    validate_dependency_ledger_parity,
+    write_dependency_obligations,
+)
 import plamen_display as display
 from pty_exec import (
     SUBPROCESS_ISOLATION_PAYLOAD,
@@ -6559,6 +6576,19 @@ def _build_recon_worker_prompt(
             "fallback()/receive(), and raw low-level .call/.staticcall/"
             ".delegatecall — or write 'none found' with what was checked."
         ),
+        "external_dependency_research": (
+            "This is recon wave B and runs only after the base recon producers. "
+            "Read external_dependency_obligations.json and the base recon shards. "
+            "For every retained Obligation ID, research the externally defined "
+            "semantics actually relied on at its Integration Surface. Use primary "
+            "documentation/source where available. If a web/MCP call times out, "
+            "do not retry it: emit the row with Fetch Status FETCH_FAILED. Never "
+            "drop a row and never infer favorable behavior from a failed fetch. "
+            "Write exactly one Markdown table with columns: Obligation ID, "
+            "Dependency, Integration Surface, Assumed Behavior, Real Behavior, "
+            "Source, Conformance, Fetch Status. Preserve each supplied Obligation "
+            "ID exactly. This is evidence research, not vulnerability discovery."
+        ),
     }.get(role, focus)
     # Payable-impact propagation (BB mode only — gated on impact_map.md presence).
     impact_map_block = _impact_map_block(project_root, kind="recon")
@@ -6615,6 +6645,9 @@ Driver-provided recon inputs you may read when present:
 - `{scratchpad.as_posix()}/contract_inventory.md`
 - `{scratchpad.as_posix()}/state_variables.md`
 - `{scratchpad.as_posix()}/function_list.md`
+- `{scratchpad.as_posix()}/external_dependency_obligations.json`
+- `{scratchpad.as_posix()}/recon_design_context.md`
+- `{scratchpad.as_posix()}/recon_inventory_surface.md`
 - `{project_root}/impact_map.md` (when present — payable-impact ranking)
 {impact_map_block}
 ## Command Boundary
@@ -7047,6 +7080,127 @@ def _run_single_recon_worker_pty(
                 pass
 
 
+def _run_recon_dependency_research_wave(
+    *,
+    scratchpad: Path,
+    project_root: str,
+    config: dict,
+    base_cmd: list[str],
+    env: dict[str, str],
+    timeout: float,
+    quiescence_s: float,
+    attempt: int,
+) -> dict[str, Any]:
+    """Run conditional recon wave B and enforce obligation-row parity.
+
+    The deterministic unresolved ledger is written before the worker starts,
+    so a crash, timeout, missing MCP service, or malformed response cannot turn
+    a detected dependency into an empty/stub ledger.
+    """
+    obligations = write_dependency_obligations(
+        scratchpad, Path(project_root), config
+    )
+    baseline = reconcile_dependency_research_ledger(
+        scratchpad, obligations, worker_text=""
+    )
+    if not obligations.get("obligations"):
+        return {"status": "not_applicable", **baseline}
+
+    job = {
+        "agent_id": "R-EXT",
+        "role": "external_dependency_research",
+        "output": "recon_external_dependency_research.md",
+        "focus": "Research every deterministic external-dependency obligation.",
+    }
+    complete, _reasons = _recon_worker_complete(
+        scratchpad, job["output"], job
+    )
+    result: dict[str, Any] = {
+        "output": job["output"],
+        "status": "complete" if complete else "not_run",
+    }
+    protected = set(
+        _snapshot_worker_input_artifacts(scratchpad, {job["output"]})
+    )
+    if not complete:
+        result = _run_single_recon_worker_pty(
+            job=job,
+            scratchpad=scratchpad,
+            project_root=project_root,
+            config=config,
+            base_cmd=base_cmd,
+            env=env,
+            timeout=max(600, timeout),
+            quiescence_s=quiescence_s,
+            attempt=attempt,
+            retry_reasons=None,
+            allowed_outputs=[job["output"]],
+            protected_input_names=protected,
+        )
+
+    worker_text = ""
+    worker_path = scratchpad / job["output"]
+    if worker_path.is_file():
+        try:
+            worker_text = worker_path.read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            worker_text = ""
+    coverage = reconcile_dependency_research_ledger(
+        scratchpad, obligations, worker_text=worker_text
+    )
+    ledger_text = (scratchpad / "external_dependency_research.md").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    parity_ok, parity_issues = validate_dependency_ledger_parity(
+        obligations, ledger_text
+    )
+    if not parity_ok:
+        # Repair to the mechanically complete unresolved form. This can lose
+        # only untrusted research prose, never an obligation.
+        coverage = reconcile_dependency_research_ledger(
+            scratchpad, obligations, worker_text=""
+        )
+        result["parity_repaired"] = parity_issues
+    result.update(coverage)
+    return result
+
+
+def _ensure_recon_dependency_parity(
+    scratchpad: Path, project_root: str, config: dict
+) -> dict[str, Any]:
+    """Backend-independent fallback: detected dependencies can never be empty."""
+    obligations = write_dependency_obligations(
+        scratchpad, Path(project_root), config
+    )
+    research_text = ""
+    for name in (
+        "recon_external_dependency_research.md",
+        "external_dependency_research.md",
+    ):
+        path = Path(scratchpad) / name
+        if path.is_file():
+            try:
+                research_text = path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError:
+                research_text = ""
+            if research_text:
+                break
+    result = reconcile_dependency_research_ledger(
+        scratchpad, obligations, worker_text=research_text
+    )
+    ledger = (Path(scratchpad) / "external_dependency_research.md").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    ok, issues = validate_dependency_ledger_parity(obligations, ledger)
+    if not ok:
+        raise RuntimeError("external dependency ledger parity failed: " + "; ".join(issues))
+    return result
+
+
 def _run_recon_worker_pool_pty(
     *,
     scratchpad: Path,
@@ -7087,6 +7241,29 @@ def _run_recon_worker_pool_pty(
     except Exception as exc:
         log.warning(f"[recon] could not write worker-pool contract marker: {exc}")
 
+    def _finalize_recon_outputs(final_attempt: int):
+        _merge_recon_worker_shards(scratchpad, config)
+        research = _run_recon_dependency_research_wave(
+            scratchpad=scratchpad,
+            project_root=project_root,
+            config=config,
+            base_cmd=base_cmd,
+            env=env,
+            timeout=timeout,
+            quiescence_s=quiescence_s,
+            attempt=final_attempt,
+        )
+        log.info(
+            "[recon] external-dependency wave: status=%s researched=%s "
+            "unresolved=%s truncated=%s",
+            research.get("status"),
+            research.get("researched", 0),
+            research.get("unresolved", 0),
+            research.get("truncated", False),
+        )
+        passed, missing = gate_passes(scratchpad, project_root, phase)
+        return passed, missing
+
     budget = 2
     for pool_attempt in range(1, budget + 1):
         open_jobs = []
@@ -7096,11 +7273,10 @@ def _run_recon_worker_pool_pty(
                 open_jobs.append(job)
         if not open_jobs:
             try:
-                _merge_recon_worker_shards(scratchpad, config)
+                passed, missing = _finalize_recon_outputs(pool_attempt)
             except Exception as exc:
-                log.warning(f"[recon] worker-shard merge failed: {exc!r}")
+                log.warning(f"[recon] finalize/research wave failed: {exc!r}")
                 return -2
-            passed, missing = gate_passes(scratchpad, project_root, phase)
             if passed:
                 return 0
             log.warning(f"[recon] worker-pool canonical gate failed: {missing}")
@@ -7222,11 +7398,10 @@ def _run_recon_worker_pool_pty(
                 remaining_jobs.append(job)
         if not remaining_jobs:
             try:
-                _merge_recon_worker_shards(scratchpad, config)
+                passed, missing = _finalize_recon_outputs(pool_attempt)
             except Exception as exc:
-                log.warning(f"[recon] worker-shard merge failed: {exc!r}")
+                log.warning(f"[recon] finalize/research wave failed: {exc!r}")
                 return -2
-            passed, missing = gate_passes(scratchpad, project_root, phase)
             if passed:
                 return 0
             log.warning(f"[recon] worker-pool canonical gate failed: {missing}")
@@ -7254,11 +7429,10 @@ def _run_recon_worker_pool_pty(
         else:
             remaining_jobs.append(job)
     try:
-        _merge_recon_worker_shards(scratchpad, config)
+        passed, missing = _finalize_recon_outputs(budget + 1)
     except Exception as exc:
-        log.warning(f"[recon] partial-merge failed: {exc!r}")
+        log.warning(f"[recon] partial finalize/research failed: {exc!r}")
         return -2
-    passed, missing = gate_passes(scratchpad, project_root, phase)
     if passed:
         log.info(
             "[recon] partial-merge over %d/%d completed shards passed canonical "
@@ -9532,6 +9706,174 @@ _DEPTH_THOROUGH_SIDE_JOBS: tuple[dict[str, str], ...] = (
 )
 
 
+# R0-8a: sidecars are methodology-bearing roles, not generic depth artifacts.
+# Keep this registry closed so adding a sidecar job without binding its actual
+# methodology fails at prompt construction instead of silently receiving the
+# broad phase4b-depth coordinator prompt.
+_DEPTH_SIDECAR_CONTRACTS: dict[str, dict[str, str]] = {
+    "design_stress": {
+        "output": "design_stress_findings.md",
+        "methodology": "ecosystem-design-stress-section",
+        "anchor": "ecosystem-design-stress-section",
+    },
+    "perturbation": {
+        "output": "perturbation_findings.md",
+        "methodology": "prompts/shared/v2/phase4b-perturbation.md",
+        "anchor": "# Phase 4b Finding Perturbation Agent",
+    },
+    "skill_execution_checklist": {
+        "output": "skill_execution_checklist.md",
+        "methodology": "prompts/shared/v2/phase4b-skill-checklist.md",
+        "anchor": "# Phase 4b Skill Execution Checklist Agent",
+    },
+}
+
+_SC_DEPTH_BINDING_LANGUAGES = frozenset({
+    "evm", "solana", "aptos", "sui", "soroban", "daml",
+})
+_L1_DEPTH_BINDING_LANGUAGES = frozenset({"go", "rust"})
+
+
+def _canonical_depth_binding_context(config: dict) -> tuple[str, str]:
+    """Normalize and validate the pipeline/language used in prompt bindings.
+
+    These values eventually participate in filesystem paths.  Accepting an
+    unknown value and relying on ``Path`` joining would turn a configuration
+    typo (or ``..`` segment) into a methodology substitution.  Case and outer
+    whitespace are harmless and canonicalized; aliases are deliberately not
+    guessed.
+    """
+    pipeline = str(config.get("pipeline", "sc") or "").strip().lower()
+    language = str(config.get("language", "") or "").strip().lower()
+    allowed = (
+        _SC_DEPTH_BINDING_LANGUAGES if pipeline == "sc"
+        else _L1_DEPTH_BINDING_LANGUAGES if pipeline == "l1"
+        else frozenset()
+    )
+    if pipeline not in {"sc", "l1"} or language not in allowed:
+        raise ValueError(
+            "unsupported depth binding context: "
+            f"pipeline={pipeline or '(empty)'}, language={language or '(empty)'}"
+        )
+    return pipeline, language
+
+
+def _validated_methodology_binding(
+    relative_path: str, *, anchor: str
+) -> Path:
+    """Resolve a methodology under Plamen home and verify its exact anchor."""
+    home = plamen_home().resolve()
+    candidate = (home / relative_path).resolve()
+    try:
+        candidate.relative_to(home)
+    except ValueError as exc:
+        raise ValueError(
+            f"depth methodology binding escapes Plamen home: {relative_path}"
+        ) from exc
+    if not candidate.is_file():
+        raise ValueError(f"depth methodology binding is not a file: {candidate}")
+    try:
+        exact_heading_count = sum(
+            1 for line in candidate.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+            if line == anchor
+        )
+    except OSError as exc:
+        raise ValueError(
+            f"depth methodology binding is unreadable: {candidate}"
+        ) from exc
+    if exact_heading_count != 1:
+        raise ValueError(
+            "depth methodology exact heading anchor missing or ambiguous: "
+            f"{anchor!r} in {candidate} (count={exact_heading_count})"
+        )
+    return candidate
+
+
+def _sidecar_contract_for_job(job: dict[str, str]) -> dict[str, str] | None:
+    """Return the exact sidecar contract, rejecting every partial claim.
+
+    Role, output, and category are a three-part identity.  A registered role
+    *or* registered output forces this check, so deleting/changing ``category``
+    cannot route a sidecar through a generic standard/scanner prompt.
+    """
+    role = str(job.get("role") or "").strip()
+    output = str(job.get("output") or "").strip()
+    category = str(job.get("category") or "").strip().lower()
+    by_role = _DEPTH_SIDECAR_CONTRACTS.get(role)
+    output_roles = [
+        registered_role
+        for registered_role, contract in _DEPTH_SIDECAR_CONTRACTS.items()
+        if contract["output"] == output
+    ]
+    if by_role is None and not output_roles and category != "sidecar":
+        return None
+    if by_role is None:
+        if category == "sidecar" and not output_roles:
+            raise ValueError(
+                f"unregistered depth sidecar role: {role or '(empty)'}"
+            )
+        expected = output_roles[0] if output_roles else "(registered role)"
+        raise ValueError(
+            "depth sidecar role/output mismatch: "
+            f"output {output or '(empty)'} requires role {expected}, "
+            f"got {role or '(empty)'}"
+        )
+    if output != by_role["output"]:
+        raise ValueError(
+            f"depth sidecar role/output mismatch: {role} requires "
+            f"{by_role['output']}, got {output or '(empty)'}"
+        )
+    if category != "sidecar":
+        raise ValueError(
+            f"depth sidecar category mismatch: {role}/{output} requires "
+            f"category=sidecar, got {category or '(omitted)'}"
+        )
+    return by_role
+
+
+def _depth_sidecar_methodology_binding(
+    job: dict[str, str], config: dict
+) -> tuple[Path, str]:
+    """Return the registered methodology path and selector for a sidecar.
+
+    Design-stress methodology is an existing dedicated section in each SC
+    ecosystem depth driver and in the L1 scanner templates.  The other two
+    roles already have standalone shared-v2 prompts.  Role/output pairing is
+    part of the closed contract so a mislabeled job cannot retain a valid
+    output allowlist while executing the wrong methodology.
+    """
+    role = str(job.get("role") or "").strip()
+    contract = _sidecar_contract_for_job(job)
+    if contract is None:
+        raise ValueError(f"unregistered depth sidecar role: {role or '(empty)'}")
+    pipeline, language = _canonical_depth_binding_context(config)
+
+    methodology = contract["methodology"]
+    if methodology != "ecosystem-design-stress-section":
+        path = _validated_methodology_binding(
+            methodology, anchor=contract["anchor"]
+        )
+        return path, f"the entire `{contract['anchor']}` methodology"
+
+    if pipeline == "l1":
+        anchor = "## Scanner: Design Stress"
+        return (
+            _validated_methodology_binding(
+                "prompts/l1/phase4b-scanner-templates.md", anchor=anchor
+            ),
+            f"only the exact `{anchor}` section",
+        )
+    anchor = "### Design Stress Testing Agent (Thorough only)"
+    return (
+        _validated_methodology_binding(
+            f"prompts/{language}/phase4b-depth-driver.md", anchor=anchor
+        ),
+        f"only the exact `{anchor}` section",
+    )
+
+
 def _niche_slug_from_name(raw: str) -> str:
     s = str(raw or "").strip().strip("`")
     s = re.sub(r"_findings\.md$", "", s, flags=re.IGNORECASE)
@@ -10377,6 +10719,93 @@ def _depth_open_jobs(
     ]
 
 
+_DEPTH_PRODUCER_CATEGORIES = frozenset({"standard", "scanner", "niche"})
+_DEPTH_POST_PRODUCER_ROLES = frozenset({
+    "perturbation", "skill_execution_checklist",
+})
+
+
+def _depth_producer_barrier_satisfied(
+    scratchpad: Path,
+    phase: Phase,
+    all_jobs: list[dict[str, str]],
+) -> bool:
+    """True only after every standard/scanner/niche producer completed."""
+    producers = [
+        job for job in all_jobs
+        if str(job.get("category") or "") in _DEPTH_PRODUCER_CATEGORIES
+    ]
+    return bool(producers) and all(
+        _depth_worker_output_complete(scratchpad, phase, job)
+        for job in producers
+    )
+
+
+def _depth_jobs_ready_after_producer_barrier(
+    scratchpad: Path,
+    phase: Phase,
+    open_jobs: list[dict[str, str]],
+    all_jobs: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Hold aggregate consumers until their complete producer set exists.
+
+    Design-stress does not consume producer artifacts and intentionally stays
+    in the first wave.  Perturbation and the checklist read the collective
+    standard/scanner/niche outputs; starting them in the same pool was a race
+    that made their coverage depend on scheduling order.
+    """
+    if _depth_producer_barrier_satisfied(scratchpad, phase, all_jobs):
+        return list(open_jobs)
+    return [
+        job for job in open_jobs
+        if str(job.get("role") or "") not in _DEPTH_POST_PRODUCER_ROLES
+    ]
+
+
+def _prepare_depth_post_producer_consumers(
+    scratchpad: Path,
+    phase: Phase,
+    all_jobs: list[dict[str, str]],
+    mode: str,
+) -> None:
+    """Materialize digest-bound traces/gaps before checklist consumption."""
+    if not _depth_producer_barrier_satisfied(scratchpad, phase, all_jobs):
+        return
+    try:
+        issues = _check_step_execution_traces(scratchpad, mode)
+        if issues:
+            log.warning(
+                "[depth] pre-consumer step trace normalization: %s",
+                "; ".join(issues),
+            )
+    except Exception as exc:
+        # Haltless policy: the checklist will see a missing aggregate and must
+        # report UNKNOWN rather than treating absence as executed.
+        log.warning(
+            "[depth] pre-consumer step trace normalization degraded: %r", exc
+        )
+
+
+def _invalidate_derived_step_trace_for_job(
+    scratchpad: Path, job: dict[str, str]
+) -> None:
+    """Drop only the driver-derived trace before a standard worker rewrites.
+
+    This lets a legitimate retry produce a new embedded table which the driver
+    can bind once.  An out-of-band findings mutation keeps its old sidecar and
+    is therefore detected as a stale digest rather than silently rebound.
+    """
+    if str(job.get("category") or "") != "standard":
+        return
+    role = str(job.get("role") or "").strip()
+    if not role:
+        return
+    try:
+        (scratchpad / f"step_execution_trace_{role}.md").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _should_use_depth_worker_pool(config: dict, scratchpad: Path) -> bool:
     """Return True when depth can run as driver-owned PTY workers."""
     try:
@@ -10435,13 +10864,21 @@ def _build_depth_worker_prompt(
     attempt: int,
     retry_reasons: list[str] | None = None,
 ) -> str:
-    output = job["output"]
-    agent_id = job["agent_id"]
-    role = job["role"]
-    category = job.get("category", "standard")
+    output = str(job["output"]).strip()
+    agent_id = str(job["agent_id"]).strip()
+    role = str(job["role"]).strip()
+    category = str(job.get("category", "standard") or "").strip().lower()
     pipeline = str(config.get("pipeline", "sc"))
     language = str(config.get("language", "unknown"))
-    methodology = _depth_methodology_path(config).as_posix()
+    # Validate even when a registered role/output was mislabeled as another
+    # category.  Without this pre-dispatch check, only the ``sidecar`` branch
+    # below would enforce the closed contract.
+    sidecar_contract = _sidecar_contract_for_job(job)
+    binding_config = config
+    if sidecar_contract is not None:
+        pipeline, language = _canonical_depth_binding_context(config)
+        binding_config = {**config, "pipeline": pipeline, "language": language}
+    methodology = _depth_methodology_path(binding_config).as_posix()
     agent_methodology = (
         plamen_home() / "agents" / f"depth-{role.replace('_', '-')}.md"
     )
@@ -10481,6 +10918,28 @@ CONFIRMED finding has a matching `### Perturbation Block - <finding_id>` H3.
 
     perturbation_block = ""
     perturbation_contract_item = ""
+    step_trace_contract_item = ""
+    if category == "standard":
+        step_trace_contract_item = f"""
+7. Inside `{output}`, immediately before the final COMPLETE marker, include
+   exactly one `## Step Execution Trace` section with this table:
+
+   `| Skill | Step | Executed | Evidence | Result |`
+
+   Emit one row for every step of the assigned role methodology and every
+   injected skill you actually inherited. `Executed` is one of
+   `yes|partial|no|unknown`. A `yes` row is valid only when Evidence embeds an
+   exact `relative/source.ext:L42` citation that exists under PROJECT_ROOT and
+   whose line exists. A bare evidence tag, finding ID, `file:42`, prose
+   `file line 42`, `(general)`, or arbitrary file-plus-digit text is not proof.
+   Tags count only when they themselves embed a resolvable `file:Lline`.
+
+   This table MUST be embedded inside `{output}`. Do NOT write a separate `step_execution_trace_{role}.md`; the driver mechanically extracts the
+   embedded rows verbatim into a digest-bound derived sidecar. If the assigned
+   steps cannot be enumerated safely, emit
+   `| agent-trace | original assigned methodology | unknown | - | rerun the original assigned role methodology and every injected skill |`
+   instead of guessing or claiming closure.
+"""
     if role in {"token_flow", "state_trace"}:
         perturbation_block = """
 Mandatory perturbation-retention contract for this role:
@@ -10550,6 +11009,25 @@ Mandatory standard-depth sections:
 - `## Chain Summary`
 {perturbation_block}
 {depth_skill_block}
+"""
+    elif category == "sidecar":
+        sidecar_methodology, sidecar_selector = _depth_sidecar_methodology_binding(
+            job, binding_config
+        )
+        standard_block = f"""
+This is a registered depth sidecar worker. Read {sidecar_selector} from
+`{sidecar_methodology.as_posix()}` and execute that methodology directly.
+Apply ONLY the methodology registered for the `{role}` role. Coordinator or
+subagent-spawn instructions in the source file are not applicable because you
+are already the isolated worker.
+
+The Output Allowlist and Required File Contract in this prompt remain
+authoritative. If the registered methodology names any other output, ignore
+that filename and write only `{scratchpad.as_posix()}/{output}`.
+
+Do not substitute the generic phase4b depth methodology for this sidecar. Do
+not spawn subagents, inspect other sidecar outputs, or advance to chain
+analysis, verification, or reporting.
 """
     elif category == "fuzz":
         if role == "medusa_fuzz":
@@ -10791,6 +11269,7 @@ The output file must:
 4. End with a final `<!-- PLAMEN_STATUS: COMPLETE -->` marker only after the
    file is fully written and verified on disk.
 {perturbation_contract_item}
+{step_trace_contract_item}
 
 SCOPE: Write ONLY to your assigned output file. Do NOT read or write other
 agents' output files. Do NOT continue after the assigned file is complete.
@@ -10822,6 +11301,7 @@ def _run_single_depth_worker_pty(
     allowed_output_set = set(allowed_outputs or [output])
     protected_input_set = set(protected_input_names or set())
     session_id = str(uuid.uuid4())
+    _invalidate_derived_step_trace_for_job(scratchpad, job)
     prompt = _build_depth_worker_prompt(
         job=job,
         scratchpad=scratchpad,
@@ -11640,32 +12120,66 @@ def _run_depth_worker_pool_pty(
             f"[depth] worker PTY pool attempt {pool_attempt}: "
             f"{len(open_jobs)} open row(s), concurrency={_DEPTH_WORKER_CONCURRENCY}"
         )
-        rc, results = _run_depth_worker_batch(
-            scratchpad=scratchpad,
-            project_root=project_root,
-            config=config,
-            phase=phase,
-            base_cmd=base_cmd,
-            env=env,
-            timeout=timeout,
-            quiescence_s=quiescence_s,
-            jobs=open_jobs,
-            attempt=pool_attempt,
-            pool_started=pool_started,
-            retry_reasons_by_output=retry_reasons_by_output,
-        )
-        if rc != 0:
-            if rc == -4:
-                log.error("[depth] worker-pool containment violation")
-            return rc
-        retry_reasons_by_output = {
-            str(r.get("output")): [
-                f"status={r.get('status')}",
-                *[str(x) for x in (r.get("reasons") or [])],
+        # One retry attempt may contain two deterministic waves.  Wave 1 runs
+        # producers plus independent design-stress.  Once every producer is
+        # complete, materialize the mechanical trace aggregate and only then
+        # launch perturbation/checklist.  Track attempted outputs so an
+        # incomplete row is retried on the next budgeted attempt, not spun in
+        # a tight loop here.
+        attempted_outputs: set[str] = set()
+        results: list[dict[str, Any]] = []
+        while True:
+            current_open = _depth_open_jobs(scratchpad, phase, jobs)
+            ready_jobs = _depth_jobs_ready_after_producer_barrier(
+                scratchpad, phase, current_open, jobs
+            )
+            ready_jobs = [
+                job for job in ready_jobs
+                if str(job.get("output") or "") not in attempted_outputs
             ]
-            for r in results
-            if r.get("status") != "complete"
-        }
+            if not ready_jobs:
+                break
+            if any(
+                str(job.get("role") or "") in _DEPTH_POST_PRODUCER_ROLES
+                for job in ready_jobs
+            ):
+                _prepare_depth_post_producer_consumers(
+                    scratchpad,
+                    phase,
+                    jobs,
+                    str(config.get("mode", "core")),
+                )
+            rc, wave_results = _run_depth_worker_batch(
+                scratchpad=scratchpad,
+                project_root=project_root,
+                config=config,
+                phase=phase,
+                base_cmd=base_cmd,
+                env=env,
+                timeout=timeout,
+                quiescence_s=quiescence_s,
+                jobs=ready_jobs,
+                attempt=pool_attempt,
+                pool_started=pool_started,
+                retry_reasons_by_output=retry_reasons_by_output,
+            )
+            attempted_outputs.update(
+                str(job.get("output") or "") for job in ready_jobs
+            )
+            results.extend(wave_results)
+            if rc != 0:
+                if rc == -4:
+                    log.error("[depth] worker-pool containment violation")
+                return rc
+            for result in wave_results:
+                result_output = str(result.get("output") or "")
+                if result.get("status") == "complete":
+                    retry_reasons_by_output.pop(result_output, None)
+                else:
+                    retry_reasons_by_output[result_output] = [
+                        f"status={result.get('status')}",
+                        *[str(x) for x in (result.get("reasons") or [])],
+                    ]
         if not retry_reasons_by_output:
             _synthesize_depth_lifecycle_artifacts(
                 scratchpad,
@@ -12813,12 +13327,25 @@ def _run_depth_codex_fanout(
     for job in jobs:
         output = str(job["output"])
         agent_id = str(job.get("agent_id") or Path(output).stem)
+        role = str(job.get("role") or "")
+        if role in _DEPTH_POST_PRODUCER_ROLES:
+            if not _depth_producer_barrier_satisfied(scratchpad, phase, jobs):
+                log.warning(
+                    "[depth] codex fan-out: hold %s because one or more "
+                    "standard/scanner/niche producers are incomplete",
+                    output,
+                )
+                continue
+            _prepare_depth_post_producer_consumers(
+                scratchpad, phase, jobs, mode
+            )
         # Resume-safe: skip jobs whose output is already substantive.
         if _depth_worker_output_complete(scratchpad, phase, job):
             log.info(f"[depth] codex fan-out: skip complete job {output}")
             continue
 
         def _exec_job(attempt_n: int, reasons: list[str] | None) -> int:
+            _invalidate_derived_step_trace_for_job(scratchpad, job)
             prompt = _build_depth_worker_prompt(
                 job=job,
                 scratchpad=scratchpad,
@@ -14959,6 +15486,10 @@ def _run_phase_validators(
     retry-block duplication class (v2.3.13).  Every validator that checks
     phase output correctness MUST live here — not inline in main().
     """
+    if "_audit_snapshot" in config:
+        _assert_audit_snapshot_still_bound(
+            config, scratchpad, f"{phase.name}:post-execution"
+        )
     # Codex/GPT models produce more concise output. Relax byte thresholds
     # to avoid false gate failures on structurally complete but terse artifacts.
     original_min_bytes = phase.min_artifact_bytes
@@ -14974,6 +15505,30 @@ def _run_phase_validators(
             )
     passed, missing = gate_passes(scratchpad, config["project_root"], phase)
     phase.min_artifact_bytes = original_min_bytes
+
+    if phase.name == "recon":
+        try:
+            coverage = _ensure_recon_dependency_parity(
+                scratchpad, config["project_root"], config
+            )
+            log.info(
+                "[recon] dependency parity: researched=%s unresolved=%s",
+                coverage.get("researched", 0),
+                coverage.get("unresolved", 0),
+            )
+        except Exception as exc:
+            # Nonhalting, but never silent: downstream report appendix consumes
+            # this durable UNKNOWN sentinel.
+            try:
+                (scratchpad / "report_semantic_dependency_research.md").write_text(
+                    "# External Dependency Research Coverage\n\n"
+                    "Status: UNKNOWN — deterministic obligation/ledger parity "
+                    f"could not be established ({type(exc).__name__}).\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+            log.warning("[recon] dependency parity degraded: %r", exc)
 
     # v2.8.6: Codex recon resilience for partial sub-agent failures.
     # Codex spawns collab workers that can hit capacity/thread limits,
@@ -17161,6 +17716,186 @@ def _archive_prior_audit_artifacts(project_root: Path) -> "Optional[Path]":
     return archive
 
 
+class AuditInputDriftError(RuntimeError):
+    """Evidence cannot continue because a frozen audit input changed."""
+
+
+def _write_audit_input_limitations(scratchpad: Path, snapshot: dict) -> None:
+    path = Path(scratchpad) / "report_semantic_audit_input_limitations.md"
+    limitations = (
+        snapshot.get("components", {})
+        .get("source_scope", {})
+        .get("coverage_limitations", [])
+    )
+    if not limitations:
+        path.unlink(missing_ok=True)
+        return
+    lines = [
+        "# Audit Input Coverage Limitations",
+        "",
+        "Status: UNKNOWN — mandatory human review; proof-grade completeness "
+        "must not be claimed for the affected language lane.",
+        "",
+    ]
+    lines.extend(f"- {item}" for item in limitations)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _scratchpad_has_prior_evidence(
+    scratchpad: Path, *, checkpoint_existed: bool, config_path: Path | None
+) -> bool:
+    if checkpoint_existed:
+        return True
+    ignored = {
+        "_plamen.log",
+        ".plamen_run.lock",
+        ".plamen-scratchpad-owner.json",
+    }
+    if config_path is not None:
+        try:
+            if config_path.resolve().parent == scratchpad.resolve():
+                ignored.add(config_path.name)
+        except OSError:
+            pass
+    try:
+        return any(path.name not in ignored for path in scratchpad.iterdir())
+    except OSError:
+        return True
+
+
+def _bind_checkpoint_audit_snapshot(
+    checkpoint: Checkpoint,
+    scratchpad: Path,
+    config: dict,
+    *,
+    config_path: Path | None,
+    checkpoint_existed: bool,
+    startup_lock_held: bool = False,
+):
+    """Bind resume state to exact inputs, or atomically rewind stale evidence.
+
+    The caller should hold :func:`snapshot_startup_guard` across checkpoint
+    load and this call. Tests and legacy callers may omit it; the archive path
+    then acquires the guard itself. Mismatch never performs a descendant-only
+    rewind: every prior phase artifact and report is quarantined together.
+    """
+    scratchpad = Path(scratchpad)
+    project_root = Path(config["project_root"]).resolve()
+    materialize_remote_documents(config)
+    current = build_audit_snapshot(config, plamen_home())
+    has_prior_progress = bool(checkpoint.completed or checkpoint.degraded) or (
+        _scratchpad_has_prior_evidence(
+            scratchpad,
+            checkpoint_existed=checkpoint_existed,
+            config_path=config_path,
+        )
+    )
+    verdict = classify_snapshot(
+        checkpoint.audit_snapshot,
+        current,
+        has_prior_progress=has_prior_progress,
+    )
+    config["_audit_snapshot"] = current
+    if verdict.state in {SNAPSHOT_NEW, SNAPSHOT_MATCH}:
+        checkpoint.audit_snapshot = current
+        checkpoint.config = config
+        _write_audit_input_limitations(scratchpad, current)
+        return checkpoint, verdict, None
+
+    preserve_names = {"_plamen.log", ".plamen_run.lock"}
+    if config_path is not None:
+        try:
+            if config_path.resolve().parent == scratchpad.resolve():
+                preserve_names.add(config_path.name)
+        except OSError:
+            pass
+    receipt = archive_stale_scratchpad(
+        scratchpad,
+        project_root=project_root,
+        reason=",".join(verdict.changed_components) or verdict.state,
+        preserve_names=preserve_names,
+        startup_lock_held=startup_lock_held,
+    )
+
+    reports_before = []
+    for pattern in _FRESH_ARCHIVE_FILE_GLOBS:
+        reports_before.extend(
+            path for path in project_root.glob(pattern) if path.is_file()
+        )
+    if reports_before:
+        _archive_prior_audit_artifacts(project_root)
+        remaining = [path for path in reports_before if path.exists()]
+        if remaining:
+            raise AuditInputDriftError(
+                "stale project-root report/RCA artifacts could not be quarantined"
+            )
+
+    fresh = Checkpoint(config=config, audit_snapshot=current)
+    sentinel = scratchpad / _AUDIT_FRESH_SENTINEL_NAME
+    sentinel.write_text(
+        json.dumps(
+            {
+                "schema": "plamen.fresh-audit-marker.v1",
+                "reason": "audit-input-snapshot-rewind",
+                "snapshot_digest": current["snapshot_digest"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (scratchpad / "snapshot_rewind_receipt.json").write_text(
+        json.dumps(
+            {
+                "schema": "plamen.snapshot-rewind.v1",
+                "verdict": verdict.state,
+                "changed_components": list(verdict.changed_components),
+                "archive_dir": str(receipt.archive_dir),
+                "snapshot_digest": current["snapshot_digest"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_audit_input_limitations(scratchpad, current)
+    return fresh, verdict, receipt.archive_dir
+
+
+def _assert_audit_snapshot_still_bound(
+    config: dict, scratchpad: Path, phase_name: str
+) -> None:
+    """Fail closed before consuming or certifying mixed-time evidence."""
+    stored = config.get("_audit_snapshot")
+    if not isinstance(stored, dict):
+        raise AuditInputDriftError("audit snapshot is not bound in runtime config")
+    current = build_audit_snapshot(config, plamen_home())
+    verdict = classify_snapshot(stored, current, has_prior_progress=True)
+    if verdict.state == SNAPSHOT_MATCH:
+        return
+    payload = {
+        "schema": "plamen.audit-input-drift.v1",
+        "phase": phase_name,
+        "verdict": verdict.state,
+        "changed_components": list(verdict.changed_components),
+        "stored_snapshot_digest": stored.get("snapshot_digest"),
+        "current_snapshot_digest": current.get("snapshot_digest"),
+        "action": "restart from recon against one immutable input set",
+    }
+    path = Path(scratchpad) / "audit_input_drift.json"
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary, path)
+    raise AuditInputDriftError(
+        f"audit inputs changed during {phase_name}: "
+        + ", ".join(verdict.changed_components)
+    )
+
+
 def _archive_stale_mismatched_checkpoint(
     scratchpad: Path,
     checkpoint: "Checkpoint",
@@ -18230,6 +18965,74 @@ def main():
     scratchpad = Path(config["scratchpad"])
     scratchpad.mkdir(parents=True, exist_ok=True)
 
+    # Snapshot classification and whole-scratchpad quarantine must happen
+    # before opening a run-lock or log handle inside the directory. The
+    # project-level guard serializes two concurrent startup attempts.
+    try:
+        with snapshot_startup_guard(Path(config["project_root"])):
+            if force_resume or fresh_restart:
+                marker = scratchpad / ".hibernating"
+                if marker.exists():
+                    marker.unlink()
+                    print(
+                        "[force/fresh] cleared .hibernating marker",
+                        file=sys.stderr,
+                    )
+            elif no_sleep:
+                marker = scratchpad / ".hibernating"
+                if marker.exists():
+                    marker.unlink()
+                    print("[no-sleep] cleared .hibernating marker", file=sys.stderr)
+            else:
+                hibernate_exit = maybe_resume_hibernation(scratchpad)
+                if hibernate_exit is not None:
+                    sys.exit(hibernate_exit)
+
+            if fresh_restart:
+                log.info("[fresh] wiping scratchpad for fresh restart")
+                _purge_scratchpad(scratchpad, config)
+                log.info("[fresh] scratchpad purged, starting from phase 1")
+                _archived = _archive_prior_audit_artifacts(
+                    Path(config["project_root"])
+                )
+                if _archived is not None:
+                    log.info(
+                        "[fresh] archived prior-run answer-key artifacts "
+                        "(reports/RCA/fuzz harnesses) to %s",
+                        _archived,
+                    )
+
+            repaired_rules = _ensure_rule_files_materialized()
+            if repaired_rules:
+                log.info(
+                    "[startup] materialized empty rule file(s) from bundled "
+                    "backups: " + ", ".join(repaired_rules)
+                )
+            _assert_methodology_reachable(config)
+
+            checkpoint_existed = (scratchpad / "_v2_checkpoint.json").exists()
+            checkpoint = Checkpoint.load(scratchpad)
+            checkpoint, snapshot_verdict, snapshot_archive = (
+                _bind_checkpoint_audit_snapshot(
+                    checkpoint,
+                    scratchpad,
+                    config,
+                    config_path=config_path,
+                    checkpoint_existed=checkpoint_existed,
+                    startup_lock_held=True,
+                )
+            )
+            if snapshot_archive is not None:
+                log.warning(
+                    "[startup] audit-input %s; quarantined all stale evidence "
+                    "to %s and rewound to recon",
+                    snapshot_verdict.state,
+                    snapshot_archive,
+                )
+    except (RuntimeError, SnapshotInputError) as exc:
+        log.error(f"[snapshot] failed to establish an honest audit input: {exc}")
+        sys.exit(EXIT_DEGRADED)
+
     lock_ok, lock_issue = _acquire_run_lock(
         scratchpad, config_path, force=force_resume,
     )
@@ -18247,70 +19050,6 @@ def main():
                           datefmt="%H:%M:%S")
     )
     log.addHandler(_file_handler)
-
-    if force_resume or fresh_restart:
-        marker = scratchpad / ".hibernating"
-        if marker.exists():
-            marker.unlink()
-            print("[force/fresh] cleared .hibernating marker", file=sys.stderr)
-    elif no_sleep:
-        marker = scratchpad / ".hibernating"
-        if marker.exists():
-            marker.unlink()
-            print("[no-sleep] cleared .hibernating marker", file=sys.stderr)
-    else:
-        hibernate_exit = maybe_resume_hibernation(scratchpad)
-        if hibernate_exit is not None:
-            sys.exit(hibernate_exit)
-
-    if fresh_restart:
-        log.info("[fresh] wiping scratchpad for fresh restart")
-        _purge_scratchpad(scratchpad, config)
-        # Re-add file handler since _purge_scratchpad closes it
-        _file_handler = logging.FileHandler(
-            scratchpad / "_plamen.log", encoding="utf-8"
-        )
-        _file_handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s",
-                              datefmt="%H:%M:%S")
-        )
-        log.addHandler(_file_handler)
-        log.info("[fresh] scratchpad purged, starting from phase 1")
-        # Also evict prior-run answer-key artifacts (reports, RCA notes,
-        # generated fuzz harnesses) from project_root so a fresh audit cannot
-        # ingest them. Moves them to a dot-prefixed sibling archive (never
-        # deletes). Without this, --fresh wipes only the scratchpad and these
-        # survive to prime discovery.
-        try:
-            _archived = _archive_prior_audit_artifacts(
-                Path(config["project_root"])
-            )
-            if _archived is not None:
-                log.info(
-                    "[fresh] archived prior-run answer-key artifacts "
-                    "(reports/RCA/fuzz harnesses) to %s — moved, not deleted",
-                    _archived,
-                )
-        except Exception as _e:
-            log.info("[fresh] prior-artifact archive skipped: %s", _e)
-
-    repaired_rules = _ensure_rule_files_materialized()
-    if repaired_rules:
-        log.info(
-            "[startup] materialized empty rule file(s) from bundled backups: "
-            + ", ".join(repaired_rules)
-        )
-
-    # Loud preflight: fail fast if methodology is unreachable for the configured
-    # backend, instead of shooting blind (Codex-only / missing-~/.claude loophole).
-    _assert_methodology_reachable(config)
-
-    try:
-        checkpoint = Checkpoint.load(scratchpad)
-    except RuntimeError as exc:
-        log.error(f"[checkpoint] failed to load checkpoint: {exc}")
-        sys.exit(EXIT_DEGRADED)
-    checkpoint.config = config
 
     # Mechanical pre-pass (writes inventory/variables/functions/build_status/subsystems).
     #
@@ -18621,6 +19360,15 @@ def main():
             skipped_names.append(phase.name)
             log.info(f"[{phase.name}] not in {mode} mode -- skipping")
             continue
+
+        try:
+            _assert_audit_snapshot_still_bound(
+                config, scratchpad, f"{phase.name}:pre-execution"
+            )
+        except AuditInputDriftError as exc:
+            log.error(f"[{phase.name}] {exc}")
+            checkpoint.save(scratchpad)
+            sys.exit(EXIT_DEGRADED)
 
         if skipped_names:
             display.print_skipped_summary(skipped_names)

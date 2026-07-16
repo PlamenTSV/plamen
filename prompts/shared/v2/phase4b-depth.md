@@ -481,11 +481,19 @@ artifact references.
 
 ## STEP-TRACE Injection (Thorough Only — MANDATORY)
 
-Each of the 4 depth-agent prompts (token-flow, state-trace, edge-case, external) MUST include the STEP-TRACE directive verbatim. Without it, the agent will not emit `step_execution_trace_{role}.md` and the driver's `_check_step_execution_traces` gate will hard-fail the depth phase.
+Each standard depth agent (SC and L1) MUST include exactly one
+`## Step Execution Trace` table **inside its assigned findings output**. It
+must not write another artifact. The driver extracts the table rows verbatim
+into `step_execution_trace_{role}.md` and binds that derived sidecar to the
+exact findings SHA-256.
 
 - Light/Core mode depth spawns SKIP STEP-TRACE — the gate is mode-gated to Thorough only.
 - Scanners and niche agents do NOT need STEP-TRACE (different agent class; gate operates on `depth_*_findings.md` only).
-- v2.3.3 status: Agent-emit is now ADVISORY. The Python driver auto-synthesizes `step_execution_trace_{role}.md` from findings evidence-tag density if the agent does not emit a richer one.
+- A `yes` row is proof only with a resolvable project-source `file:Lline` in
+  Evidence. Bare tags, finding IDs, `(general)`, and lenient line prose are not
+  proof. A missing/malformed embedded table, stale digest, or row mismatch is
+  recorded as actionable UNKNOWN; the driver never infers YES from findings or
+  evidence-tag density.
 
 ---
 
@@ -551,6 +559,11 @@ Key rules:
 - Fresh tool calls mandatory (AD-4)
 - New-evidence-only re-scoring (AD-5)
 - Contrastive conditioning via analysis path summaries
+- Read `step_execution_gaps_mechanical.md` before choosing targets. Every
+  `no`, `partial`, or `unknown` row is mandatory. A named skill/step must be
+  executed directly; an `agent-trace` UNKNOWN requires rerunning the original
+  assigned role methodology and every injected skill. Findings prose or tags
+  alone cannot close the row; cite a resolvable project source `file:Lline`.
 
 ### Loop Dynamics Detection
 

@@ -20,7 +20,9 @@ SCIP / Move / DAML graph providers) and:
      co-referencer is a COVERAGE GAP: it is appended to findings_inventory as a
      low-confidence `ENUMGAP` candidate (append-only, idempotent) so the existing
      verify-the-positives filter adjudicates it. Recall-safe: never drops, never
-     halts; if the mechanical graph is absent the gate is a no-op (advisory).
+     halts; missing, degenerate, or materially under-resolved graph coverage is
+     emitted to the shared human-review control plane instead of reading as a
+     clean zero.
 
 No-overfit: pure graph mechanics, names no protocol.
 """
@@ -29,16 +31,24 @@ from __future__ import annotations
 import json
 import math
 import os
+import posixpath
 import re
 import threading
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from coverage_shortfalls import (
     replace_producer_shortfalls,
     shortfall,
     unknown_shortfall,
+)
+from plamen_parsers import COMMITTED_INVARIANT_ID_PATTERN
+from production_source_scope import (
+    is_production_source_path as _graph_producer_is_production_source_path,
+    walker_accepts_relative_path,
 )
 
 try:
@@ -51,6 +61,15 @@ try:
 except Exception:  # pragma: no cover
     _field_from_markdown = None  # type: ignore
 
+# Keep walker exclusions explicit here: graph producer and consumer both run
+# from this checkout, while the shared semantic predicate lives in an
+# import-safe module that cannot be replaced by a recon-phase test shim.
+_GRAPH_PRODUCER_SKIP_DIR_NAMES = frozenset({
+    "node_modules", ".git", "target", "build", "out", "artifacts", "cache",
+    "dist", ".venv", "venv", "__pycache__", ".next", ".idea", ".vscode",
+    "lib", "forge-cache", ".foundry", ".anchor", ".aptos", ".sui",
+})
+
 __all__ = [
     # Axis 1 (co-reference) — G1/G2, unchanged.
     "compute_enumeration_obligations",
@@ -61,6 +80,7 @@ __all__ = [
     "compute_array_uniqueness_candidates",
     "compute_unbounded_input_candidates",
     "compute_invariant_assertion_candidates",
+    "recover_invariant_assertion_candidates",
     "compute_hot_function_set",
     "compute_axis_coverage_gaps",
     "promote_axis_findings_to_inventory",
@@ -80,6 +100,38 @@ _MAX_COREFS_PER_VAR = 6       # cap co-referencers enumerated per symbol
 _SKIP_VAR_REF_THRESHOLD = 25  # a symbol referenced by >25 fns is too common to gate on
 _MAX_ENUMGAP_PER_RUN = 40     # global cap on emitted candidates
 _CANDIDATE_TRANSACTION_LOCK = threading.RLock()
+
+# R0-6 graph-health contract.  The ratio is deliberately explicit and
+# operator-configurable, but invalid values fail back to the conservative
+# default instead of silently disabling the check.  This is a join-health
+# threshold, not a claim that the underlying graph is semantically complete.
+_GRAPH_HEALTH_PRODUCER = "enumeration.axis1.graph_health"
+_GRAPH_LOCATION_RESOLUTION_MIN_RATIO_DEFAULT = 0.80
+_GRAPH_LOCATION_RESOLUTION_MIN_RATIO_ENV = (
+    "PLAMEN_GRAPH_LOCATION_RESOLUTION_MIN_RATIO"
+)
+_GRAPH_HEALTH_FALLBACK_NAME = "report_semantic_enumeration_graph_health.md"
+_SC_PRODUCTION_SOURCE_SUFFIXES = frozenset({
+    ".sol", ".vy", ".rs", ".go", ".move", ".daml",
+})
+_SOURCE_LOCATION_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z]:)?[A-Za-z0-9_./\\-]+\.(?:sol|vy|rs|go|move|daml))"
+    r"(?:(?::[A-Za-z_]\w*)?:L?(?P<line>\d+))?",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class _SourceLocation:
+    display_path: str
+    normalized_path: str
+    line: int | None
+
+    @property
+    def rendered(self) -> str:
+        if self.line is None:
+            return self.display_path
+        return f"{self.display_path}:L{self.line}"
 
 
 @contextmanager
@@ -193,9 +245,437 @@ def _load_graph(scratchpad: Path) -> dict | None:
         g = json.loads(p.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return None
-    if not isinstance(g, dict) or "var_refs" not in g or "functions" not in g:
+    if not isinstance(g, dict):
         return None
-    return g
+    raw_var_refs = g.get("var_refs")
+    raw_functions = g.get("functions")
+    if not isinstance(raw_var_refs, dict) or not isinstance(raw_functions, dict):
+        return None
+
+    # One malformed provider row must not poison every valid row. Salvage the
+    # mechanically usable subset and carry exact diagnostics into graph-health
+    # UNKNOWN. This preserves recall while refusing to self-certify the partial
+    # graph as complete.
+    diagnostics: list[str] = []
+    functions: dict[str, dict] = {}
+    for key, raw in raw_functions.items():
+        if not isinstance(raw, dict):
+            diagnostics.append(f"functions:{key}:not-object")
+            continue
+        clean = dict(raw)
+        if "bare" in clean and not isinstance(clean.get("bare"), str):
+            diagnostics.append(f"functions:{key}:invalid-bare")
+            clean.pop("bare", None)
+        if "loc" in clean and not isinstance(clean.get("loc"), str):
+            diagnostics.append(f"functions:{key}:invalid-loc")
+            clean.pop("loc", None)
+        functions[str(key)] = clean
+
+    var_refs: dict[str, dict] = {}
+    for key, raw in raw_var_refs.items():
+        if not isinstance(raw, dict):
+            diagnostics.append(f"var_refs:{key}:not-object")
+            continue
+        refs = raw.get("refs", [])
+        if not isinstance(refs, list):
+            diagnostics.append(f"var_refs:{key}:refs-not-array")
+            continue
+        valid_refs = [ref for ref in refs if isinstance(ref, str)]
+        if len(valid_refs) != len(refs):
+            diagnostics.append(
+                f"var_refs:{key}:discarded-{len(refs) - len(valid_refs)}-invalid-ref"
+            )
+        clean = dict(raw)
+        clean["refs"] = valid_refs
+        if "bare" in clean and not isinstance(clean.get("bare"), str):
+            diagnostics.append(f"var_refs:{key}:invalid-bare")
+            clean.pop("bare", None)
+        var_refs[str(key)] = clean
+
+    source = g.get("source", "")
+    if not isinstance(source, str):
+        diagnostics.append("source:invalid-type")
+        source = ""
+    return {
+        "source": source,
+        "var_refs": var_refs,
+        "functions": functions,
+        "_graph_health_diagnostics": tuple(sorted(diagnostics)),
+    }
+
+
+def _graph_location_resolution_threshold() -> float:
+    """Return the configured SC inventory-location join-health floor.
+
+    A bad environment value must not turn the health check off.  Keeping the
+    parser here makes the threshold independently fixtureable on every OS and
+    avoids adding a driver/config-schema dependency for an advisory gate.
+    """
+    raw = os.environ.get(_GRAPH_LOCATION_RESOLUTION_MIN_RATIO_ENV, "").strip()
+    if not raw:
+        return _GRAPH_LOCATION_RESOLUTION_MIN_RATIO_DEFAULT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _GRAPH_LOCATION_RESOLUTION_MIN_RATIO_DEFAULT
+    if not math.isfinite(value) or not (0.0 < value <= 1.0):
+        return _GRAPH_LOCATION_RESOLUTION_MIN_RATIO_DEFAULT
+    return value
+
+
+def _normalized_source_path(raw_path: str) -> str:
+    path = str(raw_path or "").replace("\\", "/").strip()
+    normalized = posixpath.normpath(path)
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.casefold()
+
+
+@lru_cache(maxsize=65536)
+def _producer_accepts_source_path(raw_path: str) -> bool:
+    """Apply the graph producer's canonical production-source predicate.
+
+    ``_is_production_source_path`` is content-independent, so a synthetic root
+    is sufficient. Directory pruning performed by its walker is mirrored from
+    the producer's exported ``SKIP_DIR_NAMES``. If those imports are unavailable
+    the caller cannot establish parity and treats the location as unmeasurable.
+    """
+    normalized = _normalized_source_path(raw_path)
+    if not normalized or normalized in {".", ".."}:
+        return False
+    try:
+        return walker_accepts_relative_path(
+            normalized,
+            skip_dir_names=_GRAPH_PRODUCER_SKIP_DIR_NAMES,
+        )
+    except Exception:
+        return False
+
+
+def _production_source_locations(location: str) -> list[_SourceLocation]:
+    """Return every eligible source reference, preserving citation order.
+
+    Lines are optional so path-only inventory entries remain observable as
+    unmeasurable input rather than disappearing into a false clean zero.
+    """
+    out: list[_SourceLocation] = []
+    seen: set[tuple[str, int | None]] = set()
+    for match in _SOURCE_LOCATION_RE.finditer(str(location or "")):
+        raw_path = match.group("path").replace("\\", "/")
+        if Path(raw_path).suffix.lower() not in _SC_PRODUCTION_SOURCE_SUFFIXES:
+            continue
+        if not _producer_accepts_source_path(raw_path):
+            continue
+        raw_line = match.group("line")
+        line = int(raw_line) if raw_line is not None else None
+        normalized = _normalized_source_path(raw_path)
+        identity = (normalized, line)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        out.append(_SourceLocation(raw_path, normalized, line))
+    return out
+
+
+def _production_source_location(location: str) -> str | None:
+    """Backward-compatible first line-bearing production location."""
+    for ref in _production_source_locations(location):
+        if ref.line is not None:
+            return ref.rendered
+    return None
+
+
+def _graph_function_location_rows(
+    graph: dict,
+) -> list[tuple[str, _SourceLocation]]:
+    return list(_graph_location_index(graph)["rows"])
+
+
+def _graph_location_index(graph: dict) -> dict:
+    """Build one immutable lookup index per loaded graph.
+
+    Real graphs carry thousands of function rows and var-reference descriptors.
+    Re-scanning every function for every inventory row/descriptor is quadratic;
+    the index makes exact joins O(functions-in-file) and basename fallback
+    O(paths-with-basename) without changing selection semantics.
+    """
+    cached = graph.get("_graph_location_index")
+    if isinstance(cached, dict):
+        return cached
+    rows: list[tuple[str, _SourceLocation]] = []
+    exact: dict[str, list[tuple[str, _SourceLocation]]] = {}
+    basename: dict[str, dict[str, list[tuple[str, _SourceLocation]]]] = {}
+    bare: dict[str, list[str]] = {}
+    for function_key, info in sorted(graph.get("functions", {}).items()):
+        if not isinstance(info, dict):
+            continue
+        for ref in _production_source_locations(str(info.get("loc", ""))):
+            if ref.line is not None:
+                row = (str(function_key), ref)
+                rows.append(row)
+                exact.setdefault(ref.normalized_path, []).append(row)
+                base = posixpath.basename(ref.normalized_path)
+                basename.setdefault(base, {}).setdefault(
+                    ref.normalized_path, []
+                ).append(row)
+                normalized_bare = str(
+                    info.get("bare", str(function_key).split(".")[-1])
+                ).casefold()
+                if normalized_bare:
+                    bare.setdefault(normalized_bare, []).append(str(function_key))
+                break
+    index = {
+        "rows": tuple(rows),
+        "exact": {
+            path: tuple(path_rows) for path, path_rows in exact.items()
+        },
+        "basename": {
+            base: {
+                path: tuple(path_rows) for path, path_rows in paths.items()
+            }
+            for base, paths in basename.items()
+        },
+        "bare": {
+            name: tuple(sorted(keys)) for name, keys in bare.items()
+        },
+    }
+    graph["_graph_location_index"] = index
+    return index
+
+
+def _nearest_enclosing_function(
+    candidates: list[tuple[str, _SourceLocation]], cited_line: int,
+) -> str | None:
+    eligible = [
+        (key, ref) for key, ref in candidates
+        if ref.line is not None and ref.line <= cited_line
+    ]
+    if not eligible:
+        return None
+    best_line = max(int(ref.line) for _key, ref in eligible if ref.line is not None)
+    best = sorted({
+        key for key, ref in eligible if int(ref.line or -1) == best_line
+    })
+    return best[0] if len(best) == 1 else None
+
+
+def _resolve_inventory_function(
+    graph: dict, location: str,
+) -> tuple[str | None, _SourceLocation | None, str]:
+    """Resolve one canonical inventory locus into a graph function.
+
+    All exact project-relative matches are attempted in citation order before
+    any basename fallback. Basename fallback is legal only when that basename
+    maps to one distinct graph path. Health accounting and obligation derivation
+    both call this function, eliminating selection drift.
+    """
+    refs = _production_source_locations(location)
+    line_refs = [ref for ref in refs if ref.line is not None]
+    if not refs:
+        return None, None, "NO_PRODUCTION_LOCATION"
+    if not line_refs:
+        return None, refs[0], "MISSING_LINE"
+    index = _graph_location_index(graph)
+
+    for ref in line_refs:
+        exact_rows = list(index["exact"].get(ref.normalized_path, ()))
+        function_key = _nearest_enclosing_function(exact_rows, int(ref.line))
+        if function_key:
+            return function_key, ref, "EXACT_PATH"
+
+    for ref in line_refs:
+        basename = posixpath.basename(ref.normalized_path)
+        paths = index["basename"].get(basename, {})
+        if len(paths) != 1:
+            continue
+        basename_rows = list(next(iter(paths.values())))
+        function_key = _nearest_enclosing_function(basename_rows, int(ref.line))
+        if function_key:
+            return function_key, ref, "UNIQUE_BASENAME"
+    return None, line_refs[0], "UNRESOLVED_OR_AMBIGUOUS"
+
+
+def _graph_health_shortfalls(
+    scratchpad: Path,
+    graph: dict | None,
+    blocks: list[dict] | None,
+) -> list[dict]:
+    """Measure inventory-location -> graph-function join health.
+
+    UNKNOWN is used when graph health cannot be measured.  A numerical EXACT
+    shortfall is used only when there is a real denominator of inventory
+    findings with parseable production source locations.  Resolved rows are
+    never withheld merely because the aggregate ratio is low.
+    """
+    graph_path = Path(scratchpad) / "_mechanical_graph.json"
+    if graph is None:
+        return [unknown_shortfall(
+            producer=_GRAPH_HEALTH_PRODUCER,
+            scope="location-function-resolution",
+            kind="PROVIDER_FAILED" if graph_path.exists() else "PROVIDER_UNAVAILABLE",
+            detail=(
+                "mechanical graph is malformed or has an invalid unified schema"
+                if graph_path.exists()
+                else "mechanical graph provider artifact is missing"
+            ),
+        )]
+
+    rows: list[dict] = []
+    diagnostics = list(graph.get("_graph_health_diagnostics", ()))
+    if diagnostics:
+        rows.append(unknown_shortfall(
+            producer=_GRAPH_HEALTH_PRODUCER,
+            scope="provider-schema",
+            kind="PARTIAL_GRAPH_SCHEMA",
+            detail=(
+                "malformed graph entries were discarded while valid entries "
+                "remained eligible for enumeration"
+            ),
+            samples=diagnostics,
+        ))
+    if (
+        _graph_producer_is_production_source_path is None
+        or _GRAPH_PRODUCER_SKIP_DIR_NAMES is None
+    ):
+        rows.append(unknown_shortfall(
+            producer=_GRAPH_HEALTH_PRODUCER,
+            scope="production-source-predicate",
+            kind="PROVIDER_UNAVAILABLE",
+            detail="graph producer production-source predicate could not be imported",
+        ))
+    if not str(graph.get("source", "") or "").strip():
+        rows.append(unknown_shortfall(
+            producer=_GRAPH_HEALTH_PRODUCER,
+            scope="provider-identity",
+            kind="PROVIDER_UNAVAILABLE",
+            detail="mechanical graph has no provider/source identity",
+        ))
+
+    functions = graph.get("functions", {})
+    usable_function_locations = _graph_function_location_rows(graph)
+    if not functions or not usable_function_locations:
+        rows.append(unknown_shortfall(
+            producer=_GRAPH_HEALTH_PRODUCER,
+            scope="location-function-resolution",
+            kind="DEGENERATE_GRAPH",
+            detail="mechanical graph contains no functions with parseable production locations",
+        ))
+        return rows
+
+    if blocks and not graph.get("var_refs"):
+        rows.append(unknown_shortfall(
+            producer=_GRAPH_HEALTH_PRODUCER,
+            scope="co-reference-capability",
+            kind="COREFERENCE_CAPABILITY_EMPTY",
+            detail=(
+                "mechanical graph has functions but an empty var_refs map; "
+                "zero co-reference obligations is not measurable as complete"
+            ),
+        ))
+
+    measured: list[tuple[str, str, str | None]] = []
+    unmeasurable: list[str] = []
+    for block in blocks or []:
+        finding_id = str(block.get("id", "") or "unknown-finding")
+        raw_location = str(block.get("location", ""))
+        function_key, canonical, status = _resolve_inventory_function(
+            graph, raw_location
+        )
+        if canonical is not None and canonical.line is not None:
+            measured.append((finding_id, canonical.rendered, function_key))
+        else:
+            sample_location = canonical.rendered if canonical is not None else raw_location
+            unmeasurable.append(f"{finding_id}@{sample_location or '(missing location)'}")
+    if unmeasurable:
+        rows.append(unknown_shortfall(
+            producer=_GRAPH_HEALTH_PRODUCER,
+            scope="inventory-location-capability",
+            kind="LOCATION_UNMEASURABLE",
+            detail=(
+                "nonempty inventory rows lacked a production path plus line and "
+                "therefore could not participate in graph resolution"
+            ),
+            samples=unmeasurable,
+        ))
+    if not measured:
+        # No denominator means no numerical health claim. UNKNOWN capability
+        # rows above prevent nonempty unmeasurable input from reading as clean.
+        return rows
+
+    unresolved: list[tuple[str, str]] = []
+    resolved = 0
+    for finding_id, location, function_key in measured:
+        if function_key:
+            resolved += 1
+        else:
+            unresolved.append((finding_id, location))
+    threshold = _graph_location_resolution_threshold()
+    ratio = resolved / len(measured)
+    if ratio < threshold:
+        rows.append(shortfall(
+            producer=_GRAPH_HEALTH_PRODUCER,
+            scope="location-function-resolution",
+            cap=f"MIN_RESOLUTION_RATIO_{threshold:.3f}",
+            limit=len(measured),
+            observed=len(measured),
+            retained=resolved,
+            exact=True,
+            samples=[f"{fid}@{location}" for fid, location in unresolved],
+            detail=(
+                f"only {resolved}/{len(measured)} inventory findings with parseable "
+                f"production locations resolved to a graph function; required ratio "
+                f"is {threshold:.3f}; resolved rows were still enumerated"
+            ),
+            kind="GRAPH_RESOLUTION_SHORTFALL",
+        ))
+    return rows
+
+
+def _record_graph_health(
+    scratchpad: Path,
+    graph: dict | None,
+    blocks: list[dict] | None,
+) -> None:
+    """Best-effort replacement with a report-delivered durable fallback."""
+    scratchpad = Path(scratchpad)
+    fallback = scratchpad / _GRAPH_HEALTH_FALLBACK_NAME
+    try:
+        replace_producer_shortfalls(
+            scratchpad,
+            _GRAPH_HEALTH_PRODUCER,
+            _graph_health_shortfalls(scratchpad, graph, blocks),
+        )
+        try:
+            fallback.unlink(missing_ok=True)
+        except Exception:
+            pass
+    except Exception as exc:
+        # `report_semantic_*.md` is consumed by the report assembler's human-
+        # review appendix. This independent fallback prevents a failed shared
+        # ledger write from turning UNKNOWN into an invisible clean zero.
+        detail = re.sub(r"\s+", " ", str(exc)).strip().replace("|", "/")
+        text = (
+            "# Enumeration Graph Health Control-Plane Failure\n\n"
+            "- **Producer**: `enumeration.axis1.graph_health`\n"
+            "- **Coverage State**: **UNKNOWN**\n"
+            "- **Disposition**: FLAGGED_FOR_HUMAN_REVIEW\n"
+            "- **Detail**: graph-health coverage receipt could not be persisted"
+            f" ({type(exc).__name__}: {detail or 'no detail'}).\n"
+        )
+        tmp = fallback.with_name(
+            f".{fallback.name}.{os.getpid()}.{threading.get_ident()}."
+            f"{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(fallback)
+        except Exception:
+            pass
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _bare_from_descriptor(d: str) -> str:
@@ -205,38 +685,38 @@ def _bare_from_descriptor(d: str) -> str:
 
 
 def _fn_at_location(graph: dict, location: str) -> str | None:
-    """Map a finding location (e.g. 'core/QOrg.sol:L330') to the enclosing
-    function: same file basename, nearest function whose line <= the cited line."""
-    m = re.search(r"([A-Za-z0-9_./\\-]+)\D*:?L?(\d+)", location or "")
-    if not m:
+    """Map a cited locus using the shared exact-first canonical resolver."""
+    function_key, _canonical, _status = _resolve_inventory_function(graph, location)
+    return function_key
+
+
+def _descriptor_function_key(graph: dict, descriptor: str) -> str | None:
+    """Resolve provider descriptors, including SCIP's location-only form."""
+    function_key, _canonical, _status = _resolve_inventory_function(graph, descriptor)
+    if function_key:
+        return function_key
+
+    # Some providers retain only a bare name. Use it only when unique; qualified
+    # duplicates without a resolving location are unmeasurable, never guessed.
+    bare = _bare_from_descriptor(descriptor).casefold()
+    # A syntactic source citation that was rejected by the producer predicate
+    # (test/mock/vendor/etc.) must not re-enter through its leading bare name.
+    if not bare or _SOURCE_LOCATION_RE.search(str(descriptor or "")):
         return None
-    fbase = Path(m.group(1).replace("\\", "/")).name.lower()
-    fline = int(m.group(2))
-    best, best_line = None, -1
-    for fk, info in graph["functions"].items():
-        loc = str(info.get("loc", ""))
-        lm = re.search(r"([A-Za-z0-9_./\\-]+)\D*:?L?(\d+)", loc)
-        if not lm:
-            continue
-        if Path(lm.group(1).replace("\\", "/")).name.lower() != fbase:
-            continue
-        fnl = int(lm.group(2))
-        # the ENCLOSING function = highest declaration line at-or-before the
-        # cited line. (A forward slack would wrongly grab the NEXT function when
-        # two are adjacent.)
-        if fnl <= fline and fnl > best_line:
-            best, best_line = fk, fnl
-    return best
+    matches = list(_graph_location_index(graph)["bare"].get(bare, ()))
+    return matches[0] if len(matches) == 1 else None
 
 
 def compute_enumeration_obligations(scratchpad: Path) -> int:
     """G1. Derive per-finding co-reference obligations from the graph. Writes
     `enumeration_obligations.md` + `_enumeration_obligations.json`. Returns the
-    obligation count. Never raises; a no-op when the graph or inventory is absent."""
+    obligation count. Never raises; missing/insufficient providers are exposed
+    through graph-health coverage receipts rather than misreported as clean."""
     scratchpad = Path(scratchpad)
     graph = _load_graph(scratchpad)
     inv = scratchpad / "findings_inventory.md"
     if graph is None or _inventory_blocks is None or not inv.exists():
+        _record_graph_health(scratchpad, graph, None)
         try:
             missing = (
                 "mechanical graph" if graph is None else
@@ -259,6 +739,7 @@ def compute_enumeration_obligations(scratchpad: Path) -> int:
     try:
         blocks = _inventory_blocks(inv.read_text(encoding="utf-8", errors="replace"))
     except Exception:
+        _record_graph_health(scratchpad, graph, None)
         try:
             replace_producer_shortfalls(
                 scratchpad,
@@ -274,12 +755,19 @@ def compute_enumeration_obligations(scratchpad: Path) -> int:
             pass
         return 0
 
+    _record_graph_health(scratchpad, graph, blocks)
+
     var_refs = graph["var_refs"]
-    # invert: bare fn name -> set(var keys it references)
+    # Invert canonical graph function key -> referenced variable keys. Provider
+    # descriptors are heterogeneous: Slither/source providers usually include
+    # a name plus location; SCIP emits only reference locations. Resolve both
+    # through the same exact-first function index used by graph health.
     fn_to_vars: dict[str, set] = {}
     for vk, vd in var_refs.items():
         for d in vd.get("refs", []):
-            fn_to_vars.setdefault(_bare_from_descriptor(d).lower(), set()).add(vk)
+            descriptor_key = _descriptor_function_key(graph, d)
+            if descriptor_key:
+                fn_to_vars.setdefault(descriptor_key, set()).add(vk)
 
     obligations: list[dict] = []
     shortfalls: list[dict] = []
@@ -290,7 +778,7 @@ def compute_enumeration_obligations(scratchpad: Path) -> int:
         if not fk:
             continue
         fbare = graph["functions"][fk].get("bare", fk.split(".")[-1]).lower()
-        all_vars = sorted(fn_to_vars.get(fbare, set()))
+        all_vars = sorted(fn_to_vars.get(fk, set()))
         vars_touched = all_vars[: _MAX_VARS_PER_FINDING]
         if len(all_vars) > _MAX_VARS_PER_FINDING:
             shortfalls.append(shortfall(
@@ -335,10 +823,27 @@ def compute_enumeration_obligations(scratchpad: Path) -> int:
                 # order-dependent obligations. The control-plane receipt above
                 # is intentionally the only output for this symbol.
                 continue
-            all_corefs = sorted({
-                _bare_from_descriptor(d) for d in refs
-                if _bare_from_descriptor(d).lower() != fbare
-            })
+            all_corefs_set: set[str] = set()
+            for descriptor in refs:
+                coref_key = _descriptor_function_key(graph, descriptor)
+                if coref_key:
+                    if coref_key == fk:
+                        continue
+                    coref_info = graph["functions"].get(coref_key, {})
+                    all_corefs_set.add(
+                        str(coref_info.get("bare", coref_key.split(".")[-1]))
+                    )
+                    continue
+                # Preserve a provider's explicit non-location bare descriptor
+                # when it cannot be joined, but never leak a path as a pseudo
+                # function name into the verification obligation.
+                fallback_bare = _bare_from_descriptor(descriptor)
+                if (
+                    not _SOURCE_LOCATION_RE.search(str(descriptor or ""))
+                    and fallback_bare.casefold() != fbare.casefold()
+                ):
+                    all_corefs_set.add(fallback_bare)
+            all_corefs = sorted(all_corefs_set)
             corefs = all_corefs[: _MAX_COREFS_PER_VAR]
             if len(all_corefs) > _MAX_COREFS_PER_VAR:
                 shortfalls.append(shortfall(
@@ -1895,7 +2400,9 @@ _CI_BLOCK_RE = re.compile(
     # a `CI-\d+`-only pattern silently dropped every namespaced block — the same
     # ID-format-too-narrow silent-drop class as _EXPL_HEADING_RE (see
     # feedback_id_regex_catalog). Anchored on `committed-invariant [...]`.
-    r"committed-invariant\s*\[\s*(?P<id>CI(?:-[A-Za-z0-9]+)+)\s*\]\s*\n(?P<body>.*?)"
+    r"committed-invariant\s*\[\s*(?P<id>"
+    + COMMITTED_INVARIANT_ID_PATTERN
+    + r")\s*\]\s*\n(?P<body>.*?)"
     r"(?=\n\s*committed-invariant\s*\[|\n#{1,6}\s|\Z)",
     re.IGNORECASE | re.DOTALL,
 )
@@ -2015,6 +2522,26 @@ def compute_invariant_assertion_candidates(scratchpad: Path) -> list:
         return out
     except Exception:
         return []
+
+
+def recover_invariant_assertion_candidates(scratchpad: Path) -> int:
+    """Harvest and durably route every committed invariant immediately.
+
+    The main enumeration gate runs before both skeptic producers. Validator-
+    time recovery therefore closes the later-phase timing gap: an invariant
+    emitted by exploration-skeptic enters the normal downstream verify funnel,
+    while a post-verify skeptic invariant remains an explicit
+    NEEDS_VERIFICATION inventory/human-review item instead of disappearing.
+    Idempotence is provided by the shared candidate transaction and receipt.
+    """
+    candidates = compute_invariant_assertion_candidates(Path(scratchpad))
+    return _emit_candidates(
+        Path(scratchpad),
+        candidates,
+        _MAX_PER_DERIVER,
+        source_id="INVARIANT",
+        producer="enumeration.deriver.committed_invariant.emission",
+    )
 
 
 # ── MECHANISM 2 — multi-axis coverage meta-pass ──────────────────────────────
@@ -2937,11 +3464,7 @@ def run_enumeration_gate(scratchpad: Path) -> dict:
     # coverage while still flowing the standard ENUMGAP inventory->verify path.
     ci_emitted = 0
     try:
-        ci_cands = compute_invariant_assertion_candidates(scratchpad)
-        ci_emitted = _emit_candidates(
-            scratchpad, ci_cands, _MAX_PER_DERIVER, source_id="INVARIANT",
-            producer="enumeration.deriver.committed_invariant.emission",
-        )
+        ci_emitted = recover_invariant_assertion_candidates(scratchpad)
         emitted += ci_emitted
     except Exception:
         ci_emitted = 0

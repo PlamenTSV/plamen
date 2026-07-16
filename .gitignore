@@ -64,6 +64,9 @@ scripts/*
 !scripts/plamen_prompt.py
 !scripts/plamen_validators.py
 !scripts/coverage_shortfalls.py
+!scripts/audit_snapshot.py
+!scripts/dependency_obligations.py
+!scripts/production_source_scope.py
 !scripts/recon_prepass.py
 !scripts/banner.py
 !scripts/banner_rich.py

@@ -78,7 +78,14 @@ Point 4 requires EXPLORATION, not PRODUCTION. A DA agent that explores a new pat
 
 1. Read `{SCRATCHPAD}/confidence_scores.md` to identify UNCERTAIN and LOW_CONFIDENCE findings.
 2. Read `{SCRATCHPAD}/skill_execution_gaps.md` (if exists) for additional investigation questions.
-2a. Read `{SCRATCHPAD}/step_execution_gaps_mechanical.md` (if exists) for driver-aggregated step gaps from each iter1 depth agent's `step_execution_trace_*.md`. **Each row in this file is an iter2 directive** — the (skill, step) was either marked `no` or `partial` by the iter1 agent's own trace, and iter2 MUST address it (CONFIRM a finding, REFUTE with cited evidence, or write `<safe: justification>` per row).
+2a. Read `{SCRATCHPAD}/step_execution_gaps_mechanical.md` (if it exists) for
+driver-aggregated `no`, `partial`, and `unknown` rows extracted from each iter1
+agent's assigned findings artifact. **Each row is an iter2 directive.** For a
+named (skill, step), execute that exact step and CONFIRM a finding or write a
+cited `<safe: justification>`. For an `agent-trace` UNKNOWN, rerun the original
+assigned role methodology and every injected skill; absence/malformed trace
+cannot be treated as closure. Every affirmative disposition needs a resolvable
+project source `file:Lline`.
 2b. Read `{SCRATCHPAD}/notread_priority_gaps.md` (if exists) for files flagged NOTREAD by recon that received zero citations after iter1. iter2 MUST cover each listed file directly.
 3. Read `{SCRATCHPAD}/perturbation_findings.md` (if exists) for adjacency context.
 4. **Pre-step: Compute mechanical iter1 coverage gap.** AD-1 Prior Path is agent-written natural language and is lossy — iter1 can claim comprehensive coverage while having produced zero evidence tags for many in-scope locations. Derive a set-based ground truth:

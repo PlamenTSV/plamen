@@ -16,6 +16,8 @@ Execute the instructions below directly and stop. Do not spawn subagents.
 
 ## Your Inputs
 Read:
+- `{SCRATCHPAD}/step_execution_gaps_mechanical.md` (PRIMARY, if present;
+  digest-bound rows extracted from each assigned findings output)
 - `{SCRATCHPAD}/template_recommendations.md` (lists which skills were loaded into which agents)
 - `{SCRATCHPAD}/depth_*_findings.md` (all depth agent outputs)
 - `{SCRATCHPAD}/blind_spot_*_findings.md` or `scanner_*_findings.md` (scanner outputs)
@@ -26,7 +28,17 @@ Read:
 
 For each skill listed in `template_recommendations.md` as loaded into a depth/scanner agent:
 
-1. **Identify the skill's key methodology steps**: Read the skill name and recall its core analysis steps (e.g., ORACLE_ANALYSIS requires staleness check, decimal verification, zero-price handling, failure mode analysis).
+0. **Consume the mechanical gaps first**: copy every `partial`, `no`, and
+   `unknown` row from `step_execution_gaps_mechanical.md` into the checklist.
+   Do not upgrade one of these rows from findings prose. A named skill/step row
+   must be executed directly. An `agent-trace` UNKNOWN means the driver could
+   not enumerate the assigned steps without judgment: rerun the original
+   assigned role methodology and every injected skill, then require a fresh
+   embedded `## Step Execution Trace`. Absence of a row is not EXECUTED proof.
+
+1. **Identify the skill's key methodology steps**: Read the actual assigned
+   methodology/skill file and enumerate its steps. Do not reconstruct a skill
+   from memory.
 
 2. **Search agent output for evidence**: In the assigned agent's output file, look for:
    - Explicit mention of the skill's analysis steps
@@ -35,12 +47,16 @@ For each skill listed in `template_recommendations.md` as loaded into a depth/sc
    - Code references in the skill's target area
 
 3. **Classify execution**:
-   - EXECUTED: Agent output shows clear evidence of following the skill methodology
+   - EXECUTED: The embedded trace has a digest-bound `yes` row whose Evidence
+     contains a resolvable project source `file:Lline`
    - PARTIAL: Some steps executed, others missing
    - NOT_EXECUTED: No evidence the skill methodology was applied
    - N/A: Skill's trigger conditions were not met in the codebase
 
-4. **For PARTIAL and NOT_EXECUTED**: Formulate a specific investigation question for iteration 2 DA agents. The question should target what was NOT analyzed.
+4. **For PARTIAL, NOT_EXECUTED, and UNKNOWN**: Formulate a specific
+   investigation question for iteration 2 DA agents. For `agent-trace` UNKNOWN,
+   the question must order a rerun of the original assigned methodology; do not
+   claim step closure from a finding ID, tag, or prose summary.
 
 ## Output
 
