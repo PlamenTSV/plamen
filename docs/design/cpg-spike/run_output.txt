@@ -1,0 +1,150 @@
+==============================================================================
+CPG ENRICHMENT FACTS  (regenerated from open Slither 0.11.5)
+contract=Sample  file=Sample.sol
+==============================================================================
+function                   validationDominates sinkTypes                   
+------------------------------------------------------------------------------
+setConfigGuarded(uint256)  TRUE               EMIT_EVENT,REVERT,STATE_WRITE
+bumpCounter(uint256)       FALSE              STATE_WRITE                 
+forward(address,bytes)     n/a(no write)      EXTERNAL_CALL,REVERT        
+withdraw(uint256)          FALSE              EXTERNAL_CALL,STATE_WRITE   
+------------------------------------------------------------------------------
+
+TAINT EDGES (user source -> typed sink):
+  [forward(address,bytes)]  param:payload  --(payload)-->  EXTERNAL_CALL   @ (ok,None) = target.call(payload)
+  [forward(address,bytes)]  param:target  --(target)-->  EXTERNAL_CALL   @ (ok,None) = target.call(payload)
+  [withdraw(uint256)]  param:amount  --(amount)-->  EXTERNAL_CALL   @ address(msg.sender).transfer(amount)
+  [withdraw(uint256)]  msg.sender  --(TMP_4)-->  EXTERNAL_CALL   @ address(msg.sender).transfer(amount)
+
+==============================================================================
+FULL JSON
+==============================================================================
+[
+  {
+    "function": "setConfigGuarded(uint256)",
+    "visibility": "external",
+    "stateWriteNodes": [
+      {
+        "expr": "config = value",
+        "vars": [
+          "config"
+        ],
+        "dominatedByValidation": true,
+        "dominatorIds": [
+          0,
+          1,
+          2
+        ]
+      }
+    ],
+    "validationDominates": true,
+    "taintEdges": [],
+    "sinks": {
+      "REVERT": [
+        "require(bool,string)(msg.sender == owner,not owner)"
+      ],
+      "STATE_WRITE": [
+        "config = value"
+      ],
+      "EMIT_EVENT": [
+        "Configured(value)"
+      ]
+    }
+  },
+  {
+    "function": "bumpCounter(uint256)",
+    "visibility": "external",
+    "stateWriteNodes": [
+      {
+        "expr": "counter += delta",
+        "vars": [
+          "counter"
+        ],
+        "dominatedByValidation": false,
+        "dominatorIds": [
+          0,
+          1
+        ]
+      }
+    ],
+    "validationDominates": false,
+    "taintEdges": [],
+    "sinks": {
+      "STATE_WRITE": [
+        "counter += delta"
+      ]
+    }
+  },
+  {
+    "function": "forward(address,bytes)",
+    "visibility": "external",
+    "stateWriteNodes": [],
+    "validationDominates": null,
+    "taintEdges": [
+      {
+        "source": "param:payload",
+        "via": "payload",
+        "sink": "EXTERNAL_CALL",
+        "op": "LowLevelCall",
+        "at": "(ok,None) = target.call(payload)"
+      },
+      {
+        "source": "param:target",
+        "via": "target",
+        "sink": "EXTERNAL_CALL",
+        "op": "LowLevelCall",
+        "at": "(ok,None) = target.call(payload)"
+      }
+    ],
+    "sinks": {
+      "EXTERNAL_CALL": [
+        "(ok,None) = target.call(payload)"
+      ],
+      "REVERT": [
+        "require(bool,string)(ok,call failed)"
+      ]
+    }
+  },
+  {
+    "function": "withdraw(uint256)",
+    "visibility": "external",
+    "stateWriteNodes": [
+      {
+        "expr": "balances[msg.sender] -= amount",
+        "vars": [
+          "balances"
+        ],
+        "dominatedByValidation": false,
+        "dominatorIds": [
+          0,
+          1
+        ]
+      }
+    ],
+    "validationDominates": false,
+    "taintEdges": [
+      {
+        "source": "param:amount",
+        "via": "amount",
+        "sink": "EXTERNAL_CALL",
+        "op": "Transfer",
+        "at": "address(msg.sender).transfer(amount)"
+      },
+      {
+        "source": "msg.sender",
+        "via": "TMP_4",
+        "sink": "EXTERNAL_CALL",
+        "op": "Transfer",
+        "at": "address(msg.sender).transfer(amount)"
+      }
+    ],
+    "sinks": {
+      "STATE_WRITE": [
+        "balances[msg.sender] -= amount"
+      ],
+      "EXTERNAL_CALL": [
+        "address(msg.sender).transfer(amount)"
+      ]
+    }
+  }
+]
