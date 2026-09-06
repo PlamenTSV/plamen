@@ -50,7 +50,10 @@ that committed generation; they do not trust the source checkout. This includes:
 ### What is Codex-specific (in this source directory)
 
 - `AGENTS.md` -- Condensed orchestrator rules (under 32KB for Codex context)
-- `config.toml` -- Codex main config with model, MCP server mappings
+- `config.toml.example` -- public, credential-free defaults used only when the
+  user has no existing Codex config. The generated local `config.toml` remains
+  ignored; the installer preserves user settings and merges its managed MCP
+  block transactionally.
 - `agents/*.toml` -- Role TOML files for each agent type
 - `skills/plamen/SKILL.md` -- The `/plamen` orchestrator skill for Codex
 

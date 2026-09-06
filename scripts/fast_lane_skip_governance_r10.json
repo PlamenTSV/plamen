@@ -44,7 +44,7 @@
     "unresolved_nodes_sha256": "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874",
     "quarantine_nodes_sha256": "29bdd0de57165822ae1472f57de64d272a30617a14c5fb654ac5ffae2158e98b",
     "source_path_roster_sha256": "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4",
-    "source_roster_sha256": "75270fb763a3e49fa4093f5d60d29a4b95992e07339c8967f1435e95f188ec92",
+    "source_roster_sha256": "8d08bd4e2b0f76d38b0a70ff7f163f81dd82263ea7eb3abd2feee8b306588925",
     "quarantine_source_path_roster_sha256": "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b",
     "quarantine_source_roster_sha256": "3f38f164396f56149ca47ac5608dc4e6de25c60684be2beac80ab1e9defa8b80",
     "entry_roster_sha256": "ed7627a4d5705dac3529b91359eb964795bee193b24f5d416c442c05ae214fe1"
@@ -116,7 +116,7 @@
     },
     {
       "path": "scripts/test_owned_process_scope_launch_state_p0_am.py",
-      "sha256": "601e86155075055bce16b64ab3dcb5fa3f6fdc980cb0f340190a3150c5a91d3a"
+      "sha256": "f8396ec294aa134d2d2dfe6bd17a72416e465e22d8edd201af773871e3336f30"
     },
     {
       "path": "scripts/test_owned_process_scope_linux_p0_am.py",

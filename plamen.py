@@ -740,6 +740,12 @@ def _codex_install_posix_committed_read(
                 name for name in names
                 if alias_key(name) == alias_key(exact_component)
             ]
+            if not aliases:
+                raise FileNotFoundError(
+                    errno.ENOENT,
+                    "POSIX committed component is absent",
+                    exact_component,
+                )
             if aliases != [exact_component]:
                 raise RuntimeError(
                     "POSIX committed component case/NFC identity differs"
@@ -9579,6 +9585,15 @@ def _merge_codex_mcp_toml(w, *, codex_home, plamen_root):
     if os.path.isfile(target):
         with open(target, encoding="utf-8") as stream:
             existing = stream.read()
+    else:
+        template = os.path.join(
+            os.path.abspath(os.fspath(plamen_root)),
+            "codex-adapter",
+            "config.toml.example",
+        )
+        if os.path.isfile(template):
+            with open(template, encoding="utf-8") as stream:
+                existing = stream.read()
     try:
         parsed = _tomllib.loads(existing) if existing.strip() else {}
     except Exception as exc:
@@ -19159,7 +19174,7 @@ _CODEX_INSTALL_ADAPTER_ROOTS = ("agents", "skills", "commands")
 _CODEX_INSTALL_TOP_LEVEL = ("VERSION", "plamen", "plamen.bat", "plamen.sh")
 _CODEX_INSTALL_MCP_FILES = (
     "mcp.json.example",
-    "codex-adapter/config.toml",
+    "codex-adapter/config.toml.example",
     "mcp-packages/package.json",
     "mcp-packages/package-lock.json",
     "mcp-packages/run-node-mcp.cmd",

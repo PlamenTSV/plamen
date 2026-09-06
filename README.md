@@ -1,11 +1,19 @@
-# Plamen (v2.2.4)
+# Plamen V3.0.0
 
 Autonomous Web3 security auditor for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](https://github.com/openai/codex).
 
-Orchestrates 18-100 AI agents across 40+ phases to produce audit reports with verified PoC exploits — for **smart contracts** and **L1 node-client infrastructure**.
+Coordinates roughly 18-100 analysis workers across a deterministic ten-family
+audit graph, including evidence-backed verification and PoC attempts, for
+**smart contracts** and **L1 node-client infrastructure**.
 
 Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **Soroban/Stellar**, **DAML/Canton**, and **L1 Go/Rust node clients**.
 
+> **Branch and release status.** V3 lives on the `Plamen-v3` branch; `main`
+> remains the V2 line. V3 is active and incomplete until the
+> [continuation goal](docs/continuation/GOAL.md) is satisfied, including clean
+> packaged Codex and Claude E2E runs. Do not interpret the version heading as a
+> completed release or benchmark result.
+>
 > **Plamen-v3 platform status.** The governed production install and audit
 > runtime is supported on Windows and admitted Linux hosts. Native macOS
 > production installation and E2E auditing are **not yet supported**: the
@@ -64,6 +72,10 @@ The assistant acquires source separately and runs one governed install for
 both model backends on a supported production host. On macOS, follow the
 [source-development bootstrap](docs/development/macos.md) instead.
 
+For V3, require the assistant to clone and verify the `Plamen-v3` branch before
+running `plamen.py install`. A default clone checks out `main`, which remains
+the V2 line.
+
 > Do **not** paste [`docs/setup.md`](docs/setup.md) or
 > [`docs/getting-started.md`](docs/getting-started.md) into the AI — those
 > are long-form manuals for humans and contain the RAG build inline.
@@ -79,13 +91,13 @@ reserved for the authenticated installed package.
 
 **Linux:**
 ```bash
-git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME/plamen-source"
+git clone --branch Plamen-v3 --single-branch --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME/plamen-source"
 cd "$HOME/plamen-source" && python3.12 plamen.py install
 ```
 
 **Windows (PowerShell):**
 ```powershell
-git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source"
+git clone --branch Plamen-v3 --single-branch --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source"
 Set-Location "$HOME\plamen-source"; python plamen.py install
 ```
 
@@ -167,6 +179,14 @@ Acquire the new complete source release separately, then run its
 backend with npm. See [docs/updating.md](docs/updating.md) for authenticated
 update and recovery details.
 
+For an existing V3 source checkout, keep the branch selection explicit:
+
+```bash
+git switch Plamen-v3
+git pull --ff-only origin Plamen-v3
+python3.12 plamen.py install
+```
+
 ### Run your first audit
 
 ```bash
@@ -194,7 +214,9 @@ audited project**:
 - **Severity-tiered findings** — every finding gets its own section with **Severity**, **Location** (`file:Lnnn`), a **Description** (with the offending code), an **Impact** statement, the **PoC Result** (`[POC-PASS]` / `[POC-FAIL]` / `[CODE-TRACE]` — see [docs/glossary.md](docs/glossary.md)), and a **Recommendation** (a minimal fix diff when the PoC passed). Cosmetic Low/Info items may be grouped into a compact "Quality Observations" table.
 - **A Priority Remediation Order** — a numbered, most-urgent-first list using the clean client-facing IDs (`C-01`, `H-01`, `M-01`, …).
 - **Appendix A** — findings excluded as false-positives or duplicates (client-facing summary).
-- **Appendix B** — *flagged obligations*: any unfinished work the haltless pipeline could not fully complete is surfaced here for human triage instead of silently dropped (see [Resumable Pipeline](#resumable-pipeline-v2)).
+- **Appendix B** — *flagged obligations*: any unfinished work the pipeline
+  could not fully complete is surfaced for human triage instead of silently
+  dropped (see [Plamen V3 Architecture](#plamen-v3-architecture)).
 
 **Intermediate artifacts** live in a per-audit workspace inside the project:
 
@@ -211,21 +233,65 @@ normally never need to open it; `AUDIT_REPORT.md` is the deliverable. See
 
 ---
 
-## What Changed in v2.2.4
+## What Changes in Plamen V3.0.0
 
-Highlights since v2.1.0 — recall-focused mechanical gates and cross-platform hardening, not a change to *what* the agents analyze:
+V3 moves Plamen from prompt-and-file convention toward explicit, typed
+authority. The branch currently contains these implemented foundations and
+hardening paths:
 
-- **M2 multi-axis coverage meta-pass, now 6 axes** — in Thorough mode, a deterministic driver-owned hot-function matrix checks orthogonal analysis axes (including caller identity / authorization subject). Closed structured evidence is primary and bounded Description/Impact cues are secondary; ambiguity still resolves to `GAP`. A Sonnet worker runs only when the prepass emits GAP rows.
-- **Mechanical recall gates** — sibling/variant-coverage, external-dependency research-with-citation, and pipeline promotion-completeness are now graph-grounded, append-only gates instead of advisory prose, each routing low-confidence candidates through the existing verify-then-report filter rather than asserting a body finding directly.
-- **Force-by-default PoC gate** — any finding with a concrete material harm is now forced into an executable proof-of-concept attempt unless a small closed set of code-grounded blockers applies, closing a self-declared-skip loophole across every supported ecosystem.
-- **Non-EVM PoC execution hardened** — cargo-workspace test discovery for Rust-based ecosystems, plus a fixed PoC-registry lookup that had silently missed on non-EVM dispatch.
-- **Cross-OS source hygiene gate** — an always-on static gate over the driver's
-  own source catches missing text encodings and platform-only code paths. The
-  macOS source-test lane is portability evidence only; it does not qualify a
-  native Mac production install or E2E audit.
-- **DAML/Canton coverage extended** — the ledger-based ecosystem now participates in the M2 hot-set and identity-axis machinery alongside its existing recon/depth/verification support.
+- **Typed authority instead of a monolithic ledger.** Domain-specific immutable
+  JSON records, PhaseIO contracts, semantic journals, content identities, and
+  output-prestate/CAS checks bind producer inputs to incorporated outputs.
+  Markdown and completion markers remain human-readable projections or
+  transport evidence; their presence alone is not semantic completion.
+- **Methodology has named ownership.** The MethodCard catalog and
+  method-application policy separate normative method content from prompts,
+  provider facts, scheduler behavior, dispositions, and report projection.
+  Migrating every live consumer to that single-owner model is still active
+  work, not a completed cutover.
+- **Program Facts and graphs are capability-scoped.** Typed symbol, call,
+  state-write, dependency, and relation evidence can seed sibling coverage,
+  assumption checks, and further investigation. Missing, stale, unsupported,
+  or partial graph evidence may add candidates or debt but cannot authorize a
+  clean negative, demotion, or safe conclusion.
+- **Recall work is routed, not asserted.** Adaptive attention, global `ATT-N`
+  queue identity, enumeration-gap exploration, application and exploration
+  skeptics, niche routing, multi-axis hot-function coverage, dependency
+  research, and promotion-completeness checks feed candidates into the normal
+  deduplication and verification boundaries. They do not mint report findings
+  merely because a graph edge or heuristic matched.
+- **Worker orchestration is driver-owned.** Manifests assign one output to each
+  worker; route, model, input generation, process ownership, output prestate,
+  validation, and parent incorporation are distinct lifecycle steps. Retry,
+  timeout, cancellation, crash, and resume preserve explicit debt rather than
+  translating missing work into success.
+- **Verification and reporting are separated.** Material-harm findings are
+  routed to executable PoC attempts unless a closed blocker applies;
+  verification queues are mechanically sharded and reconciled. Report index,
+  tier writers, deduplication, disposition, material-harm floor, and final
+  assembly project accepted evidence. Report workers cannot silently mint,
+  delete, omit, or rerate canonical findings.
+- **Packaging is source-governed.** The current installer admits an exact
+  764-row source closure, hash-locked Python wheels, reviewed Node/npm and
+  backend payloads, immutable installed bytes, and receipt-bound selections
+  instead of ambient tools or an editable installed checkout.
+- **Claude and Codex share logical denominators.** Claude retains its PTY and
+  narrowly contained headless-RAG route; Codex uses direct `codex exec`, loads
+  no audit MCP servers, and uses governed Web/local precedent fallback.
+  Requested and observed backend/model/fallback facts have typed recording
+  paths, while unobservable results remain explicit `UNKNOWN_BLOCKED` debt.
+- **Cross-platform claims are fail-closed.** Windows lifecycle containment and
+  admitted Linux paths remain production targets. macOS has a reviewed source
+  bootstrap and portability checks, but not a supported native production
+  installer or E2E audit runtime.
 
-Full release notes: [CHANGELOG.md](CHANGELOG.md). Upgrade guidance: [docs/updating.md](docs/updating.md).
+These changes are not a whole-tool acceptance claim. Clean-package validation,
+the remaining requirements reconciliation, macOS production execution, and
+fresh Codex and Claude E2E completion are still open. See the
+[continuation goal](docs/continuation/GOAL.md), its
+[evidence index](docs/continuation/EVIDENCE_INDEX.json), and the
+[architecture](docs/architecture.md) for the current boundary. Comparative
+benchmarking against older Plamen versions is explicitly deferred.
 
 ---
 
@@ -304,11 +370,45 @@ See [docs/usage.md](docs/usage.md) for PATH setup and all CLI options.
 
 ---
 
-## Resumable Pipeline (V2)
+## Plamen V3 Architecture
 
-Plamen is a Python orchestrator that drives Claude (or Codex) workers. Phases run in one of three shapes: **LLM phase session** (single `claude -p` / `codex exec` subprocess), **Python mechanical** (no LLM), or **Direct PTY worker pool** (driver supervises one Claude PTY per worker artifact — used for breadth, depth, and rescan). PTY-supervised execution drives each worker through a pseudo-terminal and infers turn completion from artifacts written to disk rather than a fragile stdout/JSON envelope — eliminating the 0-byte-stdio ambiguity and silent-hang class. A dedicated PTY transport preflight runs at startup to pick a working terminal transport. For worker-pool phases the driver treats disk artifacts with `<!-- PLAMEN_STATUS: COMPLETE -->` markers as the only source of truth — Claude saying "done" is no longer trusted. If usage runs out or the process crashes, re-run the same command — it auto-resumes from the last successful checkpoint and, for worker-pool phases, only retries missing or `IN_PROGRESS` rows (completed worker rows are preserved). Stale or corrupt checkpoints recover rather than stranding the run.
+The Python driver is the sole phase sequencer. For smart-contract audits it
+implements ten semantic phase families; brackets identify mode-dependent
+families:
 
-**Haltless resilience.** A finished audit is never thrown away at the finish line. The report_index, verify, inventory, and resume paths **repair-then-degrade** — surfacing unfinished obligations as flagged items in `AUDIT_REPORT.md` (Appendix B) instead of halting the pipeline. Several formerly fragile LLM phases are now **deterministic Python** (LLM out of the loop): mechanical smart-contract report_index recovery, verify backfill / queue manifests, the data-loss-free `report_dedup` builder, and the recon prepass.
+```text
+Recon (1) -> Breadth (2) -> [Re-scan (3)] -> [Per-contract (4)]
+  -> Inventory (5) -> [Semantic Invariants (6)] -> Depth Loop (7)
+  -> Chain Analysis (8) -> Verification (9) -> Report (10)
+```
+
+Internal preparation, repair, skeptical review, deduplication, verification
+shards, and report shards expand those families into additional work units;
+they are not dozens of independent top-level phases. L1 audits retain the same
+driver-owned discovery-to-report discipline while adding their documented bake
+and graph-sweep work and using L1-specific depth and verification roles. Chain
+composition is specific to the smart-contract path.
+
+Each work unit uses one of three execution shapes: deterministic Python,
+a bounded model phase session, or a driver-owned parallel worker pool. Claude
+workers use the Claude-only PTY supervision transport. Codex workers are
+launched directly with `codex exec`; Codex has no PTY pool or status-envelope
+protocol. Both backends must satisfy the same artifact, identity, debt, and
+incorporation semantics.
+
+A process exit, model statement, marker, or output file is not enough to
+complete work. The driver checks the expected artifact, phase/worker ownership,
+immutable input and route binding, semantic shape, output prestate, and parent
+incorporation before advancing. Mechanical preparation and reconciliation own
+queue manifests, inventory joins, verification aggregation, report assembly,
+and receipt publication where model judgment is unnecessary.
+
+Retry and resume operate on missing or rejected work rather than intentionally
+accepted rows. Unsupported tooling, capacity limits, malformed evidence, and
+unrecoverable lifecycle conditions remain explicit debt and can block a
+critical boundary; they are never converted into evidence that no issue
+exists. Late-stage repair paths can surface bounded unfinished obligations for
+human review, but cannot manufacture a successful E2E acceptance record.
 
 ```bash
 # Launch via wizard (interactive)
@@ -320,7 +420,10 @@ plamen                              # terminal wrapper starts wizard
 plamen resume /path/to/project/.scratchpad/config.json
 ```
 
-The driver handles: phase scheduling, worker-pool orchestration, artifact gating, rate-limit pauses, retry-with-degradation, and subprocess isolation via the `plamen_home()` abstraction (resolves to `~/.claude/` or `~/.codex/plamen/` based on the configured backend). The LLM handles: in-phase agent reasoning for phase-LLM phases, finding analysis, PoC execution, and report content. For worker-pool phases the LLM is a bounded executor — one role, one output file, one artifact.
+The driver handles scheduling, worker ownership, artifact gates, retry/resume,
+typed incorporation, and final report publication. Model workers handle bounded
+analysis, verification, and report-writing assignments; they do not sequence
+the pipeline or self-authorize completion.
 
 After install, `~/.plamen/` is the authenticated package and must not be
 edited. The source checkout remains separate and has no live-runtime
@@ -332,7 +435,15 @@ from child subprocesses so nested invocations do not collide.
 
 ## Codex CLI Backend (BETA — cost-saving)
 
-Plamen supports [OpenAI Codex CLI](https://github.com/openai/codex) as an alternative, cost-saving backend (**beta**). The V2 driver translates **prompt text** (Write→`apply_patch`, Bash→`shell`, `Task()`→`spawn_agent`, `~/.claude/`→`~/.codex/plamen/`) and adapts sandbox constraints. This is prompt-text rewriting, not an MCP transport shim: Codex audit subprocesses load no MCP servers and use governed Web precedent research. The Claude PTY transport is Claude-only; Codex invokes `codex exec` directly — one `codex exec` per depth job, so depth fans out cleanly across jobs. Codex usage-cap errors (which Codex emits as natural-language text, not structured codes) are detected and the driver auto-waits instead of halting, and context-exceeded no longer perma-fails. Codex depth runs real Devil's-Advocate iteration 2 and seeds the full mandatory first-pass artifact set so recon/depth stop degrading lossily.
+Plamen supports [OpenAI Codex CLI](https://github.com/openai/codex) as an
+alternative backend (**beta**). The V3 runtime adapts prompt text and sandbox
+constraints for Codex while preserving the same phase and artifact contracts.
+This is not an MCP transport shim: Codex audit subprocesses load no MCP servers
+and use governed Web/local precedent research. The Claude PTY transport remains
+Claude-only; Codex invokes `codex exec` directly per assigned work unit.
+Usage-cap and context failures are routed through explicit retry/debt handling,
+and requested versus observed route facts are retained when observable. A
+fresh packaged Codex E2E completion remains an open V3 acceptance gate.
 
 ```bash
 # Run via Codex after the standard governed install
@@ -389,7 +500,7 @@ Ecosystem (language) is auto-detected and **auto-corrected at startup** with no 
 | Repository structure | [docs/repository-structure.md](docs/repository-structure.md) |
 | L1 mode design | [docs/l1-mode/design.md](docs/l1-mode/design.md) |
 | L1 severity matrix | [docs/l1-mode/severity-matrix.md](docs/l1-mode/severity-matrix.md) |
-| Automated setup (Claude) | [SETUP.md](SETUP.md) |
+| Automated setup (Claude/Codex) | [SETUP.md](SETUP.md) |
 
 ---
 

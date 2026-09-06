@@ -16,6 +16,23 @@ import pytest
 import owned_process_scope as S
 
 
+class _OSProxy:
+    """Override only ``os.name`` without mutating Python's global os module."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getattr__(self, attribute: str) -> Any:
+        return getattr(os, attribute)
+
+
+def _simulate_platform(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    monkeypatch.setattr(S, "os", _OSProxy(name))
+
+
 @dataclass
 class _FakeProcess:
     pid: int
@@ -230,7 +247,7 @@ def test_windows_job_ownership_is_established_inside_create_before_return(
     process._handle = 456  # type: ignore[attr-defined]
     events: list[str] = []
 
-    monkeypatch.setattr(S.os, "name", "nt")
+    _simulate_platform(monkeypatch, "nt")
     monkeypatch.setattr(
         scope,
         "_assign_windows_created_process_to_job",
@@ -264,7 +281,7 @@ def test_windows_create_rejects_non_suspended_launch_before_factory(
         factory_calls += 1
         return _FakeProcess(pid=112)
 
-    monkeypatch.setattr(S.os, "name", "nt")
+    _simulate_platform(monkeypatch, "nt")
     with pytest.raises(
         S.OwnedProcessScopeError,
         match="CREATE_SUSPENDED",
@@ -288,7 +305,7 @@ def test_windows_assignment_failure_kills_and_reaps_exact_created_process(
     process = _CleanupProcess(pid=113)
     process._handle = 456  # type: ignore[attr-defined]
 
-    monkeypatch.setattr(S.os, "name", "nt")
+    _simulate_platform(monkeypatch, "nt")
 
     def fail_assignment(_exact: _CleanupProcess) -> None:
         raise S.OwnedProcessScopeError("injected Job assignment failure")
@@ -342,8 +359,13 @@ def test_windows_attach_proves_existing_job_ownership_without_reassignment(
         AssignProcessToJobObject = _Assignment()
 
     kernel = _Kernel()
-    monkeypatch.setattr(S.os, "name", "nt")
-    monkeypatch.setattr(S.ctypes, "WinDLL", lambda *_a, **_k: kernel)
+    _simulate_platform(monkeypatch, "nt")
+    monkeypatch.setattr(
+        S.ctypes,
+        "WinDLL",
+        lambda *_a, **_k: kernel,
+        raising=False,
+    )
     monkeypatch.setattr(
         scope,
         "_prove_windows_created_process_job_membership",
@@ -396,7 +418,7 @@ def test_windows_attach_failure_exact_cleanup_then_ordinary_close(
         CloseHandle = _Close()
 
     scope._windows_write_lease = _Lease()
-    monkeypatch.setattr(S.os, "name", "nt")
+    _simulate_platform(monkeypatch, "nt")
     monkeypatch.setattr(
         scope,
         "_prove_windows_created_process_job_membership",
@@ -409,7 +431,12 @@ def test_windows_attach_failure_exact_cleanup_then_ordinary_close(
             S.OwnedProcessScopeError("injected integrity failure")
         ),
     )
-    monkeypatch.setattr(S.ctypes, "WinDLL", lambda *_a, **_k: _Kernel())
+    monkeypatch.setattr(
+        S.ctypes,
+        "WinDLL",
+        lambda *_a, **_k: _Kernel(),
+        raising=False,
+    )
 
     with pytest.raises(
         S.OwnedProcessScopeError,
@@ -471,8 +498,13 @@ def test_windows_emergency_recovery_releases_only_after_exact_job_zero(
 
     kernel = _Kernel()
     scope._windows_write_lease = _Lease()
-    monkeypatch.setattr(S.os, "name", "nt")
-    monkeypatch.setattr(S.ctypes, "WinDLL", lambda *_a, **_k: kernel)
+    _simulate_platform(monkeypatch, "nt")
+    monkeypatch.setattr(
+        S.ctypes,
+        "WinDLL",
+        lambda *_a, **_k: kernel,
+        raising=False,
+    )
 
     def prove_population_zero() -> None:
         assert kernel.TerminateJobObject.calls == 1
@@ -533,8 +565,13 @@ def test_windows_emergency_ambiguity_closes_job_but_retains_quarantined_lease(
 
     kernel = _Kernel()
     scope._windows_write_lease = _Lease()
-    monkeypatch.setattr(S.os, "name", "nt")
-    monkeypatch.setattr(S.ctypes, "WinDLL", lambda *_a, **_k: kernel)
+    _simulate_platform(monkeypatch, "nt")
+    monkeypatch.setattr(
+        S.ctypes,
+        "WinDLL",
+        lambda *_a, **_k: kernel,
+        raising=False,
+    )
 
     def observe_population_zero() -> None:
         if failure_mode == "observation":
@@ -641,7 +678,7 @@ def test_attach_failure_after_return_stays_created_not_prelaunch(
     scope = _bare_scope()
     process = _FakeProcess(pid=102)
     scope.create_process(("C:/trusted/claude.exe",), popen_factory=lambda *_a, **_k: process)
-    monkeypatch.setattr(S.os, "name", "posix")
+    _simulate_platform(monkeypatch, "posix")
 
     def fail_getpgid(_pid: int) -> int:
         raise OSError("injected attach observation failure")
@@ -664,7 +701,7 @@ def test_successful_attach_is_monotonic_and_foreign_attach_is_rejected(
     process = _FakeProcess(pid=103)
     foreign = _FakeProcess(pid=103)
     scope.create_process(("C:/trusted/claude.exe",), popen_factory=lambda *_a, **_k: process)
-    monkeypatch.setattr(S.os, "name", "posix")
+    _simulate_platform(monkeypatch, "posix")
     monkeypatch.setattr(S.os, "getpgid", lambda pid: pid, raising=False)
 
     with pytest.raises(

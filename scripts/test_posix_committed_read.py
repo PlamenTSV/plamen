@@ -1,6 +1,7 @@
 """POSIX no-follow authority tests for committed install artifact reads."""
 
 import ast
+import errno
 import hashlib
 import importlib.util
 import os
@@ -182,6 +183,36 @@ def test_posix_committed_read_preserves_exact_absence_contract(tmp_path):
     root.mkdir()
     with pytest.raises(FileNotFoundError):
         module._codex_install_committed_read(root, ("missing.json",))
+
+
+@POSIX_ONLY
+def test_posix_committed_read_preserves_missing_root_contract(tmp_path):
+    module = _load()
+    missing_root = tmp_path / "not-installed"
+    with pytest.raises(FileNotFoundError) as captured:
+        module._codex_install_committed_read(
+            missing_root,
+            ("payload.json",),
+        )
+    assert captured.value.errno == errno.ENOENT
+    assert captured.value.filename == missing_root.name
+
+
+@POSIX_ONLY
+def test_installed_runtime_clean_home_and_wrong_case_boundary(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load()
+    clean_home = tmp_path / "clean-home"
+    clean_home.mkdir()
+    monkeypatch.setenv("HOME", str(clean_home))
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    assert module._installed_runtime_root() is None
+
+    (clean_home / ".PLAMEN").mkdir()
+    with pytest.raises(RuntimeError, match="case/NFC"):
+        module._installed_runtime_root()
 
 
 @POSIX_ONLY

@@ -4,7 +4,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "plamen.py",
-      "sha256": "e21cd747e6377c2d43bde83475c02bf673947e8d314c74c8a00c00a1513976d6"
+      "sha256": "adea319efc4873e61c63442dbbada695f8582c1270df069c12c56a9db9ccd9ea"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -478,7 +478,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/codex_adapter.py",
-      "sha256": "bb0cf9d00f60aa02e14d76d7f89a4e64839f50427ace8f986670b1debc091fdb"
+      "sha256": "af46338e43fddd1b57998ec17b7007912b8e1cb080dec7eb22a7291fc66d5ddd"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -508,7 +508,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/conftest.py",
-      "sha256": "a593225c59a076d01c638753cb5d94c31f9dd3589a48ea19e352127f70752f4c"
+      "sha256": "724d0fdc932853fa6f5e9223287d4f8bc61cceb9042c9c9c98cd6e12026beaa0"
     },
     {
       "digest_mode": "utf8-lf-v1",

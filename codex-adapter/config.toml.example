@@ -1,0 +1,13 @@
+# Plamen Codex defaults. The installer uses this only when the user has no
+# existing ~/.codex/config.toml, then appends the receipt-bound managed MCP
+# block. Existing user settings are preserved.
+model = "gpt-5.6-terra"
+model_auto_compact_token_limit = 220000
+service_tier = "flex"
+approval_mode = "full-auto"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[agents]
+max_threads = 6
+max_depth = 1

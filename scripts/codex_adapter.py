@@ -243,7 +243,7 @@ def generate_config_toml(out_dir: Path) -> None:
         'sandbox_mode = "danger-full-access"',
         '',
         '[agents]',
-        'max_threads = 8',
+        'max_threads = 6',
         'max_depth = 1',
         '',
     ]

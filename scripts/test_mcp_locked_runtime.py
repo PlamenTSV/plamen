@@ -512,15 +512,15 @@ def test_all_production_mcp_entries_require_authenticated_front_materialization(
     assert "node_modules" not in json.dumps(template)
 
 
-def test_checked_in_windows_codex_config_is_valid_and_network_free() -> None:
-    raw = (ROOT / "codex-adapter" / "config.toml").read_text(encoding="utf-8")
+def test_checked_in_codex_config_template_is_valid_and_network_free() -> None:
+    raw = (ROOT / "codex-adapter" / "config.toml.example").read_text(
+        encoding="utf-8"
+    )
     parsed = tomllib.loads(raw)
-    assert parsed["mcp_servers"]["memory"]["command"].endswith("/node.exe")
+    assert parsed["agents"]["max_threads"] == 6
     assert "npx" not in raw.lower()
-    assert "@mcp-dockmaster" not in raw
-    assert "node_modules/helius-mcp/dist/index.js" in raw
-    assert raw.count(INSTALLER._CODEX_MCP_START) == 1
-    assert raw.count(INSTALLER._CODEX_MCP_END) == 1
+    assert "mcp_servers" not in parsed
+    assert "YOUR_" not in raw
 
 
 def test_codex_mcp_merge_is_transactional_owned_and_idempotent(
@@ -566,6 +566,48 @@ def test_codex_mcp_merge_is_transactional_owned_and_idempotent(
     assert target.read_text(encoding="utf-8") == first
 
 
+def test_codex_mcp_merge_bootstraps_missing_config_from_public_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "plamen"
+    adapter = root / "codex-adapter"
+    adapter.mkdir(parents=True)
+    (root / "mcp.json.example").write_text(
+        (ROOT / "mcp.json.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (adapter / "config.toml.example").write_text(
+        (ROOT / "codex-adapter" / "config.toml.example").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    monkeypatch.setattr(
+        INSTALLER,
+        "_validated_mcp_current_selection",
+        lambda **_kwargs: _fake_selection(),
+    )
+    monkeypatch.setattr(
+        INSTALLER,
+        "_mcp_public_command_path",
+        lambda: Path("C:/Plamen/plamen.cmd"),
+    )
+
+    assert INSTALLER._merge_codex_mcp_toml(
+        lambda _message: None,
+        codex_home=codex_home,
+        plamen_root=root,
+    )
+    installed = tomllib.loads(
+        (codex_home / "config.toml").read_text(encoding="utf-8")
+    )
+    assert installed["model"] == "gpt-5.6-terra"
+    assert installed["agents"]["max_threads"] == 6
+    assert installed["mcp_servers"]
+
+
 def test_codex_mcp_merge_refuses_invalid_existing_config_without_writing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -587,7 +629,7 @@ def test_codex_mcp_merge_refuses_invalid_existing_config_without_writing(
 
 
 def test_receipt_includes_both_mcp_config_authorities() -> None:
-    assert {"mcp.json.example", "codex-adapter/config.toml"}.issubset(
+    assert {"mcp.json.example", "codex-adapter/config.toml.example"}.issubset(
         INSTALLER._CODEX_INSTALL_MCP_FILES
     )
     assert INSTALLER._CODEX_INSTALL_SOURCE_COUNT == 764
