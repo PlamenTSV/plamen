@@ -4,10 +4,10 @@
 >
 > Want your AI assistant to install for you instead? Paste [SETUP.md](../SETUP.md) (only), not this file.
 
-> **Platform boundary:** this guide's install and audit commands apply to
-> Windows and admitted Linux production hosts. Native macOS production install
-> and E2E auditing are not yet supported because the governed package
-> transaction and worker-containment layers fail closed on Darwin. Mac users
+> **Platform boundary:** this guide's install and audit commands currently apply
+> to Windows production hosts. Native Linux and macOS production install and E2E
+> auditing are not yet supported because V3's governed package transaction,
+> keeper, and recovery transport remain Windows-native. Mac users
 > can continue source development with the
 > [macOS bootstrap](development/macos.md) and
 > [machine-migration guide](development/machine-migration.md); remaining work
@@ -15,7 +15,7 @@
 
 > Just installed Plamen? This page tells you exactly what to do next — what's required, what's optional, and how to run your first audit.
 
-> **Note:** On Windows use `python`; on Linux use `python3.12`.
+> **Note:** On Windows use `python` when it resolves to CPython 3.12.
 
 > **First thing to run:** `plamen doctor` — verifies the signed committed package, managed backend selections, private Python and Node runtimes, backend configuration, and authentication without paid/provider calls. The exact installed-package integrity pass checks hundreds of files and may take up to a minute. If `plamen` isn't found, see [README.md](../README.md); do not add or edit files inside `~/.plamen`. See [glossary.md](glossary.md) for terminology.
 
@@ -42,7 +42,7 @@ The installer materializes the managed components automatically. The host needs
 only the acquisition/bootstrap prerequisites below; ambient `node`, `npm`,
 `npx`, `claude`, and `codex` commands are neither required nor trusted.
 
-- **CPython 3.12** (`python3.12`, or `python` on Windows when it resolves to 3.12)
+- **CPython 3.12** (`python` on Windows when it resolves to 3.12)
 - **Git**
 - A complete reviewed Plamen source tree, kept outside `~/.plamen/`
 
@@ -231,7 +231,7 @@ source directory:
 ```bash
 cd /path/to/plamen-source
 git pull --ff-only
-python3.12 plamen.py install
+python plamen.py install
 ```
 
 Never run `git pull` inside `~/.plamen/`, globally update the managed npm
@@ -243,8 +243,8 @@ See [updating.md](updating.md) for details on what auto-updates and what doesn't
 
 ## Troubleshooting
 
-Production audits run on Windows and admitted Linux hosts. macOS arm64 and
-x86_64 currently support the isolated source-development bootstrap only; see
+Production audits currently run on Windows. Linux remains a source-validation
+host; macOS arm64 and x86_64 support the isolated source-development bootstrap; see
 [development/macos.md](development/macos.md). See
 [dependencies.md](dependencies.md) for supported-host dependency details.
 

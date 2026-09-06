@@ -1,5 +1,9 @@
 # Platform Dependencies
 
+> V3 production install/setup is currently qualified only on Windows. On macOS
+> use the [source-development bootstrap](development/macos.md); Linux is also a
+> source-validation host until the POSIX transaction/keeper goal is complete.
+
 > Complete dependency guide for all platforms. **Not sure what you need?** See [getting-started.md](getting-started.md) — most users only need tools for their target chain.
 >
 > `plamen setup` installs only exact checksum-backed tool recipes. Toolchains whose upstream bootstrap channel is mutable remain operator-provided and are reported by `plamen doctor`. `plamen rag` builds/rebuilds the RAG vulnerability database separately.
@@ -8,8 +12,7 @@
 
 ```bash
 # Auto-install everything (interactive)
-plamen setup                                    # if PATH is set
-cd ~/.plamen && python3.12 plamen.py setup      # macOS/Linux (before PATH)
+plamen setup                                    # if PATH is set on Windows
 cd $HOME\.plamen; python plamen.py setup        # Windows PowerShell (before PATH)
 ```
 

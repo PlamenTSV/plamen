@@ -1,0 +1,1622 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/model-routing-r2.3.json",
+  "title": "Plamen model routing R2.3 transactional schemas",
+  "type": "object",
+  "required": ["schema_bundle", "schema_bundle_version"],
+  "properties": {
+    "schema_bundle": {"const": "plamen.model-routing-schema-bundle.r2.3"},
+    "schema_bundle_version": {"const": 1}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "SafeInt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "PositiveSafeInt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "NullableDigest": {
+      "oneOf": [
+        {"$ref": "#/$defs/Digest"},
+        {"type": "null"}
+      ]
+    },
+    "ResourceVector": {
+      "type": "object",
+      "required": [
+        "source_payload_bytes",
+        "output_artifact_bytes",
+        "turns",
+        "retries",
+        "wall_time_ms",
+        "tool_calls",
+        "driver_owned_work_units",
+        "currency_micros"
+      ],
+      "properties": {
+        "source_payload_bytes": {"$ref": "#/$defs/SafeInt"},
+        "output_artifact_bytes": {"$ref": "#/$defs/SafeInt"},
+        "turns": {"$ref": "#/$defs/SafeInt"},
+        "retries": {"$ref": "#/$defs/SafeInt"},
+        "wall_time_ms": {"$ref": "#/$defs/SafeInt"},
+        "tool_calls": {"$ref": "#/$defs/SafeInt"},
+        "driver_owned_work_units": {"$ref": "#/$defs/SafeInt"},
+        "currency_micros": {"$ref": "#/$defs/SafeInt"}
+      },
+      "additionalProperties": false
+    },
+    "ZeroResourceVector": {
+      "const": {
+        "source_payload_bytes": 0,
+        "output_artifact_bytes": 0,
+        "turns": 0,
+        "retries": 0,
+        "wall_time_ms": 0,
+        "tool_calls": 0,
+        "driver_owned_work_units": 0,
+        "currency_micros": 0
+      }
+    },
+    "TokenGrant": {
+      "type": "object",
+      "required": [
+        "uncached_input_tokens",
+        "cache_write_tokens",
+        "cached_input_tokens",
+        "output_tokens_including_reasoning",
+        "reasoning_tokens_subset"
+      ],
+      "properties": {
+        "uncached_input_tokens": {"$ref": "#/$defs/SafeInt"},
+        "cache_write_tokens": {"$ref": "#/$defs/SafeInt"},
+        "cached_input_tokens": {"$ref": "#/$defs/SafeInt"},
+        "output_tokens_including_reasoning": {"$ref": "#/$defs/SafeInt"},
+        "reasoning_tokens_subset": {"$ref": "#/$defs/SafeInt"}
+      },
+      "additionalProperties": false
+    },
+    "ResourceMetric": {
+      "enum": [
+        "SOURCE_PAYLOAD_BYTES",
+        "OUTPUT_ARTIFACT_BYTES",
+        "TURNS",
+        "RETRIES",
+        "WALL_TIME_MS",
+        "TOOL_CALLS",
+        "DRIVER_OWNED_WORK_UNITS",
+        "CURRENCY_MICROS",
+        "UNCACHED_INPUT_TOKENS",
+        "CACHE_WRITE_TOKENS",
+        "CACHED_INPUT_TOKENS",
+        "OUTPUT_TOKENS_INCLUDING_REASONING"
+      ]
+    },
+    "RatioState": {
+      "enum": [
+        "FINITE",
+        "NO_NUMERATOR_OR_DENOMINATOR_USE",
+        "UNBOUNDED_REQUIRES_REVIEW",
+        "UNOBSERVABLE"
+      ]
+    },
+    "CustomizationRow": {
+      "type": "object",
+      "required": [
+        "row_digest",
+        "ordinal",
+        "precedence_rank",
+        "source_kind",
+        "source_id",
+        "canonical_realpath_digest",
+        "content_digest",
+        "loaded",
+        "declared_effort",
+        "thinking_controls_digest",
+        "scan_result"
+      ],
+      "properties": {
+        "row_digest": {"$ref": "#/$defs/Digest"},
+        "ordinal": {"$ref": "#/$defs/SafeInt"},
+        "precedence_rank": {"$ref": "#/$defs/SafeInt"},
+        "source_kind": {
+          "enum": [
+            "ENVIRONMENT",
+            "CLI_ARGUMENT",
+            "SKILL_FRONTMATTER",
+            "ROLE_FRONTMATTER",
+            "SUBAGENT_FRONTMATTER",
+            "SETTINGS_USER",
+            "SETTINGS_PROJECT",
+            "SETTINGS_LOCAL",
+            "CONTROL_REQUEST",
+            "SESSION_DEFAULT"
+          ]
+        },
+        "source_id": {"type": "string", "minLength": 1},
+        "canonical_realpath_digest": {"$ref": "#/$defs/NullableDigest"},
+        "content_digest": {"$ref": "#/$defs/NullableDigest"},
+        "loaded": {"type": "boolean"},
+        "declared_effort": {
+          "oneOf": [
+            {"enum": ["low", "medium", "high", "xhigh", "not_applicable"]},
+            {"type": "null"}
+          ]
+        },
+        "thinking_controls_digest": {"$ref": "#/$defs/NullableDigest"},
+        "scan_result": {
+          "enum": [
+            "ABSENT",
+            "PRESENT_EQUAL",
+            "PRESENT_SHADOWED",
+            "PRESENT_CONFLICT",
+            "UNREADABLE",
+            "NOT_APPLICABLE"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source_kind": {
+                "enum": [
+                  "ENVIRONMENT",
+                  "CLI_ARGUMENT",
+                  "CONTROL_REQUEST",
+                  "SESSION_DEFAULT"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "canonical_realpath_digest": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source_kind": {
+                "enum": [
+                  "SKILL_FRONTMATTER",
+                  "ROLE_FRONTMATTER",
+                  "SUBAGENT_FRONTMATTER",
+                  "SETTINGS_USER",
+                  "SETTINGS_PROJECT",
+                  "SETTINGS_LOCAL"
+                ]
+              },
+              "scan_result": {
+                "enum": [
+                  "PRESENT_EQUAL",
+                  "PRESENT_SHADOWED",
+                  "PRESENT_CONFLICT",
+                  "UNREADABLE"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "canonical_realpath_digest": {"$ref": "#/$defs/Digest"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scan_result": {
+                "enum": [
+                  "PRESENT_EQUAL",
+                  "PRESENT_SHADOWED",
+                  "PRESENT_CONFLICT"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "content_digest": {"$ref": "#/$defs/Digest"}
+            }
+          },
+          "else": {
+            "properties": {
+              "content_digest": {"type": "null"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "CustomizationDiscoveryAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "discovery_authority_version",
+        "discovery_authority_digest",
+        "resolution_root_digest",
+        "customization_registry_digest",
+        "expected_sources"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.customization-discovery-authority.v1"},
+        "discovery_authority_version": {"const": 1},
+        "discovery_authority_digest": {"$ref": "#/$defs/Digest"},
+        "resolution_root_digest": {"$ref": "#/$defs/Digest"},
+        "customization_registry_digest": {"$ref": "#/$defs/Digest"},
+        "expected_sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "ordinal",
+              "precedence_rank",
+              "source_kind",
+              "source_id",
+              "canonical_realpath_digest"
+            ],
+            "properties": {
+              "ordinal": {"$ref": "#/$defs/SafeInt"},
+              "precedence_rank": {"$ref": "#/$defs/SafeInt"},
+              "source_kind": {
+                "enum": [
+                  "ENVIRONMENT",
+                  "CLI_ARGUMENT",
+                  "SKILL_FRONTMATTER",
+                  "ROLE_FRONTMATTER",
+                  "SUBAGENT_FRONTMATTER",
+                  "SETTINGS_USER",
+                  "SETTINGS_PROJECT",
+                  "SETTINGS_LOCAL",
+                  "CONTROL_REQUEST",
+                  "SESSION_DEFAULT"
+                ]
+              },
+              "source_id": {"type": "string", "minLength": 1},
+              "canonical_realpath_digest": {"$ref": "#/$defs/NullableDigest"}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "LoadedCustomizationSetV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "customization_set_version",
+        "customization_set_digest",
+        "resolution_root_digest",
+        "customization_registry_digest",
+        "discovery_authority_digest",
+        "discovery_manifest_digest",
+        "expected_row_count",
+        "rows"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.loaded-customization-set.v1"},
+        "customization_set_version": {"const": 1},
+        "customization_set_digest": {"$ref": "#/$defs/Digest"},
+        "resolution_root_digest": {"$ref": "#/$defs/Digest"},
+        "customization_registry_digest": {"$ref": "#/$defs/Digest"},
+        "discovery_authority_digest": {"$ref": "#/$defs/Digest"},
+        "discovery_manifest_digest": {"$ref": "#/$defs/Digest"},
+        "expected_row_count": {"$ref": "#/$defs/PositiveSafeInt"},
+        "rows": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/CustomizationRow"},
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClaudeEffortAuthorityV3": {
+      "type": "object",
+      "required": [
+        "schema",
+        "effort_authority_version",
+        "effort_authority_digest",
+        "semantic_plan_digest",
+        "exact_model_id",
+        "requested_effort",
+        "organization_cap_state",
+        "customization_set_digest",
+        "environment_effort",
+        "cli_effort",
+        "authority_result"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.claude-effort-authority.v3"},
+        "effort_authority_version": {"const": 3},
+        "effort_authority_digest": {"$ref": "#/$defs/Digest"},
+        "semantic_plan_digest": {"$ref": "#/$defs/Digest"},
+        "exact_model_id": {"type": "string"},
+        "requested_effort": {
+          "enum": ["low", "medium", "high", "xhigh", "not_applicable"]
+        },
+        "organization_cap_state": {
+          "enum": [
+            "KNOWN_PERMITS_REQUEST",
+            "KNOWN_CLAMPS_REQUEST",
+            "UNKNOWN",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "customization_set_digest": {"$ref": "#/$defs/Digest"},
+        "environment_effort": {
+          "oneOf": [
+            {"enum": ["low", "medium", "high", "xhigh"]},
+            {"type": "null"}
+          ]
+        },
+        "cli_effort": {
+          "oneOf": [
+            {"enum": ["low", "medium", "high", "xhigh"]},
+            {"type": "null"}
+          ]
+        },
+        "authority_result": {
+          "enum": ["SEALED", "NOT_APPLICABLE", "DEBT"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ThinkingControlRow": {
+      "type": "object",
+      "required": [
+        "ordinal",
+        "customization_row_ordinal",
+        "source_kind",
+        "source_id",
+        "customization_row_digest",
+        "control_name",
+        "serialized_value",
+        "state"
+      ],
+      "properties": {
+        "ordinal": {"$ref": "#/$defs/SafeInt"},
+        "customization_row_ordinal": {"$ref": "#/$defs/SafeInt"},
+        "source_kind": {
+          "enum": [
+            "ENVIRONMENT",
+            "CLI_ARGUMENT",
+            "SKILL_FRONTMATTER",
+            "ROLE_FRONTMATTER",
+            "SUBAGENT_FRONTMATTER",
+            "SETTINGS_USER",
+            "SETTINGS_PROJECT",
+            "SETTINGS_LOCAL",
+            "CONTROL_REQUEST",
+            "SESSION_DEFAULT"
+          ]
+        },
+        "source_id": {"type": "string", "minLength": 1},
+        "customization_row_digest": {"$ref": "#/$defs/Digest"},
+        "control_name": {
+          "enum": [
+            "ADAPTIVE_THINKING",
+            "MAX_THINKING_TOKENS",
+            "ALWAYS_THINKING",
+            "MANUAL_THINKING_BUDGET"
+          ]
+        },
+        "serialized_value": {
+          "oneOf": [
+            {"type": "string"},
+            {"$ref": "#/$defs/SafeInt"},
+            {"type": "boolean"},
+            {"type": "null"}
+          ]
+        },
+        "state": {"enum": ["EXPLICIT", "PROVEN_ABSENT", "CONFLICT", "UNREADABLE"]}
+      },
+      "additionalProperties": false
+    },
+    "ClaudeProviderControlVectorV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "provider_control_vector_version",
+        "provider_control_vector_digest",
+        "semantic_plan_digest",
+        "exact_model_id",
+        "effort_authority_digest",
+        "requested_effort",
+        "requested_thinking_mode",
+        "manual_thinking_budget_tokens",
+        "materialized_argv_digest",
+        "materialized_environment_digest"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.claude-provider-control-vector.v1"},
+        "provider_control_vector_version": {"const": 1},
+        "provider_control_vector_digest": {"$ref": "#/$defs/Digest"},
+        "semantic_plan_digest": {"$ref": "#/$defs/Digest"},
+        "exact_model_id": {"type": "string", "minLength": 1},
+        "effort_authority_digest": {"$ref": "#/$defs/Digest"},
+        "requested_effort": {
+          "enum": ["low", "medium", "high", "xhigh", "not_applicable"]
+        },
+        "requested_thinking_mode": {
+          "enum": ["ADAPTIVE_ON", "MANUAL_OFF", "MANUAL_ON"]
+        },
+        "manual_thinking_budget_tokens": {
+          "oneOf": [
+            {"$ref": "#/$defs/PositiveSafeInt"},
+            {"type": "null"}
+          ]
+        },
+        "materialized_argv_digest": {"$ref": "#/$defs/Digest"},
+        "materialized_environment_digest": {"$ref": "#/$defs/Digest"}
+      },
+      "additionalProperties": false
+    },
+    "ClaudeThinkingAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "thinking_authority_version",
+        "thinking_authority_digest",
+        "semantic_plan_digest",
+        "exact_model_id",
+        "requested_thinking_mode",
+        "manual_thinking_budget_tokens",
+        "customization_set_digest",
+        "customization_row_count",
+        "ordered_controls",
+        "provider_control_vector_digest",
+        "authority_result"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.claude-thinking-authority.v1"},
+        "thinking_authority_version": {"const": 1},
+        "thinking_authority_digest": {"$ref": "#/$defs/Digest"},
+        "semantic_plan_digest": {"$ref": "#/$defs/Digest"},
+        "exact_model_id": {"type": "string"},
+        "requested_thinking_mode": {
+          "enum": ["ADAPTIVE_ON", "MANUAL_OFF", "MANUAL_ON"]
+        },
+        "manual_thinking_budget_tokens": {
+          "oneOf": [
+            {"$ref": "#/$defs/PositiveSafeInt"},
+            {"type": "null"}
+          ]
+        },
+        "customization_set_digest": {"$ref": "#/$defs/Digest"},
+        "customization_row_count": {"$ref": "#/$defs/PositiveSafeInt"},
+        "ordered_controls": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ThinkingControlRow"}
+        },
+        "provider_control_vector_digest": {"$ref": "#/$defs/Digest"},
+        "authority_result": {"enum": ["SEALED", "DEBT"]}
+      },
+      "additionalProperties": false
+    },
+    "TokenBudgetDerivationV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "token_derivation_version",
+        "token_derivation_digest",
+        "arm_family_digest",
+        "generation",
+        "exact_model_id",
+        "tokenizer_authority_digest",
+        "context_budget_digest",
+        "source_payload_digest",
+        "source_payload_bytes",
+        "output_artifact_bytes_reservation",
+        "context_window_tokens",
+        "maximum_input_tokens",
+        "maximum_output_tokens",
+        "request_input_ceiling_tokens",
+        "request_output_ceiling_tokens",
+        "reserved_system_tokens",
+        "reserved_tool_tokens",
+        "reserved_output_tokens",
+        "derived_token_grant",
+        "derivation_policy_digest",
+        "derivation_method",
+        "rounding_policy"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.token-budget-derivation.v2"},
+        "token_derivation_version": {"const": 2},
+        "token_derivation_digest": {"$ref": "#/$defs/Digest"},
+        "arm_family_digest": {"$ref": "#/$defs/Digest"},
+        "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+        "exact_model_id": {"type": "string"},
+        "tokenizer_authority_digest": {"$ref": "#/$defs/Digest"},
+        "context_budget_digest": {"$ref": "#/$defs/Digest"},
+        "source_payload_digest": {"$ref": "#/$defs/Digest"},
+        "source_payload_bytes": {"$ref": "#/$defs/SafeInt"},
+        "output_artifact_bytes_reservation": {"$ref": "#/$defs/SafeInt"},
+        "context_window_tokens": {"$ref": "#/$defs/SafeInt"},
+        "maximum_input_tokens": {"$ref": "#/$defs/SafeInt"},
+        "maximum_output_tokens": {"$ref": "#/$defs/SafeInt"},
+        "request_input_ceiling_tokens": {"$ref": "#/$defs/SafeInt"},
+        "request_output_ceiling_tokens": {"$ref": "#/$defs/SafeInt"},
+        "reserved_system_tokens": {"$ref": "#/$defs/SafeInt"},
+        "reserved_tool_tokens": {"$ref": "#/$defs/SafeInt"},
+        "reserved_output_tokens": {"$ref": "#/$defs/SafeInt"},
+        "derived_token_grant": {"$ref": "#/$defs/TokenGrant"},
+        "derivation_policy_digest": {"$ref": "#/$defs/Digest"},
+        "derivation_method": {
+          "enum": ["PROVIDER_TOKEN_COUNT", "PINNED_LOCAL_TOKENIZER", "CONSERVATIVE_BOUND"]
+        },
+        "rounding_policy": {"enum": ["EXACT", "ROUND_UP_ONLY"]}
+      },
+      "additionalProperties": false
+    },
+    "BudgetAuthorityV3": {
+      "type": "object",
+      "required": [
+        "schema",
+        "budget_authority_version",
+        "budget_authority_digest",
+        "semantic_plan_digest",
+        "common_resource_grant_digest",
+        "context_budget_digest",
+        "arm_family_digest",
+        "resource_ledger_digest_at_compile",
+        "generation",
+        "provider",
+        "account_mode",
+        "requested_family_reservation",
+        "token_budget_derivation_digest",
+        "token_grant",
+        "plan_or_price_class"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.budget-authority.v3"},
+        "budget_authority_version": {"const": 3},
+        "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+        "semantic_plan_digest": {"$ref": "#/$defs/Digest"},
+        "common_resource_grant_digest": {"$ref": "#/$defs/Digest"},
+        "context_budget_digest": {"$ref": "#/$defs/Digest"},
+        "arm_family_digest": {"$ref": "#/$defs/Digest"},
+        "resource_ledger_digest_at_compile": {"$ref": "#/$defs/Digest"},
+        "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+        "provider": {"enum": ["ANTHROPIC", "OPENAI"]},
+        "account_mode": {"type": "string"},
+        "requested_family_reservation": {"$ref": "#/$defs/ResourceVector"},
+        "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+        "token_grant": {"$ref": "#/$defs/TokenGrant"},
+        "plan_or_price_class": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "GenerationResourceEntryV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "generation_entry_version",
+        "generation_entry_digest",
+        "arm_family_digest",
+        "generation",
+        "budget_authority_digest",
+        "previous_generation_entry_digest",
+        "generation_reservation",
+        "unallocated_reservation",
+        "reconciled_use",
+        "entry_state"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.generation-resource-entry.v2"},
+        "generation_entry_version": {"const": 2},
+        "generation_entry_digest": {"$ref": "#/$defs/Digest"},
+        "arm_family_digest": {"$ref": "#/$defs/Digest"},
+        "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+        "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+        "previous_generation_entry_digest": {
+          "$ref": "#/$defs/NullableDigest"
+        },
+        "generation_reservation": {"$ref": "#/$defs/ResourceVector"},
+        "unallocated_reservation": {"$ref": "#/$defs/ResourceVector"},
+        "reconciled_use": {"$ref": "#/$defs/ResourceVector"},
+        "entry_state": {"enum": ["RESERVED", "ACTIVE", "RECONCILED", "RELEASED", "DEBT"]}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"entry_state": {"const": "RESERVED"}},
+            "required": ["entry_state"]
+          },
+          "then": {
+            "properties": {
+              "previous_generation_entry_digest": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entry_state": {
+                "enum": ["ACTIVE", "RECONCILED", "RELEASED", "DEBT"]
+              }
+            },
+            "required": ["entry_state"]
+          },
+          "then": {
+            "properties": {
+              "previous_generation_entry_digest": {
+                "$ref": "#/$defs/Digest"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "AttemptResourceEntryV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "attempt_entry_version",
+        "attempt_entry_digest",
+        "arm_family_digest",
+        "generation",
+        "attempt_identity_digest",
+        "generation_entry_digest",
+        "budget_authority_digest",
+        "token_budget_derivation_digest",
+        "previous_attempt_entry_digest",
+        "attempt_launch_digest",
+        "attempt_allocation",
+        "reconciled_use",
+        "entry_state"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.attempt-resource-entry.v2"},
+        "attempt_entry_version": {"const": 2},
+        "attempt_entry_digest": {"$ref": "#/$defs/Digest"},
+        "arm_family_digest": {"$ref": "#/$defs/Digest"},
+        "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+        "attempt_identity_digest": {"$ref": "#/$defs/Digest"},
+        "generation_entry_digest": {"$ref": "#/$defs/Digest"},
+        "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+        "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+        "previous_attempt_entry_digest": {"$ref": "#/$defs/NullableDigest"},
+        "attempt_launch_digest": {"$ref": "#/$defs/NullableDigest"},
+        "attempt_allocation": {"$ref": "#/$defs/ResourceVector"},
+        "reconciled_use": {"$ref": "#/$defs/ResourceVector"},
+        "entry_state": {
+          "enum": ["RESERVED", "LAUNCH_CONSUMED", "RECONCILED", "RELEASED", "DEBT"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"entry_state": {"const": "RESERVED"}},
+            "required": ["entry_state"]
+          },
+          "then": {
+            "properties": {
+              "previous_attempt_entry_digest": {"type": "null"},
+              "attempt_launch_digest": {"type": "null"},
+              "reconciled_use": {"$ref": "#/$defs/ZeroResourceVector"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"entry_state": {"const": "LAUNCH_CONSUMED"}},
+            "required": ["entry_state"]
+          },
+          "then": {
+            "properties": {
+              "previous_attempt_entry_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_launch_digest": {"$ref": "#/$defs/Digest"},
+              "reconciled_use": {"$ref": "#/$defs/ZeroResourceVector"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"entry_state": {"const": "RECONCILED"}},
+            "required": ["entry_state"]
+          },
+          "then": {
+            "properties": {
+              "previous_attempt_entry_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_launch_digest": {"$ref": "#/$defs/Digest"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"entry_state": {"const": "RELEASED"}},
+            "required": ["entry_state"]
+          },
+          "then": {
+            "properties": {
+              "previous_attempt_entry_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_launch_digest": {"type": "null"},
+              "reconciled_use": {"$ref": "#/$defs/ZeroResourceVector"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"entry_state": {"const": "DEBT"}},
+            "required": ["entry_state"]
+          },
+          "then": {
+            "properties": {
+              "previous_attempt_entry_digest": {"$ref": "#/$defs/Digest"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "BackendSemanticResourceLedgerV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "resource_ledger_version",
+        "resource_ledger_id",
+        "resource_ledger_digest",
+        "arm_family_digest",
+        "semantic_plan_digest",
+        "common_resource_grant_digest",
+        "currency_code",
+        "ledger_revision",
+        "previous_ledger_digest",
+        "ledger_state",
+        "grant",
+        "active_reserved",
+        "reconciled",
+        "remaining",
+        "generation_entry_digests",
+        "attempt_entry_digests",
+        "event_digests",
+        "last_event_sequence",
+        "last_event_digest"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.backend-semantic-resource-ledger.v2"},
+        "resource_ledger_version": {"const": 2},
+        "resource_ledger_id": {"type": "string", "minLength": 1},
+        "resource_ledger_digest": {"$ref": "#/$defs/Digest"},
+        "arm_family_digest": {"$ref": "#/$defs/Digest"},
+        "semantic_plan_digest": {"$ref": "#/$defs/Digest"},
+        "common_resource_grant_digest": {"$ref": "#/$defs/Digest"},
+        "currency_code": {
+          "oneOf": [
+            {"type": "string", "pattern": "^[A-Z]{3}$"},
+            {"type": "null"}
+          ]
+        },
+        "ledger_revision": {"$ref": "#/$defs/SafeInt"},
+        "previous_ledger_digest": {"$ref": "#/$defs/NullableDigest"},
+        "ledger_state": {"enum": ["ACTIVE", "CLOSED", "DEBT"]},
+        "grant": {"$ref": "#/$defs/ResourceVector"},
+        "active_reserved": {"$ref": "#/$defs/ResourceVector"},
+        "reconciled": {"$ref": "#/$defs/ResourceVector"},
+        "remaining": {"$ref": "#/$defs/ResourceVector"},
+        "generation_entry_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Digest"},
+          "uniqueItems": true
+        },
+        "attempt_entry_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Digest"},
+          "uniqueItems": true
+        },
+        "event_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Digest"},
+          "uniqueItems": true
+        },
+        "last_event_sequence": {
+          "oneOf": [
+            {"$ref": "#/$defs/SafeInt"},
+            {"type": "null"}
+          ]
+        },
+        "last_event_digest": {"$ref": "#/$defs/NullableDigest"}
+      },
+      "additionalProperties": false
+    },
+    "ResourceLedgerEventV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "ledger_event_version",
+        "ledger_event_digest",
+        "arm_family_digest",
+        "event_sequence",
+        "previous_event_digest",
+        "expected_ledger_revision",
+        "idempotency_key",
+        "event_kind",
+        "generation",
+        "attempt_identity_digest",
+        "budget_authority_digest",
+        "reservation_delta",
+        "reconciliation_delta",
+        "release_delta",
+        "token_budget_derivation_digest",
+        "attempt_resource_entry_digest",
+        "attempt_launch_digest",
+        "event_utc"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.resource-ledger-event.v2"},
+        "ledger_event_version": {"const": 2},
+        "ledger_event_digest": {"$ref": "#/$defs/Digest"},
+        "arm_family_digest": {"$ref": "#/$defs/Digest"},
+        "event_sequence": {"$ref": "#/$defs/SafeInt"},
+        "previous_event_digest": {"$ref": "#/$defs/NullableDigest"},
+        "expected_ledger_revision": {"$ref": "#/$defs/SafeInt"},
+        "idempotency_key": {"$ref": "#/$defs/Digest"},
+        "event_kind": {
+          "enum": [
+            "RESERVE_GENERATION",
+            "RESERVE_ATTEMPT",
+            "CONSUME_ATTEMPT_LAUNCH",
+            "RECONCILE_ATTEMPT",
+            "RELEASE_ATTEMPT",
+            "RELEASE_UNUSED_GENERATION",
+            "CLOSE_FAMILY",
+            "MARK_FAMILY_DEBT",
+            "MARK_GENERATION_DEBT",
+            "MARK_RESERVED_ATTEMPT_DEBT",
+            "MARK_CONSUMED_ATTEMPT_DEBT"
+          ]
+        },
+        "generation": {
+          "oneOf": [
+            {"$ref": "#/$defs/PositiveSafeInt"},
+            {"type": "null"}
+          ]
+        },
+        "attempt_identity_digest": {"$ref": "#/$defs/NullableDigest"},
+        "budget_authority_digest": {"$ref": "#/$defs/NullableDigest"},
+        "reservation_delta": {"$ref": "#/$defs/ResourceVector"},
+        "reconciliation_delta": {"$ref": "#/$defs/ResourceVector"},
+        "release_delta": {"$ref": "#/$defs/ResourceVector"},
+        "token_budget_derivation_digest": {"$ref": "#/$defs/NullableDigest"},
+        "attempt_resource_entry_digest": {"$ref": "#/$defs/NullableDigest"},
+        "attempt_launch_digest": {"$ref": "#/$defs/NullableDigest"},
+        "event_utc": {"type": "string", "format": "date-time"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"event_kind": {"const": "RESERVE_GENERATION"}}},
+          "then": {
+            "properties": {
+              "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+              "attempt_identity_digest": {"type": "null"},
+              "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+              "reconciliation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "release_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_resource_entry_digest": {"type": "null"},
+              "attempt_launch_digest": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"event_kind": {"const": "RESERVE_ATTEMPT"}}},
+          "then": {
+            "properties": {
+              "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+              "attempt_identity_digest": {"$ref": "#/$defs/Digest"},
+              "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+              "reconciliation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "release_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_resource_entry_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_launch_digest": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"event_kind": {"const": "CONSUME_ATTEMPT_LAUNCH"}}},
+          "then": {
+            "properties": {
+              "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+              "attempt_identity_digest": {"$ref": "#/$defs/Digest"},
+              "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+              "reservation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "reconciliation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "release_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_resource_entry_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_launch_digest": {"$ref": "#/$defs/Digest"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"event_kind": {"const": "RECONCILE_ATTEMPT"}}},
+          "then": {
+            "properties": {
+              "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+              "attempt_identity_digest": {"$ref": "#/$defs/Digest"},
+              "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+              "reservation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "release_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_resource_entry_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_launch_digest": {"$ref": "#/$defs/Digest"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"event_kind": {"const": "RELEASE_UNUSED_GENERATION"}}},
+          "then": {
+            "properties": {
+              "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+              "attempt_identity_digest": {"type": "null"},
+              "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+              "reservation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "reconciliation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_resource_entry_digest": {"type": "null"},
+              "attempt_launch_digest": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"event_kind": {"const": "RELEASE_ATTEMPT"}}},
+          "then": {
+            "properties": {
+              "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+              "attempt_identity_digest": {"$ref": "#/$defs/Digest"},
+              "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+              "reservation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "reconciliation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_resource_entry_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_launch_digest": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_kind": {"enum": ["CLOSE_FAMILY", "MARK_FAMILY_DEBT"]}
+            }
+          },
+          "then": {
+            "properties": {
+              "generation": {"type": "null"},
+              "attempt_identity_digest": {"type": "null"},
+              "budget_authority_digest": {"type": "null"},
+              "reservation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "reconciliation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "release_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"type": "null"},
+              "attempt_resource_entry_digest": {"type": "null"},
+              "attempt_launch_digest": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"event_kind": {"const": "MARK_GENERATION_DEBT"}}},
+          "then": {
+            "properties": {
+              "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+              "attempt_identity_digest": {"type": "null"},
+              "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+              "reservation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "reconciliation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "release_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_resource_entry_digest": {"type": "null"},
+              "attempt_launch_digest": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_kind": {"const": "MARK_RESERVED_ATTEMPT_DEBT"}
+            }
+          },
+          "then": {
+            "properties": {
+              "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+              "attempt_identity_digest": {"$ref": "#/$defs/Digest"},
+              "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+              "reservation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "reconciliation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "release_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_resource_entry_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_launch_digest": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_kind": {"const": "MARK_CONSUMED_ATTEMPT_DEBT"}
+            }
+          },
+          "then": {
+            "properties": {
+              "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+              "attempt_identity_digest": {"$ref": "#/$defs/Digest"},
+              "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+              "reservation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "reconciliation_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "release_delta": {"$ref": "#/$defs/ZeroResourceVector"},
+              "token_budget_derivation_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_resource_entry_digest": {"$ref": "#/$defs/Digest"},
+              "attempt_launch_digest": {"$ref": "#/$defs/Digest"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "LaunchAuthorityV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "launch_authority_version",
+        "launch_authority_digest",
+        "semantic_plan_digest",
+        "arm_family_digest",
+        "generation",
+        "model_route_digest",
+        "budget_authority_digest",
+        "generation_reservation_event_digest",
+        "effort_authority_digest",
+        "thinking_authority_digest",
+        "loaded_customization_set_digest",
+        "tool_policy_digest",
+        "child_policy",
+        "ordered_argv_template_digest",
+        "transport_policy_digest"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.launch-authority.v2"},
+        "launch_authority_version": {"const": 2},
+        "launch_authority_digest": {"$ref": "#/$defs/Digest"},
+        "semantic_plan_digest": {"$ref": "#/$defs/Digest"},
+        "arm_family_digest": {"$ref": "#/$defs/Digest"},
+        "generation": {"$ref": "#/$defs/PositiveSafeInt"},
+        "model_route_digest": {"$ref": "#/$defs/Digest"},
+        "budget_authority_digest": {"$ref": "#/$defs/Digest"},
+        "generation_reservation_event_digest": {"$ref": "#/$defs/Digest"},
+        "effort_authority_digest": {"$ref": "#/$defs/NullableDigest"},
+        "thinking_authority_digest": {"$ref": "#/$defs/NullableDigest"},
+        "loaded_customization_set_digest": {"$ref": "#/$defs/Digest"},
+        "tool_policy_digest": {"$ref": "#/$defs/Digest"},
+        "child_policy": {"const": "DRIVER_ONLY_NO_MODEL_CHILDREN"},
+        "ordered_argv_template_digest": {"$ref": "#/$defs/Digest"},
+        "transport_policy_digest": {"$ref": "#/$defs/Digest"}
+      },
+      "additionalProperties": false
+    },
+    "AttemptLaunchEnvelopeV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "attempt_launch_version",
+        "attempt_launch_digest",
+        "attempt_identity_digest",
+        "backend_arm_digest",
+        "launch_authority_digest",
+        "attempt_reservation_event_digest",
+        "attempt_resource_entry_digest",
+        "resource_ledger_digest_after_attempt_reservation",
+        "materialized_argv_digest",
+        "materialized_environment_digest",
+        "materialized_stdin_prompt_digest",
+        "working_directory_identity_digest",
+        "prepared_utc"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.attempt-launch-envelope.v2"},
+        "attempt_launch_version": {"const": 2},
+        "attempt_launch_digest": {"$ref": "#/$defs/Digest"},
+        "attempt_identity_digest": {"$ref": "#/$defs/Digest"},
+        "backend_arm_digest": {"$ref": "#/$defs/Digest"},
+        "launch_authority_digest": {"$ref": "#/$defs/Digest"},
+        "attempt_reservation_event_digest": {"$ref": "#/$defs/Digest"},
+        "attempt_resource_entry_digest": {"$ref": "#/$defs/Digest"},
+        "resource_ledger_digest_after_attempt_reservation": {"$ref": "#/$defs/Digest"},
+        "materialized_argv_digest": {"$ref": "#/$defs/Digest"},
+        "materialized_environment_digest": {"$ref": "#/$defs/Digest"},
+        "materialized_stdin_prompt_digest": {"$ref": "#/$defs/Digest"},
+        "working_directory_identity_digest": {"$ref": "#/$defs/Digest"},
+        "prepared_utc": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "ProviderExecutionObservationV4": {
+      "type": "object",
+      "required": [
+        "schema",
+        "observation_version",
+        "observation_digest",
+        "attempt_identity_digest",
+        "backend_arm_digest",
+        "attempt_launch_digest",
+        "attempt_reservation_event_digest",
+        "reserved_attempt_resource_entry_digest",
+        "consumed_attempt_resource_entry_digest",
+        "resource_ledger_digest_after_attempt_reservation",
+        "launch_consumption_event_digest",
+        "resource_ledger_digest_after_launch_consumption",
+        "observed_effective_model_id",
+        "effective_model_state",
+        "observed_effective_effort",
+        "effective_effort_state",
+        "observed_thinking_state",
+        "thinking_observation_evidence_digest",
+        "provider_terminal_category",
+        "provider_usage_digest",
+        "raw_stream_digest"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.provider-execution-observation.v4"},
+        "observation_version": {"const": 4},
+        "observation_digest": {"$ref": "#/$defs/Digest"},
+        "attempt_identity_digest": {"$ref": "#/$defs/Digest"},
+        "backend_arm_digest": {"$ref": "#/$defs/Digest"},
+        "attempt_launch_digest": {"$ref": "#/$defs/Digest"},
+        "attempt_reservation_event_digest": {"$ref": "#/$defs/Digest"},
+        "reserved_attempt_resource_entry_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "consumed_attempt_resource_entry_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "resource_ledger_digest_after_attempt_reservation": {"$ref": "#/$defs/Digest"},
+        "launch_consumption_event_digest": {"$ref": "#/$defs/Digest"},
+        "resource_ledger_digest_after_launch_consumption": {"$ref": "#/$defs/Digest"},
+        "observed_effective_model_id": {
+          "oneOf": [{"type": "string"}, {"type": "null"}]
+        },
+        "effective_model_state": {"enum": ["EXACT", "MIXED", "MISMATCHED", "UNOBSERVABLE"]},
+        "observed_effective_effort": {
+          "oneOf": [
+            {"enum": ["low", "medium", "high", "xhigh"]},
+            {"type": "null"}
+          ]
+        },
+        "effective_effort_state": {
+          "enum": ["EXACT", "NOT_APPLICABLE", "MISMATCHED", "UNSUPPORTED", "UNOBSERVABLE"]
+        },
+        "observed_thinking_state": {
+          "enum": [
+            "ADAPTIVE_ON_CONFIRMED",
+            "MANUAL_ON_CONFIRMED",
+            "MANUAL_OFF_CONFIRMED",
+            "NOT_APPLICABLE",
+            "UNOBSERVABLE",
+            "MISMATCHED"
+          ]
+        },
+        "thinking_observation_evidence_digest": {"$ref": "#/$defs/NullableDigest"},
+        "provider_terminal_category": {
+          "enum": [
+            "COMPLETED",
+            "REFUSAL",
+            "SAFETY_BLOCK",
+            "SAFETY_PAUSE_TIMEOUT",
+            "TRANSITION_DEBT",
+            "TRANSPORT_ERROR",
+            "TIMEOUT",
+            "INCOMPLETE",
+            "UNKNOWN_ADVERSE"
+          ]
+        },
+        "provider_usage_digest": {"$ref": "#/$defs/Digest"},
+        "raw_stream_digest": {"$ref": "#/$defs/Digest"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "observed_thinking_state": {"const": "NOT_APPLICABLE"}
+            },
+            "required": ["observed_thinking_state"]
+          },
+          "then": {
+            "properties": {
+              "thinking_observation_evidence_digest": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "thinking_observation_evidence_digest": {
+                "$ref": "#/$defs/Digest"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "ObservedToGrantUtilizationV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "utilization_version",
+        "utilization_digest",
+        "metric",
+        "aggregation_scope",
+        "numerator_usage_authority_digest",
+        "denominator_authority_type",
+        "denominator_authority_digest",
+        "numerator",
+        "denominator",
+        "ratio_state"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.observed-to-grant-utilization.v1"},
+        "utilization_version": {"const": 1},
+        "utilization_digest": {"$ref": "#/$defs/Digest"},
+        "metric": {"$ref": "#/$defs/ResourceMetric"},
+        "aggregation_scope": {"enum": ["ATTEMPT", "GENERATION", "ARM_FAMILY"]},
+        "numerator_usage_authority_digest": {"$ref": "#/$defs/Digest"},
+        "denominator_authority_type": {
+          "enum": ["ATTEMPT_RESOURCE_ENTRY", "GENERATION_RESOURCE_ENTRY", "FAMILY_LEDGER"]
+        },
+        "denominator_authority_digest": {"$ref": "#/$defs/Digest"},
+        "numerator": {"$ref": "#/$defs/SafeInt"},
+        "denominator": {"$ref": "#/$defs/SafeInt"},
+        "ratio_state": {"$ref": "#/$defs/RatioState"}
+      },
+      "additionalProperties": false
+    },
+    "ReservedPairResourceComparisonV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "comparison_version",
+        "comparison_digest",
+        "evaluation_policy_digest",
+        "metric",
+        "aggregation_scope",
+        "candidate_grant_authority_digest",
+        "legacy_grant_authority_digest",
+        "currency_code",
+        "candidate_pricing_snapshot_digest",
+        "legacy_pricing_snapshot_digest",
+        "numerator",
+        "denominator",
+        "ratio_state"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.reserved-pair-resource-comparison.v1"},
+        "comparison_version": {"const": 1},
+        "comparison_digest": {"$ref": "#/$defs/Digest"},
+        "evaluation_policy_digest": {"$ref": "#/$defs/Digest"},
+        "metric": {"$ref": "#/$defs/ResourceMetric"},
+        "aggregation_scope": {"enum": ["WORK_UNIT", "PHASE", "RUN"]},
+        "candidate_grant_authority_digest": {"$ref": "#/$defs/Digest"},
+        "legacy_grant_authority_digest": {"$ref": "#/$defs/Digest"},
+        "currency_code": {
+          "oneOf": [{"type": "string", "pattern": "^[A-Z]{3}$"}, {"type": "null"}]
+        },
+        "candidate_pricing_snapshot_digest": {"$ref": "#/$defs/NullableDigest"},
+        "legacy_pricing_snapshot_digest": {"$ref": "#/$defs/NullableDigest"},
+        "numerator": {"$ref": "#/$defs/SafeInt"},
+        "denominator": {"$ref": "#/$defs/SafeInt"},
+        "ratio_state": {"$ref": "#/$defs/RatioState"}
+      },
+      "additionalProperties": false
+    },
+    "ObservedPairResourceComparisonV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "comparison_version",
+        "comparison_digest",
+        "evaluation_policy_digest",
+        "metric",
+        "aggregation_scope",
+        "candidate_usage_receipt_set_digest",
+        "legacy_usage_receipt_set_digest",
+        "currency_code",
+        "candidate_pricing_snapshot_digest",
+        "legacy_pricing_snapshot_digest",
+        "numerator",
+        "denominator",
+        "ratio_state"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.observed-pair-resource-comparison.v1"},
+        "comparison_version": {"const": 1},
+        "comparison_digest": {"$ref": "#/$defs/Digest"},
+        "evaluation_policy_digest": {"$ref": "#/$defs/Digest"},
+        "metric": {"$ref": "#/$defs/ResourceMetric"},
+        "aggregation_scope": {"enum": ["WORK_UNIT", "PHASE", "RUN"]},
+        "candidate_usage_receipt_set_digest": {"$ref": "#/$defs/Digest"},
+        "legacy_usage_receipt_set_digest": {"$ref": "#/$defs/Digest"},
+        "currency_code": {
+          "oneOf": [{"type": "string", "pattern": "^[A-Z]{3}$"}, {"type": "null"}]
+        },
+        "candidate_pricing_snapshot_digest": {"$ref": "#/$defs/NullableDigest"},
+        "legacy_pricing_snapshot_digest": {"$ref": "#/$defs/NullableDigest"},
+        "numerator": {"$ref": "#/$defs/SafeInt"},
+        "denominator": {"$ref": "#/$defs/SafeInt"},
+        "ratio_state": {"$ref": "#/$defs/RatioState"}
+      },
+      "additionalProperties": false
+    },
+    "CanaryPlanAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "canary_plan_version",
+        "canary_plan_digest",
+        "required_case_ids"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.canary-plan-authority.v1"},
+        "canary_plan_version": {"const": 1},
+        "canary_plan_digest": {"$ref": "#/$defs/Digest"},
+        "required_case_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    },
+    "CanaryProofRuleAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "proof_rule_authority_version",
+        "proof_rule_authority_digest",
+        "canary_plan_digest",
+        "ordered_field_rules"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.canary-proof-rule-authority.v1"},
+        "proof_rule_authority_version": {"const": 1},
+        "proof_rule_authority_digest": {"$ref": "#/$defs/Digest"},
+        "canary_plan_digest": {"$ref": "#/$defs/Digest"},
+        "ordered_field_rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["manifest_field", "allowed_proof_rule_ids"],
+            "properties": {
+              "manifest_field": {"type": "string", "minLength": 1},
+              "allowed_proof_rule_ids": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {"type": "string", "minLength": 1}
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "CanaryCaseResultV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "case_result_version",
+        "case_result_digest",
+        "canary_plan_digest",
+        "proof_rule_authority_digest",
+        "case_id",
+        "expected_outcome",
+        "observed_outcome",
+        "raw_artifact_digests",
+        "satisfied_proof_rule_ids",
+        "case_disposition"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.canary-case-result.v1"},
+        "case_result_version": {"const": 1},
+        "case_result_digest": {"$ref": "#/$defs/Digest"},
+        "canary_plan_digest": {"$ref": "#/$defs/Digest"},
+        "proof_rule_authority_digest": {"$ref": "#/$defs/Digest"},
+        "case_id": {"type": "string", "minLength": 1},
+        "expected_outcome": {"type": "string"},
+        "observed_outcome": {"type": "string"},
+        "raw_artifact_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Digest"},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "satisfied_proof_rule_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "case_disposition": {"enum": ["PASS", "FAIL", "INCOMPLETE"]}
+      },
+      "additionalProperties": false
+    },
+    "CanaryEvidenceManifestV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "evidence_manifest_version",
+        "evidence_manifest_digest",
+        "canary_plan_digest",
+        "proof_rule_authority_digest",
+        "case_result_digests",
+        "raw_artifact_digests",
+        "raw_artifact_union_digest"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.canary-evidence-manifest.v1"},
+        "evidence_manifest_version": {"const": 1},
+        "evidence_manifest_digest": {"$ref": "#/$defs/Digest"},
+        "canary_plan_digest": {"$ref": "#/$defs/Digest"},
+        "proof_rule_authority_digest": {"$ref": "#/$defs/Digest"},
+        "case_result_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Digest"},
+          "uniqueItems": true
+        },
+        "raw_artifact_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Digest"},
+          "uniqueItems": true
+        },
+        "raw_artifact_union_digest": {"$ref": "#/$defs/Digest"}
+      },
+      "additionalProperties": false
+    },
+    "CanaryFieldClaimV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "canary_claim_version",
+        "canary_claim_digest",
+        "canary_plan_digest",
+        "proof_rule_authority_digest",
+        "evidence_manifest_digest",
+        "manifest_field",
+        "seed_value_digest",
+        "proposed_value_digest",
+        "supporting_case_ids",
+        "supporting_case_result_digests",
+        "supporting_proof_rule_ids",
+        "claim_result"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.canary-field-claim.v2"},
+        "canary_claim_version": {"const": 2},
+        "canary_claim_digest": {"$ref": "#/$defs/Digest"},
+        "canary_plan_digest": {"$ref": "#/$defs/Digest"},
+        "proof_rule_authority_digest": {"$ref": "#/$defs/Digest"},
+        "evidence_manifest_digest": {"$ref": "#/$defs/Digest"},
+        "manifest_field": {"type": "string", "minLength": 1},
+        "seed_value_digest": {"$ref": "#/$defs/Digest"},
+        "proposed_value_digest": {"$ref": "#/$defs/Digest"},
+        "supporting_case_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "supporting_case_result_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Digest"},
+          "uniqueItems": true
+        },
+        "supporting_proof_rule_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "claim_result": {"enum": ["PROVEN", "NOT_PROVEN", "CONTRADICTED", "NOT_APPLICABLE"]}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "claim_result": {"const": "PROVEN"}
+            }
+          },
+          "then": {
+            "properties": {
+              "supporting_case_ids": {"minItems": 1},
+              "supporting_case_result_digests": {"minItems": 1},
+              "supporting_proof_rule_ids": {"minItems": 1}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "ProviderCapabilityCanaryReceiptV3": {
+      "type": "object",
+      "required": [
+        "schema",
+        "canary_receipt_version",
+        "canary_receipt_digest",
+        "seed_manifest_digest",
+        "canary_plan_digest",
+        "proof_rule_authority_digest",
+        "evidence_manifest_digest",
+        "executed_case_ids",
+        "passed_case_ids",
+        "field_claim_digests",
+        "canary_execution_result"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.provider-capability-canary-receipt.v3"},
+        "canary_receipt_version": {"const": 3},
+        "canary_receipt_digest": {"$ref": "#/$defs/Digest"},
+        "seed_manifest_digest": {"$ref": "#/$defs/Digest"},
+        "canary_plan_digest": {"$ref": "#/$defs/Digest"},
+        "proof_rule_authority_digest": {"$ref": "#/$defs/Digest"},
+        "evidence_manifest_digest": {"$ref": "#/$defs/Digest"},
+        "executed_case_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "passed_case_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "field_claim_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Digest"},
+          "uniqueItems": true
+        },
+        "canary_execution_result": {"enum": ["COMPLETE", "PARTIAL", "FAILED"]}
+      },
+      "additionalProperties": false
+    },
+    "RouteDebtV3": {
+      "type": "object",
+      "required": [
+        "schema",
+        "route_debt_version",
+        "route_debt_id",
+        "route_debt_digest",
+        "semantic_plan_digest",
+        "backend_arm_digest",
+        "attempt_identity_digest",
+        "stage",
+        "debt_code",
+        "evidence_digest_set_digest",
+        "required_operator_action"
+      ],
+      "properties": {
+        "schema": {"const": "plamen.route-debt.v3"},
+        "route_debt_version": {"const": 3},
+        "route_debt_id": {"type": "string", "pattern": "^debt:[0-9a-f]{64}$"},
+        "route_debt_digest": {"$ref": "#/$defs/Digest"},
+        "semantic_plan_digest": {"$ref": "#/$defs/Digest"},
+        "backend_arm_digest": {"$ref": "#/$defs/NullableDigest"},
+        "attempt_identity_digest": {"$ref": "#/$defs/NullableDigest"},
+        "stage": {"type": "string"},
+        "debt_code": {"type": "string"},
+        "evidence_digest_set_digest": {"$ref": "#/$defs/Digest"},
+        "required_operator_action": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

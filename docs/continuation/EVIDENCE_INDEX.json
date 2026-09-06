@@ -23,8 +23,8 @@
       "kind": "discovery_snapshot",
       "source_identity": "downloads-corpus-inventory-2026-09-06.json",
       "source_sha256": "e77cfc170913d735f7df23cdd44077824438610c7874dfafb64401750a7aa767",
-      "result": "127 immediate Plamen-named regular files; 5216964 bytes",
-      "scope": "Filename-level discovery with content hashes; not semantic extraction",
+      "result": "Historical snapshot: 127 immediate Plamen-named regular files and 5210228 bytes; the same roster is now 5216964 bytes because the runtime addendum changed",
+      "scope": "Filename-level historical discovery with content hashes plus current addendum drift; not semantic extraction",
       "acceptance_effect": "Full corpus reconciliation remains open"
     },
     {
@@ -54,7 +54,7 @@
       "provenance": "unsealed_local_observation"
     },
     {
-      "id": "EV-DODO-P18-FAILED",
+      "id": "EV-PRIVATE-TARGET-P18-FAILED",
       "kind": "end_to_end_attempt",
       "backend": "codex",
       "mode": "thorough",
@@ -72,7 +72,7 @@
       "private_artifacts_included": false
     },
     {
-      "id": "EV-DODO-P19-IN-PROGRESS",
+      "id": "EV-PRIVATE-TARGET-P19-IN-PROGRESS",
       "kind": "end_to_end_attempt",
       "backend": "codex",
       "mode": "thorough",
@@ -139,6 +139,61 @@
       "acceptance_effect": "Sustainable retention, retirement authority, and integrated capacity warning remain open"
     },
     {
+      "id": "EV-RESEARCH-CORPUS-UNION-20260906",
+      "kind": "provenance_reconciliation",
+      "source_refs": [
+        "docs/continuation/CORPUS_MANIFEST.json",
+        "docs/continuation/research/PRIVATE_GAP_INDEX.json"
+      ],
+      "result": "131 current source rows and 5372712 original bytes: current 127-name roster at 5216964 bytes plus four content-discovered August sources at 155748 bytes",
+      "portable_result": "127 public source ports (54 exact, 73 sanitized); 10 original raw-byte gaps require separate hash-verified transfer, including six with full sanitized semantic ports and four raw-only payloads",
+      "inventory_record_sha256": "babc11675df83454556a5ccee534db3a0f0fa63f9e79a32b37d9b2586c878ded",
+      "scope": "Per-source original identity/bytes/hash, portable identity/bytes/hash, transformation, and redaction counts; all goal-relevant architecture, methodology, execution, acceptance, and comparison semantics are portable",
+      "acceptance_effect": "The public checkout is sufficient to continue the tool goal and design the deferred comparison; exact raw-evidence reproduction remains blocked until every private-gap hash is verified"
+    },
+    {
+      "id": "EV-AUGUST-ARCHITECTURE-BASELINE",
+      "kind": "historical_review_measurement",
+      "source_ref": "docs/continuation/research/CLAUDE_REVIEW_codex_architecture_audit_2026-07-31.sanitized.md",
+      "source_sha256": "3ba029008c842bb8e514d33038bde58544314c8b177115012061e3b7d8d1934a",
+      "result": "A targeted suite slice measured 36 failed and 1161 passed; the reviewed change added about 370000 lines with 0 removed; 24 modules totaling 39824 lines were unreachable",
+      "scope": "Historical audited tree only; counts are comparison baselines and must be remeasured on the frozen V3 release candidate",
+      "acceptance_effect": "B-1 and the delete-legacy complexity budget remain open"
+    },
+    {
+      "id": "EV-AUGUST-CORPUS-CAPTURE",
+      "kind": "historical_recall_measurement",
+      "source_ref": "docs/continuation/research/CLAUDE_REVIEW_corpus_capture_wave_2026-08-01.md",
+      "source_sha256": "d236f565580c83444c282fc91a016d520022050484cfed9d2bf2fc6eeb25a337",
+      "result": "One Python deriver emitted 74 candidates while about 30 LLM discovery agents emitted 93; the sample covered 84 of 778 findings (about 11 percent); realized behavior came from one Thorough run",
+      "additional_observations": [
+        "LLM sweeps under-produced by roughly 3 to 12 times and caps were measured non-binding",
+        "Chain-shaped findings were about 5 to 7 percent, while Light spent about 22 percent of discovery agents on chain work",
+        "PARTIAL ownership dominated because checks enumerated the wrong entities",
+        "EVM had zero narrowing-cast coverage while four other ecosystems had coverage",
+        "The P-14 prototype was discriminating but did not prove a missed real bug; one target emitted 81 obligations against a historical cap of 15"
+      ],
+      "scope": "Research direction and later-comparison baseline only; limited sample and single-run measurements are not general performance claims",
+      "acceptance_effect": "Supports Rule 0, P-14 through P-23, correction of P-1 priority, and mandatory remeasurement"
+    },
+    {
+      "id": "EV-RUNTIME-ADDENDUM-CURRENT-20260906",
+      "kind": "mutable_source_snapshot",
+      "source_ref": "docs/continuation/research/Plamen_Runtime_Acceptance_Addendum_2026-09-06.sanitized.md",
+      "source_bytes": 68084,
+      "source_sha256": "86a67f0128e90c716122f546c57a5c11059180c56ee6d93ee38329648d7d178e",
+      "result": "Current addendum captured; it supersedes the 61348-byte historical inventory snapshot for source identity only",
+      "scope": "Historical runtime observations and open debt; mutable prose is not release-candidate acceptance",
+      "acceptance_effect": "All referenced runtime claims still require immutable frozen-source receipts"
+    },
+    {
+      "id": "EV-POSIX-PRODUCTION-GAP-20260906",
+      "kind": "platform_capability_observation",
+      "result": "V3 production install and audit dispatch are Windows-only; macOS source bootstrap exists, but native Linux/macOS lack the POSIX dispatcher plus keeper/recovery adapter needed for the transaction contract",
+      "scope": "Current production platform capability, distinct from source-development portability",
+      "acceptance_effect": "CUR-005 remains open; Linux and macOS production commands must reject before mutation until clean install/start/stop/recovery/resume evidence exists"
+    },
+    {
       "id": "EV-CODEX-E2E-GATE",
       "kind": "acceptance_gate",
       "result": "MISSING",
@@ -158,6 +213,20 @@
       "result": "MISSING",
       "scope": "Clean clone, install, smoke validation, audit start, stop, and resume on macOS",
       "acceptance_effect": "Blocks portable handoff"
+    },
+    {
+      "id": "EV-LINUX-GATE",
+      "kind": "acceptance_gate",
+      "result": "MISSING",
+      "scope": "Clean clone, production install, smoke validation, audit start, stop, crash recovery, and resume on native Linux",
+      "acceptance_effect": "Blocks native POSIX production support"
+    },
+    {
+      "id": "EV-PRIVATE-RESEARCH-TRANSFER-GATE",
+      "kind": "acceptance_gate",
+      "result": "MISSING",
+      "scope": "Hash-verified out-of-Git transfer of every row in docs/continuation/research/PRIVATE_GAP_INDEX.json",
+      "acceptance_effect": "Blocks a complete next-machine research denominator and later exact research comparison"
     }
   ],
   "supersession_notes": [

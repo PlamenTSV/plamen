@@ -1,8 +1,11 @@
 # Architecture
 
-> Plamen v2.2.4. Claude analysis tiers are pinned to Opus 5 and Sonnet 5,
-> resolved via the `PLAMEN_*_MODEL` controls in
-> `scripts/plamen_types.py`. Runs on Windows, macOS, and Linux.
+> Plamen V3.0.0 development branch. The authoritative phase graph and backend
+> model mappings live in `scripts/plamen_types.py`. The current production
+> package/audit host is Windows; Linux and macOS remain source-validation hosts
+> until the POSIX transaction/keeper work in `continuation/GOAL.md` is complete.
+> POSIX transport material below documents implemented substrate and intended
+> architecture, not current release qualification.
 
 ## Pipeline Overview
 

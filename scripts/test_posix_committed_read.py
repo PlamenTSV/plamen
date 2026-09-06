@@ -347,6 +347,10 @@ def test_posix_committed_directory_roster_is_bounded_and_alias_free(tmp_path):
 
 
 @POSIX_ONLY
+@pytest.mark.skipif(
+    not hasattr(os, "O_PATH"),
+    reason="retained POSIX replacement test requires Linux O_PATH authority",
+)
 def test_posix_committed_read_detects_named_replacement_and_closes_all_fds(
     monkeypatch, tmp_path,
 ):

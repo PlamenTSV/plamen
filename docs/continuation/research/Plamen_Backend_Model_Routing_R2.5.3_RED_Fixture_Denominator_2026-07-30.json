@@ -1,0 +1,427 @@
+{
+  "schema": "plamen.model-routing-r2.5.3-red-fixture-denominator.v1",
+  "version": 1,
+  "date": "2026-07-30",
+  "disposition": "RED_PLAN_DENOMINATOR_ONLY_INDEPENDENT_ACCEPTANCE_REQUIRED",
+  "blocking_review": {
+    "file": "backend_model_routing_r2_5_2_independent_review_r1_20260730.md",
+    "body_sha256": "4a1757a50169d7bd003e20e4a2b03ce085679f35fa6e75c8250d0ec79e8528b9",
+    "whole_sha256": "0bca91a40d52b14ab2bac0147da599afe45a06d40cc79090cb2bde844aa2db57",
+    "focused_operations": 8,
+    "unexpected_accepts": 5,
+    "root_defects": [
+      "B5_FALSE_PRE_PROVIDER_LAUNCH_SEPARATION",
+      "B6_NO_AUTHENTICATED_SPAWNED_TRANSITION",
+      "B7_REFLECTIVE_ISSUANCE_AND_INCOMPLETE_CONSUMER_VALIDATION"
+    ]
+  },
+  "frozen_r2_5_2": {
+    "validator_file": "validate_plamen_model_routing_r2_5_2.py",
+    "validator_sha256": "54308ee13491bf43ab006d65b11bb4c60e70f620d17eb8b209288ef2ac5a785c",
+    "vectors_sha256": "ecbc628d257b09bc0ec343d2c525be14b6f5864b680e809dc282559eca2845b1",
+    "executed_denominator": 686
+  },
+  "denominator": {
+    "preservation": 15,
+    "B5": 10,
+    "B6": 13,
+    "B7": 10,
+    "new_causal_rows": 33,
+    "total_rows": 48
+  },
+  "rows": [
+    {
+      "id": "R2.5.3-RED-001",
+      "blocker": "P15",
+      "scenario": "preserve policy presence mutation after mint",
+      "r2_5_2_observation": "REJECT:VALIDATED_CLOSURE_POLICY_MISMATCH",
+      "green_expected": "REJECT:VALIDATED_CLOSURE_POLICY_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-002",
+      "blocker": "P15",
+      "scenario": "preserve policy source-class mutation after mint",
+      "r2_5_2_observation": "REJECT:VALIDATED_CLOSURE_POLICY_MISMATCH",
+      "green_expected": "REJECT:VALIDATED_CLOSURE_POLICY_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-003",
+      "blocker": "P15",
+      "scenario": "preserve consumed spawn-state mutation after mint",
+      "r2_5_2_observation": "REJECT:VALIDATED_CLOSURE_CONSUME_MISMATCH",
+      "green_expected": "REJECT:VALIDATED_CLOSURE_CONSUME_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-004",
+      "blocker": "P15",
+      "scenario": "preserve consumed CAS mutation after mint",
+      "r2_5_2_observation": "REJECT:VALIDATED_CLOSURE_CONSUME_MISMATCH",
+      "green_expected": "REJECT:VALIDATED_CLOSURE_CONSUME_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-005",
+      "blocker": "P15",
+      "scenario": "preserve unrooted caller current graph at Resume",
+      "r2_5_2_observation": "REJECT:RESUME_VALIDATED_CLOSURE_REQUIRED",
+      "green_expected": "REJECT:RESUME_VALIDATED_CLOSURE_REQUIRED",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-006",
+      "blocker": "P15",
+      "scenario": "preserve cross-run prior Resume authority",
+      "r2_5_2_observation": "REJECT:RESUME_RUN_SCOPE_MISMATCH",
+      "green_expected": "REJECT:RESUME_RUN_SCOPE_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-007",
+      "blocker": "P15",
+      "scenario": "preserve fabricated legacy provider observation",
+      "r2_5_2_observation": "REJECT:MANDATORY_NEUTRAL_OBSERVATION_MISMATCH",
+      "green_expected": "REJECT:MANDATORY_NEUTRAL_OBSERVATION_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-008",
+      "blocker": "P15",
+      "scenario": "preserve caller-authored legacy proof rule",
+      "r2_5_2_observation": "REJECT:MANDATORY_NEUTRAL_OBSERVATION_MISMATCH",
+      "green_expected": "REJECT:MANDATORY_NEUTRAL_OBSERVATION_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-009",
+      "blocker": "P15",
+      "scenario": "preserve unknown thinking state",
+      "r2_5_2_observation": "REJECT:NEUTRAL_STATE_GRAMMAR_MISMATCH",
+      "green_expected": "REJECT:NEUTRAL_STATE_GRAMMAR_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-010",
+      "blocker": "P15",
+      "scenario": "preserve unknown fallback state",
+      "r2_5_2_observation": "REJECT:NEUTRAL_STATE_GRAMMAR_MISMATCH",
+      "green_expected": "REJECT:NEUTRAL_STATE_GRAMMAR_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-011",
+      "blocker": "P15",
+      "scenario": "preserve unknown terminal category",
+      "r2_5_2_observation": "REJECT:NEUTRAL_STATE_GRAMMAR_MISMATCH",
+      "green_expected": "REJECT:NEUTRAL_STATE_GRAMMAR_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-012",
+      "blocker": "P15",
+      "scenario": "preserve malformed usage object",
+      "r2_5_2_observation": "REJECT:PROVIDER_USAGE_SCHEMA_MISMATCH",
+      "green_expected": "REJECT:PROVIDER_USAGE_SCHEMA_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-013",
+      "blocker": "P15",
+      "scenario": "preserve mismatched transaction parent-set key",
+      "r2_5_2_observation": "REJECT:AUTHORITY_STORE_KEY_MISMATCH",
+      "green_expected": "REJECT:AUTHORITY_STORE_KEY_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-014",
+      "blocker": "P15",
+      "scenario": "preserve cross-run transaction parent set",
+      "r2_5_2_observation": "REJECT:AUTHORITY_STORE_RUN_MISMATCH",
+      "green_expected": "REJECT:AUTHORITY_STORE_RUN_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-015",
+      "blocker": "P15",
+      "scenario": "preserve untyped raw-secret store record",
+      "r2_5_2_observation": "REJECT:AUTHORITY_STORE_NAMESPACE_MISMATCH",
+      "green_expected": "REJECT:AUTHORITY_STORE_NAMESPACE_MISMATCH",
+      "contract": "PRESERVE_EXACT_PREDECESSOR_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-016",
+      "blocker": "B5",
+      "scenario": "launch mint with observation absent",
+      "r2_5_2_observation": "REJECT:KEY_ERROR_OBSERVATION",
+      "green_expected": "PASS",
+      "contract": "GENUINE_PRE_PROVIDER_LAUNCH"
+    },
+    {
+      "id": "R2.5.3-RED-017",
+      "blocker": "B5",
+      "scenario": "launch mint with evidence absent",
+      "r2_5_2_observation": "REJECT:KEY_ERROR_EVIDENCE",
+      "green_expected": "PASS",
+      "contract": "GENUINE_PRE_PROVIDER_LAUNCH"
+    },
+    {
+      "id": "R2.5.3-RED-018",
+      "blocker": "B5",
+      "scenario": "launch mint with provider artifact absent",
+      "r2_5_2_observation": "NO_DISTINCT_LAUNCH_ONLY_GRAPH",
+      "green_expected": "PASS",
+      "contract": "GENUINE_PRE_PROVIDER_LAUNCH"
+    },
+    {
+      "id": "R2.5.3-RED-019",
+      "blocker": "B5",
+      "scenario": "observation smuggled into launch input",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:LAUNCH_POST_PROVIDER_FIELD_FORBIDDEN",
+      "contract": "LAUNCH_EXACT_FIELD_SET"
+    },
+    {
+      "id": "R2.5.3-RED-020",
+      "blocker": "B5",
+      "scenario": "evidence smuggled into launch input",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:LAUNCH_POST_PROVIDER_FIELD_FORBIDDEN",
+      "contract": "LAUNCH_EXACT_FIELD_SET"
+    },
+    {
+      "id": "R2.5.3-RED-021",
+      "blocker": "B5",
+      "scenario": "provider terminal usage or raw stream smuggled into launch input",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:LAUNCH_POST_PROVIDER_FIELD_FORBIDDEN",
+      "contract": "LAUNCH_EXACT_FIELD_SET"
+    },
+    {
+      "id": "R2.5.3-RED-022",
+      "blocker": "B5",
+      "scenario": "launch namespace omits reconciliation prior and proof rules",
+      "r2_5_2_observation": "REJECT:AUTHORITY_STORE_NAMESPACE_MISMATCH",
+      "green_expected": "PASS",
+      "contract": "STAGE_SPECIFIC_LAUNCH_NAMESPACE"
+    },
+    {
+      "id": "R2.5.3-RED-023",
+      "blocker": "B5",
+      "scenario": "completed namespace supplied to launch validator",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:LAUNCH_NAMESPACE_POST_PROVIDER_FIELD_FORBIDDEN",
+      "contract": "STAGE_SPECIFIC_LAUNCH_NAMESPACE"
+    },
+    {
+      "id": "R2.5.3-RED-024",
+      "blocker": "B5",
+      "scenario": "launch validator calls complete legacy closure",
+      "r2_5_2_observation": "STATIC_FAIL:VALIDATE_CLOSURE_V251_REACHABLE",
+      "green_expected": "STATIC_PASS:POST_PROVIDER_VALIDATORS_UNREACHABLE",
+      "contract": "LAUNCH_CALL_GRAPH_SEPARATION"
+    },
+    {
+      "id": "R2.5.3-RED-025",
+      "blocker": "B5",
+      "scenario": "valid exact launch-only replay",
+      "r2_5_2_observation": "MISSING_REQUIRED_REPLAY_API",
+      "green_expected": "PASS",
+      "contract": "TOTAL_LAUNCH_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-026",
+      "blocker": "B6",
+      "scenario": "completed current without spawned authority",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:SPAWNED_AUTHORITY_REQUIRED",
+      "contract": "SPAWN_PREFIX_REQUIRED"
+    },
+    {
+      "id": "R2.5.3-RED-027",
+      "blocker": "B6",
+      "scenario": "provider spool accepted without spawned authority",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:SPAWNED_AUTHORITY_REQUIRED",
+      "contract": "SPAWN_PREFIX_REQUIRED"
+    },
+    {
+      "id": "R2.5.3-RED-028",
+      "blocker": "B6",
+      "scenario": "spawned authority cross-run",
+      "r2_5_2_observation": "MISSING_REQUIRED_SPAWNED_AUTHORITY",
+      "green_expected": "REJECT:SPAWNED_RUN_SCOPE_MISMATCH",
+      "contract": "SPAWN_EXACT_RUN_SCOPE"
+    },
+    {
+      "id": "R2.5.3-RED-029",
+      "blocker": "B6",
+      "scenario": "spawned authority wrong generation or attempt",
+      "r2_5_2_observation": "MISSING_REQUIRED_SPAWNED_AUTHORITY",
+      "green_expected": "REJECT:SPAWNED_ATTEMPT_SCOPE_MISMATCH",
+      "contract": "SPAWN_EXACT_RUN_SCOPE"
+    },
+    {
+      "id": "R2.5.3-RED-030",
+      "blocker": "B6",
+      "scenario": "spawned authority wrong consumed digest",
+      "r2_5_2_observation": "MISSING_REQUIRED_SPAWNED_AUTHORITY",
+      "green_expected": "REJECT:SPAWNED_CONSUME_MISMATCH",
+      "contract": "SPAWN_EXACT_PARENT_JOIN"
+    },
+    {
+      "id": "R2.5.3-RED-031",
+      "blocker": "B6",
+      "scenario": "spawned authority wrong envelope digest",
+      "r2_5_2_observation": "MISSING_REQUIRED_SPAWNED_AUTHORITY",
+      "green_expected": "REJECT:SPAWNED_ENVELOPE_MISMATCH",
+      "contract": "SPAWN_EXACT_PARENT_JOIN"
+    },
+    {
+      "id": "R2.5.3-RED-032",
+      "blocker": "B6",
+      "scenario": "valid spawn-intent without authenticated outcome restart prefix",
+      "r2_5_2_observation": "NO_DURABLE_SPAWN_INTENT_OR_RESTART_GRAMMAR",
+      "green_expected": "PASS:SPAWN_INTENT_AMBIGUOUS_NO_BLIND_RELAUNCH",
+      "contract": "RESTART_PREFIX_GRAMMAR"
+    },
+    {
+      "id": "R2.5.3-RED-033",
+      "blocker": "B6",
+      "scenario": "spawned authority stale or reused CAS event",
+      "r2_5_2_observation": "MISSING_REQUIRED_SPAWNED_AUTHORITY",
+      "green_expected": "REJECT:SPAWNED_CAS_MONOTONICITY_MISMATCH",
+      "contract": "SPAWN_MONOTONIC_EVENT"
+    },
+    {
+      "id": "R2.5.3-RED-034",
+      "blocker": "B6",
+      "scenario": "terminal artifact exists without spawned authority",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:RESTART_PREFIX_GAP",
+      "contract": "RESTART_PREFIX_GRAMMAR"
+    },
+    {
+      "id": "R2.5.3-RED-035",
+      "blocker": "B6",
+      "scenario": "valid consumed-only restart prefix",
+      "r2_5_2_observation": "NO_DERIVED_RESTART_GRAMMAR",
+      "green_expected": "PASS:CONSUMED_NOT_SPAWNED",
+      "contract": "RESTART_PREFIX_GRAMMAR"
+    },
+    {
+      "id": "R2.5.3-RED-036",
+      "blocker": "B6",
+      "scenario": "valid spawned-no-terminal restart prefix",
+      "r2_5_2_observation": "MISSING_REQUIRED_SPAWNED_AUTHORITY",
+      "green_expected": "PASS:SPAWNED_NO_TERMINAL",
+      "contract": "RESTART_PREFIX_GRAMMAR"
+    },
+    {
+      "id": "R2.5.3-RED-037",
+      "blocker": "B6",
+      "scenario": "valid terminal-not-reconciled restart prefix",
+      "r2_5_2_observation": "NO_DERIVED_RESTART_GRAMMAR",
+      "green_expected": "PASS:TERMINAL_NOT_RECONCILED",
+      "contract": "RESTART_PREFIX_GRAMMAR"
+    },
+    {
+      "id": "R2.5.3-RED-038",
+      "blocker": "B6",
+      "scenario": "valid reconciled-current restart prefix",
+      "r2_5_2_observation": "NO_AUTHENTICATED_SPAWN_PREFIX",
+      "green_expected": "PASS:RECONCILED_CURRENT",
+      "contract": "RESTART_PREFIX_GRAMMAR"
+    },
+    {
+      "id": "R2.5.3-RED-039",
+      "blocker": "B7",
+      "scenario": "reflected launch issuer with stale route reaches launch validator",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:RECORD_SELF_DIGEST_MISMATCH",
+      "contract": "TOTAL_LAUNCH_CONSUMER_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-040",
+      "blocker": "B7",
+      "scenario": "reflected launch issuer with stale route reaches proof mint",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:RECORD_SELF_DIGEST_MISMATCH",
+      "contract": "TOTAL_LAUNCH_CONSUMER_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-041",
+      "blocker": "B7",
+      "scenario": "reflected launch issuer with stale route reaches spawn",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:RECORD_SELF_DIGEST_MISMATCH",
+      "contract": "TOTAL_LAUNCH_CONSUMER_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-042",
+      "blocker": "B7",
+      "scenario": "reflected current issuer with stale route reaches current validator",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:RECORD_SELF_DIGEST_MISMATCH",
+      "contract": "TOTAL_CURRENT_CONSUMER_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-043",
+      "blocker": "B7",
+      "scenario": "reflected current issuer with stale route reaches Resume",
+      "r2_5_2_observation": "ACCEPT",
+      "green_expected": "REJECT:RECORD_SELF_DIGEST_MISMATCH",
+      "contract": "TOTAL_CURRENT_CONSUMER_REPLAY"
+    },
+    {
+      "id": "R2.5.3-RED-044",
+      "blocker": "B7",
+      "scenario": "direct launch registry insertion with invalid payload",
+      "r2_5_2_observation": "ACCEPT_IF_ISSUER_AND_REGISTRY_REFLECTED",
+      "green_expected": "REJECT:REPLAY_ARTIFACT_NOT_FOUND_OR_INVALID",
+      "contract": "NO_REGISTRY_AUTHORITY"
+    },
+    {
+      "id": "R2.5.3-RED-045",
+      "blocker": "B7",
+      "scenario": "direct current registry insertion with invalid payload",
+      "r2_5_2_observation": "ACCEPT_IF_ISSUER_AND_REGISTRY_REFLECTED",
+      "green_expected": "REJECT:REPLAY_ARTIFACT_NOT_FOUND_OR_INVALID",
+      "contract": "NO_REGISTRY_AUTHORITY"
+    },
+    {
+      "id": "R2.5.3-RED-046",
+      "blocker": "B7",
+      "scenario": "caller record substitution beside valid launch replay reference",
+      "r2_5_2_observation": "CALLER_PAYLOAD_IS_CAPABILITY_INPUT",
+      "green_expected": "REJECT:REPLAY_CALLER_PAYLOAD_FORBIDDEN",
+      "contract": "EXTERNAL_REPLAY_ONLY"
+    },
+    {
+      "id": "R2.5.3-RED-047",
+      "blocker": "B7",
+      "scenario": "caller neutral substitution beside valid current replay reference",
+      "r2_5_2_observation": "CALLER_PAYLOAD_IS_CAPABILITY_INPUT",
+      "green_expected": "REJECT:REPLAY_CALLER_PAYLOAD_FORBIDDEN",
+      "contract": "EXTERNAL_REPLAY_ONLY"
+    },
+    {
+      "id": "R2.5.3-RED-048",
+      "blocker": "B7",
+      "scenario": "valid exact external launch and current replay",
+      "r2_5_2_observation": "MISSING_REQUIRED_REPLAY_API",
+      "green_expected": "PASS",
+      "contract": "EXTERNAL_REPLAY_ONLY"
+    }
+  ],
+  "authorizations": {
+    "green_implementation": false,
+    "production_integration": false,
+    "provider_calls": false,
+    "audit_launches": false,
+    "network_calls": false,
+    "default_changes": false,
+    "commit_or_push": false
+  }
+}

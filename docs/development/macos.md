@@ -143,5 +143,5 @@ audits supported:
    tiny-fixture E2E audits for both Codex and Claude on every supported Mac
    architecture, with complete phase/report receipts.
 
-Until those exit criteria pass, use macOS for source work and an existing
-supported Windows/Linux host for real audits.
+Until those exit criteria pass, use macOS for source work and a supported
+Windows host for real audits.

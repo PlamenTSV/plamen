@@ -1,5 +1,9 @@
 # Usage
 
+> V3's production commands currently apply to Windows. Linux/macOS are
+> source-development and validation hosts until the POSIX package transaction,
+> keeper, and recovery work in `continuation/GOAL.md` is complete.
+
 > **Just installed?** See [getting-started.md](getting-started.md) first — what's required, what's optional, and how to run your first audit.
 
 All invocations -- terminal CLI, Claude Code slash commands, and Codex CLI --
@@ -132,22 +136,17 @@ plamen rag
 
 ## PATH Setup
 
-To use `plamen` as a command (instead of `python plamen.py`):
-
-```bash
-# Linux (bash)
-echo 'export PATH="$HOME/.plamen:$PATH"' >> ~/.bashrc && source ~/.bashrc
-
-# macOS (zsh)
-echo 'export PATH="$HOME/.plamen:$PATH"' >> ~/.zshrc && source ~/.zshrc
-```
+To use `plamen` as a command after a supported Windows install:
 
 ```powershell
 # Windows (PowerShell, one-time)
 [System.Environment]::SetEnvironmentVariable("Path", "$env:USERPROFILE\.local\bin;" + $env:Path, "User")
 ```
 
-Or run directly: `python3 ~/.plamen/plamen.py` (macOS/Linux) or `python ~/.plamen/plamen.py` (Windows).
+Do not add the source checkout or `~/.plamen` to `PATH`. macOS and Linux
+contributors should use the isolated
+[source-development workflow](development/macos.md); it intentionally does not
+publish a `plamen` production command.
 
 ---
 

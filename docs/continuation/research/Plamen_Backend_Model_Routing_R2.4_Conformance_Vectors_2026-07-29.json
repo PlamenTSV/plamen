@@ -1,0 +1,667 @@
+{
+  "schema": "plamen.model-routing-r2.4-conformance-vectors.v1",
+  "version": 1,
+  "r2_3_preserved_denominator": {
+    "guide_sha256": "d047d994f9aa114dea0ca9435b06922234c9ba54002321ca18f4d80a5e8b9d5f",
+    "schema_sha256": "1da3f14c3e18325e818e3236cd1907a87f3032bbdeca5957fdc6fdfd1c0bedcf",
+    "vectors_sha256": "6e9e0db8df0727dd37c78483151e62bd041f8951a1ddcf0d7698f367cd37d625",
+    "validator_sha256": "584fbc05a60929a761a1987928a8d97eb1931593d2c8445c42d3c622eb938581",
+    "receipt_sha256": "3df640bac21c0adfb70ad82d5c3d085409a562427a395c12acfb81cd6b1cfe46",
+    "independent_review_sha256": "a97ee6bcf1c905d634fb3643a29d1ba629c4a7ea8416ceb1ca4686d644f6523d",
+    "canonical_vectors": 10,
+    "schema_vectors": 59,
+    "join_vectors": 91,
+    "transaction_vectors": 18,
+    "canary_vectors": 8,
+    "total_vectors": 186
+  },
+  "expansion_rules": {
+    "record_templates": "The offline validator constructs closed canonical base records for each named R2.4 authority and applies exactly the named mutation.",
+    "digest_rule": "Every serialized authority self-digest is lowercase SHA-256 over restricted RFC 8785 canonical bytes with that digest member omitted.",
+    "public_environment": "The public digest covers only ordered names, source classes, redaction markers, policy-authority digest sets, non-secret values, and public policy authorities.",
+    "ephemeral_proof": "Secret-value integrity uses a fresh 256-bit per-process/per-object HMAC proof over the exact in-memory environment and launch-object identity; key and tag are never serialized.",
+    "preservation": "Before any R2.4 vector, the validator hash-checks the six exact accepted R2.3 artifacts and runs the frozen R2.3 validator in isolated offline mode for all 186 vectors."
+  },
+  "r2_4_vectors": [
+    {
+      "id": "R2.4-001",
+      "scenario": "public-environment-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-002",
+      "scenario": "public-environment-unknown-field",
+      "expected": "SCHEMA_UNKNOWN_FIELD"
+    },
+    {
+      "id": "R2.4-003",
+      "scenario": "public-environment-duplicate-name",
+      "expected": "ENVIRONMENT_NAME_DUPLICATE"
+    },
+    {
+      "id": "R2.4-004",
+      "scenario": "public-environment-unsorted-name",
+      "expected": "ENVIRONMENT_ENTRY_ORDER_INVALID"
+    },
+    {
+      "id": "R2.4-005",
+      "scenario": "secret-entry-carries-value",
+      "expected": "SCHEMA_VALIDATION_ERROR"
+    },
+    {
+      "id": "R2.4-006",
+      "scenario": "nonsecret-entry-missing-value",
+      "expected": "SCHEMA_VALIDATION_ERROR"
+    },
+    {
+      "id": "R2.4-007",
+      "scenario": "absent-secret-entry-carries-value",
+      "expected": "SCHEMA_VALIDATION_ERROR"
+    },
+    {
+      "id": "R2.4-008",
+      "scenario": "policy-digest-set-unsorted",
+      "expected": "POLICY_AUTHORITY_ORDER_INVALID"
+    },
+    {
+      "id": "R2.4-009",
+      "scenario": "secret-rotation-public-digest-stable",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-010",
+      "scenario": "nonsecret-mutation-public-digest-changes",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-011",
+      "scenario": "name-mutation-public-digest-changes",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-012",
+      "scenario": "source-class-mutation-public-digest-changes",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-013",
+      "scenario": "redaction-marker-mutation-public-digest-changes",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-014",
+      "scenario": "policy-authority-mutation-public-digest-changes",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-015",
+      "scenario": "ephemeral-proof-valid-local",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-016",
+      "scenario": "ephemeral-proof-detects-secret-mutation",
+      "expected": "EPHEMERAL_SECRET_PROOF_MISMATCH"
+    },
+    {
+      "id": "R2.4-017",
+      "scenario": "ephemeral-proof-detects-nonsecret-mutation",
+      "expected": "EPHEMERAL_SECRET_PROOF_MISMATCH"
+    },
+    {
+      "id": "R2.4-018",
+      "scenario": "ephemeral-proof-cross-process-replay",
+      "expected": "EPHEMERAL_SECRET_PROOF_SCOPE_MISMATCH"
+    },
+    {
+      "id": "R2.4-019",
+      "scenario": "ephemeral-proof-cross-object-replay",
+      "expected": "EPHEMERAL_SECRET_PROOF_SCOPE_MISMATCH"
+    },
+    {
+      "id": "R2.4-020",
+      "scenario": "ephemeral-proof-serialization-forbidden",
+      "expected": "EPHEMERAL_SECRET_PROOF_SERIALIZATION_FORBIDDEN"
+    },
+    {
+      "id": "R2.4-021",
+      "scenario": "low-entropy-dictionary-no-durable-verifier",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-022",
+      "scenario": "axes-semantic-headless-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-023",
+      "scenario": "axes-legacy-headless-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-024",
+      "scenario": "axes-missing-transport",
+      "expected": "SCHEMA_REQUIRED_FIELD"
+    },
+    {
+      "id": "R2.4-025",
+      "scenario": "axes-legacy-pty-explicit-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-026",
+      "scenario": "axes-max-effort-not-representable",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-027",
+      "scenario": "axes-unknown-routing-profile",
+      "expected": "SCHEMA_VALIDATION_ERROR"
+    },
+    {
+      "id": "R2.4-028",
+      "scenario": "profile-analysis-filesystem-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-029",
+      "scenario": "profile-route-owned-model-field",
+      "expected": "SCHEMA_UNKNOWN_FIELD"
+    },
+    {
+      "id": "R2.4-030",
+      "scenario": "profile-stdout-no-tools-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-031",
+      "scenario": "profile-stdout-gains-tool",
+      "expected": "PROFILE_NO_TOOLS_VIOLATION"
+    },
+    {
+      "id": "R2.4-032",
+      "scenario": "profile-registry-row-digest-mismatch",
+      "expected": "PROFILE_REGISTRY_DIGEST_MISMATCH"
+    },
+    {
+      "id": "R2.4-033",
+      "scenario": "profile-registry-duplicate-row",
+      "expected": "PROFILE_REGISTRY_DUPLICATE"
+    },
+    {
+      "id": "R2.4-034",
+      "scenario": "request-semantic-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-035",
+      "scenario": "request-legacy-headless-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-036",
+      "scenario": "request-missing-input-authority",
+      "expected": "SCHEMA_REQUIRED_FIELD"
+    },
+    {
+      "id": "R2.4-037",
+      "scenario": "request-prompt-methodology-kind-alias",
+      "expected": "INPUT_AUTHORITY_KIND_MISMATCH"
+    },
+    {
+      "id": "R2.4-038",
+      "scenario": "request-route-profile-mismatch",
+      "expected": "REQUEST_ROUTE_PROFILE_MISMATCH"
+    },
+    {
+      "id": "R2.4-039",
+      "scenario": "request-two-accepted-models-not-representable",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-040",
+      "scenario": "request-claude-field-in-codex-branch",
+      "expected": "CODEX_BRANCH_MUTATION"
+    },
+    {
+      "id": "R2.4-041",
+      "scenario": "profile-route-owned-transport-field",
+      "expected": "SCHEMA_UNKNOWN_FIELD"
+    },
+    {
+      "id": "R2.4-042",
+      "scenario": "control-vector-v2-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-043",
+      "scenario": "control-vector-old-environment-digest-field",
+      "expected": "SCHEMA_UNKNOWN_FIELD"
+    },
+    {
+      "id": "R2.4-044",
+      "scenario": "control-vector-public-environment-join-mismatch",
+      "expected": "CONTROL_PUBLIC_ENVIRONMENT_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-045",
+      "scenario": "control-vector-execution-axes-join-mismatch",
+      "expected": "CONTROL_AXES_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-046",
+      "scenario": "control-vector-profile-join-mismatch",
+      "expected": "CONTROL_PROFILE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-047",
+      "scenario": "control-vector-model-not-route-singleton",
+      "expected": "CONTROL_MODEL_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-048",
+      "scenario": "control-vector-model-alias",
+      "expected": "EXACT_MODEL_ID_REQUIRED"
+    },
+    {
+      "id": "R2.4-049",
+      "scenario": "launch-authority-v3-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-050",
+      "scenario": "launch-authority-missing-workplan-binding",
+      "expected": "SCHEMA_REQUIRED_FIELD"
+    },
+    {
+      "id": "R2.4-051",
+      "scenario": "launch-authority-wrong-phaseio-binding",
+      "expected": "LAUNCH_PHASE_IO_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-052",
+      "scenario": "input-authority-set-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-053",
+      "scenario": "input-authority-prompt-used-as-methodology",
+      "expected": "INPUT_AUTHORITY_KIND_MISMATCH"
+    },
+    {
+      "id": "R2.4-054",
+      "scenario": "input-authority-program-facts-missing",
+      "expected": "SCHEMA_REQUIRED_FIELD"
+    },
+    {
+      "id": "R2.4-055",
+      "scenario": "input-authority-source-substitution-rehashed",
+      "expected": "INPUT_AUTHORITY_SET_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-056",
+      "scenario": "workplan-routing-binding-v2-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-057",
+      "scenario": "workplan-v1-cannot-authorize-semantic",
+      "expected": "HISTORICAL_WORKPLAN_NOT_LAUNCH_AUTHORITY"
+    },
+    {
+      "id": "R2.4-058",
+      "scenario": "phaseio-routing-binding-v2-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-059",
+      "scenario": "phaseio-request-join-mismatch",
+      "expected": "PHASE_IO_REQUEST_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-060",
+      "scenario": "attempt-envelope-v3-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-061",
+      "scenario": "attempt-envelope-v3-old-environment-field",
+      "expected": "SCHEMA_UNKNOWN_FIELD"
+    },
+    {
+      "id": "R2.4-062",
+      "scenario": "consumed-launch-authority-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-063",
+      "scenario": "spawn-before-consume",
+      "expected": "SPAWN_REQUIRES_CONSUMED_AUTHORITY"
+    },
+    {
+      "id": "R2.4-064",
+      "scenario": "consume-stale-cas",
+      "expected": "CONSUME_CAS_MISMATCH"
+    },
+    {
+      "id": "R2.4-065",
+      "scenario": "consume-envelope-join-mismatch",
+      "expected": "CONSUME_ENVELOPE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-066",
+      "scenario": "spawn-secret-proof-missing",
+      "expected": "EPHEMERAL_SECRET_PROOF_REQUIRED"
+    },
+    {
+      "id": "R2.4-067",
+      "scenario": "spawn-secret-proof-invalid",
+      "expected": "EPHEMERAL_SECRET_PROOF_MISMATCH"
+    },
+    {
+      "id": "R2.4-068",
+      "scenario": "spawn-secret-proof-reused",
+      "expected": "EPHEMERAL_SECRET_PROOF_ALREADY_CONSUMED"
+    },
+    {
+      "id": "R2.4-069",
+      "scenario": "spawn-capability-serialization",
+      "expected": "SPAWN_CAPABILITY_SERIALIZATION_FORBIDDEN"
+    },
+    {
+      "id": "R2.4-070",
+      "scenario": "compiler-direct-spawn",
+      "expected": "COMPILE_CANNOT_SPAWN"
+    },
+    {
+      "id": "R2.4-071",
+      "scenario": "reserve-without-compiled-authority",
+      "expected": "RESERVE_REQUIRES_COMPILED_AUTHORITY"
+    },
+    {
+      "id": "R2.4-072",
+      "scenario": "resume-retry-same-identities-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-073",
+      "scenario": "resume-retry-route-change",
+      "expected": "RETRY_IDENTITY_DRIFT"
+    },
+    {
+      "id": "R2.4-074",
+      "scenario": "resume-new-generation-model-change-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-075",
+      "scenario": "resume-model-change-same-generation",
+      "expected": "GENERATION_CHANGE_REQUIRED"
+    },
+    {
+      "id": "R2.4-076",
+      "scenario": "resume-prompt-change-same-generation",
+      "expected": "GENERATION_CHANGE_REQUIRED"
+    },
+    {
+      "id": "R2.4-077",
+      "scenario": "resume-completed-incorporation-relaunch",
+      "expected": "COMPLETED_INCORPORATION_NO_RELAUNCH"
+    },
+    {
+      "id": "R2.4-078",
+      "scenario": "resume-ambiguous-consumed-relaunch",
+      "expected": "AMBIGUOUS_CONSUMED_STATE_DEBT"
+    },
+    {
+      "id": "R2.4-079",
+      "scenario": "resume-fallback-as-retry",
+      "expected": "GENERATION_CHANGE_REQUIRED"
+    },
+    {
+      "id": "R2.4-080",
+      "scenario": "resume-family-grant-renewal",
+      "expected": "FAMILY_GRANT_RENEWAL_FORBIDDEN"
+    },
+    {
+      "id": "R2.4-081",
+      "scenario": "resume-attempt-ordinal-nonmonotonic",
+      "expected": "ATTEMPT_ORDINAL_INVALID"
+    },
+    {
+      "id": "R2.4-082",
+      "scenario": "capability-authority-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-083",
+      "scenario": "capability-provider-default-model",
+      "expected": "EXACT_MODEL_ID_REQUIRED"
+    },
+    {
+      "id": "R2.4-084",
+      "scenario": "capability-max-effort",
+      "expected": "EFFORT_MAX_FORBIDDEN"
+    },
+    {
+      "id": "R2.4-085",
+      "scenario": "capability-canary-claim-missing",
+      "expected": "CAPABILITY_CLAIM_REQUIRED"
+    },
+    {
+      "id": "R2.4-086",
+      "scenario": "price-authority-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-087",
+      "scenario": "price-currency-route-mismatch",
+      "expected": "PRICE_CURRENCY_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-088",
+      "scenario": "fallback-authority-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-089",
+      "scenario": "observed-fallback-requires-debt",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-090",
+      "scenario": "observed-fallback-direct-reconcile",
+      "expected": "FALLBACK_REQUIRES_ROUTE_DEBT"
+    },
+    {
+      "id": "R2.4-091",
+      "scenario": "model-change-family-grant-stable",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-092",
+      "scenario": "model-change-family-grant-renewed",
+      "expected": "FAMILY_GRANT_RENEWAL_FORBIDDEN"
+    },
+    {
+      "id": "R2.4-093",
+      "scenario": "agent-count-work-units-charged",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-094",
+      "scenario": "profile-ceiling-exceeds-budget",
+      "expected": "PROFILE_CEILING_EXCEEDS_BUDGET"
+    },
+    {
+      "id": "R2.4-095",
+      "scenario": "codex-parity-witness-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-096",
+      "scenario": "codex-parity-bytes-changed",
+      "expected": "CODEX_PARITY_BYTES_MISMATCH"
+    },
+    {
+      "id": "R2.4-097",
+      "scenario": "codex-parity-claude-authority-injected",
+      "expected": "CODEX_BRANCH_MUTATION"
+    },
+    {
+      "id": "R2.4-098",
+      "scenario": "downstream-closure-pending-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-099",
+      "scenario": "downstream-premature-complete",
+      "expected": "DOWNSTREAM_CLOSURE_NOT_PROVEN"
+    },
+    {
+      "id": "R2.4-100",
+      "scenario": "legacy-routing-default-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-101",
+      "scenario": "semantic-default-without-heldout",
+      "expected": "ROUTING_DEFAULT_EVIDENCE_REQUIRED"
+    },
+    {
+      "id": "R2.4-102",
+      "scenario": "backend-arm-v4-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-103",
+      "scenario": "backend-arm-v4-missing-request",
+      "expected": "SCHEMA_REQUIRED_FIELD"
+    },
+    {
+      "id": "R2.4-104",
+      "scenario": "execution-attempt-v3-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-105",
+      "scenario": "execution-attempt-v3-wrong-arm",
+      "expected": "ATTEMPT_ARM_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-106",
+      "scenario": "provider-observation-v5-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-107",
+      "scenario": "provider-observation-v5-old-envelope",
+      "expected": "OBSERVATION_ENVELOPE_VERSION_MISMATCH"
+    },
+    {
+      "id": "R2.4-108",
+      "scenario": "provider-observation-v5-fallback-debt",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-109",
+      "scenario": "provider-observation-v5-request-copy-no-evidence",
+      "expected": "OBSERVATION_EVIDENCE_REQUIRED"
+    },
+    {
+      "id": "R2.4-110",
+      "scenario": "profile-policy-authority-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-111",
+      "scenario": "profile-policy-authority-mismatch",
+      "expected": "PROFILE_POLICY_AUTHORITY_MISMATCH"
+    },
+    {
+      "id": "R2.4-112",
+      "scenario": "request-profile-not-registry-member",
+      "expected": "REQUEST_PROFILE_REGISTRY_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-113",
+      "scenario": "profile-semantic-matrix-mismatch",
+      "expected": "PROFILE_SEMANTIC_MATRIX_MISMATCH"
+    },
+    {
+      "id": "R2.4-114",
+      "scenario": "axes-claude-codex-route",
+      "expected": "AXES_COMBINATION_INVALID"
+    },
+    {
+      "id": "R2.4-115",
+      "scenario": "axes-semantic-pty",
+      "expected": "AXES_COMBINATION_INVALID"
+    },
+    {
+      "id": "R2.4-116",
+      "scenario": "axes-headless-nonproof-assurance",
+      "expected": "AXES_ASSURANCE_MISMATCH"
+    },
+    {
+      "id": "R2.4-117",
+      "scenario": "axes-codex-existing-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-118",
+      "scenario": "axes-native-existing-valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.4-119",
+      "scenario": "route-capability-authority-mismatch",
+      "expected": "ROUTE_CAPABILITY_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-120",
+      "scenario": "route-price-authority-mismatch",
+      "expected": "ROUTE_PRICE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-121",
+      "scenario": "route-fallback-authority-mismatch",
+      "expected": "ROUTE_FALLBACK_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-122",
+      "scenario": "route-execution-axes-mismatch",
+      "expected": "ROUTE_AXES_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-123",
+      "scenario": "envelope-secret-present-proof-not-required",
+      "expected": "ENVELOPE_SECRET_PROOF_POLICY_MISMATCH"
+    },
+    {
+      "id": "R2.4-124",
+      "scenario": "envelope-control-vector-mismatch",
+      "expected": "ENVELOPE_CONTROL_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-125",
+      "scenario": "envelope-environment-policy-mismatch",
+      "expected": "ENVELOPE_PUBLIC_ENVIRONMENT_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-126",
+      "scenario": "envelope-launch-authority-mismatch",
+      "expected": "ENVELOPE_LAUNCH_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-127",
+      "scenario": "consumed-authority-wrong-envelope",
+      "expected": "CONSUMED_ENVELOPE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.4-128",
+      "scenario": "consumed-authority-wrong-attempt",
+      "expected": "CONSUMED_ATTEMPT_JOIN_MISMATCH"
+    }
+  ]
+}

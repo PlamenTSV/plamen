@@ -1,0 +1,2305 @@
+{
+  "schema": "plamen.model-routing-r2.3-conformance-vectors.v1",
+  "version": 1,
+  "expansion_rules": {
+    "digest": "An object with sole key $digest and one lowercase hex character expands to that character repeated 64 times.",
+    "vector": "An object with sole key $vector expands to the eight-field resource vector with the named field overrides and zero elsewhere.",
+    "thinking_controls": "An object with sole key $thinking_controls expands in customization-row-major/control-minor order to the complete ten-source by four-control sample inventory; mode selects the single explicit provider-request control and optional mutations remove a source or add a manual conflict.",
+    "customization_record": "An object with sole key $customization_record expands to a self-digested two-row customization record or one named duplicate/path-alias/shadowed/post-scan mutation.",
+    "attempt_join": "An object with sole key $attempt_join expands to the complete reservation-entry-envelope-consumption-observation equality surface with one optional named mutation.",
+    "attempt_entry_lifecycle": "An object with sole key $attempt_entry_lifecycle expands to self-digested generation, RESERVED, LAUNCH_CONSUMED, and RECONCILED entries plus reserve/consume/reconcile events, envelope, and observation, with optional post-digest/predecessor/allocation/use mutations.",
+    "customization_join": "An object with sole key $customization_join expands to a separately self-digested discovery authority, the self-digested customization set, and effort/thinking/launch row projections, with optional missing/extra source mutations.",
+    "thinking_launch_join": "An object with sole key $thinking_launch_join expands to a self-digested Claude provider-control vector, thinking authority, launch authority, and attempt envelope with one optional vector, argv, or environment mutation.",
+    "canary_chain": "An object with sole key $canary_chain expands to a self-digested case-result, evidence-manifest, field-claim, and receipt chain with one optional named mutation.",
+    "budget_chain": "An object with sole key $budget_chain expands to a self-digested token derivation and BudgetAuthorityV3 chain with one optional named mutation.",
+    "budget_ledger_join": "An object with sole key $budget_ledger_join expands to a self-digested derivation, budget authority, genesis ledger prestate, and RESERVE_GENERATION event with one optional delta, prestate, or budget mutation.",
+    "ledger_event": "An object with sole key $ledger_event expands to a self-digested RELEASE_ATTEMPT, MARK_RESERVED_ATTEMPT_DEBT, or MARK_CONSUMED_ATTEMPT_DEBT event with optional launch mutations.",
+    "ledger_snapshot": "An object with sole key $ledger_snapshot expands to a self-digested revision-one snapshot with one optional previous/sequence/membership/count mutation.",
+    "observation": "An object with sole key $observation expands to a self-digested execution observation in confirmed, unobservable, not-applicable, or confirmed-with-null-evidence mode.",
+    "observation_disposition": "An object with sole key $observation_disposition expands to a self-digested observation and either a confirmed reconciliation disposition or an exact route-debt plus consumed-attempt-debt event, with optional adverse direct-reconcile/evidence/launch mutations.",
+    "self_digest": "A direct record member whose value is {$self_digest: member_name} is replaced after nested expansion with lowercase SHA-256 of canonical record bytes with that member omitted.",
+    "customization_authority_digests": "{$customization_registry_digest:true} hashes the fixed source-kind/rank table; {$customization_discovery_digest:true} hashes the root, registry, expected count, and ordered source projection before the containing self digest."
+  },
+  "canonical_vectors": [
+    {
+      "id": "jcs-object-order",
+      "value": {"b": 0, "a": 1},
+      "expected_utf8_hex": "7b2261223a312c2262223a307d",
+      "expected_sha256": "70c75ca39048db680b52c5fd0040136c6bcb678be341277eaaac5afd16d4e70d"
+    },
+    {
+      "id": "ijson-max",
+      "value": {"n": 9007199254740991},
+      "expected_utf8_hex": "7b226e223a393030373139393235343734303939317d",
+      "expected_sha256": "e1da48c6a6089f06ecb4e0a2259e658e3786b2420f52baccdf929ec6460d7b41"
+    },
+    {
+      "id": "utf8-set-order",
+      "semantic_set": ["\u00e9", "z"],
+      "expected_utf8_hex": "5b227a222c22c3a9225d",
+      "expected_sha256": "01e556af0b266528c4fe1c88d5dc44fa7978e97d361dd384023c5d603887caee"
+    }
+  ],
+  "negative_canonical_vectors": [
+    {
+      "id": "ijson-too-wide",
+      "raw_json": "{\"n\":9007199254740992}",
+      "expected_error": "INTEGER_OUT_OF_RANGE"
+    },
+    {
+      "id": "identity-not-nfc",
+      "identity_value": "e\u0301",
+      "expected_error": "NON_NFC_IDENTITY"
+    },
+    {
+      "id": "non-ascii-object-member-name",
+      "value": {"\ue000": 1},
+      "expected_error": "NON_ASCII_MEMBER_NAME"
+    },
+    {
+      "id": "duplicate-object-member",
+      "raw_json": "{\"a\":1,\"a\":2}",
+      "expected_error": "DUPLICATE_OBJECT_MEMBER"
+    },
+    {
+      "id": "float-lexeme-forbidden",
+      "raw_json": "{\"n\":1.0}",
+      "expected_error": "FLOAT_FORBIDDEN"
+    },
+    {
+      "id": "negative-zero-lexeme-forbidden",
+      "raw_json": "{\"n\":-0}",
+      "expected_error": "NEGATIVE_ZERO_FORBIDDEN"
+    },
+    {
+      "id": "lone-surrogate-forbidden",
+      "raw_json": "{\"s\":\"\\ud800\"}",
+      "expected_error": "LONE_SURROGATE_FORBIDDEN"
+    }
+  ],
+  "schema_vectors": [
+    {
+      "id": "customization-ordered-valid",
+      "definition": "LoadedCustomizationSetV1",
+      "valid": true,
+      "record": {
+        "schema": "plamen.loaded-customization-set.v1",
+        "customization_set_version": 1,
+        "customization_set_digest": {"$self_digest": "customization_set_digest"},
+        "resolution_root_digest": {"$digest": "b"},
+        "customization_registry_digest": {"$customization_registry_digest": true},
+        "discovery_authority_digest": {"$digest": "d"},
+        "discovery_manifest_digest": {"$customization_discovery_digest": true},
+        "expected_row_count": 2,
+        "rows": [
+          {
+            "row_digest": {"$self_digest": "row_digest"},
+            "ordinal": 0,
+            "precedence_rank": 0,
+            "source_kind": "ENVIRONMENT",
+            "source_id": "env",
+            "canonical_realpath_digest": null,
+            "content_digest": {"$digest": "2"},
+            "loaded": true,
+            "declared_effort": "high",
+            "thinking_controls_digest": null,
+            "scan_result": "PRESENT_EQUAL"
+          },
+          {
+            "row_digest": {"$self_digest": "row_digest"},
+            "ordinal": 1,
+            "precedence_rank": 2,
+            "source_kind": "SKILL_FRONTMATTER",
+            "source_id": "skill-a",
+            "canonical_realpath_digest": {"$digest": "3"},
+            "content_digest": {"$digest": "4"},
+            "loaded": true,
+            "declared_effort": "high",
+            "thinking_controls_digest": {"$digest": "5"},
+            "scan_result": "PRESENT_EQUAL"
+          }
+        ]
+      }
+    },
+    {
+      "id": "customization-reordered-invalid",
+      "definition": "LoadedCustomizationSetV1",
+      "valid": false,
+      "expected_error": "CUSTOMIZATION_ORDER_INVALID",
+      "record": {
+        "schema": "plamen.loaded-customization-set.v1",
+        "customization_set_version": 1,
+        "customization_set_digest": {"$digest": "a"},
+        "resolution_root_digest": {"$digest": "b"},
+        "customization_registry_digest": {"$customization_registry_digest": true},
+        "discovery_authority_digest": {"$digest": "d"},
+        "discovery_manifest_digest": {"$customization_discovery_digest": true},
+        "expected_row_count": 2,
+        "rows": [
+          {
+            "row_digest": {"$digest": "f"},
+            "ordinal": 0,
+            "precedence_rank": 2,
+            "source_kind": "SKILL_FRONTMATTER",
+            "source_id": "skill-a",
+            "canonical_realpath_digest": {"$digest": "3"},
+            "content_digest": {"$digest": "4"},
+            "loaded": true,
+            "declared_effort": "high",
+            "thinking_controls_digest": {"$digest": "5"},
+            "scan_result": "PRESENT_EQUAL"
+          },
+          {
+            "row_digest": {"$digest": "e"},
+            "ordinal": 1,
+            "precedence_rank": 0,
+            "source_kind": "ENVIRONMENT",
+            "source_id": "env",
+            "canonical_realpath_digest": null,
+            "content_digest": {"$digest": "2"},
+            "loaded": true,
+            "declared_effort": "high",
+            "thinking_controls_digest": null,
+            "scan_result": "PRESENT_EQUAL"
+          }
+        ]
+      }
+    },
+    {
+      "id": "attempt-envelope-valid",
+      "definition": "AttemptLaunchEnvelopeV2",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.attempt-launch-envelope.v2",
+        "attempt_launch_version": 2,
+        "attempt_launch_digest": {"$self_digest": "attempt_launch_digest"},
+        "attempt_identity_digest": {"$digest": "2"},
+        "backend_arm_digest": {"$digest": "3"},
+        "launch_authority_digest": {"$digest": "4"},
+        "attempt_reservation_event_digest": {"$digest": "5"},
+        "attempt_resource_entry_digest": {"$digest": "6"},
+        "resource_ledger_digest_after_attempt_reservation": {"$digest": "7"},
+        "materialized_argv_digest": {"$digest": "8"},
+        "materialized_environment_digest": {"$digest": "9"},
+        "materialized_stdin_prompt_digest": {"$digest": "a"},
+        "working_directory_identity_digest": {"$digest": "b"},
+        "prepared_utc": "2026-07-29T00:00:00Z"
+      }
+    },
+    {
+      "id": "attempt-envelope-missing-reservation-invalid",
+      "definition": "AttemptLaunchEnvelopeV2",
+      "valid": false,
+      "expected_error": "SCHEMA_REQUIRED_FIELD",
+      "record": {
+        "schema": "plamen.attempt-launch-envelope.v2",
+        "attempt_launch_version": 2,
+        "attempt_launch_digest": {"$digest": "1"},
+        "attempt_identity_digest": {"$digest": "2"},
+        "backend_arm_digest": {"$digest": "3"},
+        "launch_authority_digest": {"$digest": "4"},
+        "attempt_resource_entry_digest": {"$digest": "6"},
+        "resource_ledger_digest_after_attempt_reservation": {"$digest": "7"},
+        "materialized_argv_digest": {"$digest": "8"},
+        "materialized_environment_digest": {"$digest": "9"},
+        "materialized_stdin_prompt_digest": {"$digest": "a"},
+        "working_directory_identity_digest": {"$digest": "b"},
+        "prepared_utc": "2026-07-29T00:00:00Z"
+      }
+    },
+    {
+      "id": "attempt-envelope-self-digest-mutation-invalid",
+      "definition": "AttemptLaunchEnvelopeV2",
+      "valid": false,
+      "check_self_digest": true,
+      "expected_error": "RECORD_SELF_DIGEST_MISMATCH",
+      "record": {
+        "schema": "plamen.attempt-launch-envelope.v2",
+        "attempt_launch_version": 2,
+        "attempt_launch_digest": {"$digest": "1"},
+        "attempt_identity_digest": {"$digest": "2"},
+        "backend_arm_digest": {"$digest": "3"},
+        "launch_authority_digest": {"$digest": "4"},
+        "attempt_reservation_event_digest": {"$digest": "5"},
+        "attempt_resource_entry_digest": {"$digest": "6"},
+        "resource_ledger_digest_after_attempt_reservation": {"$digest": "7"},
+        "materialized_argv_digest": {"$digest": "8"},
+        "materialized_environment_digest": {"$digest": "9"},
+        "materialized_stdin_prompt_digest": {"$digest": "a"},
+        "working_directory_identity_digest": {"$digest": "b"},
+        "prepared_utc": "2026-07-29T00:00:00Z"
+      }
+    },
+    {
+      "id": "observation-confirmed-valid",
+      "definition": "ProviderExecutionObservationV4",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {"$observation": {"mode": "confirmed"}}
+    },
+    {
+      "id": "observation-unobservable-valid",
+      "definition": "ProviderExecutionObservationV4",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {"$observation": {"mode": "unobservable"}}
+    },
+    {
+      "id": "observation-not-applicable-valid",
+      "definition": "ProviderExecutionObservationV4",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {"$observation": {"mode": "not_applicable"}}
+    },
+    {
+      "id": "observation-confirmed-null-evidence-invalid",
+      "definition": "ProviderExecutionObservationV4",
+      "valid": false,
+      "expected_error": "SCHEMA_VALIDATION_ERROR",
+      "record": {"$observation": {"mode": "confirmed_null"}}
+    },
+    {
+      "id": "observation-duplicate-thinking-field-invalid",
+      "definition": "ProviderExecutionObservationV4",
+      "valid": false,
+      "expected_error": "SCHEMA_UNKNOWN_FIELD",
+      "record": {
+        "schema": "plamen.provider-execution-observation.v4",
+        "observation_version": 4,
+        "observation_digest": {"$digest": "1"},
+        "attempt_identity_digest": {"$digest": "2"},
+        "backend_arm_digest": {"$digest": "3"},
+        "attempt_launch_digest": {"$digest": "4"},
+        "attempt_reservation_event_digest": {"$digest": "5"},
+        "reserved_attempt_resource_entry_digest": {"$digest": "6"},
+        "consumed_attempt_resource_entry_digest": {"$digest": "d"},
+        "resource_ledger_digest_after_attempt_reservation": {"$digest": "7"},
+        "launch_consumption_event_digest": {"$digest": "8"},
+        "resource_ledger_digest_after_launch_consumption": {"$digest": "9"},
+        "observed_effective_model_id": "claude-opus-5",
+        "effective_model_state": "EXACT",
+        "observed_effective_effort": "high",
+        "effective_effort_state": "EXACT",
+        "observed_thinking_state": "ADAPTIVE_ON_CONFIRMED",
+        "observed_thinking_mode": "ADAPTIVE_ON",
+        "thinking_observation_evidence_digest": {"$digest": "a"},
+        "provider_terminal_category": "COMPLETED",
+        "provider_usage_digest": {"$digest": "b"},
+        "raw_stream_digest": {"$digest": "c"}
+      }
+    },
+    {
+      "id": "observed-pair-valid",
+      "definition": "ObservedPairResourceComparisonV1",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.observed-pair-resource-comparison.v1",
+        "comparison_version": 1,
+        "comparison_digest": {"$self_digest": "comparison_digest"},
+        "evaluation_policy_digest": {"$digest": "2"},
+        "metric": "OUTPUT_TOKENS_INCLUDING_REASONING",
+        "aggregation_scope": "RUN",
+        "candidate_usage_receipt_set_digest": {"$digest": "3"},
+        "legacy_usage_receipt_set_digest": {"$digest": "4"},
+        "currency_code": null,
+        "candidate_pricing_snapshot_digest": null,
+        "legacy_pricing_snapshot_digest": null,
+        "numerator": 3,
+        "denominator": 2,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "reserved-pair-valid",
+      "definition": "ReservedPairResourceComparisonV1",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.reserved-pair-resource-comparison.v1",
+        "comparison_version": 1,
+        "comparison_digest": {"$self_digest": "comparison_digest"},
+        "evaluation_policy_digest": {"$digest": "2"},
+        "metric": "TURNS",
+        "aggregation_scope": "RUN",
+        "candidate_grant_authority_digest": {"$digest": "3"},
+        "legacy_grant_authority_digest": {"$digest": "4"},
+        "currency_code": null,
+        "candidate_pricing_snapshot_digest": null,
+        "legacy_pricing_snapshot_digest": null,
+        "numerator": 5,
+        "denominator": 4,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "reserved-pair-overpopulated-with-usage-invalid",
+      "definition": "ReservedPairResourceComparisonV1",
+      "valid": false,
+      "expected_error": "SCHEMA_UNKNOWN_FIELD",
+      "record": {
+        "schema": "plamen.reserved-pair-resource-comparison.v1",
+        "comparison_version": 1,
+        "comparison_digest": {"$digest": "1"},
+        "evaluation_policy_digest": {"$digest": "2"},
+        "metric": "TURNS",
+        "aggregation_scope": "RUN",
+        "candidate_grant_authority_digest": {"$digest": "3"},
+        "legacy_grant_authority_digest": {"$digest": "4"},
+        "candidate_usage_receipt_set_digest": {"$digest": "5"},
+        "currency_code": null,
+        "candidate_pricing_snapshot_digest": null,
+        "legacy_pricing_snapshot_digest": null,
+        "numerator": 5,
+        "denominator": 4,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "observed-pair-overpopulated-invalid",
+      "definition": "ObservedPairResourceComparisonV1",
+      "valid": false,
+      "expected_error": "SCHEMA_UNKNOWN_FIELD",
+      "record": {
+        "schema": "plamen.observed-pair-resource-comparison.v1",
+        "comparison_version": 1,
+        "comparison_digest": {"$digest": "1"},
+        "evaluation_policy_digest": {"$digest": "2"},
+        "metric": "OUTPUT_TOKENS_INCLUDING_REASONING",
+        "aggregation_scope": "RUN",
+        "candidate_usage_receipt_set_digest": {"$digest": "3"},
+        "legacy_usage_receipt_set_digest": {"$digest": "4"},
+        "candidate_grant_authority_digest": {"$digest": "5"},
+        "currency_code": null,
+        "candidate_pricing_snapshot_digest": null,
+        "legacy_pricing_snapshot_digest": null,
+        "numerator": 3,
+        "denominator": 2,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "consume-attempt-event-valid",
+      "definition": "ResourceLedgerEventV2",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.resource-ledger-event.v2",
+        "ledger_event_version": 2,
+        "ledger_event_digest": {"$self_digest": "ledger_event_digest"},
+        "arm_family_digest": {"$digest": "2"},
+        "event_sequence": 2,
+        "previous_event_digest": {"$digest": "3"},
+        "expected_ledger_revision": 2,
+        "idempotency_key": {"$digest": "4"},
+        "event_kind": "CONSUME_ATTEMPT_LAUNCH",
+        "generation": 1,
+        "attempt_identity_digest": {"$digest": "5"},
+        "budget_authority_digest": {"$digest": "6"},
+        "reservation_delta": {"$vector": {}},
+        "reconciliation_delta": {"$vector": {}},
+        "release_delta": {"$vector": {}},
+        "token_budget_derivation_digest": {"$digest": "7"},
+        "attempt_resource_entry_digest": {"$digest": "8"},
+        "attempt_launch_digest": {"$digest": "9"},
+        "event_utc": "2026-07-29T00:00:00Z"
+      }
+    },
+    {
+      "id": "reserve-attempt-event-with-launch-invalid",
+      "definition": "ResourceLedgerEventV2",
+      "valid": false,
+      "expected_error": "SCHEMA_VALIDATION_ERROR",
+      "record": {
+        "schema": "plamen.resource-ledger-event.v2",
+        "ledger_event_version": 2,
+        "ledger_event_digest": {"$digest": "1"},
+        "arm_family_digest": {"$digest": "2"},
+        "event_sequence": 1,
+        "previous_event_digest": {"$digest": "3"},
+        "expected_ledger_revision": 1,
+        "idempotency_key": {"$digest": "4"},
+        "event_kind": "RESERVE_ATTEMPT",
+        "generation": 1,
+        "attempt_identity_digest": {"$digest": "5"},
+        "budget_authority_digest": {"$digest": "6"},
+        "reservation_delta": {"$vector": {"turns": 1}},
+        "reconciliation_delta": {"$vector": {}},
+        "release_delta": {"$vector": {}},
+        "token_budget_derivation_digest": {"$digest": "7"},
+        "attempt_resource_entry_digest": {"$digest": "8"},
+        "attempt_launch_digest": {"$digest": "9"},
+        "event_utc": "2026-07-29T00:00:00Z"
+      }
+    },
+    {
+      "id": "ledger-genesis-valid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.backend-semantic-resource-ledger.v2",
+        "resource_ledger_version": 2,
+        "resource_ledger_id": "ledger:family-a",
+        "resource_ledger_digest": {"$self_digest": "resource_ledger_digest"},
+        "arm_family_digest": {"$digest": "2"},
+        "semantic_plan_digest": {"$digest": "3"},
+        "common_resource_grant_digest": {"$digest": "4"},
+        "currency_code": null,
+        "ledger_revision": 0,
+        "previous_ledger_digest": null,
+        "ledger_state": "ACTIVE",
+        "grant": {"$vector": {"turns": 10}},
+        "active_reserved": {"$vector": {}},
+        "reconciled": {"$vector": {}},
+        "remaining": {"$vector": {"turns": 10}},
+        "generation_entry_digests": [],
+        "attempt_entry_digests": [],
+        "event_digests": [],
+        "last_event_sequence": null,
+        "last_event_digest": null
+      }
+    },
+    {
+      "id": "ledger-non-genesis-valid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {"$ledger_snapshot": {"mode": "valid"}}
+    },
+    {
+      "id": "ledger-non-genesis-previous-null-invalid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": false,
+      "expected_error": "LEDGER_PREVIOUS_SNAPSHOT_MISSING",
+      "record": {"$ledger_snapshot": {"mode": "previous_null"}}
+    },
+    {
+      "id": "ledger-non-genesis-last-sequence-invalid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": false,
+      "expected_error": "LEDGER_LAST_SEQUENCE_INVALID",
+      "record": {"$ledger_snapshot": {"mode": "last_sequence_wrong"}}
+    },
+    {
+      "id": "ledger-non-genesis-last-membership-invalid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": false,
+      "expected_error": "LEDGER_LAST_EVENT_NOT_MEMBER",
+      "record": {"$ledger_snapshot": {"mode": "last_not_member"}}
+    },
+    {
+      "id": "ledger-non-genesis-event-count-invalid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": false,
+      "expected_error": "LEDGER_EVENT_COUNT_INVALID",
+      "record": {"$ledger_snapshot": {"mode": "event_count_wrong"}}
+    },
+    {
+      "id": "ledger-governed-currency-genesis-valid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.backend-semantic-resource-ledger.v2",
+        "resource_ledger_version": 2,
+        "resource_ledger_id": "ledger:family-money",
+        "resource_ledger_digest": {"$self_digest": "resource_ledger_digest"},
+        "arm_family_digest": {"$digest": "2"},
+        "semantic_plan_digest": {"$digest": "3"},
+        "common_resource_grant_digest": {"$digest": "4"},
+        "currency_code": "USD",
+        "ledger_revision": 0,
+        "previous_ledger_digest": null,
+        "ledger_state": "ACTIVE",
+        "grant": {"$vector": {"currency_micros": 1000}},
+        "active_reserved": {"$vector": {}},
+        "reconciled": {"$vector": {}},
+        "remaining": {"$vector": {"currency_micros": 1000}},
+        "generation_entry_digests": [],
+        "attempt_entry_digests": [],
+        "event_digests": [],
+        "last_event_sequence": null,
+        "last_event_digest": null
+      }
+    },
+    {
+      "id": "ledger-currency-null-with-value-invalid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": false,
+      "expected_error": "LEDGER_CURRENCY_WITHOUT_CODE",
+      "record": {
+        "schema": "plamen.backend-semantic-resource-ledger.v2",
+        "resource_ledger_version": 2,
+        "resource_ledger_id": "ledger:family-money",
+        "resource_ledger_digest": {"$self_digest": "resource_ledger_digest"},
+        "arm_family_digest": {"$digest": "2"},
+        "semantic_plan_digest": {"$digest": "3"},
+        "common_resource_grant_digest": {"$digest": "4"},
+        "currency_code": null,
+        "ledger_revision": 0,
+        "previous_ledger_digest": null,
+        "ledger_state": "ACTIVE",
+        "grant": {"$vector": {"currency_micros": 1000}},
+        "active_reserved": {"$vector": {}},
+        "reconciled": {"$vector": {}},
+        "remaining": {"$vector": {"currency_micros": 1000}},
+        "generation_entry_digests": [],
+        "attempt_entry_digests": [],
+        "event_digests": [],
+        "last_event_sequence": null,
+        "last_event_digest": null
+      }
+    },
+    {
+      "id": "ledger-currency-code-with-zero-grant-invalid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": false,
+      "expected_error": "LEDGER_CURRENCY_CODE_WITHOUT_GRANT",
+      "record": {
+        "schema": "plamen.backend-semantic-resource-ledger.v2",
+        "resource_ledger_version": 2,
+        "resource_ledger_id": "ledger:family-money",
+        "resource_ledger_digest": {"$self_digest": "resource_ledger_digest"},
+        "arm_family_digest": {"$digest": "2"},
+        "semantic_plan_digest": {"$digest": "3"},
+        "common_resource_grant_digest": {"$digest": "4"},
+        "currency_code": "USD",
+        "ledger_revision": 0,
+        "previous_ledger_digest": null,
+        "ledger_state": "ACTIVE",
+        "grant": {"$vector": {}},
+        "active_reserved": {"$vector": {}},
+        "reconciled": {"$vector": {}},
+        "remaining": {"$vector": {}},
+        "generation_entry_digests": [],
+        "attempt_entry_digests": [],
+        "event_digests": [],
+        "last_event_sequence": null,
+        "last_event_digest": null
+      }
+    },
+    {
+      "id": "ledger-semantic-set-order-invalid",
+      "definition": "BackendSemanticResourceLedgerV2",
+      "valid": false,
+      "expected_error": "LEDGER_SET_ORDER_INVALID",
+      "record": {
+        "schema": "plamen.backend-semantic-resource-ledger.v2",
+        "resource_ledger_version": 2,
+        "resource_ledger_id": "ledger:family-a",
+        "resource_ledger_digest": {"$digest": "1"},
+        "arm_family_digest": {"$digest": "2"},
+        "semantic_plan_digest": {"$digest": "3"},
+        "common_resource_grant_digest": {"$digest": "4"},
+        "currency_code": null,
+        "ledger_revision": 1,
+        "previous_ledger_digest": {"$digest": "5"},
+        "ledger_state": "ACTIVE",
+        "grant": {"$vector": {"turns": 10}},
+        "active_reserved": {"$vector": {"turns": 5}},
+        "reconciled": {"$vector": {}},
+        "remaining": {"$vector": {"turns": 5}},
+        "generation_entry_digests": [{"$digest": "b"}, {"$digest": "a"}],
+        "attempt_entry_digests": [],
+        "event_digests": [{"$digest": "c"}],
+        "last_event_sequence": 0,
+        "last_event_digest": {"$digest": "c"}
+      }
+    },
+    {
+      "id": "token-derivation-valid",
+      "definition": "TokenBudgetDerivationV2",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.token-budget-derivation.v2",
+        "token_derivation_version": 2,
+        "token_derivation_digest": {"$self_digest": "token_derivation_digest"},
+        "arm_family_digest": {"$digest": "2"},
+        "generation": 1,
+        "exact_model_id": "claude-opus-5",
+        "tokenizer_authority_digest": {"$digest": "3"},
+        "context_budget_digest": {"$digest": "4"},
+        "source_payload_digest": {"$digest": "5"},
+        "source_payload_bytes": 10000,
+        "output_artifact_bytes_reservation": 1000,
+        "context_window_tokens": 1000,
+        "maximum_input_tokens": 800,
+        "maximum_output_tokens": 200,
+        "request_input_ceiling_tokens": 700,
+        "request_output_ceiling_tokens": 150,
+        "reserved_system_tokens": 50,
+        "reserved_tool_tokens": 50,
+        "reserved_output_tokens": 150,
+        "derived_token_grant": {
+          "uncached_input_tokens": 500,
+          "cache_write_tokens": 50,
+          "cached_input_tokens": 50,
+          "output_tokens_including_reasoning": 100,
+          "reasoning_tokens_subset": 50
+        },
+        "derivation_policy_digest": {"$digest": "6"},
+        "derivation_method": "PINNED_LOCAL_TOKENIZER",
+        "rounding_policy": "EXACT"
+      }
+    },
+    {
+      "id": "token-derivation-context-underflow",
+      "definition": "TokenBudgetDerivationV2",
+      "valid": false,
+      "expected_error": "TOKEN_CONTEXT_RESERVATION_UNDERFLOW",
+      "record": {
+        "schema": "plamen.token-budget-derivation.v2",
+        "token_derivation_version": 2,
+        "token_derivation_digest": {"$digest": "1"},
+        "arm_family_digest": {"$digest": "2"},
+        "generation": 1,
+        "exact_model_id": "claude-opus-5",
+        "tokenizer_authority_digest": {"$digest": "3"},
+        "context_budget_digest": {"$digest": "4"},
+        "source_payload_digest": {"$digest": "5"},
+        "source_payload_bytes": 10000,
+        "output_artifact_bytes_reservation": 1000,
+        "context_window_tokens": 1000,
+        "maximum_input_tokens": 800,
+        "maximum_output_tokens": 200,
+        "request_input_ceiling_tokens": 700,
+        "request_output_ceiling_tokens": 150,
+        "reserved_system_tokens": 900,
+        "reserved_tool_tokens": 100,
+        "reserved_output_tokens": 100,
+        "derived_token_grant": {
+          "uncached_input_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_input_tokens": 0,
+          "output_tokens_including_reasoning": 0,
+          "reasoning_tokens_subset": 0
+        },
+        "derivation_policy_digest": {"$digest": "6"},
+        "derivation_method": "PINNED_LOCAL_TOKENIZER",
+        "rounding_policy": "EXACT"
+      }
+    },
+    {
+      "id": "token-derivation-input-limit-mismatch",
+      "definition": "TokenBudgetDerivationV2",
+      "valid": false,
+      "expected_error": "TOKEN_INPUT_GRANT_EXCEEDS_LIMIT",
+      "record": {
+        "schema": "plamen.token-budget-derivation.v2",
+        "token_derivation_version": 2,
+        "token_derivation_digest": {"$digest": "1"},
+        "arm_family_digest": {"$digest": "2"},
+        "generation": 1,
+        "exact_model_id": "claude-opus-5",
+        "tokenizer_authority_digest": {"$digest": "3"},
+        "context_budget_digest": {"$digest": "4"},
+        "source_payload_digest": {"$digest": "5"},
+        "source_payload_bytes": 10000,
+        "output_artifact_bytes_reservation": 1000,
+        "context_window_tokens": 1000,
+        "maximum_input_tokens": 800,
+        "maximum_output_tokens": 200,
+        "request_input_ceiling_tokens": 700,
+        "request_output_ceiling_tokens": 150,
+        "reserved_system_tokens": 50,
+        "reserved_tool_tokens": 50,
+        "reserved_output_tokens": 150,
+        "derived_token_grant": {
+          "uncached_input_tokens": 701,
+          "cache_write_tokens": 0,
+          "cached_input_tokens": 0,
+          "output_tokens_including_reasoning": 100,
+          "reasoning_tokens_subset": 50
+        },
+        "derivation_policy_digest": {"$digest": "6"},
+        "derivation_method": "PINNED_LOCAL_TOKENIZER",
+        "rounding_policy": "EXACT"
+      }
+    },
+    {
+      "id": "token-derivation-arithmetic-overflow",
+      "definition": "TokenBudgetDerivationV2",
+      "valid": false,
+      "expected_error": "TOKEN_ARITHMETIC_OVERFLOW",
+      "record": {
+        "schema": "plamen.token-budget-derivation.v2",
+        "token_derivation_version": 2,
+        "token_derivation_digest": {"$digest": "1"},
+        "arm_family_digest": {"$digest": "2"},
+        "generation": 1,
+        "exact_model_id": "claude-opus-5",
+        "tokenizer_authority_digest": {"$digest": "3"},
+        "context_budget_digest": {"$digest": "4"},
+        "source_payload_digest": {"$digest": "5"},
+        "source_payload_bytes": 1,
+        "output_artifact_bytes_reservation": 0,
+        "context_window_tokens": 9007199254740991,
+        "maximum_input_tokens": 9007199254740991,
+        "maximum_output_tokens": 0,
+        "request_input_ceiling_tokens": 9007199254740991,
+        "request_output_ceiling_tokens": 0,
+        "reserved_system_tokens": 0,
+        "reserved_tool_tokens": 0,
+        "reserved_output_tokens": 0,
+        "derived_token_grant": {
+          "uncached_input_tokens": 9007199254740991,
+          "cache_write_tokens": 1,
+          "cached_input_tokens": 0,
+          "output_tokens_including_reasoning": 0,
+          "reasoning_tokens_subset": 0
+        },
+        "derivation_policy_digest": {"$digest": "6"},
+        "derivation_method": "CONSERVATIVE_BOUND",
+        "rounding_policy": "ROUND_UP_ONLY"
+      }
+    },
+    {
+      "id": "thinking-adaptive-authority-valid",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$self_digest": "thinking_authority_digest"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {
+          "$thinking_controls": {"mode": "ADAPTIVE_ON"}
+        },
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-manual-authority-valid",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$self_digest": "thinking_authority_digest"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-haiku-4-5",
+        "requested_thinking_mode": "MANUAL_ON",
+        "manual_thinking_budget_tokens": 64,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {
+          "$thinking_controls": {"mode": "MANUAL_ON", "manual_budget": 64}
+        },
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-adaptive-manual-conflict",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_COMPETING_CONTROL_PRESENT",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {
+          "$thinking_controls": {"mode": "ADAPTIVE_ON", "manual_conflict": true}
+        },
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-missing-environment-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "ENVIRONMENT"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-missing-cli-argument-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "CLI_ARGUMENT"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-missing-settings-user-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "SETTINGS_USER"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-missing-skill-frontmatter-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "SKILL_FRONTMATTER"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-missing-control-request-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "CONTROL_REQUEST"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-missing-session-default-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "SESSION_DEFAULT"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "customization-duplicate-source-invalid",
+      "definition": "LoadedCustomizationSetV1",
+      "valid": false,
+      "expected_error": "CUSTOMIZATION_SOURCE_DUPLICATE",
+      "record": {"$customization_record": {"mode": "duplicate_source"}}
+    },
+    {
+      "id": "thinking-missing-role-frontmatter-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "ROLE_FRONTMATTER"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-missing-subagent-frontmatter-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "SUBAGENT_FRONTMATTER"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-missing-settings-project-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "SETTINGS_PROJECT"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "thinking-missing-settings-local-source",
+      "definition": "ClaudeThinkingAuthorityV1",
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_COVERAGE_INVALID",
+      "record": {
+        "schema": "plamen.claude-thinking-authority.v1",
+        "thinking_authority_version": 1,
+        "thinking_authority_digest": {"$digest": "1"},
+        "semantic_plan_digest": {"$digest": "2"},
+        "exact_model_id": "claude-opus-5",
+        "requested_thinking_mode": "ADAPTIVE_ON",
+        "manual_thinking_budget_tokens": null,
+        "customization_set_digest": {"$digest": "3"},
+        "customization_row_count": 10,
+        "ordered_controls": {"$thinking_controls": {"mode": "ADAPTIVE_ON", "omit_source": "SETTINGS_LOCAL"}},
+        "provider_control_vector_digest": {"$digest": "4"},
+        "authority_result": "SEALED"
+      }
+    },
+    {
+      "id": "customization-path-alias-invalid",
+      "definition": "LoadedCustomizationSetV1",
+      "valid": false,
+      "expected_error": "CUSTOMIZATION_PATH_ALIAS",
+      "record": {"$customization_record": {"mode": "path_alias"}}
+    },
+    {
+      "id": "customization-shadowed-source-valid",
+      "definition": "LoadedCustomizationSetV1",
+      "valid": true,
+      "record": {"$customization_record": {"mode": "shadowed_valid"}}
+    },
+    {
+      "id": "customization-shadowed-loaded-invalid",
+      "definition": "LoadedCustomizationSetV1",
+      "valid": false,
+      "expected_error": "CUSTOMIZATION_ROW_STATE_INVALID",
+      "record": {"$customization_record": {"mode": "shadowed_loaded_invalid"}}
+    },
+    {
+      "id": "customization-post-scan-mutation-invalid",
+      "definition": "LoadedCustomizationSetV1",
+      "valid": false,
+      "expected_error": "CUSTOMIZATION_ROW_DIGEST_MISMATCH",
+      "record": {"$customization_record": {"mode": "post_scan_mutation"}}
+    },
+    {
+      "id": "observed-pair-currency-valid",
+      "definition": "ObservedPairResourceComparisonV1",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.observed-pair-resource-comparison.v1",
+        "comparison_version": 1,
+        "comparison_digest": {"$self_digest": "comparison_digest"},
+        "evaluation_policy_digest": {"$digest": "2"},
+        "metric": "CURRENCY_MICROS",
+        "aggregation_scope": "RUN",
+        "candidate_usage_receipt_set_digest": {"$digest": "3"},
+        "legacy_usage_receipt_set_digest": {"$digest": "4"},
+        "currency_code": "USD",
+        "candidate_pricing_snapshot_digest": {"$digest": "5"},
+        "legacy_pricing_snapshot_digest": {"$digest": "5"},
+        "numerator": 3,
+        "denominator": 2,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "observed-pair-currency-authority-missing",
+      "definition": "ObservedPairResourceComparisonV1",
+      "valid": false,
+      "expected_error": "PAIR_CURRENCY_AUTHORITY_MISSING",
+      "record": {
+        "schema": "plamen.observed-pair-resource-comparison.v1",
+        "comparison_version": 1,
+        "comparison_digest": {"$digest": "1"},
+        "evaluation_policy_digest": {"$digest": "2"},
+        "metric": "CURRENCY_MICROS",
+        "aggregation_scope": "RUN",
+        "candidate_usage_receipt_set_digest": {"$digest": "3"},
+        "legacy_usage_receipt_set_digest": {"$digest": "4"},
+        "currency_code": null,
+        "candidate_pricing_snapshot_digest": null,
+        "legacy_pricing_snapshot_digest": null,
+        "numerator": 3,
+        "denominator": 2,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "utilization-attempt-valid",
+      "definition": "ObservedToGrantUtilizationV1",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.observed-to-grant-utilization.v1",
+        "utilization_version": 1,
+        "utilization_digest": {"$self_digest": "utilization_digest"},
+        "metric": "TURNS",
+        "aggregation_scope": "ATTEMPT",
+        "numerator_usage_authority_digest": {"$digest": "2"},
+        "denominator_authority_type": "ATTEMPT_RESOURCE_ENTRY",
+        "denominator_authority_digest": {"$digest": "3"},
+        "numerator": 3,
+        "denominator": 5,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "utilization-generation-valid",
+      "definition": "ObservedToGrantUtilizationV1",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.observed-to-grant-utilization.v1",
+        "utilization_version": 1,
+        "utilization_digest": {"$self_digest": "utilization_digest"},
+        "metric": "TURNS",
+        "aggregation_scope": "GENERATION",
+        "numerator_usage_authority_digest": {"$digest": "2"},
+        "denominator_authority_type": "GENERATION_RESOURCE_ENTRY",
+        "denominator_authority_digest": {"$digest": "3"},
+        "numerator": 3,
+        "denominator": 10,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "utilization-arm-family-valid",
+      "definition": "ObservedToGrantUtilizationV1",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {
+        "schema": "plamen.observed-to-grant-utilization.v1",
+        "utilization_version": 1,
+        "utilization_digest": {"$self_digest": "utilization_digest"},
+        "metric": "TURNS",
+        "aggregation_scope": "ARM_FAMILY",
+        "numerator_usage_authority_digest": {"$digest": "2"},
+        "denominator_authority_type": "FAMILY_LEDGER",
+        "denominator_authority_digest": {"$digest": "3"},
+        "numerator": 3,
+        "denominator": 10,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "utilization-scope-authority-mismatch",
+      "definition": "ObservedToGrantUtilizationV1",
+      "valid": false,
+      "expected_error": "UTILIZATION_SCOPE_AUTHORITY_MISMATCH",
+      "record": {
+        "schema": "plamen.observed-to-grant-utilization.v1",
+        "utilization_version": 1,
+        "utilization_digest": {"$digest": "1"},
+        "metric": "TURNS",
+        "aggregation_scope": "ARM_FAMILY",
+        "numerator_usage_authority_digest": {"$digest": "2"},
+        "denominator_authority_type": "ATTEMPT_RESOURCE_ENTRY",
+        "denominator_authority_digest": {"$digest": "3"},
+        "numerator": 3,
+        "denominator": 5,
+        "ratio_state": "FINITE"
+      }
+    },
+    {
+      "id": "release-attempt-event-valid",
+      "definition": "ResourceLedgerEventV2",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {"$ledger_event": {"kind": "RELEASE_ATTEMPT"}}
+    },
+    {
+      "id": "mark-reserved-attempt-debt-event-valid",
+      "definition": "ResourceLedgerEventV2",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {"$ledger_event": {"kind": "MARK_RESERVED_ATTEMPT_DEBT"}}
+    },
+    {
+      "id": "mark-consumed-attempt-debt-event-valid",
+      "definition": "ResourceLedgerEventV2",
+      "valid": true,
+      "check_self_digest": true,
+      "record": {"$ledger_event": {"kind": "MARK_CONSUMED_ATTEMPT_DEBT"}}
+    },
+    {
+      "id": "mark-consumed-attempt-debt-missing-launch-invalid",
+      "definition": "ResourceLedgerEventV2",
+      "valid": false,
+      "expected_error": "SCHEMA_VALIDATION_ERROR",
+      "record": {
+        "$ledger_event": {
+          "kind": "MARK_CONSUMED_ATTEMPT_DEBT",
+          "omit_launch": true
+        }
+      }
+    },
+    {
+      "id": "release-attempt-with-launch-invalid",
+      "definition": "ResourceLedgerEventV2",
+      "valid": false,
+      "expected_error": "SCHEMA_VALIDATION_ERROR",
+      "record": {
+        "$ledger_event": {
+          "kind": "RELEASE_ATTEMPT",
+          "launch_on_release": true
+        }
+      }
+    }
+  ],
+  "join_vectors": [
+    {
+      "id": "customization-digests-equal",
+      "kind": "CUSTOMIZATION_JOIN",
+      "records": {"$customization_join": {"mode": "valid"}},
+      "valid": true
+    },
+    {
+      "id": "launch-customization-mismatch",
+      "kind": "CUSTOMIZATION_JOIN",
+      "records": {"$customization_join": {"mode": "launch_mismatch"}},
+      "valid": false,
+      "expected_error": "CUSTOMIZATION_DIGEST_MISMATCH"
+    },
+    {
+      "id": "thinking-customization-projection-mismatch",
+      "kind": "CUSTOMIZATION_JOIN",
+      "records": {"$customization_join": {"mode": "thinking_projection_mismatch"}},
+      "valid": false,
+      "expected_error": "THINKING_CUSTOMIZATION_PROJECTION_MISMATCH"
+    },
+    {
+      "id": "customization-join-post-scan-mutation",
+      "kind": "CUSTOMIZATION_JOIN",
+      "records": {"$customization_join": {"mode": "post_scan_mutation"}},
+      "valid": false,
+      "expected_error": "CUSTOMIZATION_ROW_DIGEST_MISMATCH"
+    },
+    {
+      "id": "customization-discovery-authority-missing-row",
+      "kind": "CUSTOMIZATION_JOIN",
+      "records": {"$customization_join": {"mode": "missing_authority_row"}},
+      "valid": false,
+      "expected_error": "CUSTOMIZATION_DISCOVERY_AUTHORITY_MISMATCH"
+    },
+    {
+      "id": "customization-discovery-authority-extra-row",
+      "kind": "CUSTOMIZATION_JOIN",
+      "records": {"$customization_join": {"mode": "extra_authority_row"}},
+      "valid": false,
+      "expected_error": "CUSTOMIZATION_DISCOVERY_AUTHORITY_MISMATCH"
+    },
+    {
+      "id": "token-derivation-equals-budget",
+      "kind": "TOKEN_BUDGET_JOIN",
+      "derived": {
+        "uncached_input_tokens": 100,
+        "cache_write_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens_including_reasoning": 50,
+        "reasoning_tokens_subset": 20
+      },
+      "budget": {
+        "uncached_input_tokens": 100,
+        "cache_write_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens_including_reasoning": 50,
+        "reasoning_tokens_subset": 20
+      },
+      "valid": true
+    },
+    {
+      "id": "token-budget-mismatch",
+      "kind": "TOKEN_BUDGET_JOIN",
+      "derived": {
+        "uncached_input_tokens": 100,
+        "cache_write_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens_including_reasoning": 50,
+        "reasoning_tokens_subset": 20
+      },
+      "budget": {
+        "uncached_input_tokens": 100,
+        "cache_write_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens_including_reasoning": 60,
+        "reasoning_tokens_subset": 20
+      },
+      "valid": false,
+      "expected_error": "TOKEN_BUDGET_DERIVATION_MISMATCH"
+    },
+    {
+      "id": "generation-reservation-join-valid",
+      "kind": "GENERATION_RESERVATION_JOIN",
+      "records": {"$budget_ledger_join": {"mode": "valid"}},
+      "valid": true
+    },
+    {
+      "id": "generation-reservation-wrong-delta",
+      "kind": "GENERATION_RESERVATION_JOIN",
+      "records": {"$budget_ledger_join": {"mode": "wrong_delta"}},
+      "valid": false,
+      "expected_error": "GENERATION_RESERVATION_DELTA_MISMATCH"
+    },
+    {
+      "id": "generation-reservation-stale-ledger",
+      "kind": "GENERATION_RESERVATION_JOIN",
+      "records": {"$budget_ledger_join": {"mode": "stale_ledger"}},
+      "valid": false,
+      "expected_error": "GENERATION_RESERVATION_LEDGER_MISMATCH"
+    },
+    {
+      "id": "generation-reservation-wrong-budget",
+      "kind": "GENERATION_RESERVATION_JOIN",
+      "records": {"$budget_ledger_join": {"mode": "wrong_budget"}},
+      "valid": false,
+      "expected_error": "GENERATION_RESERVATION_BUDGET_MISMATCH"
+    },
+    {
+      "id": "generation-reservation-wrong-plan",
+      "kind": "GENERATION_RESERVATION_JOIN",
+      "records": {"$budget_ledger_join": {"mode": "wrong_plan"}},
+      "valid": false,
+      "expected_error": "GENERATION_RESERVATION_PLAN_MISMATCH"
+    },
+    {
+      "id": "generation-reservation-wrong-common-grant",
+      "kind": "GENERATION_RESERVATION_JOIN",
+      "records": {"$budget_ledger_join": {"mode": "wrong_common_grant"}},
+      "valid": false,
+      "expected_error": "GENERATION_RESERVATION_COMMON_GRANT_MISMATCH"
+    },
+    {
+      "id": "generation-reservation-wrong-event-sequence",
+      "kind": "GENERATION_RESERVATION_JOIN",
+      "records": {"$budget_ledger_join": {"mode": "event_sequence_wrong"}},
+      "valid": false,
+      "expected_error": "GENERATION_RESERVATION_EVENT_SEQUENCE_MISMATCH"
+    },
+    {
+      "id": "generation-reservation-wrong-previous-event",
+      "kind": "GENERATION_RESERVATION_JOIN",
+      "records": {"$budget_ledger_join": {"mode": "previous_event_wrong"}},
+      "valid": false,
+      "expected_error": "GENERATION_RESERVATION_PREVIOUS_EVENT_MISMATCH"
+    },
+    {
+      "id": "attempt-reservation-join-valid",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "valid"}},
+      "valid": true
+    },
+    {
+      "id": "reservation-for-other-attempt",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "other_attempt"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_RESERVATION_IDENTITY_MISMATCH"
+    },
+    {
+      "id": "reservation-stale-generation",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "stale_generation"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_RESERVATION_IDENTITY_MISMATCH"
+    },
+    {
+      "id": "reservation-wrong-event-digest",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "wrong_reservation_event"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_RESERVATION_EVENT_MISMATCH"
+    },
+    {
+      "id": "reservation-wrong-entry-digest",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "wrong_entry"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_RESOURCE_ENTRY_MISMATCH"
+    },
+    {
+      "id": "observation-wrong-consumed-entry-digest",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "wrong_consumed_entry"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_CONSUMED_RESOURCE_ENTRY_MISMATCH"
+    },
+    {
+      "id": "reservation-stale-ledger",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "wrong_reservation_ledger"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_RESERVATION_LEDGER_MISMATCH"
+    },
+    {
+      "id": "reservation-allocation-mismatch",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "wrong_allocation"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ALLOCATION_MISMATCH"
+    },
+    {
+      "id": "launch-consumes-wrong-envelope",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "wrong_envelope"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_LAUNCH_CONSUMPTION_MISMATCH"
+    },
+    {
+      "id": "observation-wrong-consumption-event",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "wrong_consumption_event"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_CONSUMPTION_EVENT_MISMATCH"
+    },
+    {
+      "id": "observation-wrong-post-consumption-ledger",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "wrong_post_consumption_ledger"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_CONSUMPTION_LEDGER_MISMATCH"
+    },
+    {
+      "id": "reconciliation-unrelated-entry",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "unrelated_reconciliation_entry"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_RECONCILIATION_ENTRY_MISMATCH"
+    },
+    {
+      "id": "reconciliation-allocation-mismatch",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "reconciliation_allocation_mismatch"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_RECONCILIATION_ALLOCATION_MISMATCH"
+    },
+    {
+      "id": "reconciliation-use-mismatch",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "reconciliation_use_mismatch"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_RECONCILIATION_USE_MISMATCH"
+    },
+    {
+      "id": "reconciliation-use-exceeds-allocation",
+      "kind": "ATTEMPT_RESERVATION_JOIN",
+      "records": {"$attempt_join": {"mode": "reconciliation_use_over_allocation"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_RECONCILIATION_USE_EXCEEDS_ALLOCATION"
+    },
+    {
+      "id": "attempt-entry-typed-lifecycle-valid",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "valid"}},
+      "valid": true
+    },
+    {
+      "id": "attempt-entry-post-digest-mutation",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "reserved_post_digest_mutation"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_RECORD_DIGEST_MISMATCH"
+    },
+    {
+      "id": "generation-entry-post-digest-mutation",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "generation_post_digest_mutation"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_RECORD_DIGEST_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-unrelated-generation-entry",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "unrelated_generation_entry"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_GENERATION_ENTRY_JOIN_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-wrong-generation-predecessor",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "wrong_generation_predecessor"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_GENERATION_ENTRY_PREDECESSOR_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-stale-consume-cas",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "stale_consume_cas"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_CAS_REVISION_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-envelope-for-other-attempt",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "other_attempt_envelope"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_ENVELOPE_IDENTITY_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-observation-unrelated-consumed-entry",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "unrelated_consumed_observation_entry"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_OBSERVATION_CONSUMED_ENTRY_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-observation-wrong-reservation-ledger",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "wrong_observation_reservation_ledger"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_OBSERVATION_RESERVATION_LEDGER_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-observation-wrong-consumption-ledger",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "wrong_observation_consumption_ledger"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_OBSERVATION_CONSUMPTION_LEDGER_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-wrong-post-consumption-family-totals",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "wrong_post_consumption_family_totals"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_LEDGER_GENERATION_PROJECTION_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-invalid-predecessor",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "invalid_predecessor"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_PREDECESSOR_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-allocation-changed",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "allocation_changed"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_ALLOCATION_MISMATCH"
+    },
+    {
+      "id": "attempt-entry-use-over-allocation",
+      "kind": "ATTEMPT_ENTRY_LIFECYCLE",
+      "records": {"$attempt_entry_lifecycle": {"mode": "use_over_allocation"}},
+      "valid": false,
+      "expected_error": "ATTEMPT_ENTRY_USE_EXCEEDS_ALLOCATION"
+    },
+    {
+      "id": "observation-unobservable-debt-valid",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "unobservable_debt"}},
+      "valid": true
+    },
+    {
+      "id": "observation-mismatched-debt-valid",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "mismatched_debt"}},
+      "valid": true
+    },
+    {
+      "id": "observation-model-mismatched-debt-valid",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "model_mismatched_debt"}},
+      "valid": true
+    },
+    {
+      "id": "observation-effort-unobservable-debt-valid",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "effort_unobservable_debt"}},
+      "valid": true
+    },
+    {
+      "id": "observation-confirmed-reconcile-valid",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "confirmed_reconcile"}},
+      "valid": true
+    },
+    {
+      "id": "observation-confirmed-mode-disagrees-with-authority",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_confirmed_mode"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_THINKING_AUTHORITY_MISMATCH"
+    },
+    {
+      "id": "observation-confirmed-consumption-ledger-closed",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_consumption_ledger_state_confirmed"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_CONSUMPTION_LEDGER_JOIN_MISMATCH"
+    },
+    {
+      "id": "observation-confirmed-reservation-event-omitted",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "missing_reservation_event_confirmed"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_CONSUMPTION_LEDGER_JOIN_MISMATCH"
+    },
+    {
+      "id": "observation-unobservable-direct-reconcile-invalid",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "direct_reconcile"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_ADVERSE_REQUIRES_DEBT"
+    },
+    {
+      "id": "observation-unobservable-wrong-debt-evidence",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_debt_evidence"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_ROUTE_DEBT_JOIN_MISMATCH"
+    },
+    {
+      "id": "observation-unobservable-wrong-debt-stage",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_debt_stage"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_ROUTE_DEBT_JOIN_MISMATCH"
+    },
+    {
+      "id": "observation-unobservable-wrong-debt-launch",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_event_launch"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_DEBT_EVENT_JOIN_MISMATCH"
+    },
+    {
+      "id": "observation-unobservable-wrong-debt-family",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_event_family"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_DEBT_EVENT_JOIN_MISMATCH"
+    },
+    {
+      "id": "observation-unobservable-wrong-debt-generation",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_event_generation"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_DEBT_EVENT_JOIN_MISMATCH"
+    },
+    {
+      "id": "observation-unobservable-stale-debt-cas",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "stale_debt_cas"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_DEBT_EVENT_CAS_MISMATCH"
+    },
+    {
+      "id": "observation-unobservable-wrong-debt-snapshot-state",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_debt_snapshot_state"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_DEBT_LEDGER_JOIN_MISMATCH"
+    },
+    {
+      "id": "observation-unobservable-wrong-debt-entry-predecessor",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_debt_entry_predecessor"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_DEBT_ENTRY_JOIN_MISMATCH"
+    },
+    {
+      "id": "observation-unobservable-ledger-semantic-plan-split",
+      "kind": "OBSERVATION_DISPOSITION_JOIN",
+      "records": {"$observation_disposition": {"mode": "wrong_ledger_semantic_plan"}},
+      "valid": false,
+      "expected_error": "OBSERVATION_CONSUMPTION_LEDGER_JOIN_MISMATCH"
+    },
+    {
+      "id": "thinking-explicit-adaptive-valid",
+      "kind": "THINKING_CONTROLS",
+      "requested_mode": "ADAPTIVE_ON",
+      "controls": {
+        "ADAPTIVE_THINKING": "EXPLICIT",
+        "MAX_THINKING_TOKENS": "PROVEN_ABSENT",
+        "ALWAYS_THINKING": "PROVEN_ABSENT",
+        "MANUAL_THINKING_BUDGET": "PROVEN_ABSENT"
+      },
+      "valid": true
+    },
+    {
+      "id": "thinking-conflicting-token-env",
+      "kind": "THINKING_CONTROLS",
+      "requested_mode": "ADAPTIVE_ON",
+      "controls": {
+        "ADAPTIVE_THINKING": "EXPLICIT",
+        "MAX_THINKING_TOKENS": "EXPLICIT",
+        "ALWAYS_THINKING": "PROVEN_ABSENT",
+        "MANUAL_THINKING_BUDGET": "PROVEN_ABSENT"
+      },
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_CONFLICT"
+    },
+    {
+      "id": "thinking-launch-seal-valid",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "valid"}},
+      "valid": true
+    },
+    {
+      "id": "thinking-launch-wrong-control-vector",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "wrong_vector"}},
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_VECTOR_JOIN_MISMATCH"
+    },
+    {
+      "id": "thinking-launch-argv-mismatch",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "argv_mismatch"}},
+      "valid": false,
+      "expected_error": "THINKING_LAUNCH_ARGV_MISMATCH"
+    },
+    {
+      "id": "thinking-launch-environment-mismatch",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "environment_mismatch"}},
+      "valid": false,
+      "expected_error": "THINKING_LAUNCH_ENVIRONMENT_MISMATCH"
+    },
+    {
+      "id": "thinking-launch-debt-authority",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "debt_launch"}},
+      "valid": false,
+      "expected_error": "THINKING_AUTHORITY_NOT_SEALED"
+    },
+    {
+      "id": "thinking-launch-effort-debt-authority",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "effort_debt_launch"}},
+      "valid": false,
+      "expected_error": "EFFORT_AUTHORITY_NOT_SEALED"
+    },
+    {
+      "id": "thinking-launch-effort-projection-mismatch",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "effort_projection_mismatch"}},
+      "valid": false,
+      "expected_error": "THINKING_CONTROL_AUTHORITY_PROJECTION_MISMATCH"
+    },
+    {
+      "id": "thinking-launch-customization-mismatch",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "customization_mismatch"}},
+      "valid": false,
+      "expected_error": "THINKING_LAUNCH_CUSTOMIZATION_MISMATCH"
+    },
+    {
+      "id": "thinking-launch-wrong-source-group",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "wrong_source_group"}},
+      "valid": false,
+      "expected_error": "THINKING_LAUNCH_CONTROL_SOURCE_MISMATCH"
+    },
+    {
+      "id": "thinking-launch-wrong-row-digest",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "wrong_row_digest"}},
+      "valid": false,
+      "expected_error": "THINKING_LAUNCH_CONTROL_SOURCE_MISMATCH"
+    },
+    {
+      "id": "thinking-launch-duplicate-source-group",
+      "kind": "THINKING_LAUNCH_SEAL",
+      "records": {"$thinking_launch_join": {"mode": "duplicate_source_group"}},
+      "valid": false,
+      "expected_error": "THINKING_LAUNCH_CONTROL_SOURCE_MISMATCH"
+    },
+    {
+      "id": "canary-two-case-self-digested-chain-valid",
+      "kind": "CANARY_RECORD_CHAIN",
+      "records": {"$canary_chain": {"mode": "valid"}},
+      "valid": true
+    },
+    {
+      "id": "canary-claim-manifest-join-mismatch",
+      "kind": "CANARY_RECORD_CHAIN",
+      "records": {"$canary_chain": {"mode": "claim_manifest_mismatch"}},
+      "valid": false,
+      "expected_error": "CANARY_RECORD_DIGEST_MISMATCH"
+    },
+    {
+      "id": "canary-post-digest-claim-mutation",
+      "kind": "CANARY_RECORD_CHAIN",
+      "records": {"$canary_chain": {"mode": "claim_digest_mutation"}},
+      "valid": false,
+      "expected_error": "CANARY_RECORD_DIGEST_MISMATCH"
+    },
+    {
+      "id": "canary-recomputed-wrong-field-proof-rule",
+      "kind": "CANARY_RECORD_CHAIN",
+      "records": {"$canary_chain": {"mode": "wrong_field_rule"}},
+      "valid": false,
+      "expected_error": "CANARY_FIELD_PROOF_RULE_UNAUTHORIZED"
+    },
+    {
+      "id": "canary-recomputed-empty-executed-set",
+      "kind": "CANARY_RECORD_CHAIN",
+      "records": {"$canary_chain": {"mode": "receipt_executed_empty"}},
+      "valid": false,
+      "expected_error": "CANARY_EXECUTED_CASE_SET_MISMATCH"
+    },
+    {
+      "id": "canary-recomputed-wrong-supporting-case",
+      "kind": "CANARY_RECORD_CHAIN",
+      "records": {"$canary_chain": {"mode": "claim_wrong_case"}},
+      "valid": false,
+      "expected_error": "CANARY_CLAIM_CASE_ID_MISMATCH"
+    },
+    {
+      "id": "canary-recomputed-swapped-result",
+      "kind": "CANARY_RECORD_CHAIN",
+      "records": {"$canary_chain": {"mode": "swapped_result"}},
+      "valid": false,
+      "expected_error": "CANARY_CLAIM_CASE_ID_MISMATCH"
+    },
+    {
+      "id": "canary-recomputed-unrelated-raw-manifest",
+      "kind": "CANARY_RECORD_CHAIN",
+      "records": {"$canary_chain": {"mode": "manifest_wrong_raw"}},
+      "valid": false,
+      "expected_error": "CANARY_RAW_ARTIFACT_UNION_INVALID"
+    },
+    {
+      "id": "canary-plan-required-case-not-executed",
+      "kind": "CANARY_RECORD_CHAIN",
+      "records": {"$canary_chain": {"mode": "missing_required_case"}},
+      "valid": false,
+      "expected_error": "CANARY_REQUIRED_CASE_INCOMPLETE"
+    },
+    {
+      "id": "budget-self-digested-chain-valid",
+      "kind": "BUDGET_RECORD_CHAIN",
+      "records": {"$budget_chain": {"mode": "valid"}},
+      "valid": true
+    },
+    {
+      "id": "budget-token-grant-mutated",
+      "kind": "BUDGET_RECORD_CHAIN",
+      "records": {"$budget_chain": {"mode": "token_mismatch"}},
+      "valid": false,
+      "expected_error": "BUDGET_AUTHORITY_DIGEST_MISMATCH"
+    },
+    {
+      "id": "budget-derivation-digest-substitution",
+      "kind": "BUDGET_RECORD_CHAIN",
+      "records": {"$budget_chain": {"mode": "derivation_digest_mismatch"}},
+      "valid": false,
+      "expected_error": "BUDGET_AUTHORITY_DIGEST_MISMATCH"
+    },
+    {
+      "id": "budget-post-digest-mutation",
+      "kind": "BUDGET_RECORD_CHAIN",
+      "records": {"$budget_chain": {"mode": "budget_digest_mutation"}},
+      "valid": false,
+      "expected_error": "BUDGET_AUTHORITY_DIGEST_MISMATCH"
+    },
+    {
+      "id": "budget-source-bytes-reservation-mismatch",
+      "kind": "BUDGET_RECORD_CHAIN",
+      "records": {"$budget_chain": {"mode": "source_bytes_mismatch"}},
+      "valid": false,
+      "expected_error": "TOKEN_DERIVATION_BYTE_RESERVATION_MISMATCH"
+    },
+    {
+      "id": "budget-output-bytes-reservation-mismatch",
+      "kind": "BUDGET_RECORD_CHAIN",
+      "records": {"$budget_chain": {"mode": "output_bytes_mismatch"}},
+      "valid": false,
+      "expected_error": "TOKEN_DERIVATION_BYTE_RESERVATION_MISMATCH"
+    }
+  ],
+  "transaction_vectors": [
+    {
+      "id": "valid-attempt-launch",
+      "grant": {"$vector": {"turns": 10, "wall_time_ms": 1000, "currency_micros": 1000}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10, "wall_time_ms": 1000, "currency_micros": 1000}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5, "wall_time_ms": 500, "currency_micros": 600}}},
+        {"kind": "CONSUME_ATTEMPT_LAUNCH", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}},
+        {"kind": "RECONCILE_ATTEMPT", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}, "delta": {"$vector": {"turns": 4, "wall_time_ms": 400, "currency_micros": 550}}}
+      ],
+      "valid": true,
+      "expected_final_state_sha256": "3a94c3b5fa19c1223ab5e5f990f71a5eb580098d518ec691ac42ee4920cb98a5"
+    },
+    {
+      "id": "launch-without-reservation",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "CONSUME_ATTEMPT_LAUNCH", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}}
+      ],
+      "valid": false,
+      "expected_error": "ATTEMPT_RESERVATION_MISSING"
+    },
+    {
+      "id": "duplicate-provider-launch",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}},
+        {"kind": "CONSUME_ATTEMPT_LAUNCH", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}},
+        {"kind": "CONSUME_ATTEMPT_LAUNCH", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}}
+      ],
+      "valid": false,
+      "expected_error": "ATTEMPT_LAUNCH_ALREADY_CONSUMED"
+    },
+    {
+      "id": "cross-generation-currency-renewal",
+      "grant": {"$vector": {"currency_micros": 1000}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"currency_micros": 800}}},
+        {"kind": "RESERVE_GENERATION", "generation": 2, "delta": {"$vector": {"currency_micros": 300}}}
+      ],
+      "valid": false,
+      "expected_error": "FAMILY_GRANT_EXHAUSTED"
+    },
+    {
+      "id": "idempotent-attempt-reservation",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}, "expected_revision": 0, "event_sequence": 0, "previous_event_index": null},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}, "idempotency": "same", "expected_revision": 1, "event_sequence": 1, "previous_event_index": 0},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}, "idempotency": "same", "expected_revision": 1, "event_sequence": 1, "previous_event_index": 0}
+      ],
+      "valid": true,
+      "expected_idempotent_replays": 1
+    },
+    {
+      "id": "stale-ledger-revision",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}, "expected_revision": 0},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}, "expected_revision": 0}
+      ],
+      "valid": false,
+      "expected_error": "LEDGER_CAS_LOST"
+    },
+    {
+      "id": "full-lifecycle-close-valid",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}},
+        {"kind": "CONSUME_ATTEMPT_LAUNCH", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}},
+        {"kind": "RECONCILE_ATTEMPT", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}, "delta": {"$vector": {"turns": 4}}},
+        {"kind": "RELEASE_UNUSED_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 6}}},
+        {"kind": "CLOSE_FAMILY"}
+      ],
+      "valid": true,
+      "expected_final_state_sha256": "ede18be89d4054764f96b2bf6ea43c230e68dfd9d710e7bda3d3ca303cee7124"
+    },
+    {
+      "id": "journal-sequence-gap",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}, "event_sequence": 1}
+      ],
+      "valid": false,
+      "expected_error": "LEDGER_EVENT_SEQUENCE_INVALID"
+    },
+    {
+      "id": "journal-previous-link-mismatch",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}, "previous_event_index": null}
+      ],
+      "valid": false,
+      "expected_error": "LEDGER_PREVIOUS_DIGEST_INVALID"
+    },
+    {
+      "id": "family-close-with-active-reservation",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "CLOSE_FAMILY"}
+      ],
+      "valid": false,
+      "expected_error": "FAMILY_CLOSE_WITH_ACTIVE_RESERVATION"
+    },
+    {
+      "id": "terminal-generation-relaunch",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RELEASE_UNUSED_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 1}}}
+      ],
+      "valid": false,
+      "expected_error": "GENERATION_STATE_INVALID"
+    },
+    {
+      "id": "idempotency-payload-conflict",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}, "idempotency": "same", "expected_revision": 1, "event_sequence": 1, "previous_event_index": 0},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 4}}, "idempotency": "same", "expected_revision": 1, "event_sequence": 1, "previous_event_index": 0}
+      ],
+      "valid": false,
+      "expected_error": "LEDGER_IDEMPOTENCY_CONFLICT"
+    },
+    {
+      "id": "release-never-launched-attempt-valid",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}},
+        {"kind": "RELEASE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}},
+        {"kind": "RELEASE_UNUSED_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "CLOSE_FAMILY"}
+      ],
+      "valid": true
+    },
+    {
+      "id": "attempt-debt-fails-closed-valid",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}},
+        {"kind": "MARK_RESERVED_ATTEMPT_DEBT", "generation": 1, "attempt": "a"}
+      ],
+      "valid": true
+    },
+    {
+      "id": "release-consumed-attempt-invalid",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}},
+        {"kind": "CONSUME_ATTEMPT_LAUNCH", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}},
+        {"kind": "RELEASE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}}
+      ],
+      "valid": false,
+      "expected_error": "ATTEMPT_RELEASE_STATE_INVALID"
+    },
+    {
+      "id": "consumed-attempt-debt-valid",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}},
+        {"kind": "CONSUME_ATTEMPT_LAUNCH", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}},
+        {"kind": "MARK_CONSUMED_ATTEMPT_DEBT", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}}
+      ],
+      "valid": true
+    },
+    {
+      "id": "consumed-attempt-debt-wrong-launch",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}},
+        {"kind": "CONSUME_ATTEMPT_LAUNCH", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}},
+        {"kind": "MARK_CONSUMED_ATTEMPT_DEBT", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "b"}}
+      ],
+      "valid": false,
+      "expected_error": "ATTEMPT_LAUNCH_DIGEST_MISMATCH"
+    },
+    {
+      "id": "generation-debt-then-consume-invalid",
+      "grant": {"$vector": {"turns": 10}},
+      "events": [
+        {"kind": "RESERVE_GENERATION", "generation": 1, "delta": {"$vector": {"turns": 10}}},
+        {"kind": "RESERVE_ATTEMPT", "generation": 1, "attempt": "a", "delta": {"$vector": {"turns": 5}}},
+        {"kind": "MARK_GENERATION_DEBT", "generation": 1},
+        {"kind": "CONSUME_ATTEMPT_LAUNCH", "generation": 1, "attempt": "a", "attempt_launch_digest": {"$digest": "a"}}
+      ],
+      "valid": false,
+      "expected_error": "FAMILY_STATE_INVALID"
+    }
+  ],
+  "canary_vectors": [
+    {
+      "id": "claim-evidence-member-pass",
+      "manifest_digest": "m1",
+      "receipt_manifest_digest": "m1",
+      "required_case_ids": ["effort-high"],
+      "manifest_raw_artifact_digests": ["raw-a"],
+      "manifest_raw_artifact_union_digest": "6b62b5d8e7062cc390ecf4d0d951f3b0cbb5c40223ae1cf4b7dcc06eb47d93ad",
+      "manifest_case_results": [
+        {
+          "case_id": "effort-high",
+          "digest": "a",
+          "disposition": "PASS",
+          "raw_artifact_digests": ["raw-a"],
+          "satisfied_proof_rule_ids": ["prove-effort"]
+        }
+      ],
+      "claim": {
+        "supporting_case_ids": ["effort-high"],
+        "supporting_case_result_digests": ["a"],
+        "supporting_proof_rule_ids": ["prove-effort"],
+        "claim_result": "PROVEN"
+      },
+      "receipt_case_ids": ["effort-high"],
+      "receipt_passed_case_ids": ["effort-high"],
+      "valid": true
+    },
+    {
+      "id": "claim-arbitrary-evidence",
+      "manifest_digest": "m1",
+      "receipt_manifest_digest": "m1",
+      "required_case_ids": ["effort-high"],
+      "manifest_raw_artifact_digests": ["raw-a"],
+      "manifest_raw_artifact_union_digest": "6b62b5d8e7062cc390ecf4d0d951f3b0cbb5c40223ae1cf4b7dcc06eb47d93ad",
+      "manifest_case_results": [
+        {
+          "case_id": "effort-high",
+          "digest": "a",
+          "disposition": "PASS",
+          "raw_artifact_digests": ["raw-a"],
+          "satisfied_proof_rule_ids": ["prove-effort"]
+        }
+      ],
+      "claim": {
+        "supporting_case_ids": ["effort-high"],
+        "supporting_case_result_digests": ["b"],
+        "supporting_proof_rule_ids": ["prove-effort"],
+        "claim_result": "PROVEN"
+      },
+      "receipt_case_ids": ["effort-high"],
+      "receipt_passed_case_ids": ["effort-high"],
+      "valid": false,
+      "expected_error": "CLAIM_EVIDENCE_NOT_MEMBER"
+    },
+    {
+      "id": "claim-backed-by-failed-case",
+      "manifest_digest": "m1",
+      "receipt_manifest_digest": "m1",
+      "required_case_ids": ["effort-high"],
+      "manifest_raw_artifact_digests": ["raw-a"],
+      "manifest_raw_artifact_union_digest": "6b62b5d8e7062cc390ecf4d0d951f3b0cbb5c40223ae1cf4b7dcc06eb47d93ad",
+      "manifest_case_results": [
+        {
+          "case_id": "effort-high",
+          "digest": "a",
+          "disposition": "FAIL",
+          "raw_artifact_digests": ["raw-a"],
+          "satisfied_proof_rule_ids": []
+        }
+      ],
+      "claim": {
+        "supporting_case_ids": ["effort-high"],
+        "supporting_case_result_digests": ["a"],
+        "supporting_proof_rule_ids": ["prove-effort"],
+        "claim_result": "PROVEN"
+      },
+      "receipt_case_ids": ["effort-high"],
+      "receipt_passed_case_ids": [],
+      "valid": false,
+      "expected_error": "CLAIM_EVIDENCE_NOT_PASS"
+    },
+    {
+      "id": "claim-swapped-case",
+      "manifest_digest": "m1",
+      "receipt_manifest_digest": "m1",
+      "required_case_ids": ["effort-low"],
+      "manifest_raw_artifact_digests": ["raw-a"],
+      "manifest_raw_artifact_union_digest": "6b62b5d8e7062cc390ecf4d0d951f3b0cbb5c40223ae1cf4b7dcc06eb47d93ad",
+      "manifest_case_results": [
+        {
+          "case_id": "effort-low",
+          "digest": "a",
+          "disposition": "PASS",
+          "raw_artifact_digests": ["raw-a"],
+          "satisfied_proof_rule_ids": ["prove-effort"]
+        }
+      ],
+      "claim": {
+        "supporting_case_ids": ["effort-high"],
+        "supporting_case_result_digests": ["a"],
+        "supporting_proof_rule_ids": ["prove-effort"],
+        "claim_result": "PROVEN"
+      },
+      "receipt_case_ids": ["effort-low"],
+      "receipt_passed_case_ids": ["effort-low"],
+      "valid": false,
+      "expected_error": "CLAIM_CASE_ID_MISMATCH"
+    },
+    {
+      "id": "claim-incomplete-required-case-set",
+      "manifest_digest": "m1",
+      "receipt_manifest_digest": "m1",
+      "required_case_ids": ["effort-high", "thinking-adaptive"],
+      "manifest_raw_artifact_digests": ["raw-a"],
+      "manifest_raw_artifact_union_digest": "6b62b5d8e7062cc390ecf4d0d951f3b0cbb5c40223ae1cf4b7dcc06eb47d93ad",
+      "manifest_case_results": [
+        {
+          "case_id": "effort-high",
+          "digest": "a",
+          "disposition": "PASS",
+          "raw_artifact_digests": ["raw-a"],
+          "satisfied_proof_rule_ids": ["prove-effort"]
+        }
+      ],
+      "claim": {
+        "supporting_case_ids": ["effort-high"],
+        "supporting_case_result_digests": ["a"],
+        "supporting_proof_rule_ids": ["prove-effort"],
+        "claim_result": "PROVEN"
+      },
+      "receipt_case_ids": ["effort-high"],
+      "receipt_passed_case_ids": ["effort-high"],
+      "valid": false,
+      "expected_error": "CANARY_REQUIRED_CASE_INCOMPLETE"
+    },
+    {
+      "id": "claim-post-receipt-manifest-mutation",
+      "manifest_digest": "m2",
+      "receipt_manifest_digest": "m1",
+      "required_case_ids": ["effort-high"],
+      "manifest_raw_artifact_digests": ["raw-a"],
+      "manifest_raw_artifact_union_digest": "6b62b5d8e7062cc390ecf4d0d951f3b0cbb5c40223ae1cf4b7dcc06eb47d93ad",
+      "manifest_case_results": [
+        {
+          "case_id": "effort-high",
+          "digest": "a",
+          "disposition": "PASS",
+          "raw_artifact_digests": ["raw-a"],
+          "satisfied_proof_rule_ids": ["prove-effort"]
+        }
+      ],
+      "claim": {
+        "supporting_case_ids": ["effort-high"],
+        "supporting_case_result_digests": ["a"],
+        "supporting_proof_rule_ids": ["prove-effort"],
+        "claim_result": "PROVEN"
+      },
+      "receipt_case_ids": ["effort-high"],
+      "receipt_passed_case_ids": ["effort-high"],
+      "valid": false,
+      "expected_error": "CANARY_MANIFEST_DIGEST_MISMATCH"
+    },
+    {
+      "id": "claim-proven-with-empty-support",
+      "manifest_digest": "m1",
+      "receipt_manifest_digest": "m1",
+      "required_case_ids": ["effort-high"],
+      "manifest_raw_artifact_digests": ["raw-a"],
+      "manifest_raw_artifact_union_digest": "6b62b5d8e7062cc390ecf4d0d951f3b0cbb5c40223ae1cf4b7dcc06eb47d93ad",
+      "manifest_case_results": [
+        {
+          "case_id": "effort-high",
+          "digest": "a",
+          "disposition": "PASS",
+          "raw_artifact_digests": ["raw-a"],
+          "satisfied_proof_rule_ids": ["prove-effort"]
+        }
+      ],
+      "claim": {
+        "supporting_case_ids": [],
+        "supporting_case_result_digests": [],
+        "supporting_proof_rule_ids": [],
+        "claim_result": "PROVEN"
+      },
+      "receipt_case_ids": ["effort-high"],
+      "receipt_passed_case_ids": ["effort-high"],
+      "valid": false,
+      "expected_error": "CLAIM_SUPPORT_EMPTY"
+    },
+    {
+      "id": "claim-raw-union-digest-mismatch",
+      "manifest_digest": "m1",
+      "receipt_manifest_digest": "m1",
+      "required_case_ids": ["effort-high"],
+      "manifest_raw_artifact_digests": ["raw-a"],
+      "manifest_raw_artifact_union_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "manifest_case_results": [
+        {
+          "case_id": "effort-high",
+          "digest": "a",
+          "disposition": "PASS",
+          "raw_artifact_digests": ["raw-a"],
+          "satisfied_proof_rule_ids": ["prove-effort"]
+        }
+      ],
+      "claim": {
+        "supporting_case_ids": ["effort-high"],
+        "supporting_case_result_digests": ["a"],
+        "supporting_proof_rule_ids": ["prove-effort"],
+        "claim_result": "PROVEN"
+      },
+      "receipt_case_ids": ["effort-high"],
+      "receipt_passed_case_ids": ["effort-high"],
+      "valid": false,
+      "expected_error": "CANARY_RAW_ARTIFACT_UNION_DIGEST_MISMATCH"
+    }
+  ]
+}

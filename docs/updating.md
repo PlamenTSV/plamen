@@ -9,23 +9,15 @@ Do not run `git pull`, npm, or an editor inside it.
 Acquire the release in a separate source directory, including its submodules,
 then run the installer from that source.
 
-Linux:
-
-```bash
-git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME/plamen-source-next"
-cd "$HOME/plamen-source-next"
-python3.12 plamen.py install
-```
-
 Windows PowerShell:
 
 ```powershell
-git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source-next"
+git clone --branch Plamen-v3 --single-branch --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source-next"
 Set-Location "$HOME\plamen-source-next"
 python plamen.py install
 ```
 
-macOS currently has a separate source-development workflow. Do not run the
+Linux and macOS currently have source-development workflows only. Do not run the
 governed production installer or treat a development bootstrap as an update to
 an audit runtime. Update the `Plamen-v3` source checkout with normal reviewed
 Git operations, then rerun `scripts/bootstrap_macos_dev.sh`; see the
@@ -94,12 +86,10 @@ Claude-headless RAG route, Plamen admits only the server launch recorded in
 the signed current selection and revalidates its generation under a held
 lock. Claude PTY and all Codex audit subprocesses run without MCP servers.
 
-Windows uses Job-object descendant containment. Linux uses the delegated
-cgroup v2 and Landlock route when the host supports the required policy.
-Unsupported Linux hosts fail closed before MCP spawn and use the governed
-Web/local research fallback. On macOS, the earlier package-transaction and
-worker-containment gates currently block production audits entirely; the MCP
-fallback does not make native Mac E2E execution supported.
+Windows uses Job-object descendant containment. The V3 POSIX package transaction
+and keeper/recovery adapter remain continuation work, so Linux and macOS reject
+production install before MCP routing matters. The source-development bootstrap
+does not make native POSIX E2E execution supported.
 
 ## Rollback and recovery
 

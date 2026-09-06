@@ -1,0 +1,767 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:plamen:model-routing:r2.5.6:green-prep",
+  "title": "Plamen model-routing production-source binding preparation",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SourceRegistry"
+    },
+    {
+      "$ref": "#/$defs/RedVectors"
+    }
+  ],
+  "$defs": {
+    "Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "GitObjectId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "ConsumerId": {
+      "enum": [
+        "launch_replay_validator",
+        "proof_mint",
+        "spawn_authentication",
+        "provider_spool_acceptance",
+        "completed_current_construction",
+        "current_replay_validator",
+        "resume_authorization"
+      ]
+    },
+    "Stage": {
+      "enum": [
+        "LAUNCH",
+        "INTENT",
+        "SPAWNED",
+        "CURRENT",
+        "RESUME"
+      ]
+    },
+    "SourceFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^scripts/[A-Za-z0-9_]+\\.py$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Digest"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "SourceBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "file_sha256",
+        "qualname",
+        "line",
+        "end_line",
+        "signature",
+        "segment_sha256",
+        "required_direct_calls",
+        "known_callers"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^scripts/[A-Za-z0-9_]+\\.py$"
+        },
+        "file_sha256": {
+          "$ref": "#/$defs/Digest"
+        },
+        "qualname": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 5
+        },
+        "segment_sha256": {
+          "$ref": "#/$defs/Digest"
+        },
+        "required_direct_calls": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"
+          }
+        },
+        "known_callers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"
+          }
+        }
+      }
+    },
+    "AdapterBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module",
+        "callable",
+        "direction",
+        "insertion_order",
+        "pre_landmark",
+        "post_landmark",
+        "required_records",
+        "red_state",
+        "red_error"
+      ],
+      "properties": {
+        "module": {
+          "const": "scripts/model_routing_runtime_adapter.py"
+        },
+        "callable": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "direction": {
+          "enum": [
+            "ENTRYPOINT_CALLS_ADAPTER",
+            "ADAPTER_CALLS_ENTRYPOINT"
+          ]
+        },
+        "insertion_order": {
+          "type": "string",
+          "minLength": 8
+        },
+        "pre_landmark": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]+$"
+        },
+        "post_landmark": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]+$"
+        },
+        "required_records": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]+V[0-9]+$"
+          }
+        },
+        "red_state": {
+          "const": "ADAPTER_BINDING_ABSENT"
+        },
+        "red_error": {
+          "const": "MODEL_ROUTING_PRODUCTION_BINDING_MISSING"
+        }
+      }
+    },
+    "ConsumerRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consumer_id",
+        "stage",
+        "source",
+        "current_behavior",
+        "current_gap",
+        "adapter_binding",
+        "applicable_branch_families",
+        "crash_vector_ids"
+      ],
+      "properties": {
+        "consumer_id": {
+          "$ref": "#/$defs/ConsumerId"
+        },
+        "stage": {
+          "$ref": "#/$defs/Stage"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceBinding"
+        },
+        "current_behavior": {
+          "type": "string",
+          "minLength": 16
+        },
+        "current_gap": {
+          "type": "string",
+          "minLength": 16
+        },
+        "adapter_binding": {
+          "$ref": "#/$defs/AdapterBinding"
+        },
+        "applicable_branch_families": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "DIRECT_SPAWN",
+              "OBSERVED_SPAWN",
+              "SPAWN_FAILED",
+              "AMBIGUITY_ABORT",
+              "AMBIGUITY_DEBT"
+            ]
+          }
+        },
+        "crash_vector_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^CR-[0-9]{2}$"
+          }
+        }
+      }
+    },
+    "Repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "branch",
+        "head",
+        "working_tree_policy"
+      ],
+      "properties": {
+        "root": {
+          "const": "<LOCAL_USER_ROOT>/plamen-codex-implementation"
+        },
+        "branch": {
+          "const": "codex/recall-app-benchmark-r10_1"
+        },
+        "head": {
+          "$ref": "#/$defs/GitObjectId"
+        },
+        "working_tree_policy": {
+          "const": "EXACT_WORKTREE_BYTES_OVERRIDE_GIT_HEAD"
+        }
+      }
+    },
+    "ProductionSourceScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "include_patterns",
+        "exclude_patterns",
+        "file_count",
+        "manifest_sha256",
+        "caller_resolution_policy"
+      ],
+      "properties": {
+        "include_patterns": {
+          "const": [
+            "*.py",
+            "scripts/**/*.py",
+            "custom-mcp/**/*.py",
+            "plamen_l1/**/*.py",
+            "verification_policy/**/*.py",
+            "mcp-packages/**/*.py"
+          ]
+        },
+        "exclude_patterns": {
+          "const": [
+            "**/__pycache__/**",
+            "**/test_*.py",
+            "**/tests/**",
+            "**/conftest.py"
+          ]
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/Digest"
+        },
+        "caller_resolution_policy": {
+          "const": "RECURSIVE_CLOSED_SCOPE_IMPORT_ALIAS_RESOLUTION_AMBIGUITY_REJECT"
+        }
+      }
+    },
+    "CurrentModelBehavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "legacy_default_backend",
+        "claude_opus_default",
+        "claude_thorough_opus_default",
+        "codex_tier_map",
+        "phase_matrix_sha256",
+        "phase_matrix_rows",
+        "max_present",
+        "known_fail_open_behaviors"
+      ],
+      "properties": {
+        "legacy_default_backend": {
+          "const": "claude"
+        },
+        "claude_opus_default": {
+          "const": "claude-opus-4-8"
+        },
+        "claude_thorough_opus_default": {
+          "const": "claude-opus-4-8"
+        },
+        "codex_tier_map": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "opus",
+            "sonnet",
+            "haiku"
+          ],
+          "properties": {
+            "opus": {
+              "const": "gpt-5.5"
+            },
+            "sonnet": {
+              "const": "gpt-5.4"
+            },
+            "haiku": {
+              "const": "gpt-5.4-mini"
+            }
+          }
+        },
+        "phase_matrix_sha256": {
+          "$ref": "#/$defs/Digest"
+        },
+        "phase_matrix_rows": {
+          "const": 668
+        },
+        "max_present": {
+          "const": false
+        },
+        "known_fail_open_behaviors": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "UNKNOWN_CODEX_ALIAS_DEFAULTS_TO_SONNET_TIER",
+              "CODEX_UNAVAILABLE_MODEL_CAN_MUTATE_PHASE_FALLBACK",
+              "SKEPTIC_BACKEND_OVERRIDE_CAN_FALL_BACK_TO_CONFIGURED_BACKEND",
+              "ROUTE_IS_BARE_BACKEND_AND_MODEL_WITHOUT_ROUTE_AUTHORITY",
+              "RESUME_DOES_NOT_CALL_WORKER_TRANSACTION_RECOVERY"
+            ]
+          }
+        }
+      }
+    },
+    "SourceRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "disposition",
+        "repository",
+        "current_model_behavior",
+        "production_source_scope",
+        "source_files",
+        "expected_consumer_ids",
+        "consumers",
+        "registry_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.model-routing-r2.5.6-source-registry.v1"
+        },
+        "version": {
+          "const": 1
+        },
+        "disposition": {
+          "const": "OFFLINE_GREEN_PREP_RED_BINDINGS_ONLY"
+        },
+        "repository": {
+          "$ref": "#/$defs/Repository"
+        },
+        "current_model_behavior": {
+          "$ref": "#/$defs/CurrentModelBehavior"
+        },
+        "production_source_scope": {
+          "$ref": "#/$defs/ProductionSourceScope"
+        },
+        "source_files": {
+          "type": "array",
+          "minItems": 7,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/SourceFile"
+          }
+        },
+        "expected_consumer_ids": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ConsumerId"
+          }
+        },
+        "consumers": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": {
+            "$ref": "#/$defs/ConsumerRow"
+          }
+        },
+        "registry_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "CrashVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vector_id",
+        "cutpoint_id",
+        "cutpoint",
+        "consumer",
+        "expected_state",
+        "may_spawn"
+      ],
+      "properties": {
+        "vector_id": {
+          "type": "string",
+          "pattern": "^CR-[0-9]{2}$"
+        },
+        "cutpoint_id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]+$"
+        },
+        "cutpoint": {
+          "type": "string",
+          "minLength": 8
+        },
+        "consumer": {
+          "$ref": "#/$defs/ConsumerId"
+        },
+        "expected_state": {
+          "enum": [
+            "NO_AUTHORITY",
+            "RETRY_NEW_GENERATION",
+            "AMBIGUITY_RESOLUTION_REQUIRED",
+            "TERMINAL_DEBT",
+            "CURRENT_NOT_PUBLISHED",
+            "CURRENT_REPLAY_REQUIRED",
+            "RESUME_REJECTED"
+          ]
+        },
+        "may_spawn": {
+          "type": "boolean"
+        }
+      }
+    },
+    "OfflineTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "class",
+        "source_sha256",
+        "network",
+        "live_provider"
+      ],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "pattern": "^scripts/test_[A-Za-z0-9_]+\\.py::test_[A-Za-z0-9_]+$"
+        },
+        "class": {
+          "enum": [
+            "FAKE_PROVIDER",
+            "CRASH_RECOVERY",
+            "NATIVE_WINDOWS",
+            "WINDOWS_NO_FOLLOW"
+          ]
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/Digest"
+        },
+        "network": {
+          "const": false
+        },
+        "live_provider": {
+          "const": false
+        }
+      }
+    },
+    "RedVectors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "disposition",
+        "branch_fixtures",
+        "consumer_branch_counts",
+        "registry_mutations",
+        "source_row_mutations",
+        "crash_vectors",
+        "model_behavior_vectors",
+        "oracle_blocker_mutations",
+        "offline_tests",
+        "expected_expansion",
+        "authorization"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.model-routing-r2.5.6-green-prep-red-vectors.v1"
+        },
+        "version": {
+          "const": 1
+        },
+        "disposition": {
+          "const": "RED_DENOMINATOR_PRODUCTION_BINDINGS_ABSENT"
+        },
+        "branch_fixtures": {
+          "type": "array",
+          "minItems": 17,
+          "maxItems": 17,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "DIRECT_SPAWN::PROVIDER_TERMINAL",
+              "DIRECT_SPAWN::PROCESS_EXIT_NO_PROVIDER_FRAME",
+              "DIRECT_SPAWN::TIMEOUT",
+              "DIRECT_SPAWN::CANCELLED",
+              "DIRECT_SPAWN::TRANSPORT_FAILURE",
+              "DIRECT_SPAWN::EMPTY_PROVIDER_OUTPUT",
+              "DIRECT_SPAWN::MALFORMED_PROVIDER_OUTPUT",
+              "OBSERVED_SPAWN::PROVIDER_TERMINAL",
+              "OBSERVED_SPAWN::PROCESS_EXIT_NO_PROVIDER_FRAME",
+              "OBSERVED_SPAWN::TIMEOUT",
+              "OBSERVED_SPAWN::CANCELLED",
+              "OBSERVED_SPAWN::TRANSPORT_FAILURE",
+              "OBSERVED_SPAWN::EMPTY_PROVIDER_OUTPUT",
+              "OBSERVED_SPAWN::MALFORMED_PROVIDER_OUTPUT",
+              "SPAWN_FAILED::SPAWN_FAILED",
+              "AMBIGUITY_ABORT::AMBIGUITY_ABORTED_NOT_SPAWNED",
+              "AMBIGUITY_DEBT::AMBIGUITY_UNRESOLVED_DEBT"
+            ]
+          }
+        },
+        "consumer_branch_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "launch_replay_validator",
+            "proof_mint",
+            "spawn_authentication",
+            "provider_spool_acceptance",
+            "completed_current_construction",
+            "current_replay_validator",
+            "resume_authorization"
+          ],
+          "properties": {
+            "launch_replay_validator": {
+              "const": 17
+            },
+            "proof_mint": {
+              "const": 17
+            },
+            "spawn_authentication": {
+              "const": 17
+            },
+            "provider_spool_acceptance": {
+              "const": 14
+            },
+            "completed_current_construction": {
+              "const": 17
+            },
+            "current_replay_validator": {
+              "const": 17
+            },
+            "resume_authorization": {
+              "const": 17
+            }
+          }
+        },
+        "registry_mutations": {
+          "type": "array",
+          "minItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "UNKNOWN_CONSUMER",
+              "MISSING_CONSUMER",
+              "DUPLICATE_CONSUMER",
+              "REORDERED_CONSUMERS",
+              "EXTRA_TOP_LEVEL_FIELD",
+              "EXPECTED_ID_SET_DRIFT",
+              "CORRUPT_REGISTRY_DIGEST",
+              "RESEALED_UNKNOWN_CONSUMER"
+            ]
+          }
+        },
+        "source_row_mutations": {
+          "type": "array",
+          "minItems": 9,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "PATH_DRIFT",
+              "FILE_HASH_DRIFT",
+              "QUALNAME_DRIFT",
+              "LINE_DRIFT",
+              "END_LINE_DRIFT",
+              "SIGNATURE_DRIFT",
+              "SEGMENT_HASH_DRIFT",
+              "DELETE_REQUIRED_CALL_EDGE",
+              "KNOWN_CALLER_SET_DRIFT"
+            ]
+          }
+        },
+        "crash_vectors": {
+          "type": "array",
+          "minItems": 18,
+          "maxItems": 18,
+          "items": {
+            "$ref": "#/$defs/CrashVector"
+          }
+        },
+        "model_behavior_vectors": {
+          "type": "array",
+          "minItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "LEGACY_DEFAULT_BACKEND_IS_CLAUDE",
+              "LIGHT_CLAUDE_ALL_SONNET",
+              "CORE_CLAUDE_TIER_ALIAS_RESOLUTION",
+              "THOROUGH_CLAUDE_PROMOTION_MATRIX",
+              "CODEX_TIER_MAP_EXACT",
+              "CODEX_THOROUGH_DOES_NOT_USE_CLAUDE_PROMOTION_BRANCH",
+              "UNKNOWN_CODEX_ALIAS_CURRENTLY_DEFAULTS_TO_SONNET",
+              "CODEX_UNAVAILABLE_MODEL_CURRENTLY_MUTATES_PHASE_FALLBACK",
+              "BREADTH_OVERRIDE_CURRENTLY_ACCEPTS_ENV_OR_CONFIG",
+              "SKEPTIC_BACKEND_OVERRIDE_CURRENTLY_FALLS_BACK",
+              "MAX_IS_ABSENT_FROM_ALL_DEFAULT_PHASE_ROUTES",
+              "CURRENT_LAUNCHSPEC_BINDS_BARE_BACKEND_AND_MODEL_ONLY"
+            ]
+          }
+        },
+        "oracle_blocker_mutations": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "COLLAPSED_CRASH_REFERENCES",
+              "REWRITTEN_CR06_SEMANTICS",
+              "ARBITRARY_BRANCH_ROSTER",
+              "ARBITRARY_MODEL_ROSTER",
+              "DISCONNECTED_CONSUMER_SEMANTICS",
+              "PRODUCTION_SOURCE_SCOPE_DRIFT",
+              "DUPLICATE_JSON_KEY",
+              "NONFINITE_JSON_NUMBER",
+              "NESTED_CALL_EDGE_FALSE_POSITIVE"
+            ]
+          }
+        },
+        "offline_tests": {
+          "type": "array",
+          "minItems": 20,
+          "items": {
+            "$ref": "#/$defs/OfflineTest"
+          }
+        },
+        "expected_expansion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "consumer_binding_operations",
+            "source_mutation_operations",
+            "registry_mutation_operations",
+            "crash_operations",
+            "model_behavior_operations",
+            "operation_count",
+            "operation_manifest_sha256"
+          ],
+          "properties": {
+            "consumer_binding_operations": {
+              "const": 116
+            },
+            "source_mutation_operations": {
+              "const": 63
+            },
+            "registry_mutation_operations": {
+              "const": 8
+            },
+            "crash_operations": {
+              "const": 18
+            },
+            "model_behavior_operations": {
+              "const": 12
+            },
+            "operation_count": {
+              "const": 217
+            },
+            "operation_manifest_sha256": {
+              "$ref": "#/$defs/Digest"
+            }
+          }
+        },
+        "authorization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "production_edits",
+            "provider_calls",
+            "network_calls",
+            "audit_execution",
+            "defaults_or_config_changes",
+            "commit_or_push"
+          ],
+          "properties": {
+            "production_edits": {
+              "const": false
+            },
+            "provider_calls": {
+              "const": false
+            },
+            "network_calls": {
+              "const": false
+            },
+            "audit_execution": {
+              "const": false
+            },
+            "defaults_or_config_changes": {
+              "const": false
+            },
+            "commit_or_push": {
+              "const": false
+            }
+          }
+        }
+      }
+    }
+  }
+}

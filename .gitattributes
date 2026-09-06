@@ -39,3 +39,9 @@ requirements*.constraints text eol=lf
 *.gz        binary
 *.tar       binary
 *.wasm      binary
+
+# Continuation research is an evidentiary byte corpus.  Its manifest binds the
+# exact original or privacy-sanitized byte representation, including historical
+# line endings and Markdown hard-break spaces.  Keep those bytes stable on every
+# host and do not treat their intentional trailing spaces as source defects.
+docs/continuation/research/** -text whitespace=-trailing-space,-blank-at-eof

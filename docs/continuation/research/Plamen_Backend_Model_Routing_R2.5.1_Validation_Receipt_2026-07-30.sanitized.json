@@ -1,0 +1,133 @@
+{
+  "schema": "plamen.model-routing-r2.5.1-validation-receipt.v1",
+  "version": 1,
+  "date": "2026-07-30",
+  "disposition": "AUTHOR_SELF_VALIDATED_INDEPENDENT_REVIEW_REQUIRED_NOT_CUTOVER_AUTHORIZED",
+  "change_boundary": "Bounded design and offline conformance successor for R2.5 review blockers B1-B4 only. No production, test, provider, install, audit, network, default, commit, push, or cutover mutation was authorized.",
+  "blocking_review": {
+    "file": "backend_model_routing_r2_5_independent_review_r1_20260730.md",
+    "whole_sha256": "97db9904fd4aa53161d436206bf558b03df86a60ba512675331c9c43b2842cf8",
+    "body_sha256": "5b0d5e836b9843c9317bdbb2ef714f39970fa964415a21cea54efec8f53f690f",
+    "unexpected_accepts": 8,
+    "root_causes": [
+      "B1_UNAUTHENTICATED_SECRET_PROOF_AND_SPAWN_CAPABILITY",
+      "B2_RESUME_CALLER_SELECTED_PRIOR_AND_CURRENT_IDENTITIES",
+      "B3_SELF_AUTHORED_OBSERVATION_AND_PROOF_RULES",
+      "B4_CO_SUPPLIED_ROOT_AND_UNTYPED_TRANSACTION_ANCHORS"
+    ]
+  },
+  "manifest_discrepancy": {
+    "restricted_json_bytes": 2851,
+    "historical_declared_sha256": "61981cac2042e9c7854737e6de759ef6fae2f3fe7ad405f721b431e8dbceabca",
+    "adjudicated_reproducible_sha256": "fad68edc4f82e09c0eed8d5bc1139e389e32c70f14efa783bb419d93bcbf8f9b",
+    "disposition": "REPRODUCIBLE_DIGEST_IS_LABEL_MANIFEST_TRUTH_HISTORICAL_DECLARATION_PRESERVED"
+  },
+  "frozen_r2_5_denominator": {
+    "validator_file": "validate_plamen_model_routing_r2_5.py",
+    "validator_sha256": "d95b245e41615c988ed529f07c1decbd8f3ac2ed1966661609e2c08efe1217e5",
+    "vectors_file": "Plamen_Backend_Model_Routing_R2.5_Conformance_Vectors_2026-07-30.json",
+    "vectors_sha256": "51ffcb40264984033f0150f07f737a01a0077733dd4acdf58a3746fc01fda0ac",
+    "executed_denominator": 596,
+    "result": "PASS"
+  },
+  "package": [
+    {
+      "file": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.5.1_2026-07-30.md",
+      "bytes": 13689,
+      "lines_lf": 346,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "781eafcfd50e0f080227d92e16c620e5b08b197ce616ba0ff5503d3712170f49"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.5.1_Schemas_2026-07-30.json",
+      "bytes": 105207,
+      "lines_lf": 4012,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "b70488adaef6b653e3915957fca453e5f5ee9e8b4dc66e425a652743a371d8e3"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.5.1_Conformance_Vectors_2026-07-30.json",
+      "bytes": 9176,
+      "lines_lf": 324,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "e4e3804b86ab4251902ebdbafc99f5acae3d1409bd56255c730b345fb9c6b9e8"
+    },
+    {
+      "file": "validate_plamen_model_routing_r2_5_1.py",
+      "bytes": 79801,
+      "lines_lf": 2282,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "48bba3d1b90ebab113064983382f582b749a719728d336accb9a7d4cd115b685"
+    }
+  ],
+  "validation": {
+    "isolated_command": "python -I <LOCAL_USER_ROOT>\\Downloads\\validate_plamen_model_routing_r2_5_1.py",
+    "result": "PASS",
+    "repeat_isolated_output_stable": true,
+    "independent_pass_claimed": false,
+    "python_compile": "PASS",
+    "draft_2020_12_meta_schema": "PASS",
+    "duplicate_aware_json": "PASS",
+    "stable_generator_byte_replay": "PASS",
+    "schema_definitions_total": 57,
+    "successor_closed_definitions": 12,
+    "durable_secret_alias_probes": 12,
+    "mutated_trusted_snapshot_probes": 1,
+    "forged_root_capability_probes": 1,
+    "forged_transport_receipt_probes": 1,
+    "dispatcher_direct_expected_error_raises": 0,
+    "r2_5_preserved_executed_denominator": 596,
+    "r2_5_1_b1_vectors": 13,
+    "r2_5_1_b2_vectors": 12,
+    "r2_5_1_b3_vectors": 13,
+    "r2_5_1_b4_vectors": 12,
+    "r2_5_1_new_vectors": 50,
+    "total_executed_vector_denominator": 646,
+    "unique_requirement_count_claimed": false,
+    "schema_sha256_reported_by_validator": "b70488adaef6b653e3915957fca453e5f5ee9e8b4dc66e425a652743a371d8e3",
+    "vectors_sha256_reported_by_validator": "e4e3804b86ab4251902ebdbafc99f5acae3d1409bd56255c730b345fb9c6b9e8",
+    "blockers_reported_closed_by_validator": [
+      "B1",
+      "B2",
+      "B3",
+      "B4"
+    ],
+    "author_disposition_reported_by_validator": "SELF_VALIDATED_NOT_INDEPENDENT_PASS",
+    "repository_pytest_run": false,
+    "provider_or_audit_process_started": false
+  },
+  "trust_boundary": {
+    "fixture_trust_anchor_helpers_are_production_apis": false,
+    "fixture_transport_receipt_helpers_are_production_apis": false,
+    "production_requires_separately_initialized_governed_loader": true,
+    "production_requires_neutral_process_io_spooler": true,
+    "python_name_privacy_claimed_as_security_boundary": false,
+    "sink_recomputes_store_or_byte_digest_or_hmac": true
+  },
+  "not_proven": [
+    "independent R2.5.1 acceptance",
+    "production integration",
+    "production trust-anchor provenance",
+    "production provider-byte spool provenance",
+    "real Claude or Codex provider behavior",
+    "current provider model availability or pricing",
+    "native cross-OS store or spool behavior",
+    "downstream runtime, evaluator, BB, repair, packaging, or CI completion",
+    "audit recall",
+    "audit precision",
+    "cutover readiness"
+  ],
+  "provider_calls_or_audits_authorized": false,
+  "production_edits_authorized": false,
+  "network_calls_authorized": false,
+  "commit_or_push_authorized": false,
+  "cutover_authorized": false
+}

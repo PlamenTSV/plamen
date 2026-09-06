@@ -1,0 +1,1199 @@
+{
+  "schema": "plamen.model-routing-r2.5.4-red-operation-vectors.v1",
+  "version": 1,
+  "disposition": "DESIGN_RED_ONLY_INDEPENDENT_ACCEPTANCE_REQUIRED",
+  "sealed_r2_5_3_review": {
+    "body_sha256": "71a549c72522e4ad57229b75ffbf2115353eefd0d85b46ae2392a2c55421e075",
+    "whole_sha256": "70f0c07214f0e18145070cd315b4129d99c054105f03f94134fe2fd45ef580c3",
+    "verdict": "BLOCK"
+  },
+  "frozen_predecessor": {
+    "r2_5_3_validator_sha256": "1fb1b2e40630bca93ce220bcbbbb4b41b38590411efe095b56336e6002299bfe",
+    "r2_5_3_vectors_sha256": "8a0dbcfbf4ee7d7a1b9e141196890af9a17bb322be94ed832a9873c765ec0cb6",
+    "r2_5_2_validator_sha256": "54308ee13491bf43ab006d65b11bb4c60e70f620d17eb8b209288ef2ac5a785c",
+    "executed_denominator": 686,
+    "preserved_operations": 15,
+    "focused_unexpected_accepts": 5,
+    "focused_operations": 8
+  },
+  "predecessor_operations": [
+    {
+      "operation_id": "P15-001",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "frozen_predecessor",
+      "mutation_operator": "POLICY_PRESENCE_AFTER_MINT",
+      "mutation_target": "env_policy",
+      "expected_result": "REJECT",
+      "expected_error": "VALIDATED_CLOSURE_POLICY_MISMATCH"
+    },
+    {
+      "operation_id": "P15-002",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "frozen_predecessor",
+      "mutation_operator": "POLICY_SOURCE_CLASS_AFTER_MINT",
+      "mutation_target": "env_policy",
+      "expected_result": "REJECT",
+      "expected_error": "VALIDATED_CLOSURE_POLICY_MISMATCH"
+    },
+    {
+      "operation_id": "P15-003",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "frozen_predecessor",
+      "mutation_operator": "CONSUMED_SPAWN_STATE_AFTER_MINT",
+      "mutation_target": "consumed",
+      "expected_result": "REJECT",
+      "expected_error": "VALIDATED_CLOSURE_CONSUME_MISMATCH"
+    },
+    {
+      "operation_id": "P15-004",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "frozen_predecessor",
+      "mutation_operator": "CONSUMED_CAS_AFTER_MINT",
+      "mutation_target": "consumed",
+      "expected_result": "REJECT",
+      "expected_error": "VALIDATED_CLOSURE_CONSUME_MISMATCH"
+    },
+    {
+      "operation_id": "P15-005",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "resume_authorization",
+      "mutation_operator": "UNROOTED_CALLER_CURRENT_GRAPH",
+      "mutation_target": "current_graph",
+      "expected_result": "REJECT",
+      "expected_error": "RESUME_VALIDATED_CLOSURE_REQUIRED"
+    },
+    {
+      "operation_id": "P15-006",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "resume_authorization",
+      "mutation_operator": "CROSS_RUN_PRIOR_AUTHORITY",
+      "mutation_target": "prior_resume",
+      "expected_result": "REJECT",
+      "expected_error": "RESUME_RUN_SCOPE_MISMATCH"
+    },
+    {
+      "operation_id": "P15-007",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "FABRICATED_LEGACY_OBSERVATION",
+      "mutation_target": "provider_observation",
+      "expected_result": "REJECT",
+      "expected_error": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "operation_id": "P15-008",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "CALLER_AUTHORED_PROOF_RULE",
+      "mutation_target": "proof_rule",
+      "expected_result": "REJECT",
+      "expected_error": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "operation_id": "P15-009",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "UNKNOWN_THINKING_STATE",
+      "mutation_target": "neutral_state",
+      "expected_result": "REJECT",
+      "expected_error": "NEUTRAL_STATE_GRAMMAR_MISMATCH"
+    },
+    {
+      "operation_id": "P15-010",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "UNKNOWN_FALLBACK_STATE",
+      "mutation_target": "neutral_state",
+      "expected_result": "REJECT",
+      "expected_error": "NEUTRAL_STATE_GRAMMAR_MISMATCH"
+    },
+    {
+      "operation_id": "P15-011",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "UNKNOWN_TERMINAL_CATEGORY",
+      "mutation_target": "neutral_state",
+      "expected_result": "REJECT",
+      "expected_error": "NEUTRAL_STATE_GRAMMAR_MISMATCH"
+    },
+    {
+      "operation_id": "P15-012",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "MALFORMED_USAGE_OBJECT",
+      "mutation_target": "provider_usage",
+      "expected_result": "REJECT",
+      "expected_error": "PROVIDER_USAGE_SCHEMA_MISMATCH"
+    },
+    {
+      "operation_id": "P15-013",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "WRONG_PARENT_SET_KEY",
+      "mutation_target": "transaction_parent_set",
+      "expected_result": "REJECT",
+      "expected_error": "AUTHORITY_STORE_KEY_MISMATCH"
+    },
+    {
+      "operation_id": "P15-014",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "CROSS_RUN_PARENT_SET",
+      "mutation_target": "transaction_parent_set",
+      "expected_result": "REJECT",
+      "expected_error": "AUTHORITY_STORE_RUN_MISMATCH"
+    },
+    {
+      "operation_id": "P15-015",
+      "family": "PREDECESSOR",
+      "fixture_constructor_id": "FROZEN_R2_5_1_REPLAY",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "UNTYPED_RAW_SECRET_RECORD",
+      "mutation_target": "store_namespace",
+      "expected_result": "REJECT",
+      "expected_error": "AUTHORITY_STORE_NAMESPACE_MISMATCH"
+    }
+  ],
+  "b5_operations": [
+    {
+      "operation_id": "B5-001",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_ONLY_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "OMIT_POST_PROVIDER_OBSERVATION",
+      "mutation_target": "observation",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "B5-002",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_ONLY_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "OMIT_POST_PROVIDER_EVIDENCE",
+      "mutation_target": "evidence",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "B5-003",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_ONLY_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "OMIT_PROVIDER_ARTIFACT",
+      "mutation_target": "provider_artifact",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "B5-004",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_ONLY_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_FORBIDDEN_FIELD",
+      "mutation_target": "observation",
+      "expected_result": "REJECT",
+      "expected_error": "LAUNCH_POST_PROVIDER_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "B5-005",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_ONLY_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_FORBIDDEN_FIELD",
+      "mutation_target": "evidence",
+      "expected_result": "REJECT",
+      "expected_error": "LAUNCH_POST_PROVIDER_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "B5-006",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_ONLY_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_FORBIDDEN_FIELD",
+      "mutation_target": "terminal",
+      "expected_result": "REJECT",
+      "expected_error": "LAUNCH_POST_PROVIDER_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "B5-007",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_ONLY_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_FORBIDDEN_FIELD",
+      "mutation_target": "usage",
+      "expected_result": "REJECT",
+      "expected_error": "LAUNCH_POST_PROVIDER_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "B5-008",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_ONLY_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_FORBIDDEN_FIELD",
+      "mutation_target": "raw_stream",
+      "expected_result": "REJECT",
+      "expected_error": "LAUNCH_POST_PROVIDER_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "B5-009",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_NAMESPACE_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "OMIT_POST_PROVIDER_RECORD",
+      "mutation_target": "reconciliation",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "B5-010",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_NAMESPACE_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "OMIT_POST_PROVIDER_RECORD",
+      "mutation_target": "prior_identity",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "B5-011",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_NAMESPACE_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "OMIT_POST_PROVIDER_RECORD",
+      "mutation_target": "proof_rules",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "B5-012",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_NAMESPACE_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "SUBSTITUTE_COMPLETED_NAMESPACE",
+      "mutation_target": "namespace",
+      "expected_result": "REJECT",
+      "expected_error": "LAUNCH_NAMESPACE_POST_PROVIDER_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "B5-013",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "STATIC_LAUNCH_CALL_GRAPH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ASSERT_POST_PROVIDER_UNREACHABLE",
+      "mutation_target": "transitive_call_graph",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "B5-014",
+      "family": "B5_LAUNCH",
+      "fixture_constructor_id": "LAUNCH_ONLY_CANONICAL",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "NONE",
+      "mutation_target": "launch_graph",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    }
+  ],
+  "source_operations": [
+    {
+      "operation_id": "SRC-001",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "NONE",
+      "mutation_target": "source",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "SRC-002",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_CURRENT",
+      "target_consumer": "current_replay_validator",
+      "mutation_operator": "NONE",
+      "mutation_target": "source",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "SRC-003",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "NONEXISTENT_KEY",
+      "mutation_target": "reference.artifact_key",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_KEY_NOT_FOUND"
+    },
+    {
+      "operation_id": "SRC-004",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "CASE_ALIAS_KEY",
+      "mutation_target": "reference.artifact_key",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_KEY_INVALID"
+    },
+    {
+      "operation_id": "SRC-005",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "WRONG_CLAIM",
+      "mutation_target": "claimed_artifact_digest",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_CLAIM_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-006",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "WRONG_CLAIM",
+      "mutation_target": "claimed_byte_length",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_CLAIM_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-007",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "WRONG_CLAIM",
+      "mutation_target": "claimed_stage",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_CLAIM_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-008",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "WRONG_CLAIM",
+      "mutation_target": "claimed_snapshot_digest",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_CLAIM_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-009",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "WRONG_CLAIM",
+      "mutation_target": "claimed_run_id",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_CLAIM_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-010",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "WRONG_CLAIM",
+      "mutation_target": "claimed_generation",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_CLAIM_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-011",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "WRONG_CLAIM",
+      "mutation_target": "claimed_attempt_ordinal",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_CLAIM_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-012",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_CALLER_AUTHORITY_FIELD",
+      "mutation_target": "expected_manifest_root",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "SRC-013",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_CALLER_AUTHORITY_FIELD",
+      "mutation_target": "path",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "SRC-014",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_CALLER_AUTHORITY_FIELD",
+      "mutation_target": "raw_bytes",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "SRC-015",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "DUPLICATE_MANIFEST_KEY",
+      "mutation_target": "manifest.entries",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_MANIFEST_DUPLICATE_KEY"
+    },
+    {
+      "operation_id": "SRC-016",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "REPLACE_MANIFEST",
+      "mutation_target": "manifest_root_digest",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_MANIFEST_ROOT_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-017",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "REPLACE_ARTIFACT_BYTES",
+      "mutation_target": "artifact_bytes",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_ARTIFACT_DIGEST_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-018",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "CROSS_SOURCE_SUBSTITUTION",
+      "mutation_target": "source_id",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_SOURCE_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-019",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "CROSS_SNAPSHOT_SUBSTITUTION",
+      "mutation_target": "snapshot_digest",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_CLAIM_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-020",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_MUTATES_ON_SECOND_READ",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ASSERT_SINGLE_READ",
+      "mutation_target": "artifact_bytes",
+      "expected_result": "PASS",
+      "expected_error": "NONE"
+    },
+    {
+      "operation_id": "SRC-021",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_ALIAS_FAULT",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "SOURCE_PATH_ALIAS",
+      "mutation_target": "symlink",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_SOURCE_PATH_ALIAS"
+    },
+    {
+      "operation_id": "SRC-022",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "INVALID_KEY",
+      "mutation_target": "../launch",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_KEY_INVALID"
+    },
+    {
+      "operation_id": "SRC-023",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "INVALID_KEY",
+      "mutation_target": "/launch",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_KEY_INVALID"
+    },
+    {
+      "operation_id": "SRC-024",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "INVALID_KEY",
+      "mutation_target": "c:\\launch",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_KEY_INVALID"
+    },
+    {
+      "operation_id": "SRC-025",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "INVALID_KEY",
+      "mutation_target": "file:launch",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_KEY_INVALID"
+    },
+    {
+      "operation_id": "SRC-026",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "INVALID_KEY",
+      "mutation_target": "launch%2fartifact",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_KEY_INVALID"
+    },
+    {
+      "operation_id": "SRC-027",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "NON_ASCII_KEY",
+      "mutation_target": "launch-cafe-nonascii",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_KEY_INVALID"
+    },
+    {
+      "operation_id": "SRC-028",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_CALLER_AUTHORITY_FIELD",
+      "mutation_target": "manifest",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "SRC-029",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_CALLER_AUTHORITY_FIELD",
+      "mutation_target": "uri",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "SRC-030",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_CALLER_AUTHORITY_FIELD",
+      "mutation_target": "source",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "SRC-031",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_CALLER_AUTHORITY_FIELD",
+      "mutation_target": "registry",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "SRC-032",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_CALLER_AUTHORITY_FIELD",
+      "mutation_target": "issuer",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "SRC-033",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ADD_CALLER_AUTHORITY_FIELD",
+      "mutation_target": "validation_result",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_FIELD_FORBIDDEN"
+    },
+    {
+      "operation_id": "SRC-034",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "EXTRA_MANIFEST_FIELD",
+      "mutation_target": "manifest.unexpected",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_MANIFEST_INVALID"
+    },
+    {
+      "operation_id": "SRC-035",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "EXTRA_MANIFEST_ENTRY_FIELD",
+      "mutation_target": "manifest.entries[0].unexpected",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_MANIFEST_ENTRY_INVALID"
+    },
+    {
+      "operation_id": "SRC-036",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "UNSORTED_MANIFEST_ENTRIES",
+      "mutation_target": "manifest.entries",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_MANIFEST_KEY_INVALID"
+    },
+    {
+      "operation_id": "SRC-037",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "ARTIFACT_SCOPE_MISMATCH",
+      "mutation_target": "artifact.run_id",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_ARTIFACT_SCOPE_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-038",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "INVALID_KEY",
+      "mutation_target": "\\\\server\\share",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_KEY_INVALID"
+    },
+    {
+      "operation_id": "SRC-039",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_ALIAS_FAULT",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "SOURCE_PATH_ALIAS",
+      "mutation_target": "junction",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_SOURCE_PATH_ALIAS"
+    },
+    {
+      "operation_id": "SRC-040",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_ALIAS_FAULT",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "SOURCE_PATH_ALIAS",
+      "mutation_target": "mount",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_SOURCE_PATH_ALIAS"
+    },
+    {
+      "operation_id": "SRC-041",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_ALIAS_FAULT",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "SOURCE_PATH_ALIAS",
+      "mutation_target": "reparse",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_SOURCE_PATH_ALIAS"
+    },
+    {
+      "operation_id": "SRC-042",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "MANIFEST_LENGTH_MISMATCH",
+      "mutation_target": "manifest.entries[0].byte_length",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_ARTIFACT_DIGEST_MISMATCH"
+    },
+    {
+      "operation_id": "SRC-043",
+      "family": "REPLAY_SOURCE",
+      "fixture_constructor_id": "SOURCE_CANONICAL_LAUNCH",
+      "target_consumer": "launch_replay_validator",
+      "mutation_operator": "CALLER_DIGEST_AS_EXPECTED_ROOT",
+      "mutation_target": "claimed_artifact_digest",
+      "expected_result": "REJECT",
+      "expected_error": "REPLAY_REFERENCE_CLAIM_MISMATCH"
+    }
+  ],
+  "lifecycle_positive_variants": [
+    {
+      "variant_id": "LC-P01-C",
+      "tokens": "C",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "NONE"
+    },
+    {
+      "variant_id": "LC-P02-CI",
+      "tokens": "C,I",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "NONE"
+    },
+    {
+      "variant_id": "LC-P03-CIS",
+      "tokens": "C,I,S",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "NONE"
+    },
+    {
+      "variant_id": "LC-P04-CIST-PROVIDER",
+      "tokens": "C,I,S,T",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "PROVIDER_TERMINAL"
+    },
+    {
+      "variant_id": "LC-P05-CISTK-PROVIDER",
+      "tokens": "C,I,S,T,K",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "PROVIDER_TERMINAL"
+    },
+    {
+      "variant_id": "LC-P06-CIST-EXIT",
+      "tokens": "C,I,S,T",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "PROCESS_EXIT_NO_PROVIDER_FRAME"
+    },
+    {
+      "variant_id": "LC-P07-CISTK-EXIT",
+      "tokens": "C,I,S,T,K",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "PROCESS_EXIT_NO_PROVIDER_FRAME"
+    },
+    {
+      "variant_id": "LC-P08-CIST-TIMEOUT",
+      "tokens": "C,I,S,T",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "TIMEOUT"
+    },
+    {
+      "variant_id": "LC-P09-CISTK-TIMEOUT",
+      "tokens": "C,I,S,T,K",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "TIMEOUT"
+    },
+    {
+      "variant_id": "LC-P10-CIST-CANCELLED",
+      "tokens": "C,I,S,T",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "CANCELLED"
+    },
+    {
+      "variant_id": "LC-P11-CISTK-CANCELLED",
+      "tokens": "C,I,S,T,K",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "CANCELLED"
+    },
+    {
+      "variant_id": "LC-P12-CIST-TRANSPORT",
+      "tokens": "C,I,S,T",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "TRANSPORT_FAILURE"
+    },
+    {
+      "variant_id": "LC-P13-CISTK-TRANSPORT",
+      "tokens": "C,I,S,T,K",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "TRANSPORT_FAILURE"
+    },
+    {
+      "variant_id": "LC-P14-CIST-EMPTY",
+      "tokens": "C,I,S,T",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "EMPTY_PROVIDER_OUTPUT"
+    },
+    {
+      "variant_id": "LC-P15-CISTK-EMPTY",
+      "tokens": "C,I,S,T,K",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "EMPTY_PROVIDER_OUTPUT"
+    },
+    {
+      "variant_id": "LC-P16-CIST-MALFORMED",
+      "tokens": "C,I,S,T",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "MALFORMED_PROVIDER_OUTPUT"
+    },
+    {
+      "variant_id": "LC-P17-CISTK-MALFORMED",
+      "tokens": "C,I,S,T,K",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "MALFORMED_PROVIDER_OUTPUT"
+    },
+    {
+      "variant_id": "LC-P18-CIT-SPAWN-FAILED",
+      "tokens": "C,I,T",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "SPAWN_FAILED"
+    },
+    {
+      "variant_id": "LC-P19-CITK-SPAWN-FAILED",
+      "tokens": "C,I,T,K",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "SPAWN_FAILED"
+    },
+    {
+      "variant_id": "LC-P20-CIA",
+      "tokens": "C,I,A",
+      "resolution_outcome": "NONE",
+      "terminal_outcome": "NONE"
+    },
+    {
+      "variant_id": "LC-P21-CIAQ-OBSERVED",
+      "tokens": "C,I,A,Q",
+      "resolution_outcome": "OBSERVED_SPAWNED",
+      "terminal_outcome": "NONE"
+    },
+    {
+      "variant_id": "LC-P22-CIAQS",
+      "tokens": "C,I,A,Q,S",
+      "resolution_outcome": "OBSERVED_SPAWNED",
+      "terminal_outcome": "NONE"
+    },
+    {
+      "variant_id": "LC-P23-CIAQST",
+      "tokens": "C,I,A,Q,S,T",
+      "resolution_outcome": "OBSERVED_SPAWNED",
+      "terminal_outcome": "PROVIDER_TERMINAL"
+    },
+    {
+      "variant_id": "LC-P24-CIAQSTK",
+      "tokens": "C,I,A,Q,S,T,K",
+      "resolution_outcome": "OBSERVED_SPAWNED",
+      "terminal_outcome": "PROVIDER_TERMINAL"
+    },
+    {
+      "variant_id": "LC-P25-CIAQ-ABORT",
+      "tokens": "C,I,A,Q",
+      "resolution_outcome": "CONFIRMED_NOT_SPAWNED_ABORT",
+      "terminal_outcome": "NONE"
+    },
+    {
+      "variant_id": "LC-P26-CIAQT-ABORT",
+      "tokens": "C,I,A,Q,T",
+      "resolution_outcome": "CONFIRMED_NOT_SPAWNED_ABORT",
+      "terminal_outcome": "AMBIGUITY_ABORTED_NOT_SPAWNED"
+    },
+    {
+      "variant_id": "LC-P27-CIAQTK-ABORT",
+      "tokens": "C,I,A,Q,T,K",
+      "resolution_outcome": "CONFIRMED_NOT_SPAWNED_ABORT",
+      "terminal_outcome": "AMBIGUITY_ABORTED_NOT_SPAWNED"
+    },
+    {
+      "variant_id": "LC-P28-CIAQ-DEBT",
+      "tokens": "C,I,A,Q",
+      "resolution_outcome": "UNRESOLVED_DEBT",
+      "terminal_outcome": "NONE"
+    },
+    {
+      "variant_id": "LC-P29-CIAQT-DEBT",
+      "tokens": "C,I,A,Q,T",
+      "resolution_outcome": "UNRESOLVED_DEBT",
+      "terminal_outcome": "AMBIGUITY_UNRESOLVED_DEBT"
+    },
+    {
+      "variant_id": "LC-P30-CIAQTK-DEBT",
+      "tokens": "C,I,A,Q,T,K",
+      "resolution_outcome": "UNRESOLVED_DEBT",
+      "terminal_outcome": "AMBIGUITY_UNRESOLVED_DEBT"
+    }
+  ],
+  "lifecycle_forbidden_sequences": [
+    {
+      "variant_id": "LC-N01-SPAWNED-WITHOUT-INTENT",
+      "tokens": "C,S",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N02-SPAWNED-ONLY",
+      "tokens": "S",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N03-CURRENT-WITHOUT-TERMINAL",
+      "tokens": "C,I,S,K",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N04-CURRENT-AFTER-INTENT",
+      "tokens": "C,I,K",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N05-TERMINAL-WITHOUT-INTENT",
+      "tokens": "C,T",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N06-AMBIGUITY-AFTER-SPAWN",
+      "tokens": "C,I,S,A",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N07-SPAWN-BEFORE-RESOLUTION",
+      "tokens": "C,I,A,S",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N08-OBSERVED-RESOLUTION-TO-TERMINAL",
+      "tokens": "C,I,A,Q,T",
+      "resolution_outcome": "OBSERVED_SPAWNED",
+      "terminal_outcome": "PROVIDER_TERMINAL",
+      "expected_error": "LIFECYCLE_BRANCH_MISMATCH"
+    },
+    {
+      "variant_id": "LC-N09-ABORT-RESOLUTION-TO-SPAWN",
+      "tokens": "C,I,A,Q,S",
+      "resolution_outcome": "CONFIRMED_NOT_SPAWNED_ABORT",
+      "terminal_outcome": "NONE",
+      "expected_error": "LIFECYCLE_BRANCH_MISMATCH"
+    },
+    {
+      "variant_id": "LC-N10-DEBT-RESOLUTION-TO-SPAWN",
+      "tokens": "C,I,A,Q,S",
+      "resolution_outcome": "UNRESOLVED_DEBT",
+      "terminal_outcome": "NONE",
+      "expected_error": "LIFECYCLE_BRANCH_MISMATCH"
+    },
+    {
+      "variant_id": "LC-N11-DUPLICATE-INTENT",
+      "tokens": "C,I,I",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N12-DUPLICATE-SPAWN",
+      "tokens": "C,I,S,S",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N13-DUPLICATE-TERMINAL",
+      "tokens": "C,I,S,T,T",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N14-DUPLICATE-CURRENT",
+      "tokens": "C,I,S,T,K,K",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N15-MISSING-CONSUME",
+      "tokens": "I,S",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    },
+    {
+      "variant_id": "LC-N16-POST-CURRENT-EVENT",
+      "tokens": "C,I,S,T,K,T",
+      "expected_error": "LIFECYCLE_PREFIX_INVALID"
+    }
+  ],
+  "lifecycle_payload_mutations": [
+    {
+      "mutation_id": "LC-M01-INTENT-CONSUME",
+      "event_kind": "I",
+      "field": "consumed_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M02-INTENT-LAUNCH",
+      "event_kind": "I",
+      "field": "launch_replay_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M03-INTENT-TRANSPORT",
+      "event_kind": "I",
+      "field": "planned_transport_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M04-INTENT-NONCE",
+      "event_kind": "I",
+      "field": "intent_nonce_digest",
+      "expected_error": "LIFECYCLE_NONCE_INVALID"
+    },
+    {
+      "mutation_id": "LC-M05-SPAWN-INTENT",
+      "event_kind": "S",
+      "field": "intent_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M06-SPAWN-LAUNCH",
+      "event_kind": "S",
+      "field": "launch_replay_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M07-SPAWN-PROCESS",
+      "event_kind": "S",
+      "field": "process_identity_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M08-SPAWN-TRANSPORT",
+      "event_kind": "S",
+      "field": "transport_identity_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M09-TERMINAL-PARENT",
+      "event_kind": "T",
+      "field": "terminal_parent_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M10-TERMINAL-PROCESS",
+      "event_kind": "T",
+      "field": "process_identity_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M11-TERMINAL-SPOOL",
+      "event_kind": "T",
+      "field": "transport_identity_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M12-PROVIDER-DIGEST-MISSING",
+      "event_kind": "T",
+      "field": "provider_terminal_digest",
+      "mutation": "DELETE",
+      "terminal_outcome": "PROVIDER_TERMINAL",
+      "expected_error": "TERMINAL_PROVIDER_DIGEST_REQUIRED"
+    },
+    {
+      "mutation_id": "LC-M13-PROVIDER-DIGEST-SMUGGLED",
+      "event_kind": "T",
+      "field": "provider_terminal_digest",
+      "mutation": "ADD",
+      "terminal_outcome": "TIMEOUT",
+      "expected_error": "TERMINAL_PROVIDER_DIGEST_FORBIDDEN"
+    },
+    {
+      "mutation_id": "LC-M14-CURRENT-TERMINAL",
+      "event_kind": "K",
+      "field": "terminal_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M15-CURRENT-PREFIX",
+      "event_kind": "K",
+      "field": "prefix_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M16-AMBIGUITY-INTENT",
+      "event_kind": "A",
+      "field": "intent_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M17-RESOLUTION-AMBIGUITY",
+      "event_kind": "Q",
+      "field": "ambiguity_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M18-RESOLUTION-EVIDENCE",
+      "event_kind": "Q",
+      "field": "governed_evidence_digest",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M19-RESOLUTION-PROCESS",
+      "event_kind": "Q",
+      "field": "process_identity_digest",
+      "resolution_outcome": "OBSERVED_SPAWNED",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M20-RESOLUTION-TRANSPORT",
+      "event_kind": "Q",
+      "field": "transport_identity_digest",
+      "resolution_outcome": "OBSERVED_SPAWNED",
+      "expected_error": "LIFECYCLE_PAYLOAD_JOIN_MISMATCH"
+    },
+    {
+      "mutation_id": "LC-M21-INTENT-NONCE-REUSE",
+      "event_kind": "I",
+      "field": "intent_nonce_digest",
+      "mutation": "REUSE_ACROSS_ATTEMPTS",
+      "expected_error": "LIFECYCLE_NONCE_REUSED"
+    }
+  ],
+  "derivation": {
+    "lifecycle_event_mutations": [
+      "WRONG_PARENT_DIGEST",
+      "WRONG_RUN",
+      "WRONG_GENERATION",
+      "WRONG_ATTEMPT",
+      "WRONG_EVENT_REVISION",
+      "WRONG_CAS_REVISION"
+    ],
+    "graph_node_mutations": [
+      "DELETE_NODE",
+      "CORRUPT_NODE_SEAL"
+    ],
+    "graph_edge_mutations": [
+      "WRONG_PARENT_DIGEST",
+      "WRONG_SCOPE_JOIN"
+    ],
+    "positive_per_graph_consumer": true,
+    "operation_record_fields": [
+      "operation_id",
+      "family",
+      "fixture_constructor_id",
+      "target_consumer",
+      "mutation_operator",
+      "mutation_target",
+      "expected_result",
+      "expected_error"
+    ]
+  },
+  "expected_expansion": {
+    "explicit_predecessor_operations": 15,
+    "explicit_b5_operations": 14,
+    "explicit_source_operations": 43,
+    "lifecycle_positive_variants": 30,
+    "lifecycle_forbidden_variants": 16,
+    "lifecycle_payload_mutations": 21,
+    "derived_lifecycle_operations": 853,
+    "derived_graph_operations": 586,
+    "total_executed_operations": 1511,
+    "operation_manifest_sha256": "2c13a363f2535693b11f6b9e61d618bb4a5fc37ef9f4348a3fa74dc6c515e84e"
+  },
+  "authorization": {
+    "green_implementation": false,
+    "production_integration": false,
+    "provider_calls": false,
+    "audit_execution": false,
+    "defaults_or_config_changes": false,
+    "commit_or_push": false
+  }
+}

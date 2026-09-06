@@ -1,5 +1,9 @@
 # Internals
 
+> V3 platform boundary: Windows is currently production-qualified. POSIX code
+> described here is useful implementation substrate, but Linux/macOS native
+> install and E2E support remain gated by `continuation/GOAL.md`.
+
 ## Skill System
 
 Skills are methodology files loaded into agents at instantiation time. Three tiers:
@@ -157,8 +161,9 @@ are.**
 The pipeline driver (`plamen_driver.py`) executes model-owned phases as isolated
 backend subprocesses and mechanical phases as deterministic Python. All public
 invocations (`/plamen-wizard`, terminal `plamen`, `plamen core`, and their L1
-forms) converge on this driver. It runs on Windows, macOS, and Linux against
-either managed Claude Code or Codex (BETA).
+forms) converge on this driver. The portable driver substrate is tested on
+Windows, macOS, and Linux against Claude Code or Codex; the governed installed
+runtime is currently release-qualified only on Windows.
 
 ### Driver layout
 
@@ -210,9 +215,15 @@ The driver runs against two interchangeable CLI backends behind the same `plamen
 - **Claude Code** (default) — config files `CLAUDE.md` + `settings.json` + `mcp.json`.
 - **Codex CLI** (`codex exec`, **BETA / cost-saving**) — OpenAI's CLI as an alternative worker backend, with research-backed model/tier/compact configuration and per-job depth fan-out (one `codex exec` per depth job, which fixes the never-cut-stub halt). Codex model aliases map through `_CODEX_MODEL_MAP` (`scripts/plamen_types.py:128`), config files are `AGENTS.md` + `config.toml`, and `codex_adapter.py` regenerates them from the Claude-side manifests to prevent drift. Codex usage-cap messages are detected in natural language so the driver auto-waits instead of halting, Codex depth runs real Devil's-Advocate iter-2, and `context-exceeded` no longer perma-fails. The active backend is detected at startup (`backend == "codex"`, `scripts/plamen_driver.py:211`) and selected paths/tools are translated only when Codex is active.
 
-### Cross-platform (Windows + macOS + Linux)
+### Cross-platform substrate (Windows + macOS + Linux)
 
-The PTY worker-pool model runs on all three platforms. POSIX hosts (macOS, Linux) use `pty.openpty()` + `Popen` ownership with a `SIGCHLD` reset on spawn; Windows uses `winpty` (see the PTY transport section below). Nested-session env isolation strips `CLAUDE_CODE_*` markers from child workers on every platform, and PATH is persisted into the child environment so backend binaries resolve.
+The PTY worker-pool implementation has platform branches for all three hosts.
+POSIX uses `pty.openpty()` + `Popen` ownership with a `SIGCHLD` reset on spawn;
+Windows uses `winpty` (see the PTY transport section below). This source-level
+portability is not a native POSIX production-support claim: the hardened POSIX
+install dispatcher, crash keeper, and recovery transaction remain continuation
+work. Nested-session environment isolation and backend path propagation are
+tested independently of that release boundary.
 
 ### Ecosystem auto-detection
 

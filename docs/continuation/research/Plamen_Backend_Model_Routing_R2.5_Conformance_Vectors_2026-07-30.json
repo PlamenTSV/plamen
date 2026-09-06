@@ -1,0 +1,707 @@
+{
+  "schema": "plamen.model-routing-r2.5-conformance-vectors.v1",
+  "version": 1,
+  "blocking_review": {
+    "file": "backend_model_routing_r2_4_independent_review_r1_20260730.md",
+    "whole_sha256": "40c3468e08a5a615295e93e9189c7a53eb7af668a49f48e45a834aa55c1e06b8",
+    "body_sha256": "0d076d5f78947fdcf9fba9dcd8c451cbf4226d5121fad9323191b30fe9f2f207",
+    "declared_unexpected_accept_manifest_sha256": "61981cac2042e9c7854737e6de759ef6fae2f3fe7ad405f721b431e8dbceabca",
+    "recomputed_restricted_json_manifest_sha256": "fad68edc4f82e09c0eed8d5bc1139e389e32c70f14efa783bb419d93bcbf8f9b",
+    "unexpected_accept_count": 48
+  },
+  "preserved_denominators": {
+    "r2_3": {
+      "validator_sha256": "584fbc05a60929a761a1987928a8d97eb1931593d2c8445c42d3c622eb938581",
+      "vectors_sha256": "6e9e0db8df0727dd37c78483151e62bd041f8951a1ddcf0d7698f367cd37d625",
+      "count": 186
+    },
+    "r2_4": {
+      "guide_sha256": "065d094e562bcc09a1c720ed7a22ffb666bdc4aa015d745c7c2617dc9fe48a17",
+      "schema_sha256": "1d8895bbfbda3d44c5dd58acf3df029b700664b9bca9e1986dbc8d83dbcc4381",
+      "vectors_sha256": "e046e589cf830ba31fa608ab0ec2c650e2aff555f1fe2a5698f261f12f2079c9",
+      "validator_sha256": "47c0d70771abe13713d7bd2cf6e87773ae1ea30eab755da712a789d8ec42ff87",
+      "receipt_sha256": "467f64365cd68c5cdf7ca09956d33a0553084e0266a014139c3a4a9184a3e02a",
+      "count": 314
+    }
+  },
+  "expansion_rules": {
+    "review_probe": "Each reviewer label constructs the valid R2.5 closure, mutates the named record/authority edge, recomputes that record and necessary descendants, and calls a real schema, closure, resume, proof, neutral-evidence, or environment validator.",
+    "author_probe": "Each author probe uses the same constructed-operation rule; PASS rows assert a positive boundary and negative rows require the exact invariant error.",
+    "no_direct_raise": "Scenario dispatch may not manufacture the expected error. Expected errors arise only from a reusable validation operation also called by the valid closure.",
+    "preservation": "The offline R2.5 validator hash-checks and executes the frozen R2.3 and R2.4 validators before any R2.5 row."
+  },
+  "r2_5_vectors": [
+    {
+      "id": "R2.5-001",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "rehashed WorkPlan request substitution",
+      "scenario": "rehashed WorkPlan request substitution",
+      "expected": "WORKPLAN_REQUEST_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-002",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "rehashed PhaseIO request substitution",
+      "scenario": "rehashed PhaseIO request substitution",
+      "expected": "PHASEIO_REQUEST_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-003",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "control cross-record substitution request_digest",
+      "scenario": "control cross-record substitution request_digest",
+      "expected": "CONTROL_REQUEST_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-004",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "control cross-record substitution semantic_plan_digest",
+      "scenario": "control cross-record substitution semantic_plan_digest",
+      "expected": "CONTROL_SEMANTIC_PLAN_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-005",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "control cross-record substitution model_route_digest",
+      "scenario": "control cross-record substitution model_route_digest",
+      "expected": "CONTROL_ROUTE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-006",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "control cross-record substitution requested_effort",
+      "scenario": "control cross-record substitution requested_effort",
+      "expected": "CONTROL_EFFORT_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-007",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "control cross-record substitution requested_thinking_mode",
+      "scenario": "control cross-record substitution requested_thinking_mode",
+      "expected": "CONTROL_THINKING_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-008",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "control cross-record substitution environment_policy_set_digest",
+      "scenario": "control cross-record substitution environment_policy_set_digest",
+      "expected": "CONTROL_ENVIRONMENT_POLICY_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-009",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "control cross-record substitution secret_proof_policy_digest",
+      "scenario": "control cross-record substitution secret_proof_policy_digest",
+      "expected": "CONTROL_SECRET_PROOF_POLICY_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-010",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "launch cross-record substitution semantic_plan_digest",
+      "scenario": "launch cross-record substitution semantic_plan_digest",
+      "expected": "LAUNCH_SEMANTIC_PLAN_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-011",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "launch cross-record substitution execution_axes_digest",
+      "scenario": "launch cross-record substitution execution_axes_digest",
+      "expected": "LAUNCH_AXES_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-012",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "launch cross-record substitution provider_profile_digest",
+      "scenario": "launch cross-record substitution provider_profile_digest",
+      "expected": "LAUNCH_PROFILE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-013",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "launch cross-record substitution input_authority_set_digest",
+      "scenario": "launch cross-record substitution input_authority_set_digest",
+      "expected": "LAUNCH_INPUT_AUTHORITY_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-014",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "launch cross-record substitution model_route_digest",
+      "scenario": "launch cross-record substitution model_route_digest",
+      "expected": "LAUNCH_ROUTE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-015",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "launch cross-record substitution budget_authority_digest",
+      "scenario": "launch cross-record substitution budget_authority_digest",
+      "expected": "LAUNCH_BUDGET_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-016",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "launch cross-record substitution provider_control_vector_digest",
+      "scenario": "launch cross-record substitution provider_control_vector_digest",
+      "expected": "LAUNCH_CONTROL_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-017",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "launch cross-record substitution work_plan_routing_binding_digest",
+      "scenario": "launch cross-record substitution work_plan_routing_binding_digest",
+      "expected": "LAUNCH_WORKPLAN_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-018",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "launch cross-record substitution tool_policy_digest",
+      "scenario": "launch cross-record substitution tool_policy_digest",
+      "expected": "LAUNCH_TOOL_POLICY_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-019",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "observation cross-record substitution request_digest",
+      "scenario": "observation cross-record substitution request_digest",
+      "expected": "OBSERVATION_REQUEST_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-020",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "observation cross-record substitution execution_axes_digest",
+      "scenario": "observation cross-record substitution execution_axes_digest",
+      "expected": "OBSERVATION_AXES_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-021",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "observation cross-record substitution provider_profile_digest",
+      "scenario": "observation cross-record substitution provider_profile_digest",
+      "expected": "OBSERVATION_PROFILE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-022",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "observation cross-record substitution model_route_digest",
+      "scenario": "observation cross-record substitution model_route_digest",
+      "expected": "OBSERVATION_ROUTE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-023",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "observation cross-record substitution consumed_launch_authority_digest",
+      "scenario": "observation cross-record substitution consumed_launch_authority_digest",
+      "expected": "OBSERVATION_CONSUMED_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-024",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "observation cross-record substitution public_materialized_environment_digest",
+      "scenario": "observation cross-record substitution public_materialized_environment_digest",
+      "expected": "OBSERVATION_ENVIRONMENT_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-025",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "requested values plus unjoined arbitrary evidence digests",
+      "scenario": "requested values plus unjoined arbitrary evidence digests",
+      "expected": "OBSERVATION_EVIDENCE_MEMBERSHIP_MISMATCH"
+    },
+    {
+      "id": "R2.5-026",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "retry identity closure drift with empty changed set",
+      "scenario": "retry identity closure drift with empty changed set",
+      "expected": "RESUME_RETRY_IDENTITY_DRIFT"
+    },
+    {
+      "id": "R2.5-027",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "new generation claims change with identical closure",
+      "scenario": "new generation claims change with identical closure",
+      "expected": "RESUME_NEW_GENERATION_UNCHANGED"
+    },
+    {
+      "id": "R2.5-028",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "NO_RELAUNCH_COMPLETED arbitrary lifecycle fields",
+      "scenario": "NO_RELAUNCH_COMPLETED arbitrary lifecycle fields",
+      "expected": "RESUME_COMPLETED_EVIDENCE_MISMATCH"
+    },
+    {
+      "id": "R2.5-029",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "AMBIGUOUS_CONSUMED_DEBT arbitrary lifecycle fields",
+      "scenario": "AMBIGUOUS_CONSUMED_DEBT arbitrary lifecycle fields",
+      "expected": "RESUME_AMBIGUITY_EVIDENCE_MISMATCH"
+    },
+    {
+      "id": "R2.5-030",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "secret raw environment omitted from public projection and proof disabled",
+      "scenario": "secret raw environment omitted from public projection and proof disabled",
+      "expected": "ENVIRONMENT_POLICY_COMPLETENESS_MISMATCH"
+    },
+    {
+      "id": "R2.5-031",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "ephemeral proof API omits AttemptLaunchEnvelopeV3 digest",
+      "scenario": "ephemeral proof API omits AttemptLaunchEnvelopeV3 digest",
+      "expected": "PROOF_ENVELOPE_REQUIRED"
+    },
+    {
+      "id": "R2.5-032",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "non-256-bit process/object nonce accepted",
+      "scenario": "non-256-bit process/object nonce accepted",
+      "expected": "PROOF_NONCE_LENGTH_INVALID"
+    },
+    {
+      "id": "R2.5-033",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "spawn capability authority/proof mutation",
+      "scenario": "spawn capability authority/proof mutation",
+      "expected": "SPAWN_CAPABILITY_ENVELOPE_MISMATCH"
+    },
+    {
+      "id": "R2.5-034",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "policy-stable profile semantic mutation environment_policy_set_names",
+      "scenario": "policy-stable profile semantic mutation environment_policy_set_names",
+      "expected": "PROFILE_SEMANTICS_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-035",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "policy-stable profile semantic mutation settings_selection_policy",
+      "scenario": "policy-stable profile semantic mutation settings_selection_policy",
+      "expected": "PROFILE_SEMANTICS_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-036",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "policy-stable profile semantic mutation mcp_selection_policy",
+      "scenario": "policy-stable profile semantic mutation mcp_selection_policy",
+      "expected": "PROFILE_SEMANTICS_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-037",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "policy-stable profile semantic mutation stream_max_bytes",
+      "scenario": "policy-stable profile semantic mutation stream_max_bytes",
+      "expected": "PROFILE_SEMANTICS_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-038",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "policy-stable profile semantic mutation stream_max_events",
+      "scenario": "policy-stable profile semantic mutation stream_max_events",
+      "expected": "PROFILE_SEMANTICS_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-039",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "policy-stable profile semantic mutation isolation_policy",
+      "scenario": "policy-stable profile semantic mutation isolation_policy",
+      "expected": "PROFILE_SEMANTICS_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-040",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "dated forbidden model alias provider-default-20260701",
+      "scenario": "dated forbidden model alias provider-default-20260701",
+      "expected": "MODEL_ALIAS_FORBIDDEN"
+    },
+    {
+      "id": "R2.5-041",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "dated forbidden model alias auto-20260701",
+      "scenario": "dated forbidden model alias auto-20260701",
+      "expected": "MODEL_ALIAS_FORBIDDEN"
+    },
+    {
+      "id": "R2.5-042",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "dated forbidden model alias latest-20260701",
+      "scenario": "dated forbidden model alias latest-20260701",
+      "expected": "MODEL_ALIAS_FORBIDDEN"
+    },
+    {
+      "id": "R2.5-043",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "closed auth mapping mismatch API_KEY/CLAUDE_CODE_OAUTH",
+      "scenario": "closed auth mapping mismatch API_KEY/CLAUDE_CODE_OAUTH",
+      "expected": "ROUTE_TUPLE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-044",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "closed auth mapping mismatch STORED_SUBSCRIPTION/ANTHROPIC_API_KEY",
+      "scenario": "closed auth mapping mismatch STORED_SUBSCRIPTION/ANTHROPIC_API_KEY",
+      "expected": "ROUTE_TUPLE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-045",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "capability inverted validity interval",
+      "scenario": "capability inverted validity interval",
+      "expected": "CAPABILITY_INTERVAL_INVALID"
+    },
+    {
+      "id": "R2.5-046",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "capability malformed validity timestamp",
+      "scenario": "capability malformed validity timestamp",
+      "expected": "UTC_TIMESTAMP_INVALID"
+    },
+    {
+      "id": "R2.5-047",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "fabricated self-consistent Codex parity witness",
+      "scenario": "fabricated self-consistent Codex parity witness",
+      "expected": "CODEX_NEUTRAL_EVIDENCE_MISMATCH"
+    },
+    {
+      "id": "R2.5-048",
+      "source": "R2.4_INDEPENDENT_REVIEW_R1",
+      "review_label": "downstream COMPLETE without evidence authorities",
+      "scenario": "downstream COMPLETE without evidence authorities",
+      "expected": "DOWNSTREAM_COMPLETE_EVIDENCE_REQUIRED"
+    },
+    {
+      "id": "R2.5-049",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "launch missing thinking authority",
+      "expected": "SCHEMA_REQUIRED_FIELD"
+    },
+    {
+      "id": "R2.5-050",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "launch missing loaded customization authority",
+      "expected": "SCHEMA_REQUIRED_FIELD"
+    },
+    {
+      "id": "R2.5-051",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "control customization authority substitution",
+      "expected": "CONTROL_CUSTOMIZATION_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-052",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "customization predecessor loaded-set substitution",
+      "expected": "CUSTOMIZATION_PREDECESSOR_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-053",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "customization predecessor effort substitution",
+      "expected": "CUSTOMIZATION_PREDECESSOR_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-054",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "customization predecessor thinking substitution",
+      "expected": "CUSTOMIZATION_PREDECESSOR_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-055",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "manual thinking on with null budget",
+      "expected": "SCHEMA_VALIDATION_ERROR"
+    },
+    {
+      "id": "R2.5-056",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "manual thinking off with positive budget",
+      "expected": "SCHEMA_VALIDATION_ERROR"
+    },
+    {
+      "id": "R2.5-057",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "not-applicable effort capability valid",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5-058",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "not-applicable effort route mismatch",
+      "expected": "ROUTE_EFFORT_APPLICABILITY_MISMATCH"
+    },
+    {
+      "id": "R2.5-059",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "observation thinking claim absent",
+      "expected": "OBSERVATION_EVIDENCE_MEMBERSHIP_MISMATCH"
+    },
+    {
+      "id": "R2.5-060",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "request customization authority substitution",
+      "expected": "REQUEST_CUSTOMIZATION_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-061",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "phaseio customization authority substitution",
+      "expected": "PHASEIO_CUSTOMIZATION_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-062",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "envelope customization authority substitution",
+      "expected": "ENVELOPE_CUSTOMIZATION_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-063",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "resume loaded-customization single-field change",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5-064",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "workplan semantic-plan substitution",
+      "expected": "WORKPLAN_SEMANTIC_PLAN_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-065",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "workplan profile-semantics substitution",
+      "expected": "WORKPLAN_PROFILE_SEMANTICS_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-066",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "phaseio workplan-binding substitution",
+      "expected": "PHASEIO_WORKPLAN_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-067",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "control profile-semantics substitution",
+      "expected": "CONTROL_PROFILE_SEMANTICS_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-068",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "launch routing-root substitution",
+      "expected": "LAUNCH_ROOT_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-069",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "arm request substitution",
+      "expected": "ARM_REQUEST_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-070",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "arm launch substitution",
+      "expected": "ARM_LAUNCH_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-071",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "attempt arm substitution",
+      "expected": "ATTEMPT_ARM_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-072",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "envelope request substitution",
+      "expected": "ENVELOPE_REQUEST_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-073",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "envelope public-environment substitution",
+      "expected": "ENVELOPE_ENVIRONMENT_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-074",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "consumed envelope substitution",
+      "expected": "CONSUMED_ENVELOPE_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-075",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "observation attempt substitution",
+      "expected": "OBSERVATION_ATTEMPT_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-076",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "observation manifest substitution",
+      "expected": "OBSERVATION_EVIDENCE_MEMBERSHIP_MISMATCH"
+    },
+    {
+      "id": "R2.5-077",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "observation thinking-claim substitution",
+      "expected": "OBSERVATION_EVIDENCE_MEMBERSHIP_MISMATCH"
+    },
+    {
+      "id": "R2.5-078",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "independent root semantic-plan descendant rehash",
+      "expected": "REQUEST_SEMANTIC_PLAN_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-079",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "proof rejects historical V3 as V4",
+      "expected": "PROOF_ENVELOPE_VERSION_MISMATCH"
+    },
+    {
+      "id": "R2.5-080",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "proof envelope self-digest tamper",
+      "expected": "RECORD_SELF_DIGEST_MISMATCH"
+    },
+    {
+      "id": "R2.5-081",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "proof envelope substitution after construction",
+      "expected": "PROOF_ENVELOPE_MISMATCH"
+    },
+    {
+      "id": "R2.5-082",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "proof Unicode boundary unambiguous",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5-083",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "proof empty value unambiguous",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5-084",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "proof name-value swap detected",
+      "expected": "EPHEMERAL_SECRET_PROOF_MISMATCH"
+    },
+    {
+      "id": "R2.5-085",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "public policy omitted row",
+      "expected": "ENVIRONMENT_POLICY_COMPLETENESS_MISMATCH"
+    },
+    {
+      "id": "R2.5-086",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "public policy extra raw name",
+      "expected": "ENVIRONMENT_POLICY_COMPLETENESS_MISMATCH"
+    },
+    {
+      "id": "R2.5-087",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "public policy secrecy misclassification",
+      "expected": "ENVIRONMENT_CLASSIFICATION_MISMATCH"
+    },
+    {
+      "id": "R2.5-088",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "public policy case collision",
+      "expected": "ENVIRONMENT_NAME_COLLISION"
+    },
+    {
+      "id": "R2.5-089",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "public policy present-absent mismatch",
+      "expected": "ENVIRONMENT_PRESENCE_MISMATCH"
+    },
+    {
+      "id": "R2.5-090",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "profile semantics root row reorder",
+      "expected": "PROFILE_SEMANTICS_ORDER_INVALID"
+    },
+    {
+      "id": "R2.5-091",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "profile selected semantics row substitution",
+      "expected": "PROFILE_SEMANTICS_JOIN_MISMATCH"
+    },
+    {
+      "id": "R2.5-092",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "profile registry root substitution",
+      "expected": "PROFILE_REGISTRY_ROOT_MISMATCH"
+    },
+    {
+      "id": "R2.5-093",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "route model absent from manifest",
+      "expected": "ROUTE_MODEL_MEMBERSHIP_MISMATCH"
+    },
+    {
+      "id": "R2.5-094",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "capability evaluation equals expiry",
+      "expected": "CAPABILITY_EXPIRED"
+    },
+    {
+      "id": "R2.5-095",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "capability not yet valid",
+      "expected": "CAPABILITY_NOT_YET_VALID"
+    },
+    {
+      "id": "R2.5-096",
+      "source": "R2.5_AUTHOR_ADVERSARIAL",
+      "review_label": null,
+      "scenario": "resume multiple simultaneous changes exact",
+      "expected": "PASS"
+    }
+  ]
+}

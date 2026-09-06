@@ -1,0 +1,263 @@
+{
+  "schema": "plamen.model-routing-r2.5.2-conformance-vectors.v1",
+  "version": 1,
+  "blocking_review": {
+    "file": "backend_model_routing_r2_5_1_independent_review_r1_20260730.md",
+    "whole_sha256": "255952072991a889bb7119d744eabc1c77570bd9701f5f8ddd22d314663edf9a",
+    "body_sha256": "c769bf229a2046456a7424457028953edf8256b42b5f098c8bbd839b8e319276",
+    "fresh_operations": 73,
+    "unexpected_accepts": 15
+  },
+  "preserved_denominator": {
+    "r2_5_1_validator_sha256": "48bba3d1b90ebab113064983382f582b749a719728d336accb9a7d4cd115b685",
+    "r2_5_1_vectors_sha256": "e4e3804b86ab4251902ebdbafc99f5acae3d1409bd56255c730b345fb9c6b9e8",
+    "executed_total": 646
+  },
+  "manifest_adjudication": {
+    "historical_declared_sha256": "61981cac2042e9c7854737e6de759ef6fae2f3fe7ad405f721b431e8dbceabca",
+    "reproducible_truth_sha256": "fad68edc4f82e09c0eed8d5bc1139e389e32c70f14efa783bb419d93bcbf8f9b",
+    "restricted_json_bytes": 2851
+  },
+  "r2_5_2_vectors": [
+    {
+      "id": "R2.5.2-001",
+      "blocker": "B1",
+      "scenario": "post-mint secret presence policy mutation",
+      "expected": "VALIDATED_CLOSURE_POLICY_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-002",
+      "blocker": "B1",
+      "scenario": "post-mint non-secret source class mutation",
+      "expected": "VALIDATED_CLOSURE_POLICY_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-003",
+      "blocker": "B1",
+      "scenario": "post-mint consumed spawn-state mutation",
+      "expected": "VALIDATED_CLOSURE_CONSUME_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-004",
+      "blocker": "B1",
+      "scenario": "post-mint consumed CAS mutation",
+      "expected": "VALIDATED_CLOSURE_CONSUME_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-005",
+      "blocker": "B1",
+      "scenario": "policy-row seal mutation at sink",
+      "expected": "RECORD_SELF_DIGEST_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-006",
+      "blocker": "B1",
+      "scenario": "consumed-record seal mutation at sink",
+      "expected": "RECORD_SELF_DIGEST_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-007",
+      "blocker": "B1",
+      "scenario": "validated closure external mutation is isolated",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.2-008",
+      "blocker": "B1",
+      "scenario": "valid consume-then-proof-then-spawn order",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.2-009",
+      "blocker": "B2",
+      "scenario": "resume raw current records forbidden",
+      "expected": "RESUME_VALIDATED_CLOSURE_REQUIRED"
+    },
+    {
+      "id": "R2.5.2-010",
+      "blocker": "B2",
+      "scenario": "resume cross-run prior authority",
+      "expected": "RESUME_RUN_SCOPE_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-011",
+      "blocker": "B2",
+      "scenario": "resume external records mutation is isolated",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.2-012",
+      "blocker": "B2",
+      "scenario": "forged validated-closure constructor",
+      "expected": "VALIDATED_CLOSURE_CONSTRUCTOR_PRIVATE"
+    },
+    {
+      "id": "R2.5.2-013",
+      "blocker": "B2",
+      "scenario": "validated closure store snapshot mismatch",
+      "expected": "VALIDATED_CLOSURE_STORE_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-014",
+      "blocker": "B2",
+      "scenario": "fabricated prior and current closure",
+      "expected": "RESUME_VALIDATED_CLOSURE_REQUIRED"
+    },
+    {
+      "id": "R2.5.2-015",
+      "blocker": "B2",
+      "scenario": "resume current generation mismatch",
+      "expected": "RESUME_CURRENT_SCOPE_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-016",
+      "blocker": "B2",
+      "scenario": "valid resume from immutable closure",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.2-017",
+      "blocker": "B3",
+      "scenario": "full closure fabricated legacy observation",
+      "expected": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-018",
+      "blocker": "B3",
+      "scenario": "full closure caller-authored legacy proof rule",
+      "expected": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-019",
+      "blocker": "B3",
+      "scenario": "neutral unknown thinking state",
+      "expected": "NEUTRAL_STATE_GRAMMAR_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-020",
+      "blocker": "B3",
+      "scenario": "neutral unknown fallback state",
+      "expected": "NEUTRAL_STATE_GRAMMAR_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-021",
+      "blocker": "B3",
+      "scenario": "neutral unknown terminal category",
+      "expected": "NEUTRAL_STATE_GRAMMAR_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-022",
+      "blocker": "B3",
+      "scenario": "neutral malformed usage object",
+      "expected": "PROVIDER_USAGE_SCHEMA_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-023",
+      "blocker": "B3",
+      "scenario": "full closure omits provider artifact",
+      "expected": "MANDATORY_PROVIDER_ARTIFACT_REQUIRED"
+    },
+    {
+      "id": "R2.5.2-024",
+      "blocker": "B3",
+      "scenario": "neutral evidence mutated after closure",
+      "expected": "VALIDATED_CLOSURE_NEUTRAL_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-025",
+      "blocker": "B3",
+      "scenario": "neutral claim order mutation",
+      "expected": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-026",
+      "blocker": "B3",
+      "scenario": "neutral claim count mutation",
+      "expected": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-027",
+      "blocker": "B3",
+      "scenario": "neutral raw-stream digest mutation",
+      "expected": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-028",
+      "blocker": "B3",
+      "scenario": "neutral usage digest mutation",
+      "expected": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-029",
+      "blocker": "B3",
+      "scenario": "valid mandatory neutral closure",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.2-030",
+      "blocker": "B4",
+      "scenario": "transaction parent-set internal key mismatch",
+      "expected": "AUTHORITY_STORE_KEY_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-031",
+      "blocker": "B4",
+      "scenario": "cross-run transaction parent set",
+      "expected": "AUTHORITY_STORE_RUN_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-032",
+      "blocker": "B4",
+      "scenario": "extra untyped store record",
+      "expected": "AUTHORITY_STORE_NAMESPACE_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-033",
+      "blocker": "B4",
+      "scenario": "extra raw-secret store record",
+      "expected": "AUTHORITY_STORE_NAMESPACE_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-034",
+      "blocker": "B4",
+      "scenario": "store revision rollback",
+      "expected": "AUTHORITY_STORE_REVISION_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-035",
+      "blocker": "B4",
+      "scenario": "cross-run current snapshot",
+      "expected": "AUTHORITY_STORE_RUN_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-036",
+      "blocker": "B4",
+      "scenario": "current-run authority seal tamper",
+      "expected": "RECORD_SELF_DIGEST_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-037",
+      "blocker": "B4",
+      "scenario": "current-run root binding mismatch",
+      "expected": "CURRENT_RUN_AUTHORITY_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-038",
+      "blocker": "B4",
+      "scenario": "current-run proof-rule binding mismatch",
+      "expected": "CURRENT_RUN_AUTHORITY_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-039",
+      "blocker": "B4",
+      "scenario": "missing current-run namespace member",
+      "expected": "AUTHORITY_STORE_NAMESPACE_MISMATCH"
+    },
+    {
+      "id": "R2.5.2-040",
+      "blocker": "B4",
+      "scenario": "valid exact run-scoped namespace",
+      "expected": "PASS"
+    }
+  ]
+}

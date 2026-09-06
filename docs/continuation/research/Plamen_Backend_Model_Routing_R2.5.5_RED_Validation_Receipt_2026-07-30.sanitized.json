@@ -1,0 +1,88 @@
+{
+  "schema": "plamen.model-routing-r2.5.5-red-validation-receipt.v1",
+  "version": 1,
+  "date": "2026-07-30",
+  "disposition": "AUTHOR_SELF_VALIDATED_RED_INDEPENDENT_ACCEPTANCE_REQUIRED",
+  "package": {
+    "engineering_plan": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\Plamen_Backend_Model_Routing_R2.5.5_RED_Engineering_Plan_2026-07-30.md",
+      "sha256": "0c956c956285735740bc256f04922b78d2a38b4aaf876cbcf85507dced3fa160"
+    },
+    "schemas": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\Plamen_Backend_Model_Routing_R2.5.5_RED_Schemas_2026-07-30.json",
+      "sha256": "8c8e1638746592c5914c901a8b7730a6a3117a7ccf97b397d0596a4b91255c4e"
+    },
+    "operation_vectors": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\Plamen_Backend_Model_Routing_R2.5.5_RED_Operation_Vectors_2026-07-30.json",
+      "sha256": "925a3d6eee98bd501801e568bd80af6d84f16a3c2e819070cbf1e89f31ed2f16"
+    },
+    "validator": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\validate_plamen_model_routing_r2_5_5_red.py",
+      "sha256": "c7fd22124e72a14902d46b39d8dde4d79f1aaa658d44e8607796564eadb5b827"
+    }
+  },
+  "review_boundary": {
+    "path": "<LOCAL_USER_ROOT>\\plamen-codex-implementation\\review_fixtures\\backend_model_routing_r2_5_4_red_independent_review_r1_20260730.md",
+    "body_sha256": "25723133c196edd6a94a2e7f677811d3535fd2c65a3fd9364de5c044cf046ebd",
+    "whole_sha256": "82b0bdb39cca446bacb2bddc596c81562b22cec9e2be0e3c5268a9fb53f4b9c9",
+    "verdict": "BLOCK"
+  },
+  "frozen_predecessors": {
+    "r2_5_4_validator_sha256": "764d3a741cbb195f325794c8c0b03352ef4fc6de1f49cd0a9f4d186fd06cae2d",
+    "r2_5_2_validator_sha256": "54308ee13491bf43ab006d65b11bb4c60e70f620d17eb8b209288ef2ac5a785c"
+  },
+  "execution": {
+    "run_count": 2,
+    "run_1_exit_code": 0,
+    "run_2_exit_code": 0,
+    "stdout_byte_length": 878,
+    "run_1_stdout_sha256": "31c991fb7820fc69055565b069aad3af1078af76829c644b41a8cb050fe63ccd",
+    "run_2_stdout_sha256": "31c991fb7820fc69055565b069aad3af1078af76829c644b41a8cb050fe63ccd",
+    "stdout_byte_stable": true,
+    "stderr_empty": true,
+    "operation_manifest_sha256": "84f6b5a77b3a7a9fe124db171683d7e1549a03214796cf96179a4b4b10292da1",
+    "p15_evidence_manifest_sha256": "ee2cde9dc8ef0a4765b2e0f735f5bc557f09ec15ac88f5043094a102c9bf54ab",
+    "executed_operations": {
+      "p15_evidence": 15,
+      "p15_integrity": 4,
+      "preserved_b5": 14,
+      "preserved_source": 43,
+      "lifecycle_schema": 246,
+      "branch_matrix": 52,
+      "semantic_graph": 7246,
+      "total": 7620,
+      "family_count": 11
+    }
+  },
+  "static_and_adversarial_checks": {
+    "draft_2020_12_meta_schema": "PASS",
+    "strict_ascii_lf_final_lf": "PASS",
+    "placeholder_scan": "PASS",
+    "generic_scenario_dispatch_absent": "PASS",
+    "expected_error_self_generation_absent": "PASS",
+    "closed_p15_callable_registry": "PASS",
+    "p15_actual_input_digest_binding": "PASS",
+    "outer_and_payload_extra_field_rejection": "PASS",
+    "invented_c_q_t_state_rejection": "PASS",
+    "incompatible_q_next_and_t_parent_rejection": "PASS",
+    "real_record_schema_and_semantic_mutation_rejection": "PASS",
+    "all_17_branches_through_current_and_resume": "PASS",
+    "direct_and_observed_provider_spool": "PASS"
+  },
+  "honest_limits": [
+    "This is an out-of-tree RED intended-interface denominator, not a production adapter.",
+    "It does not prove production source provenance or real OS no-follow I/O behavior.",
+    "It performs no provider or network execution and proves no provider behavior.",
+    "It launches no audit and makes no audit recall or precision claim.",
+    "The author run is not independent acceptance."
+  ],
+  "authorization": {
+    "green_implementation": false,
+    "production_integration": false,
+    "provider_calls": false,
+    "audit_execution": false,
+    "defaults_or_config_changes": false,
+    "commit_or_push": false,
+    "cutover": false
+  }
+}

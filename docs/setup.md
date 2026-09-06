@@ -1,12 +1,12 @@
 # Setup Guide
 
-This guide installs Plamen for smart-contract and L1 audits on Windows and
-admitted Linux hosts. Both Claude and Codex audit backends are included in the
-same governed installation.
+This guide installs Plamen for smart-contract and L1 audits on the currently
+qualified Windows production host. Both Claude and Codex audit backends are
+included in the same governed installation.
 
-Native macOS production installation and E2E auditing are not yet supported:
-the governed package transaction and worker-containment layers fail closed on
-Darwin. Mac users can continue source development on arm64 or x86_64 with
+Native Linux and macOS production installation and E2E auditing are not yet
+supported: V3's governed package transaction, keeper, and recovery transport
+remain Windows-native. Mac users can continue source development on arm64 or x86_64 with
 [`scripts/bootstrap_macos_dev.sh`](../scripts/bootstrap_macos_dev.sh). Follow
 the [macOS development guide](development/macos.md) and
 [machine-migration guide](development/machine-migration.md); the remaining
@@ -44,17 +44,10 @@ provided tools whose upstream installation channel cannot be pinned safely.
 Use a dedicated source directory. Do not clone into `~/.plamen`: that path is
 reserved for the authenticated installed package.
 
-Linux:
-
-```bash
-git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME/plamen-source"
-cd "$HOME/plamen-source"
-```
-
 Windows PowerShell:
 
 ```powershell
-git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source"
+git clone --branch Plamen-v3 --single-branch --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source"
 Set-Location "$HOME\plamen-source"
 ```
 
@@ -70,12 +63,6 @@ content. Never overwrite an existing source or installed directory to repair
 an incomplete download.
 
 ## Install
-
-Linux:
-
-```bash
-python3.12 plamen.py install
-```
 
 Windows PowerShell, with `python` resolving to CPython 3.12:
 
@@ -112,14 +99,9 @@ validate the bounded native resource closure for the chosen backend.
 
 ## PATH
 
-The installed front is:
-
-- Linux: `~/.local/bin/plamen`
-- Windows: `%USERPROFILE%\.local\bin\plamen.cmd`
-
-Add `~/.local/bin` to PATH with your normal shell or operating-system settings
-if it is not already present. Do not add the source directory or `~/.plamen`
-itself to PATH.
+The installed front is `%USERPROFILE%\.local\bin\plamen.cmd`. Add its directory
+to PATH with your normal operating-system settings if needed. Do not add the
+source directory or `~/.plamen` itself to PATH.
 
 ## Verify
 

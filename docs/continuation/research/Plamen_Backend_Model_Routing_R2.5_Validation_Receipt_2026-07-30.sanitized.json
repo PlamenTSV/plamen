@@ -1,0 +1,120 @@
+{
+  "schema": "plamen.model-routing-r2.5-validation-receipt.v1",
+  "version": 1,
+  "date": "2026-07-30",
+  "disposition": "AUTHOR_SELF_VALIDATED_INDEPENDENT_REVIEW_REQUIRED_NOT_CUTOVER_AUTHORIZED",
+  "change_boundary": "Design and offline conformance artifacts only. No repository production, test, provider, install, audit, default, commit, push, or cutover mutation was authorized in this lane.",
+  "blocking_review": {
+    "file": "backend_model_routing_r2_4_independent_review_r1_20260730.md",
+    "whole_sha256": "40c3468e08a5a615295e93e9189c7a53eb7af668a49f48e45a834aa55c1e06b8",
+    "body_sha256": "0d076d5f78947fdcf9fba9dcd8c451cbf4226d5121fad9323191b30fe9f2f207",
+    "unexpected_accept_count": 48,
+    "declared_restricted_json_bytes": 2851,
+    "declared_unexpected_accept_manifest_sha256": "61981cac2042e9c7854737e6de759ef6fae2f3fe7ad405f721b431e8dbceabca",
+    "recomputed_restricted_json_bytes": 2851,
+    "recomputed_restricted_json_manifest_sha256": "fad68edc4f82e09c0eed8d5bc1139e389e32c70f14efa783bb419d93bcbf8f9b",
+    "discrepancy_disposition": "PRESERVED_EXPLICITLY_FOR_INDEPENDENT_ADJUDICATION"
+  },
+  "frozen_denominators": {
+    "r2_3": {
+      "validator_file": "validate_plamen_model_routing_r2_3.py",
+      "validator_sha256": "584fbc05a60929a761a1987928a8d97eb1931593d2c8445c42d3c622eb938581",
+      "vectors_file": "Plamen_Backend_Model_Routing_R2.3_Conformance_Vectors_2026-07-29.json",
+      "vectors_sha256": "6e9e0db8df0727dd37c78483151e62bd041f8951a1ddcf0d7698f367cd37d625",
+      "executed_vectors": 186,
+      "result": "PASS"
+    },
+    "r2_4": {
+      "guide_sha256": "065d094e562bcc09a1c720ed7a22ffb666bdc4aa015d745c7c2617dc9fe48a17",
+      "schema_sha256": "1d8895bbfbda3d44c5dd58acf3df029b700664b9bca9e1986dbc8d83dbcc4381",
+      "vectors_sha256": "e046e589cf830ba31fa608ab0ec2c650e2aff555f1fe2a5698f261f12f2079c9",
+      "validator_sha256": "47c0d70771abe13713d7bd2cf6e87773ae1ea30eab755da712a789d8ec42ff87",
+      "receipt_sha256": "467f64365cd68c5cdf7ca09956d33a0553084e0266a014139c3a4a9184a3e02a",
+      "executed_total_vectors": 314,
+      "result": "PASS"
+    }
+  },
+  "package": [
+    {
+      "file": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.5_2026-07-30.md",
+      "bytes": 17277,
+      "lines_lf": 359,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "4f3f0258117e01153b6dc9c63e54f74f720d4eec42fda1a41e5b042993535b09"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.5_Schemas_2026-07-30.json",
+      "bytes": 90950,
+      "lines_lf": 3430,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "2ff6c92d1d965fef45f539b2102a949c7da66652d7ea4288ee17f29d35dd4806"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.5_Conformance_Vectors_2026-07-30.json",
+      "bytes": 26496,
+      "lines_lf": 707,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "51ffcb40264984033f0150f07f737a01a0077733dd4acdf58a3746fc01fda0ac"
+    },
+    {
+      "file": "validate_plamen_model_routing_r2_5.py",
+      "bytes": 173119,
+      "lines_lf": 4581,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "d95b245e41615c988ed529f07c1decbd8f3ac2ed1966661609e2c08efe1217e5"
+    }
+  ],
+  "validation": {
+    "isolated_command": "python -I <LOCAL_USER_ROOT>\\Downloads\\validate_plamen_model_routing_r2_5.py",
+    "result": "PASS",
+    "independent_pass_claimed": false,
+    "draft_2020_12_meta_schema": "PASS",
+    "python_compile": "PASS",
+    "duplicate_aware_json": "PASS",
+    "stable_generator_byte_replay": "PASS",
+    "schema_definitions": 45,
+    "r2_3_preserved_vectors": 186,
+    "r2_4_preserved_total_vectors": 314,
+    "r2_5_review_vectors": 48,
+    "r2_5_author_adversarial_vectors": 48,
+    "r2_5_new_vectors": 96,
+    "total_executed_vector_denominator": 596,
+    "unique_requirement_count_claimed": false,
+    "closed_world_secret_alias_probes": 26,
+    "dispatcher_direct_expected_error_raises": 0,
+    "manifest_discrepancy_preserved": true,
+    "schema_sha256_reported_by_validator": "2ff6c92d1d965fef45f539b2102a949c7da66652d7ea4288ee17f29d35dd4806",
+    "vectors_sha256_reported_by_validator": "51ffcb40264984033f0150f07f737a01a0077733dd4acdf58a3746fc01fda0ac",
+    "author_disposition_reported_by_validator": "SELF_VALIDATED_NOT_INDEPENDENT_PASS",
+    "repository_pytest_run": false,
+    "provider_or_audit_process_started": false
+  },
+  "red_to_green_notes": [
+    "The first isolated pass exposed a negative-vector construction that reused the valid requested effort. The validator now selects a schema-valid value different from the actual predecessor-authorized effort.",
+    "The thinking-mode mutation initially used an invalid enum spelling and could fail at schema validation instead of the intended join. It now chooses a different schema-valid non-manual mode and preserves manual-budget validity.",
+    "The R2.5 main path now explicitly checks the Draft 2020-12 meta-schema before record conformance."
+  ],
+  "not_proven": [
+    "independent R2.5 acceptance",
+    "production integration",
+    "real Claude or Codex provider behavior",
+    "current provider pricing or model availability",
+    "native cross-OS production behavior",
+    "downstream runtime, evaluator, BB, repair, packaging, or CI completion",
+    "audit recall",
+    "audit precision",
+    "cutover readiness"
+  ],
+  "provider_calls_or_audits_authorized": false,
+  "production_edits_authorized": false,
+  "commit_or_push_authorized": false,
+  "cutover_authorized": false
+}

@@ -1,0 +1,72 @@
+{
+  "schema": "plamen.model-routing-r2.5.6-green-prep-validation-receipt.v1",
+  "version": 1,
+  "disposition": "SUPERSEDED_R1_BLOCKED_PENDING_R2_FINAL_SOURCE_REBIND",
+  "superseded": true,
+  "supersession_reason": "Independent review R1 proved five self-resealed semantic denominator mutations were accepted; R2 oracle corrections are prepared but await the final driver/source-scope freeze.",
+  "repository": {
+    "root": "<LOCAL_USER_ROOT>/plamen-codex-implementation",
+    "branch": "codex/recall-app-benchmark-r10_1",
+    "head": "67a0f85adc7a8169d79a286908b00bef7adb764a",
+    "working_tree_policy": "EXACT_WORKTREE_BYTES_OVERRIDE_GIT_HEAD"
+  },
+  "artifacts": [
+    {
+      "path": "<LOCAL_USER_ROOT>/Downloads/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Engineering_Plan_2026-07-30.md",
+      "size": 20384,
+      "sha256": "55d6f3c0e993ff770d5da989189863943281512a823d0877c38c1644669f6a13"
+    },
+    {
+      "path": "<LOCAL_USER_ROOT>/Downloads/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Schemas_2026-07-30.json",
+      "size": 15715,
+      "sha256": "25333c13d3b3ac13b7b8550a3d606ebf3888030108cbe8f76b87d77c4fd005d3"
+    },
+    {
+      "path": "<LOCAL_USER_ROOT>/Downloads/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Source_Registry_2026-07-30.json",
+      "size": 21121,
+      "sha256": "1b9b7e88683ed5728491faa79af036909e10e9f16d3e5998db5a09eb345b9fa7"
+    },
+    {
+      "path": "<LOCAL_USER_ROOT>/Downloads/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_RED_Vectors_2026-07-30.json",
+      "size": 14777,
+      "sha256": "b7849d19c88541f0247b8a7f97c8b1e05f11e4cb0e4cac09d3364d7ed36abdae"
+    },
+    {
+      "path": "<LOCAL_USER_ROOT>/Downloads/validate_plamen_model_routing_r2_5_6_green_prep.py",
+      "size": 28674,
+      "sha256": "43afcef9e4a1d27295ca3503fea0f0798744de75d23f7b774ad3dabe90ff9293"
+    }
+  ],
+  "validation": {
+    "command": "python -B <LOCAL_USER_ROOT>/Downloads/validate_plamen_model_routing_r2_5_6_green_prep.py --run-offline-tests",
+    "runs": 2,
+    "run_1_exit_code": 0,
+    "run_2_exit_code": 0,
+    "stable_stdout_sha256": "f51cb6a22c691add3a25c32276fef628b6f4c0df904c5fdcb5c692ae02d38cf6",
+    "stable_stdout_bytes_lf": 652,
+    "source_consumers": 7,
+    "phase_matrix_rows": 668,
+    "phase_matrix_sha256": "4af2082b6c145b7e8fc7703cf860c445078f6e8662ccb2f34e8215e61b15f703",
+    "red_operations": 217,
+    "red_operation_manifest_sha256": "b81d9309e4aad862c5f18b2845ae34e536896c36a2eedd3fb482781772c8b625",
+    "mutation_probes": 71,
+    "offline_test_node_ids": 24,
+    "offline_parametrized_cases": 35,
+    "production_adapter_state": "ABSENT_EXPECTED_RED"
+  },
+  "authorization_observed": {
+    "production_edits": false,
+    "provider_calls": false,
+    "network_calls": false,
+    "audit_execution": false,
+    "defaults_or_config_changes": false,
+    "commit_or_push": false
+  },
+  "claims": {
+    "implementation_complete": false,
+    "production_cutover_authorized": false,
+    "recall_improvement_proven": false,
+    "precision_improvement_proven": false,
+    "independent_review_required": true
+  }
+}

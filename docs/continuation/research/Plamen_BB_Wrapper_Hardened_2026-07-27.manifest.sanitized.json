@@ -1,0 +1,35 @@
+{
+  "artifact": "<LOCAL_USER_ROOT>\\Downloads\\Plamen_BB_Wrapper_Hardened_2026-07-27.zip",
+  "artifact_bytes": 316696,
+  "artifact_sha256": "087281F0D3E6DCD76A134D3795D23FFCA790CBBA9B5B81B6B92F2E5FDA03B649",
+  "archive_entries": 64,
+  "source": "<LOCAL_USER_ROOT>\\.plamen\\scripts\\bounty",
+  "staged_runtime": {
+    "repository": "<LOCAL_USER_ROOT>\\plamen-codex-implementation",
+    "head": "67a0f85adc7a8169d79a286908b00bef7adb764a",
+    "driver_sha256": "6A1B430BD72FDF6CE6FCF3AC94A9EA134E92AEBDF506B8A3846D11A2CAF72FB4"
+  },
+  "verification": {
+    "private_suite": "394 passed, 2 skipped",
+    "private_suite_independent_replay": "394 passed, 2 skipped",
+    "staged_runtime_contract": "9 passed",
+    "public_exact_scope_and_typed_docs": "53 passed",
+    "compileall": "passed",
+    "forbidden_archive_name_hits": 0,
+    "credential_like_archive_content_hits": 0,
+    "intentional_protocol_name_test_canaries": 1
+  },
+  "excluded": [
+    ".env",
+    "_realdata/",
+    ".pytest_cache/",
+    "__pycache__/",
+    "*.pyc",
+    "_prove_fork.py",
+    "_validate_build.py",
+    "_validate_clean_rebuild.py",
+    "_validate_e2e.py",
+    "_reformat_finished_run.py"
+  ],
+  "live_network_audit_executed": false
+}

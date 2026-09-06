@@ -1,0 +1,129 @@
+{
+  "schema": "plamen.model-routing-r2.5.4-red-validation-receipt.v1",
+  "version": 1,
+  "created_at_utc": "2026-07-30T12:20:59.0618314Z",
+  "disposition": "RED_REFERENCE_MODEL_SELF_VALIDATED_INDEPENDENT_ACCEPTANCE_REQUIRED",
+  "sealed_predecessor_review": {
+    "path": "<LOCAL_USER_ROOT>\\plamen-codex-implementation\\review_fixtures\\backend_model_routing_r2_5_3_red_independent_review_r1_20260730.md",
+    "body_sha256": "71a549c72522e4ad57229b75ffbf2115353eefd0d85b46ae2392a2c55421e075",
+    "whole_sha256": "70f0c07214f0e18145070cd315b4129d99c054105f03f94134fe2fd45ef580c3",
+    "verdict": "BLOCK"
+  },
+  "artifacts": {
+    "plan": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\Plamen_Backend_Model_Routing_R2.5.4_RED_Engineering_Plan_2026-07-30.md",
+      "bytes": 13408,
+      "lf": 347,
+      "sha256": "9fa75435752ccd778cbda7b691d8c3e7295fe62fab4f2a0f96f0fcbc4f9ed303"
+    },
+    "schema": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\Plamen_Backend_Model_Routing_R2.5.4_RED_Schemas_2026-07-30.json",
+      "bytes": 11724,
+      "lf": 487,
+      "sha256": "fec29bc5b7db5ca4edfe7a7b3ae60a7ce70b7c2960dcd7ee9c37378ea65df2cf"
+    },
+    "vectors": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\Plamen_Backend_Model_Routing_R2.5.4_RED_Operation_Vectors_2026-07-30.json",
+      "bytes": 40626,
+      "lf": 1199,
+      "sha256": "6f3e593bd9ba0e98ad684398629e78d4ffdd89ba0073133ed86b2629bfefa78f"
+    },
+    "validator": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\validate_plamen_model_routing_r2_5_4_red.py",
+      "bytes": 61147,
+      "lf": 1634,
+      "sha256": "764d3a741cbb195f325794c8c0b03352ef4fc6de1f49cd0a9f4d186fd06cae2d"
+    },
+    "frozen_r2_5_3_validator": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\validate_plamen_model_routing_r2_5_3_red.py",
+      "sha256": "1fb1b2e40630bca93ce220bcbbbb4b41b38590411efe095b56336e6002299bfe"
+    },
+    "frozen_r2_5_3_vectors": {
+      "path": "<LOCAL_USER_ROOT>\\Downloads\\Plamen_Backend_Model_Routing_R2.5.3_RED_Fixture_Denominator_2026-07-30.json",
+      "sha256": "8a0dbcfbf4ee7d7a1b9e141196890af9a17bb322be94ed832a9873c765ec0cb6"
+    }
+  },
+  "static_validation": {
+    "python_compile": "PASS",
+    "python_ast": "PASS",
+    "strict_duplicate_json_negative": "PASS",
+    "strict_nonfinite_json_negative": "PASS",
+    "all_package_files_ascii": true,
+    "all_package_files_lf_only": true,
+    "all_package_files_final_lf": true,
+    "part_0_genericity_scan": "PASS"
+  },
+  "operation_denominator": {
+    "frozen_predecessor_executed_denominator": 686,
+    "preserved_predecessor_operations": 15,
+    "preserved_atomic_b5_operations": 14,
+    "source_authority_operations": 43,
+    "lifecycle_positive_operations": 30,
+    "lifecycle_event_mutation_operations": 786,
+    "lifecycle_forbidden_operations": 16,
+    "lifecycle_payload_mutation_operations": 21,
+    "derived_lifecycle_operations": 853,
+    "graph_positive_operations": 10,
+    "graph_node_mutation_operations": 308,
+    "graph_edge_mutation_operations": 268,
+    "derived_graph_operations": 586,
+    "total_executed_operations": 1511,
+    "executed_family_count": 10,
+    "operation_manifest_sha256": "2c13a363f2535693b11f6b9e61d618bb4a5fc37ef9f4348a3fa74dc6c515e84e"
+  },
+  "execution": {
+    "isolated_run_count": 2,
+    "run_1": {
+      "exit_code": 0,
+      "elapsed_seconds": 73.7,
+      "stdout_exact": true,
+      "stderr_empty": true
+    },
+    "run_2": {
+      "exit_code": 0,
+      "elapsed_seconds": 90.0,
+      "stdout_exact": true,
+      "stderr_empty": true
+    },
+    "stdout_sha256_lf_ascii": "5b05b3487cd8a474407a36122e69029c05d07e8bc4c78247266840a400b35eb0",
+    "stdout_lines": [
+      "R2.5.4_RED_DENOMINATOR=PASS",
+      "FROZEN_R2_5_3_BASELINE=PASS",
+      "PRESERVED_PREDECESSOR_OPERATIONS=15",
+      "PRESERVED_ATOMIC_B5_OPERATIONS=14",
+      "SOURCE_AUTHORITY_OPERATIONS=43",
+      "DERIVED_LIFECYCLE_OPERATIONS=853",
+      "DERIVED_GRAPH_OPERATIONS=586",
+      "TOTAL_EXECUTED_OPERATIONS=1511",
+      "OPERATION_MANIFEST_SHA256=2c13a363f2535693b11f6b9e61d618bb4a5fc37ef9f4348a3fa74dc6c515e84e",
+      "PLAN_SHA256=9fa75435752ccd778cbda7b691d8c3e7295fe62fab4f2a0f96f0fcbc4f9ed303",
+      "SCHEMA_SHA256=fec29bc5b7db5ca4edfe7a7b3ae60a7ce70b7c2960dcd7ee9c37378ea65df2cf",
+      "VECTORS_SHA256=6f3e593bd9ba0e98ad684398629e78d4ffdd89ba0073133ed86b2629bfefa78f",
+      "EXECUTED_FAMILY_COUNT=10",
+      "GREEN_IMPLEMENTATION_AUTHORIZED=false",
+      "PRODUCTION_INTEGRATION_AUTHORIZED=false",
+      "AUTHOR_DISPOSITION=RED_REFERENCE_MODEL_SELF_VALIDATED_ONLY"
+    ]
+  },
+  "honest_boundary": {
+    "offline_reference_model_only": true,
+    "production_source_provenance_proven": false,
+    "real_os_no_follow_io_proven": false,
+    "os_aliases_modeled_as_fault_contracts": [
+      "symlink",
+      "junction",
+      "mount",
+      "reparse"
+    ],
+    "green_adapter_conformance_proven": false,
+    "recall_or_precision_claim": "NONE"
+  },
+  "authorization": {
+    "green_implementation": false,
+    "production_integration": false,
+    "provider_calls": false,
+    "audit_execution": false,
+    "defaults_or_config_changes": false,
+    "commit_or_push": false
+  }
+}

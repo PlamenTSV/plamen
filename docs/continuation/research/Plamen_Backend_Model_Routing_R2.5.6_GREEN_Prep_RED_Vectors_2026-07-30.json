@@ -1,0 +1,412 @@
+{
+  "schema": "plamen.model-routing-r2.5.6-green-prep-red-vectors.v1",
+  "version": 1,
+  "disposition": "RED_DENOMINATOR_PRODUCTION_BINDINGS_ABSENT",
+  "branch_fixtures": [
+    "DIRECT_SPAWN::PROVIDER_TERMINAL",
+    "DIRECT_SPAWN::PROCESS_EXIT_NO_PROVIDER_FRAME",
+    "DIRECT_SPAWN::TIMEOUT",
+    "DIRECT_SPAWN::CANCELLED",
+    "DIRECT_SPAWN::TRANSPORT_FAILURE",
+    "DIRECT_SPAWN::EMPTY_PROVIDER_OUTPUT",
+    "DIRECT_SPAWN::MALFORMED_PROVIDER_OUTPUT",
+    "OBSERVED_SPAWN::PROVIDER_TERMINAL",
+    "OBSERVED_SPAWN::PROCESS_EXIT_NO_PROVIDER_FRAME",
+    "OBSERVED_SPAWN::TIMEOUT",
+    "OBSERVED_SPAWN::CANCELLED",
+    "OBSERVED_SPAWN::TRANSPORT_FAILURE",
+    "OBSERVED_SPAWN::EMPTY_PROVIDER_OUTPUT",
+    "OBSERVED_SPAWN::MALFORMED_PROVIDER_OUTPUT",
+    "SPAWN_FAILED::SPAWN_FAILED",
+    "AMBIGUITY_ABORT::AMBIGUITY_ABORTED_NOT_SPAWNED",
+    "AMBIGUITY_DEBT::AMBIGUITY_UNRESOLVED_DEBT"
+  ],
+  "consumer_branch_counts": {
+    "launch_replay_validator": 17,
+    "proof_mint": 17,
+    "spawn_authentication": 17,
+    "provider_spool_acceptance": 14,
+    "completed_current_construction": 17,
+    "current_replay_validator": 17,
+    "resume_authorization": 17
+  },
+  "registry_mutations": [
+    "UNKNOWN_CONSUMER",
+    "MISSING_CONSUMER",
+    "DUPLICATE_CONSUMER",
+    "REORDERED_CONSUMERS",
+    "EXTRA_TOP_LEVEL_FIELD",
+    "EXPECTED_ID_SET_DRIFT",
+    "CORRUPT_REGISTRY_DIGEST",
+    "RESEALED_UNKNOWN_CONSUMER"
+  ],
+  "source_row_mutations": [
+    "PATH_DRIFT",
+    "FILE_HASH_DRIFT",
+    "QUALNAME_DRIFT",
+    "LINE_DRIFT",
+    "END_LINE_DRIFT",
+    "SIGNATURE_DRIFT",
+    "SEGMENT_HASH_DRIFT",
+    "DELETE_REQUIRED_CALL_EDGE",
+    "KNOWN_CALLER_SET_DRIFT"
+  ],
+  "crash_vectors": [
+    {
+      "vector_id": "CR-01",
+      "cutpoint_id": "BEFORE_LAUNCH_REPLAY",
+      "cutpoint": "before launch replay begins",
+      "consumer": "launch_replay_validator",
+      "expected_state": "NO_AUTHORITY",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-02",
+      "cutpoint_id": "AFTER_LAUNCH_REPLAY_BEFORE_PROOF_MINT",
+      "cutpoint": "after launch replay before capability proof mint",
+      "consumer": "proof_mint",
+      "expected_state": "NO_AUTHORITY",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-03",
+      "cutpoint_id": "AFTER_PROOF_MINT_BEFORE_CONSUMED_LAUNCH",
+      "cutpoint": "after proof mint before consumed-launch publication",
+      "consumer": "proof_mint",
+      "expected_state": "RETRY_NEW_GENERATION",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-04",
+      "cutpoint_id": "AFTER_CONSUMED_LAUNCH_BEFORE_SPAWN_INTENT",
+      "cutpoint": "after durable consumed launch before spawn intent",
+      "consumer": "spawn_authentication",
+      "expected_state": "RETRY_NEW_GENERATION",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-05",
+      "cutpoint_id": "AFTER_SPAWN_INTENT_BEFORE_PROCESS_CREATE",
+      "cutpoint": "after durable spawn intent before process creation call",
+      "consumer": "spawn_authentication",
+      "expected_state": "AMBIGUITY_RESOLUTION_REQUIRED",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-06",
+      "cutpoint_id": "PROCESS_CREATE_MAY_HAVE_RETURNED_BEFORE_SPAWN_AUTHORITY",
+      "cutpoint": "process creation returned or may have returned before spawned authority",
+      "consumer": "spawn_authentication",
+      "expected_state": "AMBIGUITY_RESOLUTION_REQUIRED",
+      "may_spawn": true
+    },
+    {
+      "vector_id": "CR-07",
+      "cutpoint_id": "AFTER_OBSERVED_SPAWN_BEFORE_SPAWN_AUTHORITY",
+      "cutpoint": "after observed-spawn resolution before spawned authority",
+      "consumer": "spawn_authentication",
+      "expected_state": "RETRY_NEW_GENERATION",
+      "may_spawn": true
+    },
+    {
+      "vector_id": "CR-08",
+      "cutpoint_id": "AFTER_SPAWN_AUTHORITY_BEFORE_PROVIDER_SPOOL",
+      "cutpoint": "after spawned authority before provider output spool",
+      "consumer": "provider_spool_acceptance",
+      "expected_state": "TERMINAL_DEBT",
+      "may_spawn": true
+    },
+    {
+      "vector_id": "CR-09",
+      "cutpoint_id": "AFTER_PROVIDER_SPOOL_BEFORE_TERMINAL_AUTHORITY",
+      "cutpoint": "after provider frame bytes spool before terminal authority",
+      "consumer": "provider_spool_acceptance",
+      "expected_state": "TERMINAL_DEBT",
+      "may_spawn": true
+    },
+    {
+      "vector_id": "CR-10",
+      "cutpoint_id": "AFTER_LAUNCHER_TERMINAL_BEFORE_TERMINAL_AUTHORITY",
+      "cutpoint": "after launcher terminal observation before terminal authority",
+      "consumer": "provider_spool_acceptance",
+      "expected_state": "TERMINAL_DEBT",
+      "may_spawn": true
+    },
+    {
+      "vector_id": "CR-11",
+      "cutpoint_id": "AFTER_TERMINAL_AUTHORITY_BEFORE_RECONCILIATION",
+      "cutpoint": "after terminal authority before neutral reconciliation",
+      "consumer": "completed_current_construction",
+      "expected_state": "CURRENT_NOT_PUBLISHED",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-12",
+      "cutpoint_id": "AFTER_RECONCILIATION_BEFORE_COMPLETED_CURRENT",
+      "cutpoint": "after neutral reconciliation before completed-current construction",
+      "consumer": "completed_current_construction",
+      "expected_state": "CURRENT_NOT_PUBLISHED",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-13",
+      "cutpoint_id": "AFTER_CURRENT_TEMP_FSYNC_BEFORE_REPLACE",
+      "cutpoint": "after completed-current temporary file fsync before atomic replace",
+      "consumer": "completed_current_construction",
+      "expected_state": "CURRENT_NOT_PUBLISHED",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-14",
+      "cutpoint_id": "AFTER_CURRENT_REPLACE_BEFORE_DIRECTORY_FSYNC",
+      "cutpoint": "after completed-current replace before parent directory fsync",
+      "consumer": "current_replay_validator",
+      "expected_state": "CURRENT_REPLAY_REQUIRED",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-15",
+      "cutpoint_id": "AFTER_CURRENT_PUBLICATION_BEFORE_PHASEIO_ARM",
+      "cutpoint": "after completed-current publication before PhaseIO incorporation arm",
+      "consumer": "current_replay_validator",
+      "expected_state": "CURRENT_REPLAY_REQUIRED",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-16",
+      "cutpoint_id": "DURING_PHASEIO_OR_LEDGER_COMMIT",
+      "cutpoint": "during PhaseIO incorporation projection or ledger commit",
+      "consumer": "current_replay_validator",
+      "expected_state": "CURRENT_REPLAY_REQUIRED",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-17",
+      "cutpoint_id": "AFTER_INCORPORATION_BEFORE_CHECKPOINT_SAVE",
+      "cutpoint": "after incorporation before checkpoint completion save",
+      "consumer": "resume_authorization",
+      "expected_state": "CURRENT_REPLAY_REQUIRED",
+      "may_spawn": false
+    },
+    {
+      "vector_id": "CR-18",
+      "cutpoint_id": "DURING_PRIOR_RESUME_REPLAY",
+      "cutpoint": "during prior Resume identity replay before completed-phase acceptance",
+      "consumer": "resume_authorization",
+      "expected_state": "RESUME_REJECTED",
+      "may_spawn": false
+    }
+  ],
+  "model_behavior_vectors": [
+    "LEGACY_DEFAULT_BACKEND_IS_CLAUDE",
+    "LIGHT_CLAUDE_ALL_SONNET",
+    "CORE_CLAUDE_TIER_ALIAS_RESOLUTION",
+    "THOROUGH_CLAUDE_PROMOTION_MATRIX",
+    "CODEX_TIER_MAP_EXACT",
+    "CODEX_THOROUGH_DOES_NOT_USE_CLAUDE_PROMOTION_BRANCH",
+    "UNKNOWN_CODEX_ALIAS_CURRENTLY_DEFAULTS_TO_SONNET",
+    "CODEX_UNAVAILABLE_MODEL_CURRENTLY_MUTATES_PHASE_FALLBACK",
+    "BREADTH_OVERRIDE_CURRENTLY_ACCEPTS_ENV_OR_CONFIG",
+    "SKEPTIC_BACKEND_OVERRIDE_CURRENTLY_FALLS_BACK",
+    "MAX_IS_ABSENT_FROM_ALL_DEFAULT_PHASE_ROUTES",
+    "CURRENT_LAUNCHSPEC_BINDS_BARE_BACKEND_AND_MODEL_ONLY"
+  ],
+  "oracle_blocker_mutations": [
+    "COLLAPSED_CRASH_REFERENCES",
+    "REWRITTEN_CR06_SEMANTICS",
+    "ARBITRARY_BRANCH_ROSTER",
+    "ARBITRARY_MODEL_ROSTER",
+    "DISCONNECTED_CONSUMER_SEMANTICS",
+    "PRODUCTION_SOURCE_SCOPE_DRIFT",
+    "DUPLICATE_JSON_KEY",
+    "NONFINITE_JSON_NUMBER",
+    "NESTED_CALL_EDGE_FALSE_POSITIVE"
+  ],
+  "offline_tests": [
+    {
+      "node_id": "scripts/test_headless_driver_cutover_p0_am.py::test_codex_leaf_uses_transactional_runtime_when_phaseio_is_armed",
+      "class": "FAKE_PROVIDER",
+      "source_sha256": "42c55133cfd260db735443bcdc2bc843b2ab49ed5440c19509bab112f4f09b6d",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_headless_driver_cutover_p0_am.py::test_claude_facade_selects_same_transactional_boundary",
+      "class": "FAKE_PROVIDER",
+      "source_sha256": "42c55133cfd260db735443bcdc2bc843b2ab49ed5440c19509bab112f4f09b6d",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_headless_driver_cutover_p0_am.py::test_unarmed_codex_worker_identity_fails_closed_before_spawn",
+      "class": "FAKE_PROVIDER",
+      "source_sha256": "42c55133cfd260db735443bcdc2bc843b2ab49ed5440c19509bab112f4f09b6d",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_headless_driver_cutover_p0_am.py::test_unarmed_claude_worker_identity_fails_closed_before_spawn",
+      "class": "FAKE_PROVIDER",
+      "source_sha256": "42c55133cfd260db735443bcdc2bc843b2ab49ed5440c19509bab112f4f09b6d",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_headless_driver_cutover_p0_am.py::test_unknown_backend_identity_fails_closed_before_spawn",
+      "class": "FAKE_PROVIDER",
+      "source_sha256": "42c55133cfd260db735443bcdc2bc843b2ab49ed5440c19509bab112f4f09b6d",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_headless_worker_runtime_p0_am.py::test_backend_neutral_headless_worker_stages_then_phaseio_publishes",
+      "class": "FAKE_PROVIDER",
+      "source_sha256": "ff9eb645964bdfb91277262dcf72419b9bb48aa06cbe7369870dd3a9bcf31848",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_headless_worker_runtime_p0_am.py::test_headless_worker_failure_leaves_canonical_absent_and_durable_debt",
+      "class": "CRASH_RECOVERY",
+      "source_sha256": "ff9eb645964bdfb91277262dcf72419b9bb48aa06cbe7369870dd3a9bcf31848",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_worker_transaction_contracts_p0_am.py::test_recovery_fails_closed_on_arm_digest_tamper",
+      "class": "CRASH_RECOVERY",
+      "source_sha256": "82ed61789a878a1f807b29e232f1d139b00e629406afd2d40cb11ca992d1ad7b",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_worker_transaction_contracts_p0_am.py::test_recovery_blocks_retry_when_persisted_scope_cleanup_fails",
+      "class": "CRASH_RECOVERY",
+      "source_sha256": "82ed61789a878a1f807b29e232f1d139b00e629406afd2d40cb11ca992d1ad7b",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_worker_transaction_contracts_p0_am.py::test_phaseio_incorporation_is_the_only_canonical_publisher",
+      "class": "FAKE_PROVIDER",
+      "source_sha256": "82ed61789a878a1f807b29e232f1d139b00e629406afd2d40cb11ca992d1ad7b",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_worker_work_plan_v2_roster_binding_p0_am.py::test_v2_armed_attempt_recovers_to_retry_without_losing_roster_identity",
+      "class": "CRASH_RECOVERY",
+      "source_sha256": "0784259b8d7c8fc043fde7965583237a55a84551fb6db1b7482235f28399c9c8",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_worker_execution_receipts.py::test_provider_owned_success_binds_process_authority_and_replays",
+      "class": "FAKE_PROVIDER",
+      "source_sha256": "1cda67f69201f11d7afa8f847d046dd94baa865ae409c66e44d990e038db205c",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_worker_execution_receipts.py::test_arm_is_fsynced_before_child_can_observe_it",
+      "class": "CRASH_RECOVERY",
+      "source_sha256": "1cda67f69201f11d7afa8f847d046dd94baa865ae409c66e44d990e038db205c",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_worker_execution_receipts.py::test_timeout_leaves_arm_streams_and_debt_but_no_completion",
+      "class": "CRASH_RECOVERY",
+      "source_sha256": "1cda67f69201f11d7afa8f847d046dd94baa865ae409c66e44d990e038db205c",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_wer_windows_long_path_p0_am.py::test_public_wer_persists_replays_and_reuses_boundary_blobs",
+      "class": "NATIVE_WINDOWS",
+      "source_sha256": "4a2a7c97701566faa81d6186d490c824727f88a7a1b11ee4ba8fdaf26d2caf00",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_wer_windows_long_path_p0_am.py::test_public_wtx_executes_with_long_attempt_scoped_semantic_inputs",
+      "class": "NATIVE_WINDOWS",
+      "source_sha256": "4a2a7c97701566faa81d6186d490c824727f88a7a1b11ee4ba8fdaf26d2caf00",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_wer_windows_long_path_p0_am.py::test_public_incorporation_crosses_wer_wtx_and_artifact_ledger",
+      "class": "NATIVE_WINDOWS",
+      "source_sha256": "4a2a7c97701566faa81d6186d490c824727f88a7a1b11ee4ba8fdaf26d2caf00",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_wer_claude_runtime_lifecycle_p0_am.py::test_offline_cli_happy_path_uses_exact_final_runtime_and_lifecycle",
+      "class": "FAKE_PROVIDER",
+      "source_sha256": "a420425707f2e9da1e31e285ce7353057963ff47be69096e576d8f2e79338f92",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_wer_claude_runtime_lifecycle_p0_am.py::test_scope_constructor_popen_and_attach_failures_are_distinct_debt",
+      "class": "CRASH_RECOVERY",
+      "source_sha256": "a420425707f2e9da1e31e285ce7353057963ff47be69096e576d8f2e79338f92",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_wer_claude_runtime_lifecycle_p0_am.py::test_subprocess_hard_crash_cutpoints_cannot_mint_completion",
+      "class": "CRASH_RECOVERY",
+      "source_sha256": "a420425707f2e9da1e31e285ce7353057963ff47be69096e576d8f2e79338f92",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_windows_low_integrity_lease_p0_am.py::test_attach_failure_kills_and_reaps_exact_created_process",
+      "class": "NATIVE_WINDOWS",
+      "source_sha256": "caf38b86e58b4fad3f8d955a9f7f7dfcb940d57d0fc088a00a31a1c56d7cb91e",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_windows_low_integrity_lease_p0_am.py::test_injected_outer_timeout_is_killed_and_reaped",
+      "class": "NATIVE_WINDOWS",
+      "source_sha256": "caf38b86e58b4fad3f8d955a9f7f7dfcb940d57d0fc088a00a31a1c56d7cb91e",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_windows_low_integrity_lease_p0_am.py::test_provider_crash_recovers_stale_root_before_next_scope",
+      "class": "NATIVE_WINDOWS",
+      "source_sha256": "caf38b86e58b4fad3f8d955a9f7f7dfcb940d57d0fc088a00a31a1c56d7cb91e",
+      "network": false,
+      "live_provider": false
+    },
+    {
+      "node_id": "scripts/test_windows_low_integrity_lease_p0_am.py::test_symlink_root_and_symlink_member_are_never_followed",
+      "class": "WINDOWS_NO_FOLLOW",
+      "source_sha256": "caf38b86e58b4fad3f8d955a9f7f7dfcb940d57d0fc088a00a31a1c56d7cb91e",
+      "network": false,
+      "live_provider": false
+    }
+  ],
+  "expected_expansion": {
+    "consumer_binding_operations": 116,
+    "source_mutation_operations": 63,
+    "registry_mutation_operations": 8,
+    "crash_operations": 18,
+    "model_behavior_operations": 12,
+    "operation_count": 217,
+    "operation_manifest_sha256": "b81d9309e4aad862c5f18b2845ae34e536896c36a2eedd3fb482781772c8b625"
+  },
+  "authorization": {
+    "production_edits": false,
+    "provider_calls": false,
+    "network_calls": false,
+    "audit_execution": false,
+    "defaults_or_config_changes": false,
+    "commit_or_push": false
+  }
+}

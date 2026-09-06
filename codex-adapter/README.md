@@ -8,8 +8,7 @@ inside the [Codex CLI](https://github.com/openai/codex) in addition to Claude Co
 
 ```bash
 # From a complete reviewed Plamen source directory on a supported audit host:
-python3.12 plamen.py install --codex   # Linux
-python plamen.py install --codex       # Windows
+python plamen.py install --codex       # Windows, CPython 3.12
 ```
 
 macOS currently supports source development, not the governed native audit
@@ -76,7 +75,7 @@ committed:
 
 ```bash
 python scripts/codex_adapter.py
-python3.12 plamen.py install --codex  # supported Linux audit host
+python plamen.py install --codex  # supported Windows audit host
 ```
 
 ## Current Limitations
@@ -91,8 +90,8 @@ python3.12 plamen.py install --codex  # supported Linux audit host
   phases use governed local tools and Web precedent-research fallbacks. The
   managed user config may contain MCP entries, but audit launch isolation is
   authoritative.
-- **Platform**: The governed installer and public launchers support Windows and
-  admitted Linux hosts. macOS supports the isolated source-development
-  bootstrap described above; native audit installation remains an explicit
-  Plamen-v3 continuation requirement. Do not hand-edit generated paths to work
-  around an install failure.
+- **Platform**: The V3 governed installer and public audit launchers currently
+  support Windows. Linux remains a source-validation host, and macOS supports
+  the isolated source-development bootstrap described above. Native POSIX audit
+  installation remains an explicit Plamen-v3 continuation requirement. Do not
+  hand-edit generated paths to work around an install failure.

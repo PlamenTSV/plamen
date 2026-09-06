@@ -15,9 +15,10 @@ Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **So
 > completed release or benchmark result.
 >
 > **Plamen-v3 platform status.** The governed production install and audit
-> runtime is supported on Windows and admitted Linux hosts. Native macOS
-> production installation and E2E auditing are **not yet supported**: the
-> package transaction and worker-containment layers fail closed on Darwin.
+> runtime is currently release-qualified on Windows. Native Linux and macOS
+> production installation and E2E auditing are **not yet supported**: V3's
+> hardened package transaction, crash keeper, and recovery transport are still
+> Windows-native. POSIX remains a source-development and validation target.
 > macOS arm64 and x86_64 are supported for isolated source development through
 > [`scripts/bootstrap_macos_dev.sh`](scripts/bootstrap_macos_dev.sh); see the
 > [macOS development guide](docs/development/macos.md) and
@@ -49,14 +50,23 @@ Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **So
 >   Audit subprocesses intentionally ignore ambient Codex MCP configuration.
 >   See [docs/mcp-servers.md](docs/mcp-servers.md).
 >
-> MCP is limited to receipt-bound Claude-headless RAG on contained hosts.
-> Windows uses a Job object; Linux uses delegated cgroup v2 plus Landlock when
-> supported. Unsupported Linux hosts fail closed before MCP spawn and use the
-> governed Web/local fallback. Claude PTY and Codex use no MCP servers.
+> MCP is limited to receipt-bound Claude-headless RAG on contained production
+> hosts. The current Windows lane uses a Job object. Linux cgroup v2/Landlock
+> containment remains implemented substrate but is not a production-support
+> claim until the POSIX install transaction is complete. Claude PTY and Codex
+> use no MCP servers.
 >
 > Per-language tools (Foundry, Solana CLI, etc.) are installed automatically via `plamen setup`.
 >
 > **Python isolation**: Plamen never writes to system or user site-packages and never uses `--break-system-packages`. It creates `~/.local/share/plamen/runtime/py312`, installs only exact wheel hashes from the universal locks, and binds generated launchers to that interpreter.
+>
+> **Repository size and launch speed:** GitHub's “1,000 files” directory
+> truncation is only a web-UI listing limit. The source tree intentionally keeps
+> tests, fault fixtures, architecture records, and continuation research beside
+> the implementation. A production install publishes the exact governed
+> 764-row closure (733 runtime rows plus 31 Codex-adapter rows); normal CLI/audit
+> launch does not recursively enumerate every source test or research file.
+> Dependency and integrity census work is concentrated at install/update time.
 
 ---
 
@@ -69,7 +79,7 @@ of [`SETUP.md`](SETUP.md). It is the only Plamen doc designed for AI-assistant
 consumption — it has step-by-step error handling and stops the assistant from
 running the heavy RAG build or the toolchain wizard from a non-TTY context.
 The assistant acquires source separately and runs one governed install for
-both model backends on a supported production host. On macOS, follow the
+both model backends on a supported Windows host. On macOS, follow the
 [source-development bootstrap](docs/development/macos.md) instead.
 
 For V3, require the assistant to clone and verify the `Plamen-v3` branch before
@@ -89,12 +99,6 @@ build the optional vulnerability DB (~6GB RAM).
 Clone into a dedicated source directory, not `~/.plamen`. That path is
 reserved for the authenticated installed package.
 
-**Linux:**
-```bash
-git clone --branch Plamen-v3 --single-branch --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME/plamen-source"
-cd "$HOME/plamen-source" && python3.12 plamen.py install
-```
-
 **Windows (PowerShell):**
 ```powershell
 git clone --branch Plamen-v3 --single-branch --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source"
@@ -109,23 +113,18 @@ Set-Location "$HOME\plamen-source"; python plamen.py install
 > inside the source checkout before `plamen install`.
 >
 > **`install` vs `setup`**: `plamen install` is the non-interactive,
-> transactional package/runtime install and is safe in any context
-> — Claude Code Bash, Codex shell, CI, headless servers. `plamen setup` runs
+> transactional package/runtime install and is safe in any supported Windows
+> context — Claude Code Bash, Codex shell, CI, or a headless Windows host. `plamen setup` runs
 > the install and then drops into an interactive toolchain wizard (Foundry,
 > Solana CLI, etc.), so run it from a real terminal. In a non-TTY context it
 > refuses before making changes and directs you to run `plamen install`.
 >
 > **Before building the RAG database**: add `SOLODIT_API_KEY` to `~/.claude/settings.json` → `"env"` section (or `~/.codex/config.toml` → `[env]` for Codex). Free key from [solodit.cyfrin.io](https://solodit.cyfrin.io). This is the only place the key is reliably visible to both `plamen rag` and audit agent subprocesses. A terminal `export` is not sufficient — Claude Code and Codex CLI spawn non-interactive subshells that don't source `.bashrc`/`.zshrc`.
 >
-> Hash-locked Python dependencies are installed into Plamen's private runtime on first run. Use CPython 3.12 (`python3.12` on Linux; `python` on Windows when it resolves to 3.12).
+> Hash-locked Python dependencies are installed into Plamen's private runtime on first run. Use `python` on Windows when it resolves to CPython 3.12. Linux and macOS contributors should follow the source-development boundary above; `plamen.py install` exits before mutation there.
 
 The installed front is written to `~/.local/bin`. Add that directory to PATH
 if needed; do not add the source directory or `~/.plamen`.
-
-**Linux (bash):**
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
-```
 
 **Windows (PowerShell, one-time):**
 ```powershell
@@ -280,10 +279,10 @@ hardening paths:
   no audit MCP servers, and uses governed Web/local precedent fallback.
   Requested and observed backend/model/fallback facts have typed recording
   paths, while unobservable results remain explicit `UNKNOWN_BLOCKED` debt.
-- **Cross-platform claims are fail-closed.** Windows lifecycle containment and
-  admitted Linux paths remain production targets. macOS has a reviewed source
-  bootstrap and portability checks, but not a supported native production
-  installer or E2E audit runtime.
+- **Cross-platform claims are fail-closed.** Windows is the current production
+  target. Linux remains covered by source tests, and macOS has a reviewed source
+  bootstrap and portability checks; neither POSIX platform currently has a
+  supported native production installer or E2E audit runtime.
 
 These changes are not a whole-tool acceptance claim. Clean-package validation,
 the remaining requirements reconciliation, macOS production execution, and

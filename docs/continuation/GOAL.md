@@ -9,9 +9,16 @@ Acceptance owner: the user
 Complete Plamen v3 as one coherent, portable Web3 security-auditing tool. The
 finished branch must contain the authoritative source, methodology, schemas,
 prompts, orchestration, tests, installation logic, and operator documentation
-needed to install and continue development from a clean clone on macOS or
-Windows. It must be validated as a tool; comparative quality benchmarking
+needed to install and continue development from a clean clone on Linux, macOS,
+or Windows. It must be validated as a tool; comparative quality benchmarking
 against older Plamen versions is a later, separate goal.
+
+The current production installer and dispatcher are Windows-only. The
+repository's macOS bootstrap proves source-development setup, not native audit
+runtime support. Native Linux and macOS completion therefore requires a POSIX
+dispatcher plus keeper/recovery adapter and real clean-machine
+install/start/stop/resume evidence; documentation must remain explicit about
+that gap until it is closed.
 
 The target is not merely an audit report or a passing fixture. It is a
 source-governed tool whose claimed behavior is production-reachable, whose
@@ -20,7 +27,7 @@ source and package identities.
 
 ## Governing requirement namespaces
 
-Completion must reconcile all three namespaces in
+Completion must reconcile all four cumulative namespaces in
 [`REQUIREMENTS.jsonl`](REQUIREMENTS.jsonl):
 
 1. The historical acceptance ledger: 44 P0 obligations and 13 P1 obligations,
@@ -29,6 +36,9 @@ Completion must reconcile all three namespaces in
    [`architecture/canonical-requirement-ownership.v2.json`](../../architecture/canonical-requirement-ownership.v2.json).
 3. Current runtime and operational requirements discovered during the 2026-09
    validation continuation.
+4. The August 2026 architecture, recall, and corpus-capture review: seven
+   release blockers, 23 ordered improvement requirements, and the preserved
+   S/R/T/D/A/M issue denominators requiring current-tree disposition.
 
 Omission from a later summary does not close a requirement. A requirement may
 leave the active denominator only through an explicit reviewed supersession
@@ -41,7 +51,7 @@ Plamen v3 is complete only when all of the following are true:
 
 ### 1. Requirements and architecture
 
-- Every row in all three requirement namespaces is `DONE`, or is covered by a
+- Every row in all four requirement namespaces is `DONE`, or is covered by a
   reviewed supersession with a named successor, rationale, and no-scope-loss
   evidence.
 - The five canonical normative sources and two redirect-only compatibility
@@ -58,6 +68,13 @@ Plamen v3 is complete only when all of the following are true:
 - Program Facts, typed graphs, method cards, adaptive attention, niche routing,
   assumption checking, and historical-precedent fallbacks are reachable where
   applicable and produce typed, capability-scoped receipts.
+- Rule 0 is enforced: Python completely enumerates mechanically discoverable
+  obligations, bounded LLM shards decide only intent-dependent questions, and
+  exact disposition reconciliation detects every missing or duplicate row.
+- Every deriver reports `sites_scanned` and `candidates_emitted`; zero scanned
+  is dead instrumentation, not a clean bill of health. Fuzz and symbolic PASS
+  outcomes never raise confidence, while mechanically authenticated
+  counterexamples may.
 - Partial, missing, stale, unsupported, timed-out, or malformed evidence can
   add candidates or debt but cannot authorize a negative, demotion, safe
   conclusion, or silent phase completion.
@@ -92,7 +109,10 @@ Plamen v3 is complete only when all of the following are true:
 - A clean checkout builds and installs without depending on mutable installed
   trees, local backups, caches, absolute paths, or ambient Python state.
 - Public install, upgrade, rollback, repair, uninstall, and development setup
-  are documented and tested on current macOS and Windows environments.
+  are documented and tested on current Linux, macOS, and Windows environments.
+- Windows-only dispatcher/keeper assumptions are either isolated behind a
+  proven POSIX implementation or surfaced as an explicit unsupported-platform
+  result; a bootstrap script is not production runtime acceptance.
 - Installed-byte receipts, packaged assets, source manifests, dependency locks,
   and runtime closures agree without manually rebasing expected identities.
 - Generated audit artifacts stay under owned output roots and never pollute an
@@ -103,6 +123,9 @@ Plamen v3 is complete only when all of the following are true:
 - Focused tests, the full serial suite, supported parallel suites, packaging
   tests, clean-install tests, fault/recovery tests, and resume tests pass on the
   exact release candidate.
+- Native Linux, macOS, and Windows each have clean install, validation,
+  start/stop, crash/recovery, and resume receipts for the frozen release
+  candidate.
 - At least one fresh, non-ground-truth end-to-end audit completes through final
   report on Codex, and at least one completes on Claude.
 - Representative supported ecosystems and L1 paths receive bounded canaries
@@ -113,7 +136,7 @@ Plamen v3 is complete only when all of the following are true:
 
 ### 7. Handoff
 
-- A new machine can clone the branch, follow the documented macOS or Windows
+- A new machine can clone the branch, follow the documented Linux, macOS, or Windows
   setup, run smoke validation, start an audit, resume it, and continue this goal
   using only versioned public inputs plus separately supplied credentials.
 - Known limitations and unresolved debt are visible. No local runtime,
@@ -125,7 +148,7 @@ Plamen v3 is complete only when all of the following are true:
 The following are outside this goal and must not block tool completion:
 
 - old-Plamen versus Plamen-v3 quality benchmarking;
-- DODO, Spectra, or other ground-truth scoring;
+- private acceptance/regression target or other ground-truth scoring;
 - recall/precision improvement claims based on held-out corpora;
 - tuning methodology, routing, or agent counts against grader-only answers.
 

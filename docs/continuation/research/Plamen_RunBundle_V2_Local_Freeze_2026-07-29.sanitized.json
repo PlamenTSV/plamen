@@ -1,0 +1,145 @@
+{
+  "schema_version": "plamen.runbundle-v2-local-freeze.v1",
+  "frozen_at": "2026-07-29",
+  "claim_scope": "LOCAL_IMPLEMENTATION_AND_FIXTURE_VALIDATION_ONLY",
+  "not_B1_effectiveness_evidence": true,
+  "review_status": "PENDING_INDEPENDENT_REVIEW",
+  "repositories": {
+    "production": {
+      "path": "<LOCAL_USER_ROOT>\\plamen-codex-implementation",
+      "head": "67a0f85adc7a8169d79a286908b00bef7adb764a",
+      "worktree_note": "dirty shared worktree; the hashes below bind the RunBundle-owned source sets, not HEAD"
+    },
+    "evaluator": {
+      "path": "<LOCAL_USER_ROOT>\\<PRIVATE_EVALUATOR_REPO>",
+      "head": "345d016d0c86b6201e90cec908c37c6a66f739c3",
+      "worktree_note": "dirty implementation worktree; the hashes below bind the evaluator source sets, not HEAD"
+    }
+  },
+  "source_sets": {
+    "production_runtime": {
+      "path_glob": "scripts/runbundle_*.py",
+      "file_count": 7,
+      "tree_sha256": "498eeba6e9e361e0e71f7c53cea0970109f7b05b56de1ab538e4edbbef56c667"
+    },
+    "production_tests": {
+      "path_glob": "scripts/test_runbundle*.py",
+      "file_count": 6,
+      "tree_sha256": "63ca2f8248b0b58d36b32ba10ca6ead8cd67c3f2b4ea92d007c4a97d72ee0836"
+    },
+    "evaluator_source": {
+      "path_glob": "src/plamen_eval/**/*.py",
+      "file_count": 28,
+      "tree_sha256": "8736b03d77452ed0be9fdc81a4e5ae9672da3cf15740fbf0bef124dd52299d70"
+    },
+    "evaluator_schemas": {
+      "path_glob": "schemas/*.schema.json",
+      "file_count": 47,
+      "tree_sha256": "6c5dbbf450a29e3ebfe6f0ce5c69e2c9afb8547564147d1ee44c39d1e316dd5f"
+    },
+    "evaluator_tests": {
+      "path_glob": "tests/**/*.py",
+      "file_count": 28,
+      "tree_sha256": "26ae4e8bda6308dd6d0acb444333c542296152c06e94203e3995a6bc16349768"
+    },
+    "evaluator_packaging": {
+      "paths": [
+        "README.md",
+        "pyproject.toml"
+      ],
+      "file_count": 2,
+      "tree_sha256": "5c5d878f74cfcae527955747c603350c7c2377799ec60c2d6701a3b3d33689f4"
+    }
+  },
+  "key_file_sha256": {
+    "production:scripts/runbundle_export.py": "e87228265aecf631c43efacc11071380915832d88ff4545614e369b679bff8d4",
+    "production:scripts/runbundle_privacy.py": "a9355db3854d1ad33fb483beb4fe13c1a04df2184f11345793bb3c98884f25eb",
+    "production:scripts/test_runbundle_real_harvest_export.py": "9b91bcadfbb7a06f9e43aa2dfba8fd8576541873cfd3f4f9a2093f613a13169e",
+    "production:scripts/test_runbundle_v2_privacy.py": "d4936dc7819447cea0c7649d72a63b19a51b039a45886de20a85c932d660cdf7",
+    "evaluator:src/plamen_eval/objects.py": "f866c032047362601bd3e8c026c9238fffae95067b5c850a4960d4b89d9f58f9",
+    "evaluator:src/plamen_eval/semantic_replay.py": "d1b21caad6e0543bdb2e78b5248ac505ed8697f40f8811831459405c2c66ff7f",
+    "evaluator:src/plamen_eval/safeio.py": "605d756108fd64e1bfb13bca1438b6dc7c90dc5f17ac3169376d2749f27a3427",
+    "evaluator:src/plamen_eval/canonical.py": "03e2d8966e87b3895b6b3dcc429273994a7c4a27676e26ef6a98d2cfb3ea5f29",
+    "evaluator:src/plamen_eval/adapters/pashov_v3.py": "9cfcb054b458c1a38523a2a309bcfe8390f455fb22f492b2deb7d606d8de0bef",
+    "evaluator:src/plamen_eval/phase_maps.py": "80e131e0be20bbb3c5b50ab81a77a3ebd3859c44cae19f2742c730be88013108",
+    "evaluator:tests/test_real_v2_production_conformance.py": "a022fc119270cad5cd71d6fbcc8a9b2727cc77975169f9dda0d8f9555a259586",
+    "evaluator:pyproject.toml": "87e0f7f0e1fe07bca1302f11ec95c391342965a5a17a044cf8e0ae63b4117f1d"
+  },
+  "api_surface": {
+    "production_public_top_level_symbols": {
+      "count": 107,
+      "sha256": "e55ac24af1c33dc5f476247c08ee304ae4457362abf7b253f447b2bc7e14189b"
+    },
+    "evaluator_public_top_level_symbols": {
+      "count": 100,
+      "sha256": "31b7a2f19ba48bd71f3bd0aeee51179419bdef48b9730149e715265f79a100f8"
+    }
+  },
+  "protocol_hashes": {
+    "smart_contract_phase_map_sha256": "28779f0e8bfb0358f0b496661b61918f7b837530c05ff1295f63e83d5d5ac9ae",
+    "l1_phase_map_sha256": "1eb129d128fc47427b1de2d0502aa82f3162546246f57d6d738090d441c526a6",
+    "evaluator_schema_tree_sha256": "6c5dbbf450a29e3ebfe6f0ce5c69e2c9afb8547564147d1ee44c39d1e316dd5f"
+  },
+  "clean_install": {
+    "wheel_filename": "plamen_eval_control-0.2.0-py3-none-any.whl",
+    "wheel_sha256": "1874f8c4a4d3d4eb72e154108e0f3ef83558d0be4b3e92300387bef41a694362",
+    "installed_version": "0.2.0",
+    "empty_profile": true,
+    "repository_on_python_path": false,
+    "b1_fixture_trust_profile": "B1_COMPLETE",
+    "b1_fixture_seal_sha256": "884c9d727576c95ede36eb93782933bd5dec4dbfab25664ed8b1fa09bcc6c473",
+    "verify_result": "VALID",
+    "content_addressed_import_result": "IMPORTED"
+  },
+  "validation": [
+    {
+      "suite": "production RunBundle",
+      "result": "509 passed",
+      "seconds": 104.53
+    },
+    {
+      "suite": "neutral evaluator full",
+      "result": "156 passed, 6 subtests passed",
+      "seconds": 51.35
+    },
+    {
+      "suite": "production packaging",
+      "result": "2 passed",
+      "seconds": 21.09
+    },
+    {
+      "suite": "public packaging freeze",
+      "result": "4 passed",
+      "seconds": 84.73
+    },
+    {
+      "suite": "cross-OS/toolchain pre-handoff",
+      "result": "22 passed",
+      "seconds": 2.99
+    },
+    {
+      "suite": "clean installed-wheel B1 verify/import",
+      "result": "VALID and IMPORTED"
+    }
+  ],
+  "closed_review_blockers": [
+    "independent cross-artifact semantic replay",
+    "single-capture and root-alias/TOCTOU safety",
+    "exact signed RUN_CONTEXT and typed B1 authority replay",
+    "closed blinded review projection",
+    "mandatory exact 2x2 parity fields",
+    "causal lifecycle milestone ordering",
+    "module-scope Windows ADS ctypes ABI",
+    "caller-authorized recovery journal path/topology",
+    "closed nested schemas and package version parity",
+    "pinned Pashov parse preimage and inventory capture"
+  ],
+  "external_blockers": [
+    "governed hidden corpus",
+    "secure independently operated launcher",
+    "external authority keys and signatures",
+    "independent blinded reviewers and adjudicator",
+    "provider-authenticated measurements",
+    "independently pinned comparator execution"
+  ]
+}

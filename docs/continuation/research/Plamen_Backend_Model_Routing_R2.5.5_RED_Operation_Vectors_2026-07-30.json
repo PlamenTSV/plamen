@@ -1,0 +1,304 @@
+{
+  "schema": "plamen.model-routing-r2.5.5-red-operation-vectors.v1",
+  "version": 1,
+  "disposition": "DESIGN_RED_ONLY_INDEPENDENT_ACCEPTANCE_REQUIRED",
+  "sealed_r2_5_4_review": {
+    "body_sha256": "25723133c196edd6a94a2e7f677811d3535fd2c65a3fd9364de5c044cf046ebd",
+    "whole_sha256": "82b0bdb39cca446bacb2bddc596c81562b22cec9e2be0e3c5268a9fb53f4b9c9",
+    "verdict": "BLOCK"
+  },
+  "frozen_r2_5_4": {
+    "validator_sha256": "764d3a741cbb195f325794c8c0b03352ef4fc6de1f49cd0a9f4d186fd06cae2d",
+    "schema_sha256": "fec29bc5b7db5ca4edfe7a7b3ae60a7ce70b7c2960dcd7ee9c37378ea65df2cf",
+    "vectors_sha256": "6f3e593bd9ba0e98ad684398629e78d4ffdd89ba0073133ed86b2629bfefa78f",
+    "accepted_source_operations": 43,
+    "preserved_b5_operations": 14,
+    "operation_manifest_sha256": "2c13a363f2535693b11f6b9e61d618bb4a5fc37ef9f4348a3fa74dc6c515e84e"
+  },
+  "p15_evidence_operations": [
+    {
+      "operation_id": "P15-001",
+      "fixture_constructor_id": "post-mint secret presence policy mutation",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.authenticate_spawn_from_capability_v252",
+      "canonical_input_sha256": "9da077ade16c35dc0d3a2cd2f3c213aa723b2505459d85eee3661c600d84f376",
+      "expected_result": "REJECT",
+      "expected_error": "VALIDATED_CLOSURE_POLICY_MISMATCH",
+      "invocation_sha256": "8e7ced227aa7ef999fa465084dd067047d16079bb24fc0b83bcca8fff74fec05"
+    },
+    {
+      "operation_id": "P15-002",
+      "fixture_constructor_id": "post-mint non-secret source class mutation",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.authenticate_spawn_from_capability_v252",
+      "canonical_input_sha256": "da09507e7872d58d4f00fcacbbd228fff6f452a36a09846f23c2370dab3f904a",
+      "expected_result": "REJECT",
+      "expected_error": "VALIDATED_CLOSURE_POLICY_MISMATCH",
+      "invocation_sha256": "1f164443ec6576cb00a6e4e6d575f7769f18e4d94bdf0866f64e558c44a2a5fc"
+    },
+    {
+      "operation_id": "P15-003",
+      "fixture_constructor_id": "post-mint consumed spawn-state mutation",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.authenticate_spawn_from_capability_v252",
+      "canonical_input_sha256": "9eb7612819a07052f512b770d25e8e936719e1b1eea75791105d68e93149dc94",
+      "expected_result": "REJECT",
+      "expected_error": "VALIDATED_CLOSURE_CONSUME_MISMATCH",
+      "invocation_sha256": "eadef6f31b0835eedc64f2ac654f7ac1123ddd394acd25e9d58ee3a54b33050f"
+    },
+    {
+      "operation_id": "P15-004",
+      "fixture_constructor_id": "post-mint consumed CAS mutation",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.authenticate_spawn_from_capability_v252",
+      "canonical_input_sha256": "804a3aac1f6ced118cea521b989a8d22928ec728acb2813d53d3efcebf8d0b76",
+      "expected_result": "REJECT",
+      "expected_error": "VALIDATED_CLOSURE_CONSUME_MISMATCH",
+      "invocation_sha256": "362ca3a31fc6306c742983ea93236f326e1b8e477cec6c9b1b2955e5fbeb2f92"
+    },
+    {
+      "operation_id": "P15-005",
+      "fixture_constructor_id": "resume raw current records forbidden",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_resume_v252",
+      "canonical_input_sha256": "1e4e44e8cc036cdea96ab1d5a79bdccfda87b3bd64606e9d055df77074bd42f3",
+      "expected_result": "REJECT",
+      "expected_error": "RESUME_VALIDATED_CLOSURE_REQUIRED",
+      "invocation_sha256": "8d47bd57ba13095f6d8b7b8439835f6669ff2b2baec8cf252b36f6ef7a98dfcd"
+    },
+    {
+      "operation_id": "P15-006",
+      "fixture_constructor_id": "resume cross-run prior authority",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_resume_v252",
+      "canonical_input_sha256": "8a531e585db6b0f0c68e1a4716c3ea8668617496c94614de4e886576670b4d9b",
+      "expected_result": "REJECT",
+      "expected_error": "RESUME_RUN_SCOPE_MISMATCH",
+      "invocation_sha256": "91bf27177d310b8caebb40c52f1f29828d940caa7f6d388e68915b66758e6511"
+    },
+    {
+      "operation_id": "P15-007",
+      "fixture_constructor_id": "full closure fabricated legacy observation",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_and_mint_closure_v252",
+      "canonical_input_sha256": "2031d18d9616eace2fbf2c6d5aee39c211bacc51594fa262d12388943f167012",
+      "expected_result": "REJECT",
+      "expected_error": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH",
+      "invocation_sha256": "e89252a619abd41fd8cb3e8883d35ddc6c14a0e38f6f8039749b4c93a919bd93"
+    },
+    {
+      "operation_id": "P15-008",
+      "fixture_constructor_id": "full closure caller-authored legacy proof rule",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_and_mint_closure_v252",
+      "canonical_input_sha256": "445fe5f1828bb232a8fd89c8ae183560030268c2d6ce35720024602b133b9f2e",
+      "expected_result": "REJECT",
+      "expected_error": "MANDATORY_NEUTRAL_OBSERVATION_MISMATCH",
+      "invocation_sha256": "c7b72ad467f826fd54d5e278f5eb32d00932af0a94bb05cc379a8bd1847d3a36"
+    },
+    {
+      "operation_id": "P15-009",
+      "fixture_constructor_id": "neutral unknown thinking state",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_and_mint_closure_v252",
+      "canonical_input_sha256": "f2a3e12e4fb99b0bf76a48a20d482c4be324a5d12939f83f26de73939685cbf0",
+      "expected_result": "REJECT",
+      "expected_error": "NEUTRAL_STATE_GRAMMAR_MISMATCH",
+      "invocation_sha256": "905757e1cd8236779453e6dc2bf2680a2934ef66246ca937c5f4c7b1133c780b"
+    },
+    {
+      "operation_id": "P15-010",
+      "fixture_constructor_id": "neutral unknown fallback state",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_and_mint_closure_v252",
+      "canonical_input_sha256": "c345d2f2fdbbe74db04c666fa23e296f3ce0bd52dc468b9c4701a9c946a92f01",
+      "expected_result": "REJECT",
+      "expected_error": "NEUTRAL_STATE_GRAMMAR_MISMATCH",
+      "invocation_sha256": "75aa3d99bd15950edb22603ec7afd52dd4a9d766ce1954b9f69481ecb5975eee"
+    },
+    {
+      "operation_id": "P15-011",
+      "fixture_constructor_id": "neutral unknown terminal category",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_and_mint_closure_v252",
+      "canonical_input_sha256": "1d134cd63b6e2c269345e37a92e2745c24ed3dbf34c48968bccd6955c67676c2",
+      "expected_result": "REJECT",
+      "expected_error": "NEUTRAL_STATE_GRAMMAR_MISMATCH",
+      "invocation_sha256": "b6ac41206eb921cf7bac5cb51ea72e621c2b7567adcd66113a53dacf2c121711"
+    },
+    {
+      "operation_id": "P15-012",
+      "fixture_constructor_id": "neutral malformed usage object",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_and_mint_closure_v252",
+      "canonical_input_sha256": "8053e26e52fbba2b6adde352e0595bcb81f5b3f7722f804c3e20a5bb7ca5e230",
+      "expected_result": "REJECT",
+      "expected_error": "PROVIDER_USAGE_SCHEMA_MISMATCH",
+      "invocation_sha256": "79b21ecb17f30c04cca1c7a836a3e7c2d9b17f75a1612dfb04664206c548b22d"
+    },
+    {
+      "operation_id": "P15-013",
+      "fixture_constructor_id": "transaction parent-set internal key mismatch",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_store_scope",
+      "canonical_input_sha256": "a7d50b3eaf855a9d346180dc9b3db8c7eaf8775f34e098b62e3668497bac14ad",
+      "expected_result": "REJECT",
+      "expected_error": "AUTHORITY_STORE_KEY_MISMATCH",
+      "invocation_sha256": "4b71f275b38f32989bcbac536824d2708abb794bf1595530bc549d63e4e21c08"
+    },
+    {
+      "operation_id": "P15-014",
+      "fixture_constructor_id": "cross-run transaction parent set",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_store_scope",
+      "canonical_input_sha256": "cb97d871ea5b4b575857abaafbd01b7c1bfc603b3f8caf2a664410385ce2977d",
+      "expected_result": "REJECT",
+      "expected_error": "AUTHORITY_STORE_RUN_MISMATCH",
+      "invocation_sha256": "d34afbcdea4b2410fc82ddc860bac886342a8362fd7f3240531a373e79855d54"
+    },
+    {
+      "operation_id": "P15-015",
+      "fixture_constructor_id": "extra raw-secret store record",
+      "target_callable": "validate_plamen_model_routing_r2_5_2.validate_store_scope",
+      "canonical_input_sha256": "041f053dd6d43f9245418781628fe943cac423d7cee3b88ea0d616c144150579",
+      "expected_result": "REJECT",
+      "expected_error": "AUTHORITY_STORE_NAMESPACE_MISMATCH",
+      "invocation_sha256": "8880e65f2926767b30585fae2c83b571e149f84093d05af892d814b8169cfdcf"
+    }
+  ],
+  "lifecycle_schema_fixtures": [
+    "C",
+    "I",
+    "A",
+    "Q_OBSERVED",
+    "Q_ABORT",
+    "Q_DEBT",
+    "S_DIRECT",
+    "S_OBSERVED",
+    "T_PROVIDER",
+    "T_SPAWNED_NO_PROVIDER",
+    "T_SPAWN_FAILED",
+    "T_AMBIGUITY_ABORT",
+    "T_AMBIGUITY_DEBT",
+    "K_PROVIDER",
+    "K_LAUNCHER"
+  ],
+  "payload_mutations": [
+    "EXTRA_FIELD_RESEALED",
+    "DELETE_FIELD_RESEALED",
+    "WRONG_TYPE_RESEALED",
+    "REHASHED_VALUE"
+  ],
+  "outer_mutations": [
+    "EXTRA_FIELD_RESEALED",
+    "DELETE_REQUIRED_FIELD_RESEALED",
+    "SCHEMA_KIND_MISMATCH_RESEALED"
+  ],
+  "branch_families": {
+    "DIRECT_SPAWN": {
+      "resolution_outcome": "NONE",
+      "prefix": "C,I,S",
+      "terminal_outcomes": [
+        "PROVIDER_TERMINAL",
+        "PROCESS_EXIT_NO_PROVIDER_FRAME",
+        "TIMEOUT",
+        "CANCELLED",
+        "TRANSPORT_FAILURE",
+        "EMPTY_PROVIDER_OUTPUT",
+        "MALFORMED_PROVIDER_OUTPUT"
+      ]
+    },
+    "OBSERVED_SPAWN": {
+      "resolution_outcome": "OBSERVED_SPAWNED",
+      "prefix": "C,I,A,Q,S",
+      "terminal_outcomes": [
+        "PROVIDER_TERMINAL",
+        "PROCESS_EXIT_NO_PROVIDER_FRAME",
+        "TIMEOUT",
+        "CANCELLED",
+        "TRANSPORT_FAILURE",
+        "EMPTY_PROVIDER_OUTPUT",
+        "MALFORMED_PROVIDER_OUTPUT"
+      ]
+    },
+    "SPAWN_FAILED": {
+      "resolution_outcome": "NONE",
+      "prefix": "C,I",
+      "terminal_outcomes": [
+        "SPAWN_FAILED"
+      ]
+    },
+    "AMBIGUITY_ABORT": {
+      "resolution_outcome": "CONFIRMED_NOT_SPAWNED_ABORT",
+      "prefix": "C,I,A,Q",
+      "terminal_outcomes": [
+        "AMBIGUITY_ABORTED_NOT_SPAWNED"
+      ]
+    },
+    "AMBIGUITY_DEBT": {
+      "resolution_outcome": "UNRESOLVED_DEBT",
+      "prefix": "C,I,A,Q",
+      "terminal_outcomes": [
+        "AMBIGUITY_UNRESOLVED_DEBT"
+      ]
+    }
+  },
+  "terminal_parent_classes": [
+    "I",
+    "S",
+    "Q:CONFIRMED_NOT_SPAWNED_ABORT",
+    "Q:UNRESOLVED_DEBT"
+  ],
+  "terminal_outcomes": [
+    "PROVIDER_TERMINAL",
+    "SPAWN_FAILED",
+    "PROCESS_EXIT_NO_PROVIDER_FRAME",
+    "TIMEOUT",
+    "CANCELLED",
+    "TRANSPORT_FAILURE",
+    "EMPTY_PROVIDER_OUTPUT",
+    "MALFORMED_PROVIDER_OUTPUT",
+    "AMBIGUITY_ABORTED_NOT_SPAWNED",
+    "AMBIGUITY_UNRESOLVED_DEBT"
+  ],
+  "resolution_next_events": [
+    "S",
+    "T"
+  ],
+  "graph_consumers": {
+    "COMMON_LAUNCH": [
+      "launch_replay_validator",
+      "proof_mint"
+    ],
+    "INTENT": [
+      "spawn_authentication"
+    ],
+    "SPAWNED": [
+      "provider_spool_acceptance"
+    ],
+    "CURRENT": [
+      "completed_current_construction",
+      "current_replay_validator"
+    ],
+    "RESUME": [
+      "resume_authorization"
+    ]
+  },
+  "graph_record_mutations": [
+    "DELETE_RECORD",
+    "CORRUPT_SELF_DIGEST",
+    "EXTRA_FIELD_RESEALED",
+    "DELETE_REQUIRED_FIELD_RESEALED",
+    "WRONG_TYPE_RESEALED",
+    "SEMANTIC_FIELD_RESEALED"
+  ],
+  "graph_parent_mutations": [
+    "WRONG_PARENT_DIGEST_RESEALED",
+    "WRONG_PARENT_SCOPE_RESEALED"
+  ],
+  "expected_expansion": {
+    "p15_evidence_operations": 15,
+    "inherited_b5_operations": 14,
+    "inherited_source_operations": 43,
+    "lifecycle_schema_operations": 246,
+    "branch_matrix_operations": 52,
+    "semantic_graph_operations": 7246,
+    "total_executed_operations": 7620,
+    "operation_manifest_sha256": "84f6b5a77b3a7a9fe124db171683d7e1549a03214796cf96179a4b4b10292da1",
+    "p15_evidence_manifest_sha256": "ee2cde9dc8ef0a4765b2e0f735f5bc557f09ec15ac88f5043094a102c9bf54ab"
+  },
+  "authorization": {
+    "green_implementation": false,
+    "production_integration": false,
+    "provider_calls": false,
+    "audit_execution": false,
+    "defaults_or_config_changes": false,
+    "commit_or_push": false
+  }
+}

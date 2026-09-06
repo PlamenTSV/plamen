@@ -1126,7 +1126,8 @@ def _codex_install_committed_descriptor(
 def _codex_install_terminal_verification(
     *, verified_manifest_sha256, completed_ns=None,
     projection_public_key=None, projection_lock_public_key=None,
-    prior_lock_authority=None, legacy_projection_migration=None,
+    prior_lock_authority=None, projection_lock_authority_sha256=None,
+    legacy_projection_migration=None,
 ):
     """Build the exact terminal schema consumed by both installed entrypoints."""
     if not re.fullmatch(r"[0-9a-f]{64}", verified_manifest_sha256 or ""):
@@ -1146,6 +1147,7 @@ def _codex_install_terminal_verification(
     if projection_public_key is None:
         if any(value is not None for value in (
             projection_lock_public_key, prior_lock_authority,
+            projection_lock_authority_sha256,
             legacy_projection_migration,
         )):
             raise RuntimeError("terminal projection authority is incomplete")
@@ -1155,6 +1157,7 @@ def _codex_install_terminal_verification(
     if (
         projection_lock_public_key is None
         and prior_lock_authority is None
+        and projection_lock_authority_sha256 is None
         and legacy_projection_migration is None
     ):
         terminal["projection_public_key"] = projection_public_key
@@ -1163,15 +1166,29 @@ def _codex_install_terminal_verification(
         not re.fullmatch(
             r"[0-9a-f]{64}", projection_lock_public_key or ""
         )
-        or not isinstance(prior_lock_authority, dict)
+    ):
+        raise RuntimeError("terminal projection authority is malformed")
+    if prior_lock_authority is not None:
+        if not isinstance(prior_lock_authority, dict):
+            raise RuntimeError("terminal projection authority is malformed")
+        observed_lock_authority_sha256 = hashlib.sha256(json.dumps(
+            prior_lock_authority, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        if (
+            projection_lock_authority_sha256 is not None
+            and projection_lock_authority_sha256
+            != observed_lock_authority_sha256
+        ):
+            raise RuntimeError("terminal projection lock authority differs")
+        projection_lock_authority_sha256 = observed_lock_authority_sha256
+    if not re.fullmatch(
+        r"[0-9a-f]{64}", projection_lock_authority_sha256 or "",
     ):
         raise RuntimeError("terminal projection authority is malformed")
     terminal.update({
         "projection_public_key": projection_public_key,
         "projection_lock_public_key": projection_lock_public_key,
-        "projection_lock_authority_sha256": hashlib.sha256(json.dumps(
-            prior_lock_authority, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")).hexdigest(),
+        "projection_lock_authority_sha256": projection_lock_authority_sha256,
     })
     if legacy_projection_migration is not None:
         if not isinstance(legacy_projection_migration, dict):
@@ -24557,6 +24574,7 @@ def _install_codex_package_transaction(
 
     projection_public_key = None
     projection_lock_public_key = None
+    projection_lock_authority_sha256 = None
     prior_lock_lease = None
     prior_lock_lease_active = False
     prior_lock_authority = None
@@ -24676,10 +24694,17 @@ def _install_codex_package_transaction(
             projection_public_key = prior_projection_terminal.get(
                 "projection_public_key"
             )
+            # A Codex-only refresh must never inspect ~/.claude, but it must
+            # carry the authenticated idle-lock authority forward.  Otherwise
+            # a later full install has no signed authority with which to admit
+            # the still-existing projection lock.
+            projection_lock_public_key = prior_projection_terminal.get(
+                "projection_lock_public_key"
+            )
+            projection_lock_authority_sha256 = prior_projection_terminal.get(
+                "projection_lock_authority_sha256"
+            )
             if enable_claude_projection:
-                projection_lock_public_key = prior_projection_terminal.get(
-                    "projection_lock_public_key"
-                )
                 if _claude_projection_legacy_receipt(prior_projection_receipt):
                     legacy_projection_receipt = prior_projection_receipt
                     legacy_projection_census = (
@@ -25632,6 +25657,9 @@ def _install_codex_package_transaction(
             projection_public_key=projection_public_key,
             projection_lock_public_key=projection_lock_public_key,
             prior_lock_authority=prior_lock_authority,
+            projection_lock_authority_sha256=(
+                projection_lock_authority_sha256
+            ),
             legacy_projection_migration=legacy_projection_migration,
         )
         receipt["terminal_verification"] = terminal_verification
@@ -32011,6 +32039,12 @@ def main():
                 raise RuntimeError(
                     "--recover-codex-install requires one exact 32-hex transaction id"
                 )
+            if os.name != "nt" and __name__ == "__main__":
+                sys.stderr.write(
+                    "Plamen V3 install recovery is currently qualified only "
+                    "on Windows; POSIX keeper/recovery support is unfinished.\n"
+                )
+                raise SystemExit(3)
             recovered = _recover_codex_package_transaction(sys.argv[2])
             sys.stdout.write(
                 f"Recovered transaction: {recovered['transaction_id']}\n"
@@ -32071,12 +32105,12 @@ def main():
             w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}resume{_RST} path/config.json      Resume specific config\n")
             w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}start-config{_RST} path/config.json Start a pre-created clean config\n")
             w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}compare{_RST}                      Diff reports\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}install{_RST}                      Non-interactive install (symlinks + config)\n")
+            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}install{_RST}                      Non-interactive governed install (Windows)\n")
             w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}setup{_RST}                        Install + interactive toolchain wizard + RAG\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}migrate{_RST}                      Migrate v1.x install (~/.claude) to v2.x (~/.plamen)\n")
+            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}migrate{_RST}                      Migrate a legacy install (~/.claude) to V3 (~/.plamen)\n")
             w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}doctor{_RST}                       Verify install (no audit run, no API calls)\n")
             w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}rag{_RST}                          Rebuild RAG database only\n")
-            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}uninstall{_RST}                    Remove from ~/.claude\n")
+            w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}uninstall{_RST}                    Remove the governed local installation\n")
             w(f"    {_C_ORANGE}plamen{_RST} {_C_GRAY}install --codex{_RST}             Install Codex adapter\n")
             w(f"\n  {_C_WHITE}Options:{_RST}\n")
             w(f"    {_C_GRAY}--docs{_RST} PATH              Whitepaper or spec file\n")
@@ -32128,10 +32162,18 @@ def main():
 
         # ── Install / setup / migrate / uninstall subcommands ─
         # `install` is non-interactive (symlinks + config + Python deps + hook
-        # self-heal). Safe in Claude Code Bash, Codex shell, and CI. Exits 0.
+        # self-heal). Production installation is release-qualified on Windows.
         # `setup` runs install, then the interactive toolchain checkbox + RAG.
         # `--codex` runs only the Codex adapter generator (non-interactive).
         if arg in ("install", "setup"):
+            if os.name != "nt" and __name__ == "__main__":
+                sys.stderr.write(
+                    "Plamen V3 production installation is currently qualified "
+                    "only on Windows. Linux and macOS remain source-development "
+                    "hosts until the POSIX transaction/keeper goal is complete; "
+                    "see docs/continuation/GOAL.md and docs/development/macos.md.\n"
+                )
+                raise SystemExit(3)
             if "--codex" in sys.argv:
                 show_banner()
                 w = sys.stdout.write
@@ -32152,6 +32194,12 @@ def main():
             return
 
         if arg == "migrate":
+            if os.name != "nt" and __name__ == "__main__":
+                sys.stderr.write(
+                    "Plamen V3 migration is currently qualified only on "
+                    "Windows; POSIX transaction/recovery support is unfinished.\n"
+                )
+                raise SystemExit(3)
             run_migrate()
             return
 

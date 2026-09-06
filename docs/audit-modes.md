@@ -1,8 +1,9 @@
 # Audit Modes
 
-> Plamen v2.2.4. All modes run through the PTY-supervised V2 driver
-> (`plamen_driver.py`) on Windows, macOS, and Linux, with either the Claude Code
-> or OpenAI Codex CLI backend.
+> Plamen V3.0.0 development branch. All modes run through the deterministic V2
+> driver (`plamen_driver.py`) with either the Claude Code or OpenAI Codex CLI
+> backend. Windows is the current production host; native Linux/macOS package
+> and E2E qualification remains continuation work.
 
 ## Comparison
 
@@ -30,7 +31,13 @@
 
 > The "agent" counts above are role counts. Agents in the **breadth**, **rescan**, and **depth** rows execute as a driver-owned PTY worker pool (one Claude PTY per agent artifact) rather than as `Task()` subagents under a Claude coordinator. The driver supervises each worker through a pseudo-terminal and infers turn completion from artifacts written to disk (`PLAMEN_STATUS` markers) rather than from a stdout/JSON envelope, eliminating the 0-byte-stdio / silent-hang class. See [pipeline-phases-presentation.md](pipeline-phases-presentation.md) for execution-shape details.
 
-> **Cross-platform & ecosystem auto-detect**: All modes run on Windows, macOS, and Linux. The driver auto-detects (and auto-corrects, without a halt-to-rerun) the language ecosystem at startup, shows it on the startup banner, and resolves it via manifest-priority rules. POSIX runs use `Popen`-owned PTY execution with nested-session env isolation.
+> **Platform boundary & ecosystem auto-detect**: All modes are currently
+> release-qualified on Windows. Linux and macOS exercise the portable driver
+> substrate in source validation, but native production launches remain blocked
+> until the POSIX install transaction and keeper/recovery goal is complete. On
+> an admitted host, the driver auto-detects (and auto-corrects, without a
+> halt-to-rerun) the language ecosystem at startup and resolves it through
+> manifest-priority rules.
 
 > **Haltless resilience**: A finished audit is never discarded at the finish line. The report_index, verify, inventory, and resume paths repair-then-degrade and surface any unfinished obligations as flagged Appendix-B items in `AUDIT_REPORT.md` instead of halting. Stale or corrupt checkpoints recover instead of stranding the run.
 

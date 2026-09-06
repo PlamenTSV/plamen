@@ -1,0 +1,152 @@
+{
+  "schema": "plamen.model-routing-r2.5.2-validation-receipt.v1",
+  "version": 1,
+  "date": "2026-07-30",
+  "disposition": "AUTHOR_SELF_VALIDATED_INDEPENDENT_REVIEW_REQUIRED_NOT_CUTOVER_AUTHORIZED",
+  "change_boundary": "Bounded design and offline conformance successor for the sealed R2.5.1 review blockers B1-B4 only. No production, test, provider, install, audit, network, default, commit, push, or cutover mutation was authorized.",
+  "blocking_review": {
+    "file": "backend_model_routing_r2_5_1_independent_review_r1_20260730.md",
+    "whole_sha256": "255952072991a889bb7119d744eabc1c77570bd9701f5f8ddd22d314663edf9a",
+    "body_sha256": "c769bf229a2046456a7424457028953edf8256b42b5f098c8bbd839b8e319276",
+    "fresh_operations": 73,
+    "unexpected_accepts": 15,
+    "root_causes": [
+      "B1_POLICY_AND_CONSUME_NOT_AUTHENTICATED_AT_FINAL_SPAWN_SINK",
+      "B2_RESUME_CURRENT_CLOSURE_NOT_ROOTED_OR_RUN_SCOPED",
+      "B3_NEUTRAL_PROVIDER_EVIDENCE_NOT_MANDATORY_OR_LOAD_BEARING",
+      "B4_STORE_KEY_RUN_GENERATION_ATTEMPT_AND_NAMESPACE_NOT_CLOSED"
+    ]
+  },
+  "causal_lifecycle_correction": {
+    "single_capability_cycle_rejected": true,
+    "launch_capability": "POST_CONSUME_PRE_SPAWN_NO_PROVIDER_OUTPUT_CLAIMS",
+    "completed_current_capability": "POST_PROVIDER_NEUTRAL_RECONCILED_RESUME_INPUT",
+    "order": [
+      "LOAD_GOVERNED_STORE_AND_CURRENT_RUN",
+      "COMPILE_LAUNCH_CANDIDATE",
+      "PERSIST_CONSUME_CAS_AND_TYPED_PARENT",
+      "VALIDATE_POST_CONSUME_LAUNCH_CLOSURE",
+      "MINT_LAUNCH_CAPABILITY",
+      "MINT_SECRET_PROOF",
+      "AUTHENTICATE_ACTUAL_POLICY_CONSUME_AND_PROOF",
+      "SPAWN",
+      "SPOOL_IMMUTABLE_PROVIDER_BYTES",
+      "NEUTRAL_PARSE_AND_RECONCILE",
+      "VALIDATE_COMPLETED_CURRENT_CLOSURE",
+      "MINT_COMPLETED_CURRENT_CAPABILITY",
+      "RESUME_ACCEPTS_ONLY_COMPLETED_CURRENT_CAPABILITY"
+    ]
+  },
+  "manifest_discrepancy": {
+    "restricted_json_bytes": 2851,
+    "historical_declared_sha256": "61981cac2042e9c7854737e6de759ef6fae2f3fe7ad405f721b431e8dbceabca",
+    "adjudicated_reproducible_sha256": "fad68edc4f82e09c0eed8d5bc1139e389e32c70f14efa783bb419d93bcbf8f9b",
+    "disposition": "REPRODUCIBLE_DIGEST_IS_LABEL_MANIFEST_TRUTH_HISTORICAL_DECLARATION_PRESERVED"
+  },
+  "frozen_r2_5_1_denominator": {
+    "validator_file": "validate_plamen_model_routing_r2_5_1.py",
+    "validator_sha256": "48bba3d1b90ebab113064983382f582b749a719728d336accb9a7d4cd115b685",
+    "vectors_file": "Plamen_Backend_Model_Routing_R2.5.1_Conformance_Vectors_2026-07-30.json",
+    "vectors_sha256": "e4e3804b86ab4251902ebdbafc99f5acae3d1409bd56255c730b345fb9c6b9e8",
+    "executed_denominator": 646,
+    "result": "PASS"
+  },
+  "package": [
+    {
+      "file": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.5.2_2026-07-30.md",
+      "bytes": 12645,
+      "lines_lf": 323,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "826697b371143bb2ecf79544f30f72815564f4b988a61de66cb8975eb2db56eb"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.5.2_Schemas_2026-07-30.json",
+      "bytes": 111261,
+      "lines_lf": 4253,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "23795b1620168ca94a7f9a65ab4136243a33c72027a7bf7a217a1911c14b1e02"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.5.2_Conformance_Vectors_2026-07-30.json",
+      "bytes": 7693,
+      "lines_lf": 263,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "ecbc628d257b09bc0ec343d2c525be14b6f5864b680e809dc282559eca2845b1"
+    },
+    {
+      "file": "validate_plamen_model_routing_r2_5_2.py",
+      "bytes": 71273,
+      "lines_lf": 2191,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "54308ee13491bf43ab006d65b11bb4c60e70f620d17eb8b209288ef2ac5a785c"
+    }
+  ],
+  "validation": {
+    "isolated_command": "python -I <LOCAL_USER_ROOT>\\Downloads\\validate_plamen_model_routing_r2_5_2.py",
+    "result": "PASS",
+    "repeat_isolated_output_stable": true,
+    "independent_pass_claimed": false,
+    "python_compile": "PASS",
+    "draft_2020_12_meta_schema": "PASS",
+    "duplicate_aware_json": "PASS",
+    "ascii_lf_final_lf": "PASS",
+    "schema_definitions_total": 61,
+    "successor_closed_definitions": 4,
+    "r2_5_1_preserved_executed_denominator": 646,
+    "r2_5_2_b1_vectors": 8,
+    "r2_5_2_b2_vectors": 8,
+    "r2_5_2_b3_vectors": 13,
+    "r2_5_2_b4_vectors": 11,
+    "r2_5_2_new_vectors": 40,
+    "total_executed_vector_denominator": 686,
+    "author_hardening_probes": 12,
+    "unique_requirement_count_claimed": false,
+    "schema_sha256_reported_by_validator": "23795b1620168ca94a7f9a65ab4136243a33c72027a7bf7a217a1911c14b1e02",
+    "vectors_sha256_reported_by_validator": "ecbc628d257b09bc0ec343d2c525be14b6f5864b680e809dc282559eca2845b1",
+    "blockers_reported_closed_by_validator": [
+      "B1",
+      "B2",
+      "B3",
+      "B4"
+    ],
+    "author_disposition_reported_by_validator": "SELF_VALIDATED_NOT_INDEPENDENT_PASS",
+    "repository_pytest_run": false,
+    "provider_or_audit_process_started": false
+  },
+  "trust_boundary": {
+    "fixture_store_anchor_helpers_are_production_apis": false,
+    "fixture_transport_receipt_helpers_are_production_apis": false,
+    "python_name_privacy_claimed_as_external_provenance": false,
+    "reference_registry_claimed_as_production_security": false,
+    "production_requires_separately_initialized_governed_loader": true,
+    "production_requires_neutral_process_io_spooler": true,
+    "production_requires_access_controlled_capability_issuer": true,
+    "launch_and_completed_current_capabilities_are_distinct": true
+  },
+  "not_proven": [
+    "independent R2.5.2 acceptance",
+    "production integration",
+    "production store and capability provenance",
+    "production provider-byte spool provenance",
+    "real Claude or Codex provider behavior",
+    "current provider model availability or pricing",
+    "native cross-OS store or spool behavior",
+    "downstream runtime, evaluator, BB, repair, packaging, or CI completion",
+    "audit recall",
+    "audit precision",
+    "cutover readiness"
+  ],
+  "provider_calls_or_audits_authorized": false,
+  "production_edits_authorized": false,
+  "network_calls_authorized": false,
+  "commit_or_push_authorized": false,
+  "cutover_authorized": false
+}

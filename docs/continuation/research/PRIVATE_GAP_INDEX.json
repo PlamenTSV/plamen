@@ -1,0 +1,462 @@
+{
+    "schema":  "plamen.continuation.private-research-gaps.v2",
+    "generated_date":  "2026-09-06",
+    "purpose":  "Exact raw-byte gaps in the 131-source denominator. Six privacy-interleaved text sources also have full sanitized semantic ports; four payloads remain raw-only outside Git.",
+    "gap_count":  10,
+    "source_bytes":  1182552,
+    "completion_rule":  "The public checkout is semantically complete for the tool goal, but byte-complete corpus migration requires every raw source in this index to be transferred outside Git under PRIVATE_ARTIFACTS.md and match its recorded size and SHA-256.",
+    "next_machine_steps":  [
+                               "Use the 127 exact/sanitized source ports in docs/continuation/research for implementation and future research comparison.",
+                               "Create the encrypted private migration archive outside the repository as specified by docs/continuation/PRIVATE_ARTIFACTS.md.",
+                               "Copy every source_identity in this index into the archive without renaming its logical identity.",
+                               "On the destination machine, recompute byte size and SHA-256 and require exact equality for all 10 raw-gap rows before declaring the 131-source raw denominator complete.",
+                               "Keep the unpacked archive outside the public checkout and expose private target evidence only to the human comparison workflow, never to audit workers or prompts."
+                           ],
+    "gaps":  [
+                 {
+                     "gap_id":  "GAP-PRIVATE-001",
+                     "source_identity":  "AUDIT_REPORT.plamen-original.md",
+                     "source_locator":  "Downloads/AUDIT_REPORT.plamen-original.md",
+                     "source_bytes":  53721,
+                     "source_sha256":  "1ea31cfcbf294bd70ebd87cc5a6ba8e5f91553c9c3880f69baaa28d3fe939076",
+                     "reason":  "private_audit_report",
+                     "git_port_present":  false,
+                     "portable_path":  null,
+                     "portable_bytes":  null,
+                     "portable_sha256":  null,
+                     "transformation":  "excluded",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/GOAL.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl",
+                                                          "architecture/canonical-requirement-ownership.v2.json"
+                                                      ],
+                     "gap_status":  "RAW_ONLY_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+
+                                    ],
+                     "redaction_map_ref":  null
+                 },
+                 {
+                     "gap_id":  "GAP-BINARY-001",
+                     "source_identity":  "Plamen_BB_Wrapper_Hardened_2026-07-27.zip",
+                     "source_locator":  "Downloads/Plamen_BB_Wrapper_Hardened_2026-07-27.zip",
+                     "source_bytes":  316696,
+                     "source_sha256":  "087281f0d3e6dcd76a134d3795d23ffca790cbba9b5b81b6b92f2e5fda03b649",
+                     "reason":  "superseded_binary_bundle",
+                     "git_port_present":  false,
+                     "portable_path":  null,
+                     "portable_bytes":  null,
+                     "portable_sha256":  null,
+                     "transformation":  "excluded",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/research/Plamen_BB_Wrapper_Hardened_2026-07-27.manifest.json",
+                                                          "docs/continuation/research/Plamen_BB_Wrapper_Hardened_Handoff_2026-07-27.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl"
+                                                      ],
+                     "gap_status":  "RAW_ONLY_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+
+                                    ],
+                     "redaction_map_ref":  null
+                 },
+                 {
+                     "gap_id":  "GAP-BINARY-002",
+                     "source_identity":  "Plamen_BB_Wrapper_Hardened_2026-07-29.zip",
+                     "source_locator":  "Downloads/Plamen_BB_Wrapper_Hardened_2026-07-29.zip",
+                     "source_bytes":  506015,
+                     "source_sha256":  "2ba527421f693c1881330ea46525295304c4a272c27971a886b3cad5ec9b0c64",
+                     "reason":  "superseded_binary_bundle",
+                     "git_port_present":  false,
+                     "portable_path":  null,
+                     "portable_bytes":  null,
+                     "portable_sha256":  null,
+                     "transformation":  "excluded",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/research/Plamen_BB_Wrapper_Hardened_2026-07-27.manifest.json",
+                                                          "docs/continuation/research/Plamen_BB_Wrapper_Hardened_Handoff_2026-07-27.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl"
+                                                      ],
+                     "gap_status":  "RAW_ONLY_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+
+                                    ],
+                     "redaction_map_ref":  null
+                 },
+                 {
+                     "gap_id":  "GAP-PRIVATE-003",
+                     "source_identity":  "Plamen_Canonical_Architecture_Methodology_and_Implementation_Plan_2026-07-15.md",
+                     "source_locator":  "Downloads/Plamen_Canonical_Architecture_Methodology_and_Implementation_Plan_2026-07-15.md",
+                     "source_bytes":  112624,
+                     "source_sha256":  "4b487c3bf271933e88bcb094c5bdd1268db310a082b2b86f2fb5a83b21030b34",
+                     "reason":  "research_interleaved_with_private_target_forensics",
+                     "git_port_present":  true,
+                     "portable_path":  "docs/continuation/research/Plamen_Canonical_Architecture_Methodology_and_Implementation_Plan_2026-07-15.sanitized.md",
+                     "portable_bytes":  113604,
+                     "portable_sha256":  "fb3fd6c29c837d83d77a3d5efda5a732cb2fe1a55a4a61a5f3a3aabe17b9c9af",
+                     "transformation":  "sanitized",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/research/Plamen_Canonical_Architecture_Methodology_and_Implementation_Plan_2026-07-15.sanitized.md",
+                                                          "docs/continuation/GOAL.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl",
+                                                          "architecture/canonical-requirement-ownership.v2.json"
+                                                      ],
+                     "gap_status":  "SEMANTIC_PORT_PRESENT_RAW_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+                                        {
+                                            "rule_id":  "PORTABLE_PROVENANCE_HEADER",
+                                            "count":  1,
+                                            "replacement":  "One fixed provenance header"
+                                        },
+                                        {
+                                            "rule_id":  "TYPED_PRIVATE_OR_LOCAL_PATH",
+                                            "count":  1,
+                                            "replacement":  "Typed non-machine path placeholder"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_TARGET_OR_CLAIM_IDENTITY",
+                                            "count":  20,
+                                            "replacement":  "Typed anonymous identity phrase"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_FINDING_ID",
+                                            "count":  13,
+                                            "replacement":  "Deterministic relationship-preserving private finding token"
+                                        },
+                                        {
+                                            "rule_id":  "SOURCE_REVISION",
+                                            "count":  7,
+                                            "replacement":  "Deterministic relationship-preserving revision token"
+                                        }
+                                    ],
+                     "redaction_map_ref":  "docs/continuation/CORPUS_MANIFEST.json#source_inventory/Plamen_Canonical_Architecture_Methodology_and_Implementation_Plan_2026-07-15.md"
+                 },
+                 {
+                     "gap_id":  "GAP-PRIVATE-007",
+                     "source_identity":  "Plamen_Claude-to-Codex_Implementation_Handoff_2026-07-15.md",
+                     "source_locator":  "Downloads/Plamen_Claude-to-Codex_Implementation_Handoff_2026-07-15.md",
+                     "source_bytes":  22548,
+                     "source_sha256":  "e69831fc4735254ad4cc41a06639a124fc1261b31447a581b5ed7b288794c5ea",
+                     "reason":  "handoff_contains_private_regression_finding_ids_and_results",
+                     "git_port_present":  true,
+                     "portable_path":  "docs/continuation/research/Plamen_Claude-to-Codex_Implementation_Handoff_2026-07-15.sanitized.md",
+                     "portable_bytes":  23530,
+                     "portable_sha256":  "672bf8cfc781f718dd197ea7334f1d93dc7d4e56f5fc28c2d6917686d33783eb",
+                     "transformation":  "sanitized",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/research/Plamen_Claude-to-Codex_Implementation_Handoff_2026-07-15.sanitized.md",
+                                                          "docs/continuation/GOAL.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl",
+                                                          "architecture/canonical-requirement-ownership.v2.json"
+                                                      ],
+                     "gap_status":  "SEMANTIC_PORT_PRESENT_RAW_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+                                        {
+                                            "rule_id":  "PORTABLE_PROVENANCE_HEADER",
+                                            "count":  1,
+                                            "replacement":  "One fixed provenance header"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_TARGET_OR_CLAIM_IDENTITY",
+                                            "count":  10,
+                                            "replacement":  "Typed anonymous identity phrase"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_FINDING_DESCRIPTION",
+                                            "count":  1,
+                                            "replacement":  "Anonymous semantic finding description"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_FINDING_ID",
+                                            "count":  14,
+                                            "replacement":  "Deterministic relationship-preserving private finding token"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_INVENTORY_ID",
+                                            "count":  1,
+                                            "replacement":  "Deterministic relationship-preserving inventory token"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_GROUP_ID",
+                                            "count":  2,
+                                            "replacement":  "Deterministic relationship-preserving grouping token"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_ARTIFACT_ID",
+                                            "count":  1,
+                                            "replacement":  "Deterministic relationship-preserving artifact token"
+                                        }
+                                    ],
+                     "redaction_map_ref":  "docs/continuation/CORPUS_MANIFEST.json#source_inventory/Plamen_Claude-to-Codex_Implementation_Handoff_2026-07-15.md"
+                 },
+                 {
+                     "gap_id":  "GAP-PRIVATE-006",
+                     "source_identity":  "Plamen_Codex-to-Claude_Implementation_Review_Handoff_2026-07-16.md",
+                     "source_locator":  "Downloads/Plamen_Codex-to-Claude_Implementation_Review_Handoff_2026-07-16.md",
+                     "source_bytes":  42985,
+                     "source_sha256":  "664def020d68fd26703a7997f0aad5c684dfc7cf0727e4bb15d78458a74fee7f",
+                     "reason":  "handoff_interleaved_with_private_regression_finding_ids",
+                     "git_port_present":  true,
+                     "portable_path":  "docs/continuation/research/Plamen_Codex-to-Claude_Implementation_Review_Handoff_2026-07-16.sanitized.md",
+                     "portable_bytes":  43185,
+                     "portable_sha256":  "e8acbb4a7546601141f0fb5fbcb96909d07efaae83cee10073023b9a4afa44b6",
+                     "transformation":  "sanitized",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/research/Plamen_Codex-to-Claude_Implementation_Review_Handoff_2026-07-16.sanitized.md",
+                                                          "docs/continuation/GOAL.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl",
+                                                          "architecture/canonical-requirement-ownership.v2.json"
+                                                      ],
+                     "gap_status":  "SEMANTIC_PORT_PRESENT_RAW_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+                                        {
+                                            "rule_id":  "PORTABLE_PROVENANCE_HEADER",
+                                            "count":  1,
+                                            "replacement":  "One fixed provenance header"
+                                        },
+                                        {
+                                            "rule_id":  "TYPED_PRIVATE_OR_LOCAL_PATH",
+                                            "count":  9,
+                                            "replacement":  "Typed non-machine path placeholder"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_TARGET_OR_CLAIM_IDENTITY",
+                                            "count":  6,
+                                            "replacement":  "Typed anonymous identity phrase"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_FINDING_ID",
+                                            "count":  12,
+                                            "replacement":  "Deterministic relationship-preserving private finding token"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_ARTIFACT_SHA256",
+                                            "count":  10,
+                                            "replacement":  "Deterministic relationship-preserving digest token"
+                                        },
+                                        {
+                                            "rule_id":  "SOURCE_REVISION",
+                                            "count":  3,
+                                            "replacement":  "Deterministic relationship-preserving revision token"
+                                        }
+                                    ],
+                     "redaction_map_ref":  "docs/continuation/CORPUS_MANIFEST.json#source_inventory/Plamen_Codex-to-Claude_Implementation_Review_Handoff_2026-07-16.md"
+                 },
+                 {
+                     "gap_id":  "GAP-PRIVATE-004",
+                     "source_identity":  "Plamen_Deep_Forensic_Architecture_Review_2026-07-15.md",
+                     "source_locator":  "Downloads/Plamen_Deep_Forensic_Architecture_Review_2026-07-15.md",
+                     "source_bytes":  58113,
+                     "source_sha256":  "948675ae1bfbb650c8e348ddac4dbb38d30459c4af846c7aac805d6abf790d76",
+                     "reason":  "research_interleaved_with_private_target_findings",
+                     "git_port_present":  true,
+                     "portable_path":  "docs/continuation/research/Plamen_Deep_Forensic_Architecture_Review_2026-07-15.sanitized.md",
+                     "portable_bytes":  59366,
+                     "portable_sha256":  "779a01b2307cd350c71ab7fee5244025d4fc81ccfaeeccc42a7c37b554a572b1",
+                     "transformation":  "sanitized",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/research/Plamen_Deep_Forensic_Architecture_Review_2026-07-15.sanitized.md",
+                                                          "docs/continuation/GOAL.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl",
+                                                          "architecture/canonical-requirement-ownership.v2.json"
+                                                      ],
+                     "gap_status":  "SEMANTIC_PORT_PRESENT_RAW_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+                                        {
+                                            "rule_id":  "PORTABLE_PROVENANCE_HEADER",
+                                            "count":  1,
+                                            "replacement":  "One fixed provenance header"
+                                        },
+                                        {
+                                            "rule_id":  "TYPED_PRIVATE_OR_LOCAL_PATH",
+                                            "count":  2,
+                                            "replacement":  "Typed non-machine path placeholder"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_TARGET_OR_CLAIM_IDENTITY",
+                                            "count":  21,
+                                            "replacement":  "Typed anonymous identity phrase"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_FINDING_DESCRIPTION",
+                                            "count":  2,
+                                            "replacement":  "Anonymous semantic finding description"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_FINDING_ID",
+                                            "count":  25,
+                                            "replacement":  "Deterministic relationship-preserving private finding token"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_INVENTORY_ID",
+                                            "count":  1,
+                                            "replacement":  "Deterministic relationship-preserving inventory token"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_GROUP_ID",
+                                            "count":  3,
+                                            "replacement":  "Deterministic relationship-preserving grouping token"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_ARTIFACT_ID",
+                                            "count":  3,
+                                            "replacement":  "Deterministic relationship-preserving artifact token"
+                                        },
+                                        {
+                                            "rule_id":  "SOURCE_REVISION",
+                                            "count":  1,
+                                            "replacement":  "Deterministic relationship-preserving revision token"
+                                        }
+                                    ],
+                     "redaction_map_ref":  "docs/continuation/CORPUS_MANIFEST.json#source_inventory/Plamen_Deep_Forensic_Architecture_Review_2026-07-15.md"
+                 },
+                 {
+                     "gap_id":  "GAP-PRIVATE-008",
+                     "source_identity":  "Plamen_Goal_Acceptance_Ledger_2026-07-17.md",
+                     "source_locator":  "Downloads/Plamen_Goal_Acceptance_Ledger_2026-07-17.md",
+                     "source_bytes":  22815,
+                     "source_sha256":  "0d05542b851609a1b81565bd69f7824ac8c677b2440ff072d50dd79f4ec66060",
+                     "reason":  "ledger_contains_private_target_locations_ground_truth_identifiers_and_hashes",
+                     "git_port_present":  true,
+                     "portable_path":  "docs/continuation/research/Plamen_Goal_Acceptance_Ledger_2026-07-17.sanitized.md",
+                     "portable_bytes":  22928,
+                     "portable_sha256":  "3e0fca58032f43fea32e8435926b1a76b00ef8a24ff3a4ecc9607dd95ce1b51a",
+                     "transformation":  "sanitized",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/research/Plamen_Goal_Acceptance_Ledger_2026-07-17.sanitized.md",
+                                                          "docs/continuation/GOAL.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl",
+                                                          "architecture/canonical-requirement-ownership.v2.json"
+                                                      ],
+                     "gap_status":  "SEMANTIC_PORT_PRESENT_RAW_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+                                        {
+                                            "rule_id":  "PORTABLE_PROVENANCE_HEADER",
+                                            "count":  1,
+                                            "replacement":  "One fixed provenance header"
+                                        },
+                                        {
+                                            "rule_id":  "TYPED_PRIVATE_OR_LOCAL_PATH",
+                                            "count":  5,
+                                            "replacement":  "Typed non-machine path placeholder"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_TARGET_OR_CLAIM_IDENTITY",
+                                            "count":  8,
+                                            "replacement":  "Typed anonymous identity phrase"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_FINDING_ID",
+                                            "count":  4,
+                                            "replacement":  "Deterministic relationship-preserving private finding token"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_ARTIFACT_SHA256",
+                                            "count":  11,
+                                            "replacement":  "Deterministic relationship-preserving digest token"
+                                        }
+                                    ],
+                     "redaction_map_ref":  "docs/continuation/CORPUS_MANIFEST.json#source_inventory/Plamen_Goal_Acceptance_Ledger_2026-07-17.md"
+                 },
+                 {
+                     "gap_id":  "GAP-PRIVATE-005",
+                     "source_identity":  "Plamen_Methodology_Application_and_Solodit_Research_2026-07-15.md",
+                     "source_locator":  "Downloads/Plamen_Methodology_Application_and_Solodit_Research_2026-07-15.md",
+                     "source_bytes":  33686,
+                     "source_sha256":  "916d2a2a86de59cd427196bb27a63bdef487f726971a255c00a577c28261f991",
+                     "reason":  "research_interleaved_with_private_target_findings",
+                     "git_port_present":  true,
+                     "portable_path":  "docs/continuation/research/Plamen_Methodology_Application_and_Solodit_Research_2026-07-15.sanitized.md",
+                     "portable_bytes":  34400,
+                     "portable_sha256":  "db95a631987b7c1b8f67c9e3648e380c4c54f250bd6524802cacc3129338696e",
+                     "transformation":  "sanitized",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/research/Plamen_Methodology_Application_and_Solodit_Research_2026-07-15.sanitized.md",
+                                                          "docs/continuation/GOAL.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl",
+                                                          "architecture/canonical-requirement-ownership.v2.json"
+                                                      ],
+                     "gap_status":  "SEMANTIC_PORT_PRESENT_RAW_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+                                        {
+                                            "rule_id":  "PORTABLE_PROVENANCE_HEADER",
+                                            "count":  1,
+                                            "replacement":  "One fixed provenance header"
+                                        },
+                                        {
+                                            "rule_id":  "TYPED_PRIVATE_OR_LOCAL_PATH",
+                                            "count":  2,
+                                            "replacement":  "Typed non-machine path placeholder"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_TARGET_OR_CLAIM_IDENTITY",
+                                            "count":  11,
+                                            "replacement":  "Typed anonymous identity phrase"
+                                        },
+                                        {
+                                            "rule_id":  "PRIVATE_FINDING_ID",
+                                            "count":  2,
+                                            "replacement":  "Deterministic relationship-preserving private finding token"
+                                        }
+                                    ],
+                     "redaction_map_ref":  "docs/continuation/CORPUS_MANIFEST.json#source_inventory/Plamen_Methodology_Application_and_Solodit_Research_2026-07-15.md"
+                 },
+                 {
+                     "gap_id":  "GAP-PRIVATE-002",
+                     "source_identity":  "PLAMEN_RUN_POSTMORTEM.md",
+                     "source_locator":  "Downloads/PLAMEN_RUN_POSTMORTEM.md",
+                     "source_bytes":  13349,
+                     "source_sha256":  "5c392a4f967f80199b59d80193ffba5e2f1a937c458377b73e35dbd139fcb36a",
+                     "reason":  "private_audit_postmortem",
+                     "git_port_present":  false,
+                     "portable_path":  null,
+                     "portable_bytes":  null,
+                     "portable_sha256":  null,
+                     "transformation":  "excluded",
+                     "raw_transfer_required":  true,
+                     "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
+                     "semantic_representation_refs":  [
+                                                          "docs/continuation/GOAL.md",
+                                                          "docs/continuation/REQUIREMENTS.jsonl",
+                                                          "architecture/canonical-requirement-ownership.v2.json"
+                                                      ],
+                     "gap_status":  "RAW_ONLY_PENDING_HASH_TRANSFER",
+                     "redactions":  [
+
+                                    ],
+                     "redaction_map_ref":  null
+                 }
+             ],
+    "completion_claim":  false,
+    "sanitized_semantic_port_count":  6,
+    "sanitized_semantic_source_bytes":  292771,
+    "raw_only_gap_count":  4,
+    "raw_only_source_bytes":  889781,
+    "research_directory_reconciliation":  {
+                                              "source_rows":  131,
+                                              "portable_source_files":  127,
+                                              "raw_only_source_rows":  4,
+                                              "gap_index_files":  1,
+                                              "research_directory_files":  128,
+                                              "source_row_minus_directory_file_delta":  3,
+                                              "formula":  "131 - 4 + 1 = 128"
+                                          },
+    "semantic_completion_claim":  true
+}

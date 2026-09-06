@@ -80,12 +80,13 @@ bytes is not verification.
 6. **Verify source identity.** Confirm the branch and expected commit, inspect
    submodule or external-artifact revisions, and ensure the clone contains no
    private inventory or audit material.
-7. **Install natively.** Follow the macOS installation documentation from the
-   fresh clone. Let the installer create platform-specific launchers, runtimes,
-   skills, and agent projections.
-8. **Run acceptance checks.** Run the documented unit, installer, and minimal
-   end-to-end smoke tests. Exercise each supported backend that the continuation
-   goal requires. Do not use copied Windows runtime state to make a check pass.
+7. **Bootstrap source development.** Follow `docs/development/macos.md` from the
+   fresh clone. Do not run the unsupported production installer or copy its
+   Windows launchers, runtimes, skills, or agent projections.
+8. **Run source acceptance checks.** Rebuild the isolated development state and
+   run the documented source-validation suite. Native macOS install/E2E remains
+   an explicit continuation-goal gate and must not be simulated with copied
+   Windows runtime state.
 9. **Verify private retention.** Transfer the encrypted archive separately,
    recompute every digest on macOS, mark `verified_destination` only after an
    exact match, and confirm that required retained material can be opened.

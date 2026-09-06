@@ -1417,9 +1417,15 @@ def test_codex_only_reinstall_preserves_public_key_without_claude_lock_access(
     assert receipt["state"] == "COMMITTED"
     assert set(receipt["terminal_verification"]) == {
         "verified_count", "verified_manifest_sha256", "completed_ns",
-        "projection_public_key",
+        "projection_public_key", "projection_lock_public_key",
+        "projection_lock_authority_sha256",
     }
     assert receipt["terminal_verification"]["projection_public_key"] == "3" * 64
+    assert receipt["terminal_verification"]["projection_lock_public_key"] == "3" * 64
+    assert (
+        receipt["terminal_verification"]["projection_lock_authority_sha256"]
+        == "4" * 64
+    )
     assert len(key_calls) == 1
     assert module._strict_json_bytes(receipt_path.read_bytes()) == receipt
 
@@ -3334,14 +3340,42 @@ def test_k2_publication_is_exactly_retired_when_k1_drifts(
     source = tmp_path / "source"
     installed = tmp_path / "installed"
     codex = tmp_path / "codex"
+    claude = tmp_path / ".claude"
     state = tmp_path / "state"
-    for root in (source, installed, codex):
+    for root in (source, installed, codex, claude):
         root.mkdir()
+    monkeypatch.setattr(module, "CLAUDE_HOME", str(claude))
     generation = _receipt(source, installed, codex)
-    generation["terminal_verification"]["projection_public_key"] = "6" * 64
-    generation["terminal_verification"]["projection_lock_public_key"] = "6" * 64
+    generation["terminal_verification"] = {
+        "verified_count": 759,
+        "verified_manifest_sha256": "2" * 64,
+        "completed_ns": 1,
+    }
+    generation["lock_identity"] = [17, 18]
+    receipt_raw = b"exact legacy receipt\n"
+    lock_path = claude / ".plamen-projection.lock"
+    lock_path.write_bytes(module._CLAUDE_PROJECTION_LEGACY_LOCK_RAW)
+    census = {
+        "manifest_sha256": "d" * 64,
+        "projection_count": 4,
+        "runtime_count": 10,
+    }
+    census["projection_roster"] = _synthetic_legacy_projection_roster(
+        module, source, claude,
+    )
+    census["projection_roster_sha256"] = hashlib.sha256(json.dumps(
+        census["projection_roster"], sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
     monkeypatch.setattr(
         module, "_validated_committed_install_receipt", lambda: generation,
+    )
+    monkeypatch.setattr(
+        module, "_claude_projection_validate_legacy_projection_ownership",
+        lambda *_a, **_k: dict(census),
+    )
+    monkeypatch.setattr(
+        module, "_codex_install_committed_read",
+        lambda *_a, **_k: ({}, receipt_raw),
     )
     monkeypatch.setattr(
         module, "_toolchain_runtime_required_integrity_issues",
@@ -3361,27 +3395,18 @@ def test_k2_publication_is_exactly_retired_when_k1_drifts(
     monkeypatch.setattr(
         module, "_claude_projection_fsync_parent", lambda *_a: None,
     )
-    lease_authority = {
-        "path": str(tmp_path / "lock"), "public_key": "6" * 64,
-        "device": 1, "inode": 2, "links": 1, "size": 1,
-        "sha256": "7" * 64,
-    }
-
-    @contextlib.contextmanager
-    def lease(*, create=True):
-        assert create is False
-        yield lease_authority
-
     validations = {"count": 0}
 
     def revalidate(authority):
-        assert authority is lease_authority
+        assert authority["public_key"] == module._CLAUDE_PROJECTION_LEGACY_PUBLIC
+        assert authority["path"] == module._claude_projection_canonical_path(
+            str(lock_path),
+        )
         validations["count"] += 1
         if validations["count"] == 6:
             assert key_path.is_file()
             raise RuntimeError("K1 replaced after K2 publication")
 
-    monkeypatch.setattr(module, "_claude_projection_lock", lease)
     monkeypatch.setattr(
         module, "_claude_projection_revalidate_lock_authority", revalidate,
     )
@@ -3405,7 +3430,7 @@ def test_k2_publication_is_exactly_retired_when_k1_drifts(
         )
         for path in tmp_path.rglob("*")
     }
-    assert validations["count"] == 6
+    assert validations["count"] >= 6
     assert after == before
     assert not key_path.exists()
     assert not state.exists()
@@ -3473,13 +3498,16 @@ def test_pretransaction_failure_retires_candidate_key_and_parent_exactly(
     source = tmp_path / "source"
     installed = tmp_path / "installed"
     codex = tmp_path / "codex"
-    for root in (source, installed, codex):
+    claude = tmp_path / ".claude"
+    for root in (source, installed, codex, claude):
         root.mkdir()
-    generation = _receipt(source, installed, codex)
-    generation["terminal_verification"]["projection_public_key"] = "6" * 64
-    generation["terminal_verification"]["projection_lock_public_key"] = "6" * 64
+    monkeypatch.setattr(module, "CLAUDE_HOME", str(claude))
+
+    def no_prior_receipt():
+        raise RuntimeError("no prior receipt")
+
     monkeypatch.setattr(
-        module, "_validated_committed_install_receipt", lambda: generation,
+        module, "_validated_committed_install_receipt", no_prior_receipt,
     )
     monkeypatch.setattr(
         module, "_toolchain_runtime_required_integrity_issues",

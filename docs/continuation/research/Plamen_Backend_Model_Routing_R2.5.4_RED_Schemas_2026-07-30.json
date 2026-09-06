@@ -1,0 +1,487 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:plamen:model-routing:r2.5.4:red",
+  "title": "Plamen backend model-routing R2.5.4 RED contracts",
+  "type": "object",
+  "$defs": {
+    "Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "RunId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$"
+    },
+    "ArtifactKey": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "ReplayManifestEntryV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_key",
+        "artifact_digest",
+        "byte_length",
+        "stage",
+        "snapshot_digest",
+        "run_id",
+        "generation",
+        "attempt_ordinal"
+      ],
+      "properties": {
+        "artifact_key": {
+          "$ref": "#/$defs/ArtifactKey"
+        },
+        "artifact_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stage": {
+          "enum": [
+            "LAUNCH",
+            "CURRENT"
+          ]
+        },
+        "snapshot_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attempt_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ReplayManifestAuthorityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "authority_id",
+        "source_id",
+        "key_policy",
+        "entries",
+        "manifest_root_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "ReplayManifestAuthorityV1"
+        },
+        "version": {
+          "const": 1
+        },
+        "authority_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "source_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "key_policy": {
+          "const": "ASCII_BYTEWISE_LOWER_V1"
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ReplayManifestEntryV1"
+          }
+        },
+        "manifest_root_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "ReplayReferenceV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "kind",
+        "artifact_key",
+        "claimed_artifact_digest",
+        "claimed_byte_length",
+        "claimed_stage",
+        "claimed_snapshot_digest",
+        "claimed_run_id",
+        "claimed_generation",
+        "claimed_attempt_ordinal"
+      ],
+      "properties": {
+        "schema": {
+          "enum": [
+            "LaunchReplayReferenceV2",
+            "CurrentReplayReferenceV2"
+          ]
+        },
+        "version": {
+          "const": 2
+        },
+        "kind": {
+          "enum": [
+            "LAUNCH",
+            "CURRENT"
+          ]
+        },
+        "artifact_key": {
+          "$ref": "#/$defs/ArtifactKey"
+        },
+        "claimed_artifact_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "claimed_byte_length": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "claimed_stage": {
+          "enum": [
+            "LAUNCH",
+            "CURRENT"
+          ]
+        },
+        "claimed_snapshot_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "claimed_run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "claimed_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "claimed_attempt_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "LifecycleEventV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "event_kind",
+        "event_revision",
+        "cas_revision",
+        "run_id",
+        "generation",
+        "attempt_ordinal",
+        "launch_replay_digest",
+        "parent_event_digest",
+        "event_digest",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "LifecycleEventV1"
+        },
+        "version": {
+          "const": 1
+        },
+        "event_kind": {
+          "enum": [
+            "C",
+            "I",
+            "A",
+            "Q",
+            "S",
+            "T",
+            "K"
+          ]
+        },
+        "event_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cas_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attempt_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "launch_replay_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "parent_event_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "event_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "payload": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "x-plamen-contract": {
+    "version": 1,
+    "trusted_source": {
+      "selection": "OUTSIDE_CALLER_INPUT",
+      "expected_root_owner": "ORCHESTRATOR_GOVERNED_CONFIGURATION",
+      "manifest_map": "EXACT_KEY_TO_DIGEST_LENGTH_STAGE_SNAPSHOT_RUN_GENERATION_ATTEMPT",
+      "artifact_read_count_per_decision": 1,
+      "parse_buffer": "SAME_BUFFER_AS_DIGEST_CHECK",
+      "caller_forbidden_fields": [
+        "expected_manifest_root",
+        "manifest",
+        "path",
+        "uri",
+        "raw_bytes",
+        "source",
+        "registry",
+        "issuer",
+        "validation_result"
+      ]
+    },
+    "key_policy": {
+      "id": "ASCII_BYTEWISE_LOWER_V1",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+      "case_sensitive": true,
+      "unicode_normalization": "NONE_REJECT_NON_ASCII",
+      "forbidden_fragments": [
+        "/",
+        "\\",
+        ":",
+        "..",
+        "%",
+        "\u0000"
+      ],
+      "filesystem_aliases": "REJECT_SYMLINK_JUNCTION_MOUNT_REPARSE"
+    },
+    "lifecycle": {
+      "tokens": [
+        "C",
+        "I",
+        "A",
+        "Q",
+        "S",
+        "T",
+        "K"
+      ],
+      "valid_prefixes": [
+        "C",
+        "C,I",
+        "C,I,S",
+        "C,I,S,T",
+        "C,I,S,T,K",
+        "C,I,T",
+        "C,I,T,K",
+        "C,I,A",
+        "C,I,A,Q",
+        "C,I,A,Q,S",
+        "C,I,A,Q,S,T",
+        "C,I,A,Q,S,T,K",
+        "C,I,A,Q,T",
+        "C,I,A,Q,T,K"
+      ],
+      "resolution_outcomes": [
+        "OBSERVED_SPAWNED",
+        "CONFIRMED_NOT_SPAWNED_ABORT",
+        "UNRESOLVED_DEBT"
+      ],
+      "terminal_outcomes": [
+        "PROVIDER_TERMINAL",
+        "SPAWN_FAILED",
+        "PROCESS_EXIT_NO_PROVIDER_FRAME",
+        "TIMEOUT",
+        "CANCELLED",
+        "TRANSPORT_FAILURE",
+        "EMPTY_PROVIDER_OUTPUT",
+        "MALFORMED_PROVIDER_OUTPUT",
+        "AMBIGUITY_ABORTED_NOT_SPAWNED",
+        "AMBIGUITY_UNRESOLVED_DEBT"
+      ],
+      "revision_law": "EXACT_PLUS_ONE",
+      "same_attempt_relaunch_after_intent": "FORBIDDEN",
+      "event_storage": "APPEND_ONLY_ONE_EVENT_PER_REVISION"
+    },
+    "replay_graph": {
+      "nodes": [
+        "manifest",
+        "manifest_entry",
+        "artifact",
+        "root",
+        "attempt",
+        "route",
+        "launch_envelope_v4",
+        "predecessor_envelope_v3",
+        "env_policy",
+        "public_env",
+        "consumed",
+        "intent",
+        "spawned",
+        "terminal",
+        "provider_artifact",
+        "neutral",
+        "reconciliation",
+        "completed_current",
+        "prior_identity"
+      ],
+      "edges": {
+        "manifest_to_entry": [
+          "manifest",
+          "manifest_entry"
+        ],
+        "entry_to_artifact": [
+          "manifest_entry",
+          "artifact"
+        ],
+        "root_to_attempt": [
+          "root",
+          "attempt"
+        ],
+        "attempt_to_route": [
+          "attempt",
+          "route"
+        ],
+        "route_to_v4": [
+          "route",
+          "launch_envelope_v4"
+        ],
+        "v4_to_v3": [
+          "launch_envelope_v4",
+          "predecessor_envelope_v3"
+        ],
+        "route_to_env_policy": [
+          "route",
+          "env_policy"
+        ],
+        "env_policy_to_public_env": [
+          "env_policy",
+          "public_env"
+        ],
+        "attempt_to_consumed": [
+          "attempt",
+          "consumed"
+        ],
+        "consumed_to_intent": [
+          "consumed",
+          "intent"
+        ],
+        "intent_to_spawned": [
+          "intent",
+          "spawned"
+        ],
+        "spawned_to_terminal": [
+          "spawned",
+          "terminal"
+        ],
+        "terminal_to_provider_artifact": [
+          "terminal",
+          "provider_artifact"
+        ],
+        "provider_artifact_to_neutral": [
+          "provider_artifact",
+          "neutral"
+        ],
+        "terminal_to_neutral": [
+          "terminal",
+          "neutral"
+        ],
+        "neutral_to_reconciliation": [
+          "neutral",
+          "reconciliation"
+        ],
+        "reconciliation_to_completed_current": [
+          "reconciliation",
+          "completed_current"
+        ],
+        "prior_identity_to_completed_current": [
+          "prior_identity",
+          "completed_current"
+        ]
+      },
+      "consumers": {
+        "launch_replay_validator": {
+          "nodes_through": "consumed",
+          "edges_through": "attempt_to_consumed"
+        },
+        "proof_mint": {
+          "nodes_through": "consumed",
+          "edges_through": "attempt_to_consumed"
+        },
+        "spawn_authentication": {
+          "nodes_through": "intent",
+          "edges_through": "consumed_to_intent"
+        },
+        "provider_spool_acceptance": {
+          "nodes_through": "spawned",
+          "edges_through": "intent_to_spawned"
+        },
+        "completed_current_construction": {
+          "nodes_through": "completed_current",
+          "edges_through": "reconciliation_to_completed_current"
+        },
+        "current_replay_validator": {
+          "nodes_through": "completed_current",
+          "edges_through": "reconciliation_to_completed_current"
+        },
+        "resume_authorization": {
+          "nodes_through": "prior_identity",
+          "edges_through": "prior_identity_to_completed_current"
+        }
+      },
+      "variants": {
+        "PROVIDER_TERMINAL": {
+          "consumers": [
+            "completed_current_construction",
+            "current_replay_validator",
+            "resume_authorization"
+          ],
+          "excluded_nodes": [],
+          "excluded_edges": [
+            "terminal_to_neutral"
+          ]
+        },
+        "LAUNCHER_TERMINAL_NO_PROVIDER": {
+          "consumers": [
+            "completed_current_construction",
+            "current_replay_validator",
+            "resume_authorization"
+          ],
+          "excluded_nodes": [
+            "provider_artifact"
+          ],
+          "excluded_edges": [
+            "terminal_to_provider_artifact",
+            "provider_artifact_to_neutral"
+          ]
+        }
+      }
+    },
+    "operation_derivation": {
+      "positive_per_consumer": true,
+      "node_mutations": [
+        "DELETE_NODE",
+        "CORRUPT_NODE_SEAL"
+      ],
+      "edge_mutations": [
+        "WRONG_PARENT_DIGEST",
+        "WRONG_SCOPE_JOIN"
+      ],
+      "operation_id_format": "GRAPH::<consumer>::<kind>::<target>::<mutation>"
+    }
+  }
+}

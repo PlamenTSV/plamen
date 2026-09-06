@@ -108,7 +108,7 @@ advisory bootstrap, and dual-backend E2E acceptance.
 Until that goal's macOS exit criteria pass:
 
 - develop and run source-level tests on the Mac;
-- run real audits on the retained supported Windows/Linux host;
+- run real audits on the retained supported Windows host;
 - do not pass `PLAMEN_SKIP_SUPPLY_CHAIN_GATE=1` as a portability workaround;
 - do not weaken process/write authority checks; and
 - do not restore the legacy direct/symlink installer for Darwin.

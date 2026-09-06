@@ -1,0 +1,324 @@
+{
+  "schema": "plamen.model-routing-r2.5.1-conformance-vectors.v1",
+  "version": 1,
+  "blocking_review": {
+    "file": "backend_model_routing_r2_5_independent_review_r1_20260730.md",
+    "whole_sha256": "97db9904fd4aa53161d436206bf558b03df86a60ba512675331c9c43b2842cf8",
+    "body_sha256": "5b0d5e836b9843c9317bdbb2ef714f39970fa964415a21cea54efec8f53f690f",
+    "unexpected_accept_count": 8,
+    "blocking_root_cause_count": 4
+  },
+  "manifest_discrepancy": {
+    "historical_declared_sha256": "61981cac2042e9c7854737e6de759ef6fae2f3fe7ad405f721b431e8dbceabca",
+    "adjudicated_reproducible_sha256": "fad68edc4f82e09c0eed8d5bc1139e389e32c70f14efa783bb419d93bcbf8f9b",
+    "restricted_json_bytes": 2851,
+    "disposition": "REPRODUCIBLE_DIGEST_IS_LABEL_MANIFEST_TRUTH_HISTORICAL_DECLARATION_PRESERVED"
+  },
+  "preserved_denominator": {
+    "r2_5_validator_sha256": "d95b245e41615c988ed529f07c1decbd8f3ac2ed1966661609e2c08efe1217e5",
+    "r2_5_vectors_sha256": "51ffcb40264984033f0150f07f737a01a0077733dd4acdf58a3746fc01fda0ac",
+    "r2_5_executed_total": 596
+  },
+  "r2_5_1_vectors": [
+    {
+      "id": "R2.5.1-001",
+      "blocker": "B1",
+      "scenario": "forged direct proof promoted to spawn capability",
+      "expected": "PROOF_CONSTRUCTOR_PRIVATE"
+    },
+    {
+      "id": "R2.5.1-002",
+      "blocker": "B1",
+      "scenario": "arbitrary proof tag",
+      "expected": "SECRET_PROOF_HMAC_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-003",
+      "blocker": "B1",
+      "scenario": "wrong V3 predecessor proof binding",
+      "expected": "SECRET_PROOF_V3_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-004",
+      "blocker": "B1",
+      "scenario": "wrong proof policy binding",
+      "expected": "SECRET_PROOF_POLICY_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-005",
+      "blocker": "B1",
+      "scenario": "wrong proof secret set",
+      "expected": "SECRET_PROOF_HMAC_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-006",
+      "blocker": "B1",
+      "scenario": "wrong proof process nonce",
+      "expected": "SECRET_PROOF_HMAC_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-007",
+      "blocker": "B1",
+      "scenario": "wrong proof object nonce",
+      "expected": "SECRET_PROOF_HMAC_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-008",
+      "blocker": "B1",
+      "scenario": "wrong proof key",
+      "expected": "SECRET_PROOF_HMAC_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-009",
+      "blocker": "B1",
+      "scenario": "proof replay across attempt",
+      "expected": "SECRET_PROOF_ATTEMPT_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-010",
+      "blocker": "B1",
+      "scenario": "forged spawn capability constructor",
+      "expected": "SPAWN_CAPABILITY_CONSTRUCTOR_PRIVATE"
+    },
+    {
+      "id": "R2.5.1-011",
+      "blocker": "B1",
+      "scenario": "proof copy prohibited",
+      "expected": "PROOF_COPY_FORBIDDEN"
+    },
+    {
+      "id": "R2.5.1-012",
+      "blocker": "B1",
+      "scenario": "zero-secret policy while proof required",
+      "expected": "SECRET_SET_EMPTY"
+    },
+    {
+      "id": "R2.5.1-013",
+      "blocker": "B1",
+      "scenario": "genuine verified proof and spawn",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.1-014",
+      "blocker": "B2",
+      "scenario": "fabricated current resume identity",
+      "expected": "RESUME_CURRENT_ACTUAL_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-015",
+      "blocker": "B2",
+      "scenario": "fabricated prior resume identity",
+      "expected": "RESUME_PRIOR_STORE_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-016",
+      "blocker": "B2",
+      "scenario": "fabricated both resume identities",
+      "expected": "RESUME_PRIOR_STORE_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-017",
+      "blocker": "B2",
+      "scenario": "caller-selected prior vector",
+      "expected": "RESUME_CALLER_VECTOR_FORBIDDEN"
+    },
+    {
+      "id": "R2.5.1-018",
+      "blocker": "B2",
+      "scenario": "stale prior resume store revision",
+      "expected": "AUTHORITY_STORE_REVISION_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-019",
+      "blocker": "B2",
+      "scenario": "wrong prior resume store key",
+      "expected": "AUTHORITY_STORE_KEY_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-020",
+      "blocker": "B2",
+      "scenario": "prior resume authority seal tamper",
+      "expected": "RECORD_SELF_DIGEST_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-021",
+      "blocker": "B2",
+      "scenario": "valid actual single resume change",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.1-022",
+      "blocker": "B2",
+      "scenario": "valid actual multiple resume changes",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.1-023",
+      "blocker": "B2",
+      "scenario": "valid actual retry",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.1-024",
+      "blocker": "B2",
+      "scenario": "valid actual completed no-relaunch",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.1-025",
+      "blocker": "B2",
+      "scenario": "valid actual ambiguous consumed debt",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.1-026",
+      "blocker": "B3",
+      "scenario": "fully fabricated provider observation manifest",
+      "expected": "NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-027",
+      "blocker": "B3",
+      "scenario": "caller-authored observation proof-rule id",
+      "expected": "OBSERVATION_PROOF_RULE_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-028",
+      "blocker": "B3",
+      "scenario": "provider observation wrong raw bytes",
+      "expected": "PROVIDER_ARTIFACT_DIGEST_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-029",
+      "blocker": "B3",
+      "scenario": "provider observation mixed streams",
+      "expected": "PROVIDER_STREAM_ID_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-030",
+      "blocker": "B3",
+      "scenario": "provider observation omitted frame",
+      "expected": "PROVIDER_FRAME_COUNT_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-031",
+      "blocker": "B3",
+      "scenario": "provider observation reordered frames",
+      "expected": "PROVIDER_FRAME_ORDER_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-032",
+      "blocker": "B3",
+      "scenario": "provider observation duplicate sequence",
+      "expected": "PROVIDER_FRAME_ORDER_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-033",
+      "blocker": "B3",
+      "scenario": "provider observation wrong attempt",
+      "expected": "PROVIDER_ATTEMPT_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-034",
+      "blocker": "B3",
+      "scenario": "provider observation usage tamper",
+      "expected": "PROVIDER_USAGE_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-035",
+      "blocker": "B3",
+      "scenario": "provider observation fallback tamper",
+      "expected": "NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-036",
+      "blocker": "B3",
+      "scenario": "provider observation terminal tamper",
+      "expected": "NEUTRAL_OBSERVATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-037",
+      "blocker": "B3",
+      "scenario": "caller co-supplied transport receipt",
+      "expected": "PROVIDER_ARTIFACT_UNTRUSTED"
+    },
+    {
+      "id": "R2.5.1-038",
+      "blocker": "B3",
+      "scenario": "valid neutral provider observation",
+      "expected": "PASS"
+    },
+    {
+      "id": "R2.5.1-039",
+      "blocker": "B4",
+      "scenario": "root and descendants co-rehashed with candidate anchor",
+      "expected": "ROOT_PREIMAGE_STORE_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-040",
+      "blocker": "B4",
+      "scenario": "transaction parent and descendants co-rehashed",
+      "expected": "TRANSACTION_STORE_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-041",
+      "blocker": "B4",
+      "scenario": "transaction parent unknown raw-secret field",
+      "expected": "SCHEMA_UNKNOWN_FIELD"
+    },
+    {
+      "id": "R2.5.1-042",
+      "blocker": "B4",
+      "scenario": "stale transaction parent",
+      "expected": "TRANSACTION_STALE_PARENT"
+    },
+    {
+      "id": "R2.5.1-043",
+      "blocker": "B4",
+      "scenario": "cross-generation transaction parent",
+      "expected": "TRANSACTION_GENERATION_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-044",
+      "blocker": "B4",
+      "scenario": "transaction parent seal tamper",
+      "expected": "RECORD_SELF_DIGEST_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-045",
+      "blocker": "B4",
+      "scenario": "missing transaction parent",
+      "expected": "AUTHORITY_STORE_KEY_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-046",
+      "blocker": "B4",
+      "scenario": "root preimage wrong store key",
+      "expected": "AUTHORITY_STORE_KEY_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-047",
+      "blocker": "B4",
+      "scenario": "root preimage seal tamper",
+      "expected": "RECORD_SELF_DIGEST_MISMATCH"
+    },
+    {
+      "id": "R2.5.1-048",
+      "blocker": "B4",
+      "scenario": "untrusted authority store capability",
+      "expected": "AUTHORITY_STORE_UNTRUSTED"
+    },
+    {
+      "id": "R2.5.1-049",
+      "blocker": "B4",
+      "scenario": "candidate embeds legacy root anchor",
+      "expected": "CANDIDATE_EMBEDDED_ANCHOR_FORBIDDEN"
+    },
+    {
+      "id": "R2.5.1-050",
+      "blocker": "B4",
+      "scenario": "valid externally loaded root and transaction parents",
+      "expected": "PASS"
+    }
+  ]
+}

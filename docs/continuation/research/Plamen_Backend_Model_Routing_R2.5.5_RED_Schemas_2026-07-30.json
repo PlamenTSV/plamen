@@ -1,0 +1,1128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:plamen:model-routing:r2.5.5:red",
+  "title": "Plamen backend model-routing R2.5.5 closed semantic contracts",
+  "type": "object",
+  "$defs": {
+    "Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "RunId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$"
+    },
+    "EventCommon": {
+      "type": "object",
+      "required": [
+        "schema",
+        "version",
+        "event_kind",
+        "event_revision",
+        "cas_revision",
+        "run_id",
+        "generation",
+        "attempt_ordinal",
+        "launch_replay_digest",
+        "parent_event_digest",
+        "payload",
+        "event_digest"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string"
+        },
+        "version": {
+          "const": 1
+        },
+        "event_kind": {
+          "enum": [
+            "C",
+            "I",
+            "A",
+            "Q",
+            "S",
+            "T",
+            "K"
+          ]
+        },
+        "event_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cas_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attempt_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "launch_replay_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "parent_event_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "event_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "ConsumedPayloadV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spawn_state",
+        "execution_attempt_digest",
+        "consumed_cas_digest"
+      ],
+      "properties": {
+        "spawn_state": {
+          "const": "CONSUMED_NOT_SPAWNED"
+        },
+        "execution_attempt_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "consumed_cas_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "IntentPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consumed_digest",
+        "launch_replay_digest",
+        "planned_transport_digest",
+        "intent_nonce_digest"
+      ],
+      "properties": {
+        "consumed_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "launch_replay_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "planned_transport_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "intent_nonce_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "AmbiguityPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_digest",
+        "recovery_reason"
+      ],
+      "properties": {
+        "intent_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "recovery_reason": {
+          "const": "RESTART_WITHOUT_AUTHENTICATED_OUTCOME"
+        }
+      }
+    },
+    "ObservedResolutionPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ambiguity_digest",
+        "resolution_outcome",
+        "governed_evidence_digest",
+        "process_identity_digest",
+        "transport_identity_digest"
+      ],
+      "properties": {
+        "ambiguity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "resolution_outcome": {
+          "const": "OBSERVED_SPAWNED"
+        },
+        "governed_evidence_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "process_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "transport_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "NoSpawnResolutionPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ambiguity_digest",
+        "resolution_outcome",
+        "governed_evidence_digest"
+      ],
+      "properties": {
+        "ambiguity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "resolution_outcome": {
+          "enum": [
+            "CONFIRMED_NOT_SPAWNED_ABORT",
+            "UNRESOLVED_DEBT"
+          ]
+        },
+        "governed_evidence_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "SpawnedPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_digest",
+        "launch_replay_digest",
+        "process_identity_digest",
+        "transport_identity_digest",
+        "resolution_digest"
+      ],
+      "properties": {
+        "intent_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "launch_replay_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "process_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "transport_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "resolution_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "ProviderTerminalPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terminal_parent_digest",
+        "terminal_outcome",
+        "process_identity_digest",
+        "transport_identity_digest",
+        "provider_terminal_digest"
+      ],
+      "properties": {
+        "terminal_parent_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "terminal_outcome": {
+          "const": "PROVIDER_TERMINAL"
+        },
+        "process_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "transport_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_terminal_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "SpawnedLauncherTerminalPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terminal_parent_digest",
+        "terminal_outcome",
+        "process_identity_digest",
+        "transport_identity_digest"
+      ],
+      "properties": {
+        "terminal_parent_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "terminal_outcome": {
+          "enum": [
+            "PROCESS_EXIT_NO_PROVIDER_FRAME",
+            "TIMEOUT",
+            "CANCELLED",
+            "TRANSPORT_FAILURE",
+            "EMPTY_PROVIDER_OUTPUT",
+            "MALFORMED_PROVIDER_OUTPUT"
+          ]
+        },
+        "process_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "transport_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "SpawnFailedTerminalPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terminal_parent_digest",
+        "terminal_outcome",
+        "process_identity_digest",
+        "transport_identity_digest"
+      ],
+      "properties": {
+        "terminal_parent_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "terminal_outcome": {
+          "const": "SPAWN_FAILED"
+        },
+        "process_identity_digest": {
+          "const": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "transport_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "AmbiguityTerminalPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terminal_parent_digest",
+        "terminal_outcome",
+        "process_identity_digest",
+        "transport_identity_digest"
+      ],
+      "properties": {
+        "terminal_parent_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "terminal_outcome": {
+          "enum": [
+            "AMBIGUITY_ABORTED_NOT_SPAWNED",
+            "AMBIGUITY_UNRESOLVED_DEBT"
+          ]
+        },
+        "process_identity_digest": {
+          "const": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "transport_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "CompletedCurrentPayloadV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terminal_digest",
+        "prefix_digest",
+        "neutral_reconciliation_digest"
+      ],
+      "properties": {
+        "terminal_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "prefix_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "neutral_reconciliation_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "ConsumedAttemptLaunchAuthorityV2": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "const": "ConsumedAttemptLaunchAuthorityV2"
+            },
+            "event_kind": {
+              "const": "C"
+            },
+            "payload": {
+              "$ref": "#/$defs/ConsumedPayloadV2"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SpawnIntentAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "const": "SpawnIntentAuthorityV1"
+            },
+            "event_kind": {
+              "const": "I"
+            },
+            "payload": {
+              "$ref": "#/$defs/IntentPayloadV1"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SpawnAmbiguityAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "const": "SpawnAmbiguityAuthorityV1"
+            },
+            "event_kind": {
+              "const": "A"
+            },
+            "payload": {
+              "$ref": "#/$defs/AmbiguityPayloadV1"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SpawnAmbiguityResolutionAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "const": "SpawnAmbiguityResolutionAuthorityV1"
+            },
+            "event_kind": {
+              "const": "Q"
+            },
+            "payload": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/ObservedResolutionPayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/NoSpawnResolutionPayloadV1"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SpawnedAttemptAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "const": "SpawnedAttemptAuthorityV1"
+            },
+            "event_kind": {
+              "const": "S"
+            },
+            "payload": {
+              "$ref": "#/$defs/SpawnedPayloadV1"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "TerminalAttemptAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "const": "TerminalAttemptAuthorityV1"
+            },
+            "event_kind": {
+              "const": "T"
+            },
+            "payload": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/ProviderTerminalPayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/SpawnedLauncherTerminalPayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/SpawnFailedTerminalPayloadV1"
+                },
+                {
+                  "$ref": "#/$defs/AmbiguityTerminalPayloadV1"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "CompletedCurrentAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "const": "CompletedCurrentAuthorityV1"
+            },
+            "event_kind": {
+              "const": "K"
+            },
+            "payload": {
+              "$ref": "#/$defs/CompletedCurrentPayloadV1"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "LifecycleEventV2": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ConsumedAttemptLaunchAuthorityV2"
+        },
+        {
+          "$ref": "#/$defs/SpawnIntentAuthorityV1"
+        },
+        {
+          "$ref": "#/$defs/SpawnAmbiguityAuthorityV1"
+        },
+        {
+          "$ref": "#/$defs/SpawnAmbiguityResolutionAuthorityV1"
+        },
+        {
+          "$ref": "#/$defs/SpawnedAttemptAuthorityV1"
+        },
+        {
+          "$ref": "#/$defs/TerminalAttemptAuthorityV1"
+        },
+        {
+          "$ref": "#/$defs/CompletedCurrentAuthorityV1"
+        }
+      ]
+    },
+    "ScopedAuthorityBase": {
+      "type": "object",
+      "required": [
+        "schema",
+        "version",
+        "run_id",
+        "generation",
+        "attempt_ordinal",
+        "record_digest"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string"
+        },
+        "version": {
+          "const": 1
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attempt_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "record_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    },
+    "RoutingRootAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "routing_policy_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "RoutingRootAuthorityV1"
+            },
+            "routing_policy_digest": {
+              "$ref": "#/$defs/Digest"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ExecutionAttemptAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "routing_root_digest",
+            "work_plan_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "ExecutionAttemptAuthorityV1"
+            },
+            "routing_root_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "work_plan_digest": {
+              "$ref": "#/$defs/Digest"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SelectedRouteAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "execution_attempt_digest",
+            "provider_id",
+            "exact_model_id"
+          ],
+          "properties": {
+            "schema": {
+              "const": "SelectedRouteAuthorityV1"
+            },
+            "execution_attempt_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "provider_id": {
+              "enum": [
+                "claude",
+                "codex"
+              ]
+            },
+            "exact_model_id": {
+              "$ref": "#/$defs/RunId"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "LaunchEnvelopeV4": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "selected_route_digest",
+            "request_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "LaunchEnvelopeV4"
+            },
+            "selected_route_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "request_digest": {
+              "$ref": "#/$defs/Digest"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "PredecessorEnvelopeV3": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "launch_envelope_v4_digest",
+            "projection_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "PredecessorEnvelopeV3"
+            },
+            "launch_envelope_v4_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "projection_digest": {
+              "$ref": "#/$defs/Digest"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "EnvironmentPolicyAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "selected_route_digest",
+            "public_env_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "EnvironmentPolicyAuthorityV1"
+            },
+            "selected_route_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "public_env_digest": {
+              "$ref": "#/$defs/Digest"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "PublicEnvironmentAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "env_policy_digest",
+            "materialized_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "PublicEnvironmentAuthorityV1"
+            },
+            "env_policy_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "materialized_digest": {
+              "$ref": "#/$defs/Digest"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ProviderArtifactAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "terminal_digest",
+            "provider_frame_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "ProviderArtifactAuthorityV1"
+            },
+            "terminal_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "provider_frame_digest": {
+              "$ref": "#/$defs/Digest"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "NeutralProviderClaimAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "terminal_digest",
+            "provider_artifact_digest",
+            "neutral_state"
+          ],
+          "properties": {
+            "schema": {
+              "const": "NeutralProviderClaimAuthorityV1"
+            },
+            "terminal_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "provider_artifact_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "neutral_state": {
+              "const": "PROVIDER_TERMINAL_VALID"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "NeutralLauncherClaimAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "terminal_digest",
+            "neutral_state"
+          ],
+          "properties": {
+            "schema": {
+              "const": "NeutralLauncherClaimAuthorityV1"
+            },
+            "terminal_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "neutral_state": {
+              "enum": [
+                "LAUNCHER_FAILURE",
+                "UNKNOWN_ADVERSE"
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "NeutralReconciliationAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "neutral_claim_digest",
+            "reconciliation_state"
+          ],
+          "properties": {
+            "schema": {
+              "const": "NeutralReconciliationAuthorityV1"
+            },
+            "neutral_claim_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "reconciliation_state": {
+              "enum": [
+                "RECONCILED_PROVIDER",
+                "RECONCILED_FAILURE",
+                "RECONCILED_UNKNOWN_ADVERSE"
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "PriorResumeIdentityAuthorityV1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ScopedAuthorityBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "prior_identity_digest",
+            "current_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "PriorResumeIdentityAuthorityV1"
+            },
+            "prior_identity_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "current_digest": {
+              "$ref": "#/$defs/Digest"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  },
+  "x-plamen-contract": {
+    "version": 1,
+    "accepted_source_contract": {
+      "predecessor": "R2.5.4",
+      "whole_review_sha256": "82b0bdb39cca446bacb2bddc596c81562b22cec9e2be0e3c5268a9fb53f4b9c9",
+      "status": "PRESERVED_OFFLINE_ONLY"
+    },
+    "resolution_outcomes": [
+      "OBSERVED_SPAWNED",
+      "CONFIRMED_NOT_SPAWNED_ABORT",
+      "UNRESOLVED_DEBT"
+    ],
+    "spawned_terminal_outcomes": [
+      "PROVIDER_TERMINAL",
+      "PROCESS_EXIT_NO_PROVIDER_FRAME",
+      "TIMEOUT",
+      "CANCELLED",
+      "TRANSPORT_FAILURE",
+      "EMPTY_PROVIDER_OUTPUT",
+      "MALFORMED_PROVIDER_OUTPUT"
+    ],
+    "branch_compatibility": {
+      "I": [
+        "SPAWN_FAILED"
+      ],
+      "S": [
+        "PROVIDER_TERMINAL",
+        "PROCESS_EXIT_NO_PROVIDER_FRAME",
+        "TIMEOUT",
+        "CANCELLED",
+        "TRANSPORT_FAILURE",
+        "EMPTY_PROVIDER_OUTPUT",
+        "MALFORMED_PROVIDER_OUTPUT"
+      ],
+      "Q:CONFIRMED_NOT_SPAWNED_ABORT": [
+        "AMBIGUITY_ABORTED_NOT_SPAWNED"
+      ],
+      "Q:UNRESOLVED_DEBT": [
+        "AMBIGUITY_UNRESOLVED_DEBT"
+      ]
+    },
+    "record_catalog": {
+      "root": {
+        "schema": "RoutingRootAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "routing_policy_digest",
+        "parents": {}
+      },
+      "attempt": {
+        "schema": "ExecutionAttemptAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "work_plan_digest",
+        "parents": {
+          "root": "routing_root_digest"
+        }
+      },
+      "route": {
+        "schema": "SelectedRouteAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "exact_model_id",
+        "parents": {
+          "attempt": "execution_attempt_digest"
+        }
+      },
+      "launch_envelope_v4": {
+        "schema": "LaunchEnvelopeV4",
+        "digest_field": "record_digest",
+        "semantic_field": "request_digest",
+        "parents": {
+          "route": "selected_route_digest"
+        }
+      },
+      "predecessor_envelope_v3": {
+        "schema": "PredecessorEnvelopeV3",
+        "digest_field": "record_digest",
+        "semantic_field": "projection_digest",
+        "parents": {
+          "launch_envelope_v4": "launch_envelope_v4_digest"
+        }
+      },
+      "env_policy": {
+        "schema": "EnvironmentPolicyAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "public_env_digest",
+        "parents": {
+          "route": "selected_route_digest"
+        }
+      },
+      "public_env": {
+        "schema": "PublicEnvironmentAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "materialized_digest",
+        "parents": {
+          "env_policy": "env_policy_digest"
+        }
+      },
+      "consumed": {
+        "schema": "ConsumedAttemptLaunchAuthorityV2",
+        "digest_field": "event_digest",
+        "semantic_field": "payload.spawn_state",
+        "parents": {
+          "attempt": "payload.execution_attempt_digest"
+        }
+      },
+      "intent": {
+        "schema": "SpawnIntentAuthorityV1",
+        "digest_field": "event_digest",
+        "semantic_field": "payload.intent_nonce_digest",
+        "parents": {
+          "consumed": "payload.consumed_digest"
+        }
+      },
+      "ambiguity": {
+        "schema": "SpawnAmbiguityAuthorityV1",
+        "digest_field": "event_digest",
+        "semantic_field": "payload.recovery_reason",
+        "parents": {
+          "intent": "payload.intent_digest"
+        }
+      },
+      "resolution": {
+        "schema": "SpawnAmbiguityResolutionAuthorityV1",
+        "digest_field": "event_digest",
+        "semantic_field": "payload.resolution_outcome",
+        "parents": {
+          "ambiguity": "payload.ambiguity_digest"
+        }
+      },
+      "spawned": {
+        "schema": "SpawnedAttemptAuthorityV1",
+        "digest_field": "event_digest",
+        "semantic_field": "payload.process_identity_digest",
+        "parents": {
+          "intent": "payload.intent_digest",
+          "resolution_optional": "payload.resolution_digest"
+        }
+      },
+      "terminal": {
+        "schema": "TerminalAttemptAuthorityV1",
+        "digest_field": "event_digest",
+        "semantic_field": "payload.terminal_outcome",
+        "parents": {
+          "terminal_parent": "payload.terminal_parent_digest"
+        }
+      },
+      "provider_artifact": {
+        "schema": "ProviderArtifactAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "provider_frame_digest",
+        "parents": {
+          "terminal": "terminal_digest"
+        }
+      },
+      "neutral_provider": {
+        "schema": "NeutralProviderClaimAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "neutral_state",
+        "parents": {
+          "terminal": "terminal_digest",
+          "provider_artifact": "provider_artifact_digest"
+        }
+      },
+      "neutral_launcher": {
+        "schema": "NeutralLauncherClaimAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "neutral_state",
+        "parents": {
+          "terminal": "terminal_digest"
+        }
+      },
+      "reconciliation": {
+        "schema": "NeutralReconciliationAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "reconciliation_state",
+        "parents": {
+          "neutral": "neutral_claim_digest"
+        }
+      },
+      "completed_current": {
+        "schema": "CompletedCurrentAuthorityV1",
+        "digest_field": "event_digest",
+        "semantic_field": "payload.prefix_digest",
+        "parents": {
+          "terminal": "payload.terminal_digest",
+          "reconciliation": "payload.neutral_reconciliation_digest"
+        }
+      },
+      "prior_identity": {
+        "schema": "PriorResumeIdentityAuthorityV1",
+        "digest_field": "record_digest",
+        "semantic_field": "prior_identity_digest",
+        "parents": {
+          "completed_current": "current_digest"
+        }
+      }
+    },
+    "consumer_stages": {
+      "launch_replay_validator": "LAUNCH",
+      "proof_mint": "LAUNCH",
+      "spawn_authentication": "INTENT",
+      "provider_spool_acceptance": "SPAWNED",
+      "completed_current_construction": "CURRENT",
+      "current_replay_validator": "CURRENT",
+      "resume_authorization": "RESUME"
+    },
+    "record_mutations": [
+      "DELETE_RECORD",
+      "CORRUPT_SELF_DIGEST",
+      "EXTRA_FIELD_RESEALED",
+      "DELETE_REQUIRED_FIELD_RESEALED",
+      "WRONG_TYPE_RESEALED",
+      "SEMANTIC_FIELD_RESEALED"
+    ],
+    "parent_mutations": [
+      "WRONG_PARENT_DIGEST_RESEALED",
+      "WRONG_PARENT_SCOPE_RESEALED"
+    ]
+  }
+}

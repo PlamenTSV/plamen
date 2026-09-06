@@ -27,6 +27,10 @@ sys.modules[SPEC.name] = RUNTIME
 SPEC.loader.exec_module(RUNTIME)
 
 KEY = b"managed-node-unit-test-key"
+XATTR_ENUMERATION = pytest.mark.skipif(
+    not hasattr(os, "listxattr"),
+    reason="managed runtime publication requires native xattr enumeration",
+)
 
 
 def _sign(raw: bytes):
@@ -132,6 +136,7 @@ def test_production_materializer_has_no_ambient_npm_or_node_resolution() -> None
     assert "permanently disabled" in legacy_prefix
 
 
+@XATTR_ENUMERATION
 def test_managed_node_download_publish_and_offline_reuse_are_exact(tmp_path, monkeypatch) -> None:
     managed, archive, _raw, downloads = _stage(tmp_path, monkeypatch)
     assert managed.archive_sha256 == archive["sha256"]
@@ -147,6 +152,7 @@ def test_managed_node_download_publish_and_offline_reuse_are_exact(tmp_path, mon
     assert reused == managed
 
 
+@XATTR_ENUMERATION
 def test_npm_ci_never_executes_path_wrapper_and_uses_exact_managed_cli(
     tmp_path, monkeypatch,
 ) -> None:
@@ -180,6 +186,7 @@ def test_npm_ci_never_executes_path_wrapper_and_uses_exact_managed_cli(
 
 
 @pytest.mark.parametrize("target_kind", ["npm-cli", "dependency"])
+@XATTR_ENUMERATION
 def test_managed_npm_mutation_fails_before_spawn(tmp_path, monkeypatch, target_kind) -> None:
     managed, _archive, _raw, _downloads = _stage(tmp_path, monkeypatch)
     target = managed.npm_cli_path
@@ -198,6 +205,7 @@ def test_managed_npm_mutation_fails_before_spawn(tmp_path, monkeypatch, target_k
         )
 
 
+@XATTR_ENUMERATION
 def test_managed_npm_revalidates_closure_after_runner_before_unlock(tmp_path, monkeypatch) -> None:
     managed, _archive, _raw, _downloads = _stage(tmp_path, monkeypatch)
     dependency = (
@@ -218,6 +226,7 @@ def test_managed_npm_revalidates_closure_after_runner_before_unlock(tmp_path, mo
         )
 
 
+@XATTR_ENUMERATION
 def test_archive_digest_and_link_member_fail_before_publication(tmp_path, monkeypatch) -> None:
     key, archive, raw = _fake_reviewed_archive(monkeypatch)
     with pytest.raises(RUNTIME.MCPRuntimeSecurityError, match="downloaded managed Node"):
@@ -247,6 +256,7 @@ def test_archive_digest_and_link_member_fail_before_publication(tmp_path, monkey
     assert not list((tmp_path / "linked" / "generations").iterdir())
 
 
+@XATTR_ENUMERATION
 def test_committed_generation_recovers_durable_pending_without_download(
     tmp_path, monkeypatch,
 ) -> None:

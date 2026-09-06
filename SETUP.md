@@ -5,8 +5,8 @@
 > assistant must stop on any failed check. It must not start an audit, build
 > the optional RAG index, or run the interactive toolchain wizard.
 >
-> **macOS boundary:** the governed production installer and native audit
-> runtime are not yet supported on Darwin. On a Mac, do not run the production
+> **POSIX boundary:** the V3 governed production installer and native audit
+> runtime are currently qualified only on Windows. On Linux or macOS, do not run the production
 > steps below. Use the development-only procedure in
 > [`docs/development/macos.md`](docs/development/macos.md), which invokes
 > `scripts/bootstrap_macos_dev.sh` and deliberately does not install or launch
@@ -40,17 +40,10 @@ their operating-system policy. Do not make system-level changes yourself.
 Clone into a dedicated source directory, not `~/.plamen`. `~/.plamen` is the
 authenticated installed package and must not be a mutable Git checkout.
 
-Linux:
-
-```bash
-git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME/plamen-source"
-cd "$HOME/plamen-source"
-```
-
 Windows PowerShell:
 
 ```powershell
-git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source"
+git clone --branch Plamen-v3 --single-branch --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source"
 Set-Location "$HOME\plamen-source"
 ```
 
@@ -59,12 +52,6 @@ the user which trusted source directory to use. A Git archive/ZIP is not an
 equivalent source because it omits submodule content.
 
 ## 3. Run the governed install
-
-Linux:
-
-```bash
-python3.12 plamen.py install
-```
 
 Windows PowerShell (where `python` resolves to CPython 3.12):
 
@@ -92,10 +79,9 @@ non-critical.
 
 ## 4. Ensure the installed front is on PATH
 
-The installer writes `~/.local/bin/plamen` on Linux and
-`%USERPROFILE%\.local\bin\plamen.cmd` on Windows. If `~/.local/bin` is not
-already on PATH, add only that directory using the user's normal shell or OS
-settings. Do not add the source directory or `~/.plamen` to PATH.
+The installer writes `%USERPROFILE%\.local\bin\plamen.cmd`. Add only that
+directory using the user's normal OS settings. Do not add the source directory
+or `~/.plamen` to PATH.
 
 ## 5. Verify without invoking ambient tools
 
@@ -115,8 +101,8 @@ interactive terminal wizards. Tell the user to run `plamen setup` in a real
 terminal for optional chain toolchains and bare `plamen` to start an audit.
 
 Do not run `plamen rag` here. It is an optional, resource-intensive index
-build that the user can start later. Production audits remain supported on
-Windows and admitted Linux hosts with either Claude or Codex. Contained MCP
+build that the user can start later. Production audits are currently supported
+on Windows with either Claude or Codex. Contained MCP
 RAG is used only on supported Claude-headless routes; all other supported
 routes use governed Web/local fallbacks.
 

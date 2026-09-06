@@ -1,0 +1,91 @@
+{
+  "schema": "plamen.model-routing-r2.3-validation-receipt.v1",
+  "version": 1,
+  "date": "2026-07-29",
+  "disposition": "R2_3_DESIGN_PACKAGE_CONFORMS_NOT_CUTOVER_AUTHORIZED",
+  "change_boundary": "Downloads documentation and conformance artifacts only; no repository, configuration, provider, audit, commit, push, or production-default mutation.",
+  "frozen_inputs": [
+    {
+      "file": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.2_2026-07-29.md",
+      "sha256": "1077ca061f6cbbf93a4a9fb410cec9a0431ca3b5cf0a16366e113e3925e28a62"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.2_Independent_Review_2026-07-29.md",
+      "sha256": "fd08144e400297bec4e941c86072548ab6df6eaab3152f565d3244fdb0e712d4"
+    }
+  ],
+  "package": [
+    {
+      "file": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.3_2026-07-29.md",
+      "bytes": 48913,
+      "lines_lf": 1199,
+      "ascii": true,
+      "cr_bytes": 0,
+      "sha256": "d047d994f9aa114dea0ca9435b06922234c9ba54002321ca18f4d80a5e8b9d5f"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.3_Schemas_2026-07-29.json",
+      "bytes": 57988,
+      "lines_lf": 1622,
+      "ascii": true,
+      "cr_bytes": 0,
+      "sha256": "1da3f14c3e18325e818e3236cd1907a87f3032bbdeca5957fdc6fdfd1c0bedcf"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.3_Conformance_Vectors_2026-07-29.json",
+      "bytes": 93167,
+      "lines_lf": 2305,
+      "ascii": true,
+      "cr_bytes": 0,
+      "sha256": "6e9e0db8df0727dd37c78483151e62bd041f8951a1ddcf0d7698f367cd37d625"
+    },
+    {
+      "file": "validate_plamen_model_routing_r2_3.py",
+      "bytes": 212675,
+      "lines_lf": 5182,
+      "ascii": true,
+      "cr_bytes": 0,
+      "sha256": "584fbc05a60929a761a1987928a8d97eb1931593d2c8445c42d3c622eb938581"
+    }
+  ],
+  "validation": {
+    "command": "python <LOCAL_USER_ROOT>\\Downloads\\validate_plamen_model_routing_r2_3.py",
+    "result": "PASS",
+    "draft_2020_12_meta_schema": "PASS",
+    "python_compile": "PASS",
+    "package_hash_match": "PASS",
+    "total_vectors": 186,
+    "canonical_vectors": 10,
+    "schema_vectors": 59,
+    "join_vectors": 91,
+    "transaction_vectors": 18,
+    "canary_vectors": 8,
+    "schema_sha256_reported_by_validator": "1da3f14c3e18325e818e3236cd1907a87f3032bbdeca5957fdc6fdfd1c0bedcf",
+    "vectors_sha256_reported_by_validator": "6e9e0db8df0727dd37c78483151e62bd041f8951a1ddcf0d7698f367cd37d625"
+  },
+  "closed_review_blocks": [
+    "attempt reservation is transactionally consumed before the only provider spawn",
+    "attempt observations bind distinct reserved and consumed entry identities plus typed post-reservation and post-consumption ledgers",
+    "generation and attempt resource entries are versioned across reserve, consume, reconcile, and debt with exact predecessor and projection laws",
+    "post-reservation, post-consumption, post-reconciliation, and post-debt snapshots preserve exact semantic-plan, event, entry, CAS, and family-resource joins",
+    "model, effort, and thinking observations bind their launch authorities and every adverse state follows the typed debt transaction",
+    "consumed-attempt debt advances under CAS to typed attempt and generation DEBT successors and a family DEBT snapshot",
+    "Claude thinking has one observation field and a complete per-customization-row control inventory",
+    "loaded customization has fixed ranks, complete discovery, self-digests, and four-way authority joins",
+    "generation token grant is derived exactly and family money cannot renew across generations",
+    "ledger has exact genesis, event variants, CAS, idempotency-before-CAS, state transitions, replay, and golden final-state vectors",
+    "reserved and observed pair comparisons are separate schemas with metric, currency, pricing, and scope laws",
+    "canary field claims are non-empty members of receipt-bound self-digested transitive evidence"
+  ],
+  "not_proven": [
+    "production implementation",
+    "cross-runtime conformance",
+    "cross-OS production behavior",
+    "provider capability",
+    "audit recall",
+    "audit precision",
+    "cutover readiness"
+  ],
+  "provider_calls_or_audits_authorized": false,
+  "cutover_authorized": false
+}

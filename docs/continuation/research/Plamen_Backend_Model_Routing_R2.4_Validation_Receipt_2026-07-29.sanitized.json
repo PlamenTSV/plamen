@@ -1,0 +1,123 @@
+{
+  "schema": "plamen.model-routing-r2.4-validation-receipt.v1",
+  "version": 1,
+  "date": "2026-07-29",
+  "disposition": "AUTHOR_SELF_VALIDATED_INDEPENDENT_REVIEW_REQUIRED_NOT_CUTOVER_AUTHORIZED",
+  "change_boundary": "Design and offline conformance artifacts only. No repository production, test, policy, lock, evaluator, BB, provider, audit, install, commit, push, default, or cutover mutation.",
+  "frozen_r2_3_denominator": [
+    {
+      "file": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.3_2026-07-29.md",
+      "sha256": "d047d994f9aa114dea0ca9435b06922234c9ba54002321ca18f4d80a5e8b9d5f"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.3_Schemas_2026-07-29.json",
+      "sha256": "1da3f14c3e18325e818e3236cd1907a87f3032bbdeca5957fdc6fdfd1c0bedcf"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.3_Conformance_Vectors_2026-07-29.json",
+      "sha256": "6e9e0db8df0727dd37c78483151e62bd041f8951a1ddcf0d7698f367cd37d625"
+    },
+    {
+      "file": "validate_plamen_model_routing_r2_3.py",
+      "sha256": "584fbc05a60929a761a1987928a8d97eb1931593d2c8445c42d3c622eb938581"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.3_Validation_Receipt_2026-07-29.json",
+      "sha256": "3df640bac21c0adfb70ad82d5c3d085409a562427a395c12acfb81cd6b1cfe46"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.3_Independent_Review_2026-07-29.md",
+      "sha256": "a97ee6bcf1c905d634fb3643a29d1ba629c4a7ea8416ceb1ca4686d644f6523d"
+    }
+  ],
+  "frozen_joint_design_inputs": [
+    {
+      "file": "review_fixtures/claude_r3_backend_routing_r2_3_compatibility_preflight_20260729.md",
+      "sha256": "0ff71074c21f10ce75a8fdf0d9f025da3bba4fc6bca61828e4803675e48826b5"
+    },
+    {
+      "file": "review_fixtures/claude_provider_wtx_universal_cutover_repair_plan_r3_20260729.md",
+      "sha256": "f55c1db5875cedc64b4c7a9443f3c7b904e645aaaa47a8e49b7e4c613c152e2a"
+    }
+  ],
+  "package": [
+    {
+      "file": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.4_2026-07-29.md",
+      "bytes": 32127,
+      "lines_lf": 797,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "065d094e562bcc09a1c720ed7a22ffb666bdc4aa015d745c7c2617dc9fe48a17"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.4_Schemas_2026-07-29.json",
+      "bytes": 50314,
+      "lines_lf": 1902,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "1d8895bbfbda3d44c5dd58acf3df029b700664b9bca9e1986dbc8d83dbcc4381"
+    },
+    {
+      "file": "Plamen_Backend_Model_Routing_R2.4_Conformance_Vectors_2026-07-29.json",
+      "bytes": 18675,
+      "lines_lf": 667,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "e046e589cf830ba31fa608ab0ec2c650e2aff555f1fe2a5698f261f12f2079c9"
+    },
+    {
+      "file": "validate_plamen_model_routing_r2_4.py",
+      "bytes": 83999,
+      "lines_lf": 2161,
+      "ascii": true,
+      "cr_bytes": 0,
+      "final_lf": true,
+      "sha256": "47c0d70771abe13713d7bd2cf6e87773ae1ea30eab755da712a789d8ec42ff87"
+    }
+  ],
+  "validation": {
+    "command": "python -I <LOCAL_USER_ROOT>\\Downloads\\validate_plamen_model_routing_r2_4.py",
+    "result": "PASS",
+    "author_pass_claimed": false,
+    "independent_review_required": true,
+    "draft_2020_12_meta_schema": "PASS",
+    "python_compile": "PASS",
+    "r2_3_exact_six_file_hash_binding": "PASS",
+    "r2_3_isolated_validator": "PASS",
+    "r2_3_preserved_vectors": 186,
+    "r2_4_numbered_vectors": 128,
+    "total_vectors": 314,
+    "schema_sha256_reported_by_validator": "1d8895bbfbda3d44c5dd58acf3df029b700664b9bca9e1986dbc8d83dbcc4381",
+    "vectors_sha256_reported_by_validator": "e046e589cf830ba31fa608ab0ec2c650e2aff555f1fe2a5698f261f12f2079c9"
+  },
+  "a1_a12_resolution": [
+    "A1 orthogonal backend, routing profile, transport, and assurance axes",
+    "A2 closed route-neutral ClaudeProviderProfileV1 registry",
+    "A3 tagged ClaudeHeadlessExecutionRequestV2",
+    "A4 deterministic compiler join with no route selection, reservation, or spawn",
+    "A5 one versioned WorkPlan and PhaseIO routing transaction cut",
+    "A6 compile-reserve-materialize-consume-spawn authority separation",
+    "A7 exact retry, new-generation, completed, and ambiguous-consumed law",
+    "A8 secret-free public environment JCS projection plus non-durable process/object keyed proof",
+    "A9 independent typed source, prompt, methodology, and Program Facts identities",
+    "A10 versioned capability, price, fallback, and family-wide resource authority",
+    "A11 unchanged Codex branch with parity witness",
+    "A12 delayed downstream propagation, CI closure, canary, benchmark, and default claims"
+  ],
+  "not_proven": [
+    "independent review",
+    "production implementation",
+    "cross-runtime conformance",
+    "native cross-OS production behavior",
+    "provider capability",
+    "audit recall",
+    "audit precision",
+    "cutover readiness"
+  ],
+  "provider_calls_or_audits_authorized": false,
+  "production_edits_authorized": false,
+  "cutover_authorized": false
+}

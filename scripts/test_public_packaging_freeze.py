@@ -763,15 +763,21 @@ def test_private_and_generated_paths_remain_explicitly_ignored() -> None:
     )
 
 
-def test_plamen_v3_pushes_run_install_smoke() -> None:
+def test_plamen_v3_pushes_run_platform_boundary_smoke() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "install-smoke.yml").read_text(
         encoding="utf-8"
     )
     push_block = workflow.partition("  push:\n")[2].partition("  pull_request:")[0]
     assert push_block, "install-smoke workflow has no push branch block"
     assert "      - Plamen-v3\n" in push_block, (
-        "Plamen-v3 pushes must exercise the cross-platform install smoke matrix"
+        "Plamen-v3 pushes must exercise the platform-boundary smoke workflow"
     )
+    assert "os: [windows-latest]" in workflow
+    assert "Linux source validation / production rejection" in workflow
+    assert 'if [ "$STATUS" -ne 3 ]' in workflow
+    front = (REPO_ROOT / "plamen.py").read_text(encoding="utf-8")
+    assert "production installation is currently qualified" in front
+    assert 'raise SystemExit(3)' in front
 
 
 def test_production_scripts_cannot_import_test_only_claude_authority() -> None:

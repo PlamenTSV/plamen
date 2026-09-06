@@ -1,0 +1,1902 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/model-routing-r2.4-overlay.json",
+  "title": "Plamen model routing R2.4 additive compatibility and privacy overlay",
+  "type": "object",
+  "required": [
+    "schema_bundle",
+    "schema_bundle_version",
+    "r2_3_schema_sha256",
+    "r2_3_vectors_sha256"
+  ],
+  "properties": {
+    "schema_bundle": {
+      "const": "plamen.model-routing-r2.4-schema-overlay"
+    },
+    "schema_bundle_version": {
+      "const": 1
+    },
+    "r2_3_schema_sha256": {
+      "const": "1da3f14c3e18325e818e3236cd1907a87f3032bbdeca5957fdc6fdfd1c0bedcf"
+    },
+    "r2_3_vectors_sha256": {
+      "const": "6e9e0db8df0727dd37c78483151e62bd041f8951a1ddcf0d7698f367cd37d625"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "SafeInt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "PositiveSafeInt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "NullableDigest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "DigestSemanticSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Digest"
+      },
+      "uniqueItems": true
+    },
+    "PublicEnvironmentEntryV1": {
+      "type": "object",
+      "required": [
+        "name",
+        "source_class",
+        "redaction_marker",
+        "policy_authority_digests",
+        "non_secret_value"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]*$",
+          "minLength": 1
+        },
+        "source_class": {
+          "enum": [
+            "POLICY_LITERAL_NON_SECRET",
+            "HOST_DERIVED_NON_SECRET",
+            "TOOLCHAIN_DERIVED_NON_SECRET",
+            "RUNTIME_PATH_NON_SECRET",
+            "SECRET_RUNTIME"
+          ]
+        },
+        "redaction_marker": {
+          "enum": [
+            "NON_SECRET_VALUE_INCLUDED",
+            "SECRET_VALUE_PRESENT_REDACTED",
+            "SECRET_VALUE_ABSENT"
+          ]
+        },
+        "policy_authority_digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Digest"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "non_secret_value": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "redaction_marker": {
+                "const": "NON_SECRET_VALUE_INCLUDED"
+              }
+            },
+            "required": [
+              "redaction_marker"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source_class": {
+                "enum": [
+                  "POLICY_LITERAL_NON_SECRET",
+                  "HOST_DERIVED_NON_SECRET",
+                  "TOOLCHAIN_DERIVED_NON_SECRET",
+                  "RUNTIME_PATH_NON_SECRET"
+                ]
+              },
+              "non_secret_value": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "source_class": {
+                "const": "SECRET_RUNTIME"
+              },
+              "non_secret_value": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "PublicMaterializedEnvironmentV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "public_environment_version",
+        "public_materialized_environment_digest",
+        "environment_policy_set_digest",
+        "host_policy_authority_digest",
+        "entry_count",
+        "entries"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.public-materialized-environment.v1"
+        },
+        "public_environment_version": {
+          "const": 1
+        },
+        "public_materialized_environment_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "environment_policy_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "host_policy_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "entry_count": {
+          "$ref": "#/$defs/SafeInt"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PublicEnvironmentEntryV1"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "EphemeralSecretProofPolicyV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "secret_proof_policy_version",
+        "secret_proof_policy_digest",
+        "algorithm",
+        "key_bits",
+        "domain_separator",
+        "scope",
+        "serialization",
+        "export",
+        "logging",
+        "replay",
+        "zeroization"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.ephemeral-secret-proof-policy.v1"
+        },
+        "secret_proof_policy_version": {
+          "const": 1
+        },
+        "secret_proof_policy_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "algorithm": {
+          "const": "HMAC-SHA-256"
+        },
+        "key_bits": {
+          "const": 256
+        },
+        "domain_separator": {
+          "const": "plamen.ephemeral-secret-proof.v1\\x00"
+        },
+        "scope": {
+          "const": "ONE_PROCESS_ONE_LAUNCH_OBJECT"
+        },
+        "serialization": {
+          "const": "FORBIDDEN"
+        },
+        "export": {
+          "const": "FORBIDDEN"
+        },
+        "logging": {
+          "const": "FORBIDDEN"
+        },
+        "replay": {
+          "const": "FORBIDDEN"
+        },
+        "zeroization": {
+          "const": "BEST_EFFORT_AFTER_SPAWN_ATTEMPT"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ExecutionAxesV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "execution_axes_version",
+        "execution_axes_digest",
+        "backend",
+        "routing_profile",
+        "transport",
+        "assurance_class"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.execution-axes.v1"
+        },
+        "execution_axes_version": {
+          "const": 1
+        },
+        "execution_axes_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "backend": {
+          "enum": [
+            "claude",
+            "codex",
+            "native"
+          ]
+        },
+        "routing_profile": {
+          "enum": [
+            "legacy_claude_v1",
+            "semantic_v1",
+            "codex_existing_v1",
+            "native_existing_v1"
+          ]
+        },
+        "transport": {
+          "enum": [
+            "HEADLESS_PROOF",
+            "LEGACY_PTY_NON_PROOF",
+            "CODEX_EXISTING",
+            "NATIVE_EXISTING"
+          ]
+        },
+        "assurance_class": {
+          "enum": [
+            "TRANSACTIONAL_PROOF_CANDIDATE",
+            "LEGACY_PTY_NON_PROOF",
+            "EXISTING_CODEX_ASSURANCE",
+            "EXISTING_NATIVE_ASSURANCE"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClaudeProviderProfilePolicyAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "profile_policy_authority_version",
+        "profile_policy_authority_digest",
+        "profile_semantics_id",
+        "profile_ids"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.claude-provider-profile-policy-authority.v1"
+        },
+        "profile_policy_authority_version": {
+          "const": 1
+        },
+        "profile_policy_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profile_semantics_id": {
+          "const": "PLAMEN_CLAUDE_PROFILE_SEMANTICS_R2_4_V1"
+        },
+        "profile_ids": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "adjudication_staged_write"
+            },
+            {
+              "const": "analysis_filesystem"
+            },
+            {
+              "const": "analysis_read_only"
+            },
+            {
+              "const": "stdout_json_no_tools"
+            }
+          ],
+          "items": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClaudeProviderProfileV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "provider_profile_version",
+        "provider_profile_id",
+        "provider_profile_digest",
+        "profile_policy_authority_digest",
+        "permission_mode",
+        "builtin_tools",
+        "network_policy",
+        "filesystem_policy",
+        "subagent_policy",
+        "output_profile",
+        "environment_policy_set_names",
+        "settings_selection_policy",
+        "mcp_selection_policy",
+        "stream_max_bytes",
+        "stream_max_events",
+        "isolation_policy",
+        "route_neutrality"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.claude-provider-profile.v1"
+        },
+        "provider_profile_version": {
+          "const": 1
+        },
+        "provider_profile_id": {
+          "enum": [
+            "analysis_filesystem",
+            "analysis_read_only",
+            "adjudication_staged_write",
+            "stdout_json_no_tools"
+          ]
+        },
+        "provider_profile_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profile_policy_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "permission_mode": {
+          "enum": [
+            "ANALYSIS_FILESYSTEM",
+            "ANALYSIS_READ_ONLY",
+            "ADJUDICATION_STAGED_WRITE",
+            "STDOUT_JSON_NO_TOOLS"
+          ]
+        },
+        "builtin_tools": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "Read",
+              "Glob",
+              "Grep",
+              "Write",
+              "Edit",
+              "Bash"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "network_policy": {
+          "enum": [
+            "DENY",
+            "PHASE_EXPLICIT_ONLY"
+          ]
+        },
+        "filesystem_policy": {
+          "enum": [
+            "ANALYSIS_ASSIGNED_SCOPE",
+            "READ_ONLY_ASSIGNED_SCOPE",
+            "STAGED_WRITE_ASSIGNED_SCOPE",
+            "NO_MODEL_FILESYSTEM"
+          ]
+        },
+        "subagent_policy": {
+          "const": "FORBIDDEN"
+        },
+        "output_profile": {
+          "enum": [
+            "WORKER_FILE_OUTPUTS",
+            "CLAUDE_STREAM_RESULT_ASSIGNED_OUTPUT"
+          ]
+        },
+        "environment_policy_set_names": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "settings_selection_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mcp_selection_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stream_max_bytes": {
+          "$ref": "#/$defs/PositiveSafeInt"
+        },
+        "stream_max_events": {
+          "$ref": "#/$defs/PositiveSafeInt"
+        },
+        "isolation_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route_neutrality": {
+          "const": "ROUTE_FIELDS_FORBIDDEN"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClaudeProviderProfileRegistryV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "profile_registry_version",
+        "profile_registry_digest",
+        "profile_policy_authority_digest",
+        "profile_ids",
+        "profile_digests"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.claude-provider-profile-registry.v1"
+        },
+        "profile_registry_version": {
+          "const": 1
+        },
+        "profile_registry_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profile_policy_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profile_ids": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "adjudication_staged_write"
+            },
+            {
+              "const": "analysis_filesystem"
+            },
+            {
+              "const": "analysis_read_only"
+            },
+            {
+              "const": "stdout_json_no_tools"
+            }
+          ],
+          "items": false
+        },
+        "profile_digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Digest"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "ExecutionInputAuthoritySetV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "input_authority_set_version",
+        "input_authority_set_digest",
+        "source_snapshot_authority_schema",
+        "source_snapshot_authority_digest",
+        "prompt_authority_schema",
+        "prompt_authority_digest",
+        "methodology_authority_schema",
+        "methodology_authority_digest",
+        "program_facts_authority_schema",
+        "program_facts_authority_digest",
+        "tool_policy_authority_digest",
+        "identity_domain_separation"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.execution-input-authority-set.v1"
+        },
+        "input_authority_set_version": {
+          "const": 1
+        },
+        "input_authority_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "source_snapshot_authority_schema": {
+          "const": "plamen.source-snapshot-authority.v1"
+        },
+        "source_snapshot_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "prompt_authority_schema": {
+          "const": "plamen.prompt-authority.v1"
+        },
+        "prompt_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "methodology_authority_schema": {
+          "const": "plamen.methodology-authority.v1"
+        },
+        "methodology_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "program_facts_authority_schema": {
+          "const": "plamen.program-facts-authority.v2"
+        },
+        "program_facts_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "tool_policy_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "identity_domain_separation": {
+          "const": "SOURCE_PROMPT_METHODOLOGY_PROGRAM_FACTS_INDEPENDENT_V1"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModelRouteV3": {
+      "type": "object",
+      "required": [
+        "schema",
+        "model_route_version",
+        "model_route_digest",
+        "execution_axes_digest",
+        "provider",
+        "exact_requested_model_id",
+        "requested_effort",
+        "requested_thinking_mode",
+        "account_class",
+        "auth_route",
+        "service_tier",
+        "fallback_policy_digest",
+        "capability_authority_digest",
+        "price_authority_digest",
+        "context_budget_digest",
+        "budget_authority_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.model-route.v3"
+        },
+        "model_route_version": {
+          "const": 3
+        },
+        "model_route_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "execution_axes_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider": {
+          "const": "claude"
+        },
+        "exact_requested_model_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]*-[0-9]{8}$"
+        },
+        "requested_effort": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        "requested_thinking_mode": {
+          "enum": [
+            "ADAPTIVE_ON",
+            "MANUAL_ON",
+            "MANUAL_OFF"
+          ]
+        },
+        "account_class": {
+          "enum": [
+            "STORED_SUBSCRIPTION",
+            "API_KEY"
+          ]
+        },
+        "auth_route": {
+          "enum": [
+            "CLAUDE_CODE_OAUTH",
+            "ANTHROPIC_API_KEY"
+          ]
+        },
+        "service_tier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback_policy_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "capability_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "price_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "context_budget_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "budget_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkPlanRoutingBindingV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "work_plan_routing_binding_version",
+        "work_plan_routing_binding_digest",
+        "work_plan_digest",
+        "semantic_plan_digest",
+        "request_digest",
+        "execution_axes_digest",
+        "provider_profile_digest",
+        "input_authority_set_digest",
+        "model_route_digest",
+        "output_contract_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.work-plan-routing-binding.v2"
+        },
+        "work_plan_routing_binding_version": {
+          "const": 2
+        },
+        "work_plan_routing_binding_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "work_plan_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "semantic_plan_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "execution_axes_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_profile_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "input_authority_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "model_route_digest": {
+          "$ref": "#/$defs/NullableDigest"
+        },
+        "output_contract_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PhaseIORoutingBindingV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "phase_io_routing_binding_version",
+        "phase_io_routing_binding_digest",
+        "phase_io_contract_digest",
+        "phase_io_launch_digest",
+        "work_plan_routing_binding_digest",
+        "request_digest",
+        "input_authority_set_digest",
+        "output_contract_digest",
+        "incorporation_policy"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.phase-io-routing-binding.v2"
+        },
+        "phase_io_routing_binding_version": {
+          "const": 2
+        },
+        "phase_io_routing_binding_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "phase_io_contract_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "phase_io_launch_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "work_plan_routing_binding_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "input_authority_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "output_contract_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "incorporation_policy": {
+          "const": "EXACTLY_ONCE_AFTER_RECONCILIATION"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClaudeHeadlessExecutionRequestV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "request_version",
+        "request_digest",
+        "request_kind",
+        "execution_axes_digest",
+        "routing_profile",
+        "transport",
+        "provider_profile_digest",
+        "profile_registry_digest",
+        "profile_policy_authority_digest",
+        "input_authority_set_digest",
+        "semantic_plan_digest",
+        "work_plan_contract_authority_digest",
+        "phase_io_contract_digest",
+        "output_contract_digest",
+        "timeout_ms",
+        "stream_ceiling_digest",
+        "model_route_digest",
+        "arm_family_digest",
+        "context_budget_digest",
+        "budget_authority_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.claude-headless-execution-request.v2"
+        },
+        "request_version": {
+          "const": 2
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "request_kind": {
+          "enum": [
+            "BASELINE",
+            "SEMANTIC"
+          ]
+        },
+        "execution_axes_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "routing_profile": {
+          "enum": [
+            "legacy_claude_v1",
+            "semantic_v1"
+          ]
+        },
+        "transport": {
+          "const": "HEADLESS_PROOF"
+        },
+        "provider_profile_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profile_registry_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profile_policy_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "input_authority_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "semantic_plan_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "work_plan_contract_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "phase_io_contract_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "output_contract_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "timeout_ms": {
+          "$ref": "#/$defs/PositiveSafeInt"
+        },
+        "stream_ceiling_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "model_route_digest": {
+          "$ref": "#/$defs/NullableDigest"
+        },
+        "arm_family_digest": {
+          "$ref": "#/$defs/NullableDigest"
+        },
+        "context_budget_digest": {
+          "$ref": "#/$defs/NullableDigest"
+        },
+        "budget_authority_digest": {
+          "$ref": "#/$defs/NullableDigest"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "request_kind": {
+                "const": "SEMANTIC"
+              }
+            },
+            "required": [
+              "request_kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "routing_profile": {
+                "const": "semantic_v1"
+              },
+              "model_route_digest": {
+                "$ref": "#/$defs/Digest"
+              },
+              "arm_family_digest": {
+                "$ref": "#/$defs/Digest"
+              },
+              "context_budget_digest": {
+                "$ref": "#/$defs/Digest"
+              },
+              "budget_authority_digest": {
+                "$ref": "#/$defs/Digest"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "request_kind": {
+                "const": "BASELINE"
+              },
+              "routing_profile": {
+                "const": "legacy_claude_v1"
+              },
+              "model_route_digest": {
+                "type": "null"
+              },
+              "arm_family_digest": {
+                "type": "null"
+              },
+              "context_budget_digest": {
+                "type": "null"
+              },
+              "budget_authority_digest": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ClaudeProviderControlVectorV2": {
+      "type": "object",
+      "required": [
+        "schema",
+        "provider_control_vector_version",
+        "provider_control_vector_digest",
+        "request_digest",
+        "semantic_plan_digest",
+        "execution_axes_digest",
+        "provider_profile_digest",
+        "model_route_digest",
+        "exact_model_id",
+        "effort_authority_digest",
+        "requested_effort",
+        "requested_thinking_mode",
+        "manual_thinking_budget_tokens",
+        "materialized_argv_digest",
+        "public_materialized_environment_digest",
+        "environment_policy_set_digest",
+        "secret_proof_policy_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.claude-provider-control-vector.v2"
+        },
+        "provider_control_vector_version": {
+          "const": 2
+        },
+        "provider_control_vector_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "semantic_plan_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "execution_axes_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_profile_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "model_route_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "exact_model_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effort_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "requested_effort": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        "requested_thinking_mode": {
+          "enum": [
+            "ADAPTIVE_ON",
+            "MANUAL_ON",
+            "MANUAL_OFF"
+          ]
+        },
+        "manual_thinking_budget_tokens": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PositiveSafeInt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "materialized_argv_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "public_materialized_environment_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "environment_policy_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "secret_proof_policy_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LaunchAuthorityV3": {
+      "type": "object",
+      "required": [
+        "schema",
+        "launch_authority_version",
+        "launch_authority_digest",
+        "semantic_plan_digest",
+        "arm_family_digest",
+        "generation",
+        "request_digest",
+        "execution_axes_digest",
+        "provider_profile_digest",
+        "input_authority_set_digest",
+        "model_route_digest",
+        "budget_authority_digest",
+        "generation_reservation_event_digest",
+        "provider_control_vector_digest",
+        "work_plan_routing_binding_digest",
+        "phase_io_routing_binding_digest",
+        "tool_policy_digest",
+        "child_policy",
+        "ordered_argv_template_digest",
+        "transport_policy_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.launch-authority.v3"
+        },
+        "launch_authority_version": {
+          "const": 3
+        },
+        "launch_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "semantic_plan_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "arm_family_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "generation": {
+          "$ref": "#/$defs/PositiveSafeInt"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "execution_axes_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_profile_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "input_authority_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "model_route_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "budget_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "generation_reservation_event_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_control_vector_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "work_plan_routing_binding_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "phase_io_routing_binding_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "tool_policy_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "child_policy": {
+          "const": "DRIVER_ONLY_NO_MODEL_CHILDREN"
+        },
+        "ordered_argv_template_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "transport_policy_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "AttemptLaunchEnvelopeV3": {
+      "type": "object",
+      "required": [
+        "schema",
+        "attempt_launch_version",
+        "attempt_launch_digest",
+        "attempt_identity_digest",
+        "backend_arm_digest",
+        "launch_authority_digest",
+        "request_digest",
+        "provider_control_vector_digest",
+        "attempt_reservation_event_digest",
+        "attempt_resource_entry_digest",
+        "resource_ledger_digest_after_attempt_reservation",
+        "materialized_argv_digest",
+        "public_materialized_environment_digest",
+        "environment_policy_set_digest",
+        "secret_proof_policy_digest",
+        "secret_proof_required",
+        "materialized_stdin_prompt_digest",
+        "working_directory_identity_digest",
+        "prepared_utc"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.attempt-launch-envelope.v3"
+        },
+        "attempt_launch_version": {
+          "const": 3
+        },
+        "attempt_launch_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "attempt_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "backend_arm_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "launch_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_control_vector_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "attempt_reservation_event_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "attempt_resource_entry_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "resource_ledger_digest_after_attempt_reservation": {
+          "$ref": "#/$defs/Digest"
+        },
+        "materialized_argv_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "public_materialized_environment_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "environment_policy_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "secret_proof_policy_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "secret_proof_required": {
+          "type": "boolean"
+        },
+        "materialized_stdin_prompt_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "working_directory_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "prepared_utc": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "BackendArmExecutionIdentityV4": {
+      "type": "object",
+      "required": [
+        "schema",
+        "backend_arm_version",
+        "backend_arm_digest",
+        "arm_family_digest",
+        "generation",
+        "semantic_plan_digest",
+        "request_digest",
+        "execution_axes_digest",
+        "provider_profile_digest",
+        "input_authority_set_digest",
+        "model_route_digest",
+        "budget_authority_digest",
+        "token_budget_derivation_digest",
+        "launch_authority_digest",
+        "work_plan_routing_binding_digest",
+        "phase_io_routing_binding_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.backend-arm-execution-identity.v4"
+        },
+        "backend_arm_version": {
+          "const": 4
+        },
+        "backend_arm_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "arm_family_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "generation": {
+          "$ref": "#/$defs/PositiveSafeInt"
+        },
+        "semantic_plan_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "execution_axes_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_profile_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "input_authority_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "model_route_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "budget_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "token_budget_derivation_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "launch_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "work_plan_routing_binding_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "phase_io_routing_binding_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ExecutionAttemptIdentityV3": {
+      "type": "object",
+      "required": [
+        "schema",
+        "execution_attempt_version",
+        "execution_attempt_digest",
+        "backend_arm_digest",
+        "arm_family_digest",
+        "generation",
+        "attempt_ordinal",
+        "request_digest",
+        "model_route_digest",
+        "provider_profile_digest",
+        "input_authority_set_digest",
+        "launch_authority_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.execution-attempt-identity.v3"
+        },
+        "execution_attempt_version": {
+          "const": 3
+        },
+        "execution_attempt_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "backend_arm_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "arm_family_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "generation": {
+          "$ref": "#/$defs/PositiveSafeInt"
+        },
+        "attempt_ordinal": {
+          "$ref": "#/$defs/SafeInt"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "model_route_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_profile_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "input_authority_set_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "launch_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConsumedAttemptLaunchAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "consumed_launch_authority_version",
+        "consumed_launch_authority_digest",
+        "attempt_launch_digest",
+        "attempt_identity_digest",
+        "launch_consumption_event_digest",
+        "consumed_attempt_resource_entry_digest",
+        "resource_ledger_digest_after_launch_consumption",
+        "consume_cas_revision",
+        "spawn_state"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.consumed-attempt-launch-authority.v1"
+        },
+        "consumed_launch_authority_version": {
+          "const": 1
+        },
+        "consumed_launch_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "attempt_launch_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "attempt_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "launch_consumption_event_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "consumed_attempt_resource_entry_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "resource_ledger_digest_after_launch_consumption": {
+          "$ref": "#/$defs/Digest"
+        },
+        "consume_cas_revision": {
+          "$ref": "#/$defs/SafeInt"
+        },
+        "spawn_state": {
+          "enum": [
+            "CONSUMED_NOT_SPAWNED",
+            "SPAWN_ATTEMPTED",
+            "AMBIGUOUS_DEBT"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProviderExecutionObservationV5": {
+      "type": "object",
+      "required": [
+        "schema",
+        "observation_version",
+        "observation_digest",
+        "execution_attempt_digest",
+        "backend_arm_digest",
+        "request_digest",
+        "execution_axes_digest",
+        "provider_profile_digest",
+        "model_route_digest",
+        "attempt_launch_digest",
+        "consumed_launch_authority_digest",
+        "public_materialized_environment_digest",
+        "observed_effective_model_id",
+        "effective_model_state",
+        "observed_effective_effort",
+        "effective_effort_state",
+        "observed_thinking_state",
+        "fallback_observation_state",
+        "provider_terminal_category",
+        "provider_evidence_manifest_digest",
+        "provider_usage_digest",
+        "raw_stream_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.provider-execution-observation.v5"
+        },
+        "observation_version": {
+          "const": 5
+        },
+        "observation_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "execution_attempt_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "backend_arm_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "execution_axes_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_profile_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "model_route_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "attempt_launch_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "consumed_launch_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "public_materialized_environment_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "observed_effective_model_id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_model_state": {
+          "enum": [
+            "EXACT",
+            "MIXED",
+            "MISMATCHED",
+            "UNOBSERVABLE"
+          ]
+        },
+        "observed_effective_effort": {
+          "oneOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_effort_state": {
+          "enum": [
+            "EXACT",
+            "NOT_APPLICABLE",
+            "MISMATCHED",
+            "UNSUPPORTED",
+            "UNOBSERVABLE"
+          ]
+        },
+        "observed_thinking_state": {
+          "enum": [
+            "ADAPTIVE_ON_CONFIRMED",
+            "MANUAL_ON_CONFIRMED",
+            "MANUAL_OFF_CONFIRMED",
+            "NOT_APPLICABLE",
+            "UNOBSERVABLE",
+            "MISMATCHED"
+          ]
+        },
+        "fallback_observation_state": {
+          "enum": [
+            "NO_FALLBACK_CONFIRMED",
+            "OBSERVED_DIFFERENT_MODEL",
+            "UNOBSERVABLE"
+          ]
+        },
+        "provider_terminal_category": {
+          "enum": [
+            "COMPLETED",
+            "REFUSAL",
+            "SAFETY_BLOCK",
+            "SAFETY_PAUSE_TIMEOUT",
+            "TRANSITION_DEBT",
+            "TRANSPORT_ERROR",
+            "TIMEOUT",
+            "INCOMPLETE",
+            "UNKNOWN_ADVERSE"
+          ]
+        },
+        "provider_evidence_manifest_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_usage_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "raw_stream_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResumeAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "resume_authority_version",
+        "resume_authority_digest",
+        "prior_generation",
+        "current_generation",
+        "prior_attempt_ordinal",
+        "current_attempt_ordinal",
+        "identity_closure_digest_before",
+        "identity_closure_digest_after",
+        "changed_identity_fields",
+        "decision",
+        "family_grant_authority_digest_before",
+        "family_grant_authority_digest_after"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.resume-authority.v1"
+        },
+        "resume_authority_version": {
+          "const": 1
+        },
+        "resume_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "prior_generation": {
+          "$ref": "#/$defs/PositiveSafeInt"
+        },
+        "current_generation": {
+          "$ref": "#/$defs/PositiveSafeInt"
+        },
+        "prior_attempt_ordinal": {
+          "$ref": "#/$defs/SafeInt"
+        },
+        "current_attempt_ordinal": {
+          "$ref": "#/$defs/SafeInt"
+        },
+        "identity_closure_digest_before": {
+          "$ref": "#/$defs/Digest"
+        },
+        "identity_closure_digest_after": {
+          "$ref": "#/$defs/Digest"
+        },
+        "changed_identity_fields": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "model",
+              "effort",
+              "thinking",
+              "transport",
+              "account",
+              "auth",
+              "service",
+              "fallback",
+              "environment",
+              "source",
+              "prompt",
+              "methodology",
+              "program_facts",
+              "tools",
+              "profile",
+              "resource_grant",
+              "work_plan",
+              "phase_io"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "decision": {
+          "enum": [
+            "RETRY_SAME_GENERATION",
+            "NEW_GENERATION",
+            "NO_RELAUNCH_COMPLETED",
+            "AMBIGUOUS_CONSUMED_DEBT"
+          ]
+        },
+        "family_grant_authority_digest_before": {
+          "$ref": "#/$defs/Digest"
+        },
+        "family_grant_authority_digest_after": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProviderRouteCapabilityAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "capability_authority_version",
+        "capability_authority_digest",
+        "provider_manifest_digest",
+        "canary_field_claim_digest",
+        "exact_model_id",
+        "supported_efforts",
+        "supported_transports",
+        "observability_fields",
+        "valid_from_utc",
+        "valid_until_utc"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.provider-route-capability-authority.v1"
+        },
+        "capability_authority_version": {
+          "const": 1
+        },
+        "capability_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_manifest_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "canary_field_claim_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "exact_model_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]*-[0-9]{8}$"
+        },
+        "supported_efforts": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "supported_transports": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "HEADLESS_PROOF"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "observability_fields": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "effective_model",
+              "effective_effort",
+              "thinking_state",
+              "provider_terminal_category",
+              "usage"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "valid_from_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "valid_until_utc": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProviderPriceAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "price_authority_version",
+        "price_authority_digest",
+        "provider_price_snapshot_digest",
+        "exact_model_id",
+        "currency_code",
+        "unit_basis",
+        "input_micros",
+        "cache_write_micros",
+        "cache_read_micros",
+        "output_including_reasoning_micros",
+        "observed_utc"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.provider-price-authority.v1"
+        },
+        "price_authority_version": {
+          "const": 1
+        },
+        "price_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "provider_price_snapshot_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "exact_model_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "currency_code": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "unit_basis": {
+          "const": "PER_MILLION_TOKENS"
+        },
+        "input_micros": {
+          "$ref": "#/$defs/SafeInt"
+        },
+        "cache_write_micros": {
+          "$ref": "#/$defs/SafeInt"
+        },
+        "cache_read_micros": {
+          "$ref": "#/$defs/SafeInt"
+        },
+        "output_including_reasoning_micros": {
+          "$ref": "#/$defs/SafeInt"
+        },
+        "observed_utc": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProviderFallbackAuthorityV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "fallback_authority_version",
+        "fallback_authority_digest",
+        "policy",
+        "requested_model_count",
+        "observed_different_model_disposition",
+        "continuation_rule"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.provider-fallback-authority.v1"
+        },
+        "fallback_authority_version": {
+          "const": 1
+        },
+        "fallback_authority_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "policy": {
+          "const": "FORBID_IMPLICIT_PROVIDER_FALLBACK"
+        },
+        "requested_model_count": {
+          "const": 1
+        },
+        "observed_different_model_disposition": {
+          "const": "ROUTE_DEBT"
+        },
+        "continuation_rule": {
+          "const": "NEW_GENERATION_ONLY"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CodexParityWitnessV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "codex_parity_witness_version",
+        "codex_parity_witness_digest",
+        "codex_schema_before",
+        "codex_schema_after",
+        "canonical_bytes_sha256_before",
+        "canonical_bytes_sha256_after",
+        "semantic_behavior_fixture_set_digest_before",
+        "semantic_behavior_fixture_set_digest_after",
+        "claude_fields_present"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.codex-parity-witness.v1"
+        },
+        "codex_parity_witness_version": {
+          "const": 1
+        },
+        "codex_parity_witness_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "codex_schema_before": {
+          "type": "string",
+          "minLength": 1
+        },
+        "codex_schema_after": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canonical_bytes_sha256_before": {
+          "$ref": "#/$defs/Digest"
+        },
+        "canonical_bytes_sha256_after": {
+          "$ref": "#/$defs/Digest"
+        },
+        "semantic_behavior_fixture_set_digest_before": {
+          "$ref": "#/$defs/Digest"
+        },
+        "semantic_behavior_fixture_set_digest_after": {
+          "$ref": "#/$defs/Digest"
+        },
+        "claude_fields_present": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "DownstreamPropagationStatusV1": {
+      "type": "object",
+      "required": [
+        "schema",
+        "downstream_status_version",
+        "downstream_status_digest",
+        "runtime_propagation_state",
+        "runbundle_state",
+        "evaluator_state",
+        "bb_state",
+        "repair_state",
+        "packaging_state",
+        "ci_runtime_closure_state",
+        "cutover_authorized"
+      ],
+      "properties": {
+        "schema": {
+          "const": "plamen.downstream-propagation-status.v1"
+        },
+        "downstream_status_version": {
+          "const": 1
+        },
+        "downstream_status_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "runtime_propagation_state": {
+          "enum": [
+            "PENDING",
+            "COMPLETE"
+          ]
+        },
+        "runbundle_state": {
+          "enum": [
+            "PENDING",
+            "COMPLETE"
+          ]
+        },
+        "evaluator_state": {
+          "enum": [
+            "PENDING",
+            "COMPLETE"
+          ]
+        },
+        "bb_state": {
+          "enum": [
+            "PENDING",
+            "COMPLETE"
+          ]
+        },
+        "repair_state": {
+          "enum": [
+            "PENDING",
+            "COMPLETE"
+          ]
+        },
+        "packaging_state": {
+          "enum": [
+            "PENDING",
+            "COMPLETE"
+          ]
+        },
+        "ci_runtime_closure_state": {
+          "enum": [
+            "PENDING",
+            "COMPLETE"
+          ]
+        },
+        "cutover_authorized": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

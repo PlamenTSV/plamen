@@ -1,0 +1,497 @@
+{
+  "schema": "plamen.model-routing-r2.5.6-source-registry.v1",
+  "version": 1,
+  "disposition": "OFFLINE_GREEN_PREP_RED_BINDINGS_ONLY",
+  "repository": {
+    "root": "<LOCAL_USER_ROOT>/plamen-codex-implementation",
+    "branch": "codex/recall-app-benchmark-r10_1",
+    "head": "67a0f85adc7a8169d79a286908b00bef7adb764a",
+    "working_tree_policy": "EXACT_WORKTREE_BYTES_OVERRIDE_GIT_HEAD"
+  },
+  "current_model_behavior": {
+    "legacy_default_backend": "claude",
+    "claude_opus_default": "claude-opus-4-8",
+    "claude_thorough_opus_default": "claude-opus-4-8",
+    "codex_tier_map": {
+      "opus": "gpt-5.5",
+      "sonnet": "gpt-5.4",
+      "haiku": "gpt-5.4-mini"
+    },
+    "phase_matrix_sha256": "4af2082b6c145b7e8fc7703cf860c445078f6e8662ccb2f34e8215e61b15f703",
+    "phase_matrix_rows": 668,
+    "max_present": false,
+    "known_fail_open_behaviors": [
+      "UNKNOWN_CODEX_ALIAS_DEFAULTS_TO_SONNET_TIER",
+      "CODEX_UNAVAILABLE_MODEL_CAN_MUTATE_PHASE_FALLBACK",
+      "SKEPTIC_BACKEND_OVERRIDE_CAN_FALL_BACK_TO_CONFIGURED_BACKEND",
+      "ROUTE_IS_BARE_BACKEND_AND_MODEL_WITHOUT_ROUTE_AUTHORITY",
+      "RESUME_DOES_NOT_CALL_WORKER_TRANSACTION_RECOVERY"
+    ]
+  },
+  "production_source_scope": {
+    "include_patterns": [
+      "*.py",
+      "scripts/**/*.py",
+      "custom-mcp/**/*.py",
+      "plamen_l1/**/*.py",
+      "verification_policy/**/*.py",
+      "mcp-packages/**/*.py"
+    ],
+    "exclude_patterns": [
+      "**/__pycache__/**",
+      "**/test_*.py",
+      "**/tests/**",
+      "**/conftest.py"
+    ],
+    "file_count": 284,
+    "manifest_sha256": "5371ea308f20a6e7de7b19b16a18f8451725f451835fd7602d1696ed35d252c2",
+    "caller_resolution_policy": "RECURSIVE_CLOSED_SCOPE_IMPORT_ALIAS_RESOLUTION_AMBIGUITY_REJECT"
+  },
+  "source_files": [
+    {
+      "path": "scripts/plamen_types.py",
+      "sha256": "74d540e7b5a8c05d2746d1058a712f1a3b088614f856b1d1aa8f6590b847f4ef",
+      "size": 134607
+    },
+    {
+      "path": "scripts/plamen_driver.py",
+      "sha256": "090d9fe4b63c5388b2fc535074ae4cfab6fc438e58bc4b8155973abe7dcc61e6",
+      "size": 3049564
+    },
+    {
+      "path": "scripts/headless_worker_runtime.py",
+      "sha256": "04a7ac54b9c38511bbd340b37a34520de394b6875ee87444f631111a85b51bee",
+      "size": 52432
+    },
+    {
+      "path": "scripts/backend_capability_registry.py",
+      "sha256": "897fa92b03dd3ee7a6031d3c61e073139511ace04655172f1ffdce26a5dee4a6",
+      "size": 197042
+    },
+    {
+      "path": "scripts/worker_transaction.py",
+      "sha256": "47773f533a5e133626f4c3fb580af1fc53fc931832eab7bf07393c4508b52c35",
+      "size": 150510
+    },
+    {
+      "path": "scripts/worker_execution_receipts.py",
+      "sha256": "a2cb4a190bfa453902e053670ec97fe937d19f5c33b7203fbe4ffc0ddad7309b",
+      "size": 424732
+    },
+    {
+      "path": "scripts/isolated_execution_host.py",
+      "sha256": "c1bb9ace2a181777b14b7b558e552e2b15727c46ba3fab696d51241818968b00",
+      "size": 164470
+    },
+    {
+      "path": "scripts/artifact_ledger.py",
+      "sha256": "657f4a6bfd2d1d491ac2fa347883fbb032c915ee35b523ddef19f6c66168857a",
+      "size": 486532
+    },
+    {
+      "path": "scripts/phase_io_contracts.py",
+      "sha256": "8361b7c9e19ec261e03ebf2229e7f14d291fee7e2c87ea718262c4893abbe16b",
+      "size": 324338
+    },
+    {
+      "path": "scripts/claude_stream_json_evidence.py",
+      "sha256": "8fde700037d43c874eaccb77a16f47bfee46d79c88d8cfbb2b9421f56f949bbd",
+      "size": 59327
+    },
+    {
+      "path": "scripts/bb_wrapper_provider_adapter.py",
+      "sha256": "62507d096c672cde7a1d5f9e0d80cde2270abcfca209d74af457b69ee2be55b9",
+      "size": 53488
+    }
+  ],
+  "expected_consumer_ids": [
+    "launch_replay_validator",
+    "proof_mint",
+    "spawn_authentication",
+    "provider_spool_acceptance",
+    "completed_current_construction",
+    "current_replay_validator",
+    "resume_authorization"
+  ],
+  "consumers": [
+    {
+      "consumer_id": "launch_replay_validator",
+      "stage": "LAUNCH",
+      "source": {
+        "path": "scripts/headless_worker_runtime.py",
+        "file_sha256": "04a7ac54b9c38511bbd340b37a34520de394b6875ee87444f631111a85b51bee",
+        "qualname": "prepare_headless_worker",
+        "line": 662,
+        "end_line": 1048,
+        "signature": "def prepare_headless_worker(*, scratchpad: Path, project_root: Path, run_id: str, phase_io_contract: PhaseIOContract, phase_io_launch: LaunchSpec, prompt: str, command_builder: CommandBuilder, cwd: Path, environment: Mapping[str, str], environment_allowlist: Sequence[str], source_snapshot_digest: str, methodology_digests: Sequence[str], startup_authority_binding: Mapping[str, Any], generation: int=1, parser_digest: ParserDigest=strict_nonempty_artifact_digest, stdout_limit_bytes: int=_DEFAULT_STDOUT_LIMIT, stderr_limit_bytes: int=_DEFAULT_STDERR_LIMIT, staged_member_limit_bytes: int=_DEFAULT_MEMBER_LIMIT, phase_roster_denominator_digest: str | None=None, staged_output_validator: StagedOutputValidator | None=None, staged_output_context: Mapping[str, Any] | None=None, staged_output_input_identities: Sequence[str]=(), provider_stdout_evidence_configuration: Mapping[str, Any] | None=None, claude_launch_security: Mapping[str, Any] | None=None, claude_launch_security_request: Mapping[str, Any] | None=None, claude_provider_preparation: ClaudeProviderPreparation | None=None, claude_runtime_local_inputs: Mapping[str, Any] | None=None, claude_bound_settings_bytes: bytes | None=None, claude_selected_mcp_config_bytes: bytes | None=None) -> PreparedHeadlessWorker",
+        "segment_sha256": "be72f93859cbbd93caf54147d8f39e47dbbde42fd9b4b236ddfc7bd4cdbab7e4",
+        "required_direct_calls": [
+          "_normalize_startup_authority_binding",
+          "_normalize_claude_launch_contract",
+          "_compile_claude_provider_parent_authority",
+          "compile_worker_plan"
+        ],
+        "known_callers": [
+          "headless_worker_runtime.execute_headless_worker"
+        ]
+      },
+      "current_behavior": "Replays the auxiliary-root startup permit, normalizes Claude-only launch security, freezes backend/model into intent and WorkPlan, and does not launch.",
+      "current_gap": "No ModelRoute authority, capability decision, exact effort/service/fallback policy, or R2.5.5 launch graph is consumed before the WorkPlan is frozen.",
+      "adapter_binding": {
+        "module": "scripts/model_routing_runtime_adapter.py",
+        "callable": "validate_launch_replay",
+        "direction": "ENTRYPOINT_CALLS_ADAPTER",
+        "insertion_order": "after PhaseIO contract/launch equality and startup replay; before command_builder, intent, provider, or WorkPlan construction",
+        "pre_landmark": "PHASEIO_LAUNCH_AND_STARTUP_REPLAYED",
+        "post_landmark": "COMMAND_AND_WORK_PLAN_CONSTRUCTION",
+        "required_records": [
+          "RoutingRootAuthorityV1",
+          "ExecutionAttemptAuthorityV1",
+          "SelectedRouteAuthorityV1",
+          "LaunchEnvelopeV4",
+          "PredecessorEnvelopeV3",
+          "EnvironmentPolicyAuthorityV1",
+          "PublicEnvironmentAuthorityV1"
+        ],
+        "red_state": "ADAPTER_BINDING_ABSENT",
+        "red_error": "MODEL_ROUTING_PRODUCTION_BINDING_MISSING"
+      },
+      "applicable_branch_families": [
+        "DIRECT_SPAWN",
+        "OBSERVED_SPAWN",
+        "SPAWN_FAILED",
+        "AMBIGUITY_ABORT",
+        "AMBIGUITY_DEBT"
+      ],
+      "crash_vector_ids": [
+        "CR-01",
+        "CR-02",
+        "CR-03"
+      ]
+    },
+    {
+      "consumer_id": "proof_mint",
+      "stage": "LAUNCH",
+      "source": {
+        "path": "scripts/backend_capability_registry.py",
+        "file_sha256": "897fa92b03dd3ee7a6031d3c61e073139511ace04655172f1ffdce26a5dee4a6",
+        "qualname": "promote_backend_capability_receipt",
+        "line": 4429,
+        "end_line": 4441,
+        "signature": "def promote_backend_capability_receipt(*, resource_grant: Any, resource_policy_authority: Any, **kwargs: Any) -> BackendCapabilityAuthority",
+        "segment_sha256": "abb4c89992d561091c5be06c3cf65123c2406caec31f89547708647d642ee5bb",
+        "required_direct_calls": [
+          "_promote_backend_capability_receipt"
+        ],
+        "known_callers": []
+      },
+      "current_behavior": "Promotes a capability receipt only after typed observation, policy, route-intent, resource, and launch-generation parents replay.",
+      "current_gap": "This production-strength mint is disconnected from non-test runtime callers; the driver/headless path therefore cannot prove that a promoted capability authorized a real spawn.",
+      "adapter_binding": {
+        "module": "scripts/model_routing_runtime_adapter.py",
+        "callable": "mint_capability_proof",
+        "direction": "ADAPTER_CALLS_ENTRYPOINT",
+        "insertion_order": "after launch replay and neutral provider observation replay; before any consumed launch or spawn intent record is durable",
+        "pre_landmark": "LAUNCH_AND_NEUTRAL_PROVIDER_OBSERVATION_REPLAYED",
+        "post_landmark": "CONSUMED_LAUNCH_OR_SPAWN_INTENT_PUBLICATION",
+        "required_records": [
+          "RoutingRootAuthorityV1",
+          "ExecutionAttemptAuthorityV1",
+          "SelectedRouteAuthorityV1",
+          "LaunchEnvelopeV4",
+          "ProviderObservationAuthorityV1"
+        ],
+        "red_state": "ADAPTER_BINDING_ABSENT",
+        "red_error": "MODEL_ROUTING_PRODUCTION_BINDING_MISSING"
+      },
+      "applicable_branch_families": [
+        "DIRECT_SPAWN",
+        "OBSERVED_SPAWN",
+        "SPAWN_FAILED",
+        "AMBIGUITY_ABORT",
+        "AMBIGUITY_DEBT"
+      ],
+      "crash_vector_ids": [
+        "CR-02",
+        "CR-03",
+        "CR-04"
+      ]
+    },
+    {
+      "consumer_id": "spawn_authentication",
+      "stage": "INTENT",
+      "source": {
+        "path": "scripts/worker_transaction.py",
+        "file_sha256": "47773f533a5e133626f4c3fb580af1fc53fc931832eab7bf07393c4508b52c35",
+        "qualname": "execute_worker_transaction",
+        "line": 2150,
+        "end_line": 2886,
+        "signature": "def execute_worker_transaction(plan: Mapping[str, Any], adapter: NativeCommandAdapter | HeadlessModelAdapter, cancel_token: Any=None) -> ExecutionRef",
+        "segment_sha256": "d7a8c416a9fc3fcf3c32f8b347dee8971e7afd5d7978bd9c83321a611453842f",
+        "required_direct_calls": [
+          "_validate_compiled_plan",
+          "validate_work_plan_phase_roster",
+          "_write_absent_json",
+          "run_observed_worker"
+        ],
+        "known_callers": [
+          "headless_worker_runtime._execute_prepared_headless_worker",
+          "program_facts_evm_wtx.execute_evm_worker_transaction"
+        ]
+      },
+      "current_behavior": "Validates WorkPlan/adapter equality, writes a durable attempt arm, binds backend/model/argv/environment/startup authority, and then dispatches the observed worker.",
+      "current_gap": "The arm carries bare backend/model and startup authority but no one-shot ModelRoute capability, consumed-launch record, spawn intent, ambiguity resolution, or exact route observation obligation.",
+      "adapter_binding": {
+        "module": "scripts/model_routing_runtime_adapter.py",
+        "callable": "authenticate_spawn",
+        "direction": "ENTRYPOINT_CALLS_ADAPTER",
+        "insertion_order": "after complete plan/adapter/input replay and before attempt directory, active registry, outer arm, provider-runtime claim, or process creation",
+        "pre_landmark": "PLAN_ADAPTER_AND_INPUT_REPLAYED",
+        "post_landmark": "ATTEMPT_ARM_OR_PROCESS_CREATION",
+        "required_records": [
+          "ConsumedAttemptLaunchAuthorityV2",
+          "SpawnIntentAuthorityV1",
+          "SelectedRouteAuthorityV1",
+          "LaunchEnvelopeV4",
+          "PublicEnvironmentAuthorityV1"
+        ],
+        "red_state": "ADAPTER_BINDING_ABSENT",
+        "red_error": "MODEL_ROUTING_PRODUCTION_BINDING_MISSING"
+      },
+      "applicable_branch_families": [
+        "DIRECT_SPAWN",
+        "OBSERVED_SPAWN",
+        "SPAWN_FAILED",
+        "AMBIGUITY_ABORT",
+        "AMBIGUITY_DEBT"
+      ],
+      "crash_vector_ids": [
+        "CR-04",
+        "CR-05",
+        "CR-06",
+        "CR-07"
+      ]
+    },
+    {
+      "consumer_id": "provider_spool_acceptance",
+      "stage": "SPAWNED",
+      "source": {
+        "path": "scripts/worker_execution_receipts.py",
+        "file_sha256": "a2cb4a190bfa453902e053670ec97fe937d19f5c33b7203fbe4ffc0ddad7309b",
+        "qualname": "validate_staged_execution",
+        "line": 10489,
+        "end_line": 10505,
+        "signature": "def validate_staged_execution(*, scratchpad: str | Path, receipt_path: str | Path, parser_digest: ParserDigest, expected_completion_sha256: str) -> dict[str, Any]",
+        "segment_sha256": "475b1a79bfa654589a91c555141a9f131df2a38776b6d48d7343a97818cd71ea",
+        "required_direct_calls": [
+          "validate_completed_execution"
+        ],
+        "known_callers": [
+          "isolated_execution_host._execute_wer_provider_from_staged",
+          "program_facts_evm_wtx.reconcile_evm_worker_execution",
+          "worker_execution_receipts._replay_semantic_executor_completion",
+          "worker_execution_receipts.staged_execution_stream_bytes",
+          "worker_transaction.incorporate_worker_execution"
+        ]
+      },
+      "current_behavior": "Replays the content-addressed provider completion, arm, executable, environment, streams, output denominator, staged bytes, lifecycle, and optional Claude stream evidence.",
+      "current_gap": "The replay proves current WER truth but does not bind requested versus observed ModelRoute, effort, service tier, fallback/refusal, lifecycle C-I-A-Q-S-T-K, or route-specific neutral reconciliation.",
+      "adapter_binding": {
+        "module": "scripts/model_routing_runtime_adapter.py",
+        "callable": "accept_provider_spool",
+        "direction": "ENTRYPOINT_CALLS_ADAPTER",
+        "insertion_order": "after validate_completed_execution returns exact immutable bytes and before any staged completion can be returned to PhaseIO incorporation",
+        "pre_landmark": "IMMUTABLE_COMPLETED_EXECUTION_VALIDATED",
+        "post_landmark": "STAGED_COMPLETION_TO_PHASEIO",
+        "required_records": [
+          "SpawnedAttemptAuthorityV1",
+          "TerminalAttemptAuthorityV1",
+          "ProviderArtifactAuthorityV1",
+          "NeutralProviderClaimAuthorityV1",
+          "NeutralLauncherClaimAuthorityV1",
+          "NeutralReconciliationAuthorityV1"
+        ],
+        "red_state": "ADAPTER_BINDING_ABSENT",
+        "red_error": "MODEL_ROUTING_PRODUCTION_BINDING_MISSING"
+      },
+      "applicable_branch_families": [
+        "DIRECT_SPAWN",
+        "OBSERVED_SPAWN"
+      ],
+      "crash_vector_ids": [
+        "CR-06",
+        "CR-07",
+        "CR-08",
+        "CR-09",
+        "CR-10",
+        "CR-11"
+      ]
+    },
+    {
+      "consumer_id": "completed_current_construction",
+      "stage": "CURRENT",
+      "source": {
+        "path": "scripts/worker_transaction.py",
+        "file_sha256": "47773f533a5e133626f4c3fb580af1fc53fc931832eab7bf07393c4508b52c35",
+        "qualname": "incorporate_worker_execution",
+        "line": 3147,
+        "end_line": 3605,
+        "signature": "def incorporate_worker_execution(execution_ref: ExecutionRef, phase_io_contract: Any, *, phase_io_launch: Any, work_plan: Mapping[str, Any], parser_digest: ParserDigest, scratchpad: Path, project_root: Path, run_id: str, staged_output_validator: StagedOutputValidator | None=None, staged_output_context: Mapping[str, Any] | None=None) -> IncorporationRef",
+        "segment_sha256": "c48e617452fae5dac51a8bb101b83c4a49889965c64d50732ef6ab70f33dcbc9",
+        "required_direct_calls": [
+          "_validate_arm",
+          "_validate_attempt_completion",
+          "validate_staged_execution",
+          "validate_worker_execution_authority",
+          "record_work_unit_artifacts"
+        ],
+        "known_callers": [
+          "headless_worker_runtime._execute_prepared_headless_worker"
+        ]
+      },
+      "current_behavior": "Replays arm and provider completion, applies an optional staged semantic gate, publishes canonical PhaseIO outputs, writes incorporation authority, and records ArtifactLedger execution authority.",
+      "current_gap": "Canonical publication has no CompletedCurrentAuthority route record and cannot require the exact terminal/reconciliation prefix before publication.",
+      "adapter_binding": {
+        "module": "scripts/model_routing_runtime_adapter.py",
+        "callable": "construct_completed_current",
+        "direction": "ENTRYPOINT_CALLS_ADAPTER",
+        "insertion_order": "after staged provider replay and semantic validation; before projection arm, canonical os.replace, incorporation completion, or ArtifactLedger commit",
+        "pre_landmark": "STAGED_PROVIDER_AND_SEMANTIC_REPLAYED",
+        "post_landmark": "PROJECTION_OR_CURRENT_PUBLICATION",
+        "required_records": [
+          "TerminalAttemptAuthorityV1",
+          "NeutralReconciliationAuthorityV1",
+          "CompletedCurrentAuthorityV1"
+        ],
+        "red_state": "ADAPTER_BINDING_ABSENT",
+        "red_error": "MODEL_ROUTING_PRODUCTION_BINDING_MISSING"
+      },
+      "applicable_branch_families": [
+        "DIRECT_SPAWN",
+        "OBSERVED_SPAWN",
+        "SPAWN_FAILED",
+        "AMBIGUITY_ABORT",
+        "AMBIGUITY_DEBT"
+      ],
+      "crash_vector_ids": [
+        "CR-11",
+        "CR-12",
+        "CR-13",
+        "CR-14",
+        "CR-15",
+        "CR-16"
+      ]
+    },
+    {
+      "consumer_id": "current_replay_validator",
+      "stage": "CURRENT",
+      "source": {
+        "path": "scripts/worker_transaction.py",
+        "file_sha256": "47773f533a5e133626f4c3fb580af1fc53fc931832eab7bf07393c4508b52c35",
+        "qualname": "validate_worker_execution_authority",
+        "line": 2988,
+        "end_line": 3144,
+        "signature": "def validate_worker_execution_authority(*, scratchpad: Path, authority: Mapping[str, Any], contract: Any, launch: Any, run_id: str) -> dict[str, Any]",
+        "segment_sha256": "e4eb6fe5dd968407905b0f0e5fe27d62ae83da9d4f7c669cec1e3595f70f2cff",
+        "required_direct_calls": [
+          "_read_digest_bound_json",
+          "_projection_destination",
+          "_artifact_state"
+        ],
+        "known_callers": [
+          "artifact_ledger._worker_execution_expected_records",
+          "artifact_ledger._record_work_unit_artifacts_unlocked",
+          "bb_wrapper_provider_adapter.replay_bb_provider_invocation",
+          "worker_transaction.incorporate_worker_execution"
+        ]
+      },
+      "current_behavior": "Replays attempt completion, provider completion, incorporation, PhaseIO contract/launch, and every current canonical output byte for ArtifactLedger and BB consumers.",
+      "current_gap": "The replay chain does not include a route CompletedCurrentAuthority, terminal/reconciliation ancestry, prior Resume identity, or actual model/effort/service/fallback evidence.",
+      "adapter_binding": {
+        "module": "scripts/model_routing_runtime_adapter.py",
+        "callable": "validate_current_replay",
+        "direction": "ENTRYPOINT_CALLS_ADAPTER",
+        "insertion_order": "after structural execution/incorporation replay and before returning authority to ArtifactLedger, BB, report, or resume consumers",
+        "pre_landmark": "STRUCTURAL_EXECUTION_AND_INCORPORATION_REPLAYED",
+        "post_landmark": "CURRENT_AUTHORITY_RETURNED_TO_CONSUMER",
+        "required_records": [
+          "CompletedCurrentAuthorityV1",
+          "TerminalAttemptAuthorityV1",
+          "NeutralReconciliationAuthorityV1",
+          "SelectedRouteAuthorityV1"
+        ],
+        "red_state": "ADAPTER_BINDING_ABSENT",
+        "red_error": "MODEL_ROUTING_PRODUCTION_BINDING_MISSING"
+      },
+      "applicable_branch_families": [
+        "DIRECT_SPAWN",
+        "OBSERVED_SPAWN",
+        "SPAWN_FAILED",
+        "AMBIGUITY_ABORT",
+        "AMBIGUITY_DEBT"
+      ],
+      "crash_vector_ids": [
+        "CR-12",
+        "CR-13",
+        "CR-14",
+        "CR-15",
+        "CR-16",
+        "CR-17"
+      ]
+    },
+    {
+      "consumer_id": "resume_authorization",
+      "stage": "RESUME",
+      "source": {
+        "path": "scripts/plamen_driver.py",
+        "file_sha256": "090d9fe4b63c5388b2fc535074ae4cfab6fc438e58bc4b8155973abe7dcc61e6",
+        "qualname": "_reconcile_completed_checkpoint_artifacts",
+        "line": 5752,
+        "end_line": 6168,
+        "signature": "def _reconcile_completed_checkpoint_artifacts(scratchpad: Path, project_root: str, checkpoint: Checkpoint, phases: list[Phase], mode: str, language: str='', pipeline: str='', backend: str='') -> list[str]",
+        "segment_sha256": "abfbdee1d518bf14ad5bdddedcec8809af7cc0bf4a4270f57f5293589984f4fb",
+        "required_direct_calls": [
+          "_resume_semantic_issues",
+          "read_artifact_ledger",
+          "_atomic_driver_json_record",
+          "checkpoint.save"
+        ],
+        "known_callers": [
+          "plamen_driver.main"
+        ]
+      },
+      "current_behavior": "Reconciles completed checkpoint phases against semantic mutation state, ArtifactLedger, per-phase contracts, and resume-specific validators, then rewinds invalid descendants.",
+      "current_gap": "It never calls recover_worker_transactions, has no PriorResumeIdentityAuthority, and can accept completed phases without replaying the route lifecycle/current identity that authorized their model execution.",
+      "adapter_binding": {
+        "module": "scripts/model_routing_runtime_adapter.py",
+        "callable": "authorize_resume",
+        "direction": "ENTRYPOINT_CALLS_ADAPTER",
+        "insertion_order": "after worker-transaction crash recovery and before any completed phase is accepted, backfilled, rewound, retried, or used to authorize a provider continuation",
+        "pre_landmark": "WORKER_TRANSACTION_RECOVERY_COMPLETE",
+        "post_landmark": "COMPLETED_PHASE_ACCEPTANCE_OR_REWIND",
+        "required_records": [
+          "PriorResumeIdentityAuthorityV1",
+          "CompletedCurrentAuthorityV1",
+          "ExecutionAttemptAuthorityV1",
+          "SelectedRouteAuthorityV1"
+        ],
+        "red_state": "ADAPTER_BINDING_ABSENT",
+        "red_error": "MODEL_ROUTING_PRODUCTION_BINDING_MISSING"
+      },
+      "applicable_branch_families": [
+        "DIRECT_SPAWN",
+        "OBSERVED_SPAWN",
+        "SPAWN_FAILED",
+        "AMBIGUITY_ABORT",
+        "AMBIGUITY_DEBT"
+      ],
+      "crash_vector_ids": [
+        "CR-15",
+        "CR-16",
+        "CR-17",
+        "CR-18"
+      ]
+    }
+  ],
+  "registry_digest": "95b487c0bd3b83b4b181be45c34cec3a1bdec9e34263d1f864e047cb6937d949"
+}
