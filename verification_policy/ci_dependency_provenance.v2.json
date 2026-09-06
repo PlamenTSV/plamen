@@ -43,12 +43,12 @@
     "input_sha256": {
       "requirements-ci-resolver.in": "55e3173445050d9bf00a0d217abcbec83b6baa161f971d5192f28d664a2d45ef",
       "requirements-ci-resolver.lock": "842074be5fbac7fc368018d85a5b2bbb9cb3daacec5ff6e75d0da79cea89e44d",
-      "requirements-ci.constraints": "0fe299bbad088c90d85ecfa08a50a92bacdec62044f8b1c2abe59690d02cc42b",
-      "requirements-dev.txt": "b08f1430eeeca71f4934766892f57e278f748fcaaa6d16d0740e9619773ed01a",
+      "requirements-ci.constraints": "1e43da80fa17db917935ca61a5b8cd0b379984afd52289b3feecabe020d2f60e",
+      "requirements-dev.txt": "ce7863ed7a53020a8e07f6f851416d6a6f6464a66bf59186c2d73c171b751f32",
       "requirements.txt": "539450e067e10f6e7f58dd4b84dd0f5c0dd303284c6df8b780d343fdf9553a50"
     },
     "output_path": "requirements-ci.lock",
-    "output_sha256": "4c2381ce078b1ca2778c27a210f9f98e93ce730198d2e24347fe80f9c941af3a"
+    "output_sha256": "f9f465a7f6c06c020a037f4d04a1d81e88436578a04a74bf99392575e60625a3"
   },
   "locked_projects": [
     {

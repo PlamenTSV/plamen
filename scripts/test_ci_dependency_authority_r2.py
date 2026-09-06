@@ -106,6 +106,66 @@ def test_generated_lock_bytes_are_cross_platform_lf_canonical() -> None:
         AUTH._canonical_generated_lock_bytes(b"alpha")
 
 
+def test_host_resolution_allows_only_inactive_marker_rows_to_be_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "a" * 64
+    checked = {
+        "common": AUTH.LockedRequirement("1.0", (digest,)),
+        "windows-only": AUTH.LockedRequirement(
+            "2.0",
+            (digest,),
+            'platform_system == "Windows"',
+        ),
+    }
+    regenerated = {"common": checked["common"]}
+
+    monkeypatch.setattr(
+        "packaging.markers.default_environment",
+        lambda: {
+            "implementation_name": "cpython",
+            "implementation_version": "3.12.0",
+            "os_name": "posix",
+            "platform_machine": "x86_64",
+            "platform_python_implementation": "CPython",
+            "platform_release": "test",
+            "platform_system": "Linux",
+            "platform_version": "test",
+            "python_full_version": "3.12.0",
+            "python_version": "3.12",
+            "sys_platform": "linux",
+        },
+    )
+    AUTH._verify_host_resolution(checked, regenerated)
+
+    with pytest.raises(
+        AUTH.CIDependencyAuthorityError,
+        match="omits active checked rows",
+    ):
+        AUTH._verify_host_resolution(checked, {})
+
+    with pytest.raises(
+        AUTH.CIDependencyAuthorityError,
+        match="differs from checked lock row",
+    ):
+        AUTH._verify_host_resolution(
+            checked,
+            {"common": AUTH.LockedRequirement("9.9", (digest,))},
+        )
+
+    with pytest.raises(
+        AUTH.CIDependencyAuthorityError,
+        match="differs from checked lock row",
+    ):
+        AUTH._verify_host_resolution(
+            checked,
+            {
+                "common": checked["common"],
+                "unreviewed": AUTH.LockedRequirement("1.0", (digest,)),
+            },
+        )
+
+
 def test_installable_lock_downgrade_fails_static_gate_before_resolver(
     tmp_path: Path,
 ) -> None:

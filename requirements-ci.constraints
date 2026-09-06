@@ -1,8 +1,8 @@
 # Exact resolver input for the reviewed CI graph.
 #
 # This is intentionally separate from requirements-ci.lock.  CI regenerates
-# the hash lock from requirements-dev.txt plus these exact constraints, then
-# byte-compares before installing the application/test environment.
+# the host projection from requirements-dev.txt plus these exact constraints,
+# then compares every active row before installing the application/test environment.
 annotated-types==0.8.0
 attrs==26.1.0
 colorama==0.4.6

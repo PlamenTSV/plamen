@@ -46,19 +46,19 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "runtime-data",
       "path": "requirements-ci.constraints",
-      "sha256": "0fe299bbad088c90d85ecfa08a50a92bacdec62044f8b1c2abe59690d02cc42b"
+      "sha256": "1e43da80fa17db917935ca61a5b8cd0b379984afd52289b3feecabe020d2f60e"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "runtime-data",
       "path": "requirements-ci.lock",
-      "sha256": "4c2381ce078b1ca2778c27a210f9f98e93ce730198d2e24347fe80f9c941af3a"
+      "sha256": "f9f465a7f6c06c020a037f4d04a1d81e88436578a04a74bf99392575e60625a3"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "runtime-data",
       "path": "requirements-dev.txt",
-      "sha256": "b08f1430eeeca71f4934766892f57e278f748fcaaa6d16d0740e9619773ed01a"
+      "sha256": "ce7863ed7a53020a8e07f6f851416d6a6f6464a66bf59186c2d73c171b751f32"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -388,7 +388,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/ci_dependency_authority.py",
-      "sha256": "500b1db88419a9d3d066c162dc642e686a811022923bc73ca42c5fa5e557e83a"
+      "sha256": "761bcd39a3a4601e1321e0fe09ff05ece8a3c8ede5dec7606604d0b4a900e53d"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1576,7 +1576,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_dependency_provenance.v2.json",
-      "sha256": "a381234c07c195f37b27b2fee0c0e1dbf0f4672dde9cdf13cb0dfb2a848ca04f"
+      "sha256": "8655bcc91fa5cdc4c452b5285ab92b987c94d7ab57f1311b7a5f2506579a3520"
     },
     {
       "digest_mode": "utf8-lf-v1",

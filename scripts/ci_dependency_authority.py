@@ -331,12 +331,16 @@ def _closed_raw_directory(
         ) from exc
 
 
-def parse_lock(path: Path) -> dict[str, LockedRequirement]:
-    """Parse a pip-compile hash lock without trusting its comments."""
+def _parse_lock_text(
+    text: str,
+    *,
+    label: str,
+) -> dict[str, LockedRequirement]:
+    """Parse pip-compile text without trusting comments or formatting."""
 
     rows: list[str] = []
     current = ""
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in text.splitlines():
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -350,7 +354,7 @@ def parse_lock(path: Path) -> dict[str, LockedRequirement]:
         current = ""
     if current:
         raise CIDependencyAuthorityError(
-            f"unterminated lock continuation: {path}"
+            f"unterminated lock continuation: {label}"
         )
     locked: dict[str, LockedRequirement] = {}
     for row in rows:
@@ -377,6 +381,51 @@ def parse_lock(path: Path) -> dict[str, LockedRequirement]:
     if not locked:
         raise CIDependencyAuthorityError("CI application lock is empty")
     return locked
+
+
+def parse_lock(path: Path) -> dict[str, LockedRequirement]:
+    """Parse a pip-compile hash lock without trusting its comments."""
+
+    return _parse_lock_text(
+        path.read_text(encoding="utf-8"),
+        label=str(path),
+    )
+
+
+def _verify_host_resolution(
+    checked: Mapping[str, LockedRequirement],
+    regenerated: Mapping[str, LockedRequirement],
+) -> None:
+    """Verify resolver output against the reviewed current-host projection.
+
+    pip evaluates PEP 508 markers while compiling. A Linux or macOS resolver
+    therefore omits Windows-only rows, while the universal checked lock keeps
+    those rows for Windows installation. Every emitted row must be identical
+    to its checked row, and every checked row active on this host must appear.
+    Inactive checked rows remain bound by the receipt and evidence denominator.
+    """
+
+    from packaging.markers import Marker, default_environment
+
+    for name, row in regenerated.items():
+        if checked.get(name) != row:
+            raise CIDependencyAuthorityError(
+                "isolated host resolution differs from checked lock row: "
+                f"{name}"
+            )
+    environment = default_environment()
+    active = {
+        name
+        for name, row in checked.items()
+        if row.marker is None
+        or Marker(row.marker).evaluate(environment=environment)
+    }
+    missing = sorted(active - set(regenerated))
+    if missing:
+        raise CIDependencyAuthorityError(
+            "isolated host resolution omits active checked rows: "
+            f"{missing}"
+        )
 
 
 def _read_requirement_inputs(
@@ -2034,11 +2083,12 @@ def verify_repository(
     validate_receipt_payload(Path(root), json.loads(checked), now=now)
     if regenerate_lock:
         regenerated = regenerate_lock_bytes(Path(root))
-        actual = (Path(root) / "requirements-ci.lock").read_bytes()
-        if regenerated != actual:
-            raise CIDependencyAuthorityError(
-                "checked lock differs from isolated deterministic resolution"
-            )
+        regenerated_lock = _parse_lock_text(
+            regenerated.decode("utf-8"),
+            label="isolated deterministic resolution",
+        )
+        checked_lock = parse_lock(Path(root) / "requirements-ci.lock")
+        _verify_host_resolution(checked_lock, regenerated_lock)
 
 
 def build_dependency_snapshot(

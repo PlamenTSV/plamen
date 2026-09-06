@@ -6,3 +6,4 @@
 -r requirements.txt
 pytest==9.1.1
 pytest-xdist==3.8.0  # `-n auto` fast-lane parallelism; already installed, pinned here
+colorama==0.4.6  # universal pure-wheel pin; pytest also consumes it on Windows
