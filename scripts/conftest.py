@@ -47,7 +47,7 @@ if _SCRIPTS_DIR not in sys.path:
 # (2) Exact, source-bound quarantine authority for the release fast lane.
 _FAST_GOVERNANCE_SCHEMA = "plamen.fast-lane-skip-governance.v1"
 _FAST_GOVERNANCE_MANIFEST_SHA256 = (
-    "ff278efba9009ab37d259b1ee6db3ac56354d258ab9737c80fe5790a49391f2e"
+    "de13b9b170d404ce8d2eb63bde53c73d9550d1909169e1783c21a65767e60ad0"
 )
 _FAST_GOVERNANCE_MANIFEST = Path(__file__).with_name(
     "fast_lane_skip_governance_r10.json"
@@ -128,7 +128,7 @@ _FAST_GOVERNANCE_HASHES = {
         "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b"
     ),
     "quarantine_source_roster_sha256": (
-        "3f38f164396f56149ca47ac5608dc4e6de25c60684be2beac80ab1e9defa8b80"
+        "1d6cfe7a5df7745975ed7167e01c249d64abc878e207e6f30e55db3831e5088c"
     ),
     "r9_default_nodes_sha256": (
         "22bbcf73f724b188768fb532fc832e5e6a85aa9fba1196fa4c0dde7e4db2de1d"
@@ -137,7 +137,7 @@ _FAST_GOVERNANCE_HASHES = {
         "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4"
     ),
     "source_roster_sha256": (
-        "8d08bd4e2b0f76d38b0a70ff7f163f81dd82263ea7eb3abd2feee8b306588925"
+        "4ad55cf4244b45df28f215b5a54a48e59a81fdd317b8b77c7b0ae80c6171f293"
     ),
     "unresolved_nodes_sha256": (
         "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874"

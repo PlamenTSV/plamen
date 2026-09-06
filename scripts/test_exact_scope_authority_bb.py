@@ -738,3 +738,24 @@ def test_scope_match_mode_is_snapshot_bound(tmp_path: Path) -> None:
         {**base, "scope_match_mode": "exact"}
     )
     assert legacy["digest"] != exact["digest"]
+
+
+def test_legacy_inventory_drops_same_row_display_basename_alias(
+    tmp_path: Path,
+) -> None:
+    scratchpad = tmp_path / ".scratchpad"
+    scratchpad.mkdir()
+    (scratchpad / "contract_inventory.md").write_text(
+        "# Contracts\n\n"
+        "| Contract | Path | Lines |\n"
+        "|---|---|---:|\n"
+        "| BytesHelperLib.sol | `contracts/libraries/BytesHelperLib.sol` | 41 |\n"
+        "| Root.sol | `Root.sol` | 9 |\n",
+        encoding="utf-8",
+    )
+
+    indexed = validators._collect_scip_indexed_paths(scratchpad)
+
+    assert "contracts/libraries/BytesHelperLib.sol" in indexed
+    assert "BytesHelperLib.sol" not in indexed
+    assert "Root.sol" in indexed

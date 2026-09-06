@@ -66,8 +66,6 @@ _FORBIDDEN_ARCHIVE_PREFIXES = (
 _FORBIDDEN_ARCHIVE_PATHS = {
     ".plamen-manifest.json",
     "codex-adapter/config.toml",
-    "codex-adapter/skills/plamen/plamen-l1-wizard.md",
-    "codex-adapter/skills/plamen/plamen-wizard.md",
     "mcp.json",
     "integration",
     "production",
@@ -746,8 +744,6 @@ def test_private_and_generated_paths_remain_explicitly_ignored() -> None:
         "/target*",
         "/write_dedup.py",
         "codex-adapter/config.toml",
-        "codex-adapter/skills/plamen/plamen-l1-wizard.md",
-        "codex-adapter/skills/plamen/plamen-wizard.md",
         "scripts/bounty/",
         "scripts/bounty_targets/",
         "scripts/test_impact_map_injection.py",

@@ -37,8 +37,6 @@ backups/
 build/
 cache/
 codex-adapter/config.toml
-codex-adapter/skills/plamen/plamen-l1-wizard.md
-codex-adapter/skills/plamen/plamen-wizard.md
 custom-mcp/defihacklabs-rag/data/
 custom-mcp/solodit-scraper/data/
 custom-mcp/unified-vuln-db/*.egg-info/

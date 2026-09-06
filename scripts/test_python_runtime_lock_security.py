@@ -123,6 +123,18 @@ def test_bootstrap_preserves_inherited_streams_and_propagates_windows_exit() -> 
     )
 
 
+def test_bootstrap_identifies_posix_venv_by_prefix_not_resolved_executable() -> None:
+    """A POSIX venv Python commonly resolves to the ambient interpreter inode."""
+    front = _load_front()
+    bootstrap_source = inspect.getsource(front._bootstrap)
+    assert "active_runtime_root = Path(sys.prefix).absolute()" in bootstrap_source
+    assert "active_python != managed_python.resolve()" not in bootstrap_source
+    assert (
+        "active_runtime_root != _managed_runtime_root().absolute()"
+        in bootstrap_source
+    )
+
+
 def test_full_lock_and_reproducibility_inputs_are_runtime_assets() -> None:
     front = _load_front()
     assets = {row["path"] for row in front.PLAMEN_RUNTIME_ASSETS}

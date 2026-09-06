@@ -40,7 +40,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Native production installation is currently supported on Linux and
+        # Windows. macOS has a separate source-development bootstrap below.
+        os: [ubuntu-latest, windows-latest]
         python: ["3.12"]
     runs-on: ${{ matrix.os }}
     steps:
@@ -125,3 +127,35 @@ jobs:
             exit 1
           fi
           echo "OK: all driver invocations in docs use python3"
+
+  macos-source-development:
+    name: macOS source-development bootstrap (py3.12)
+    needs: lock-authority
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Bootstrap the isolated source-development environment
+        shell: bash
+        run: |
+          set -e
+          sh scripts/bootstrap_macos_dev.sh \
+            --python "$(command -v python)" \
+            --venv "$RUNNER_TEMP/plamen-v3-dev" \
+            --extended-validation
+      - name: Keep native macOS audit execution fail-closed
+        shell: bash
+        run: |
+          set +e
+          sh scripts/bootstrap_macos_dev.sh --require-native-audit
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -ne 3 ]; then
+            echo "::error::native macOS audit check returned $STATUS; expected 3"
+            exit 1
+          fi

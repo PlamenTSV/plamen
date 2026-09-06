@@ -923,7 +923,7 @@ def generate_skill_md(out_dir: Path) -> None:
     description: "Launch the Plamen deterministic Web3 security audit pipeline"
     ---
 
-    # Plamen V2 Wizard Launcher For Codex
+    # Plamen V3.0.0 Wizard Launcher For Codex
 
     Use this skill whenever the user invokes `$plamen`, `/plamen`, asks to
     start, resume, or configure a Plamen audit, or asks for the Plamen wizard

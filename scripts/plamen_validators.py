@@ -10332,20 +10332,38 @@ def _collect_scip_indexed_paths(scratchpad: Path) -> set[str]:
             path_re = re.compile(
                 r"\b([A-Za-z0-9_./\\-]+\.(?:rs|go|sol|move|py|c|cpp|cc|h|hpp|java|ts|js))\b"
             )
-            for m in path_re.finditer(text):
-                p = m.group(1).replace("\\", "/").strip("`")
-                if re.match(r"^[A-Za-z]:/", p):
-                    m2 = re.search(
-                        r"(?:crates/|src/|cmd/|pkg/|core/|eth/|consensus/|p2p/|"
-                        r"actors/|types/|api-server/|storage/|reth-|"
-                        r"contracts/|test/|tests/|scripts/|programs/)",
-                        p,
-                    )
-                    if m2:
-                        p = p[m2.start():]
-                if " " in p or "." not in p.rsplit("/", 1)[-1]:
-                    continue
-                paths.add(p.rstrip("/"))
+            for raw_line in text.splitlines():
+                line_paths: list[str] = []
+                for m in path_re.finditer(raw_line):
+                    p = m.group(1).replace("\\", "/").strip("`")
+                    if re.match(r"^[A-Za-z]:/", p):
+                        m2 = re.search(
+                            r"(?:crates/|src/|cmd/|pkg/|core/|eth/|consensus/|p2p/|"
+                            r"actors/|types/|api-server/|storage/|reth-|"
+                            r"contracts/|test/|tests/|scripts/|programs/)",
+                            p,
+                        )
+                        if m2:
+                            p = p[m2.start():]
+                    if " " in p or "." not in p.rsplit("/", 1)[-1]:
+                        continue
+                    normalized = p.rstrip("/")
+                    if normalized not in line_paths:
+                        line_paths.append(normalized)
+                # Recon inventories commonly put a display basename beside
+                # the authoritative repository-relative path in one table
+                # row (``Foo.sol | contracts/lib/Foo.sol``).  Counting both
+                # creates a fake root-level file and a repair row that cannot
+                # satisfy the exact-path receipt contract.  Preserve a real
+                # root-level path when it appears alone; suppress only the
+                # same-line display alias.
+                for p in line_paths:
+                    if "/" not in p and any(
+                        other != p and other.endswith("/" + p)
+                        for other in line_paths
+                    ):
+                        continue
+                    paths.add(p)
     return paths
 
 

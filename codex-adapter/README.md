@@ -7,10 +7,20 @@ inside the [Codex CLI](https://github.com/openai/codex) in addition to Claude Co
 ## Installation
 
 ```bash
-# From a complete reviewed Plamen source directory:
-python3.12 plamen.py install --codex   # macOS/Linux
+# From a complete reviewed Plamen source directory on a supported audit host:
+python3.12 plamen.py install --codex   # Linux
 python plamen.py install --codex       # Windows
 ```
+
+macOS currently supports source development, not the governed native audit
+runtime. Use the repository's reviewed bootstrap instead of `plamen.py install`:
+
+```bash
+sh scripts/bootstrap_macos_dev.sh --python "$(command -v python3.12)"
+```
+
+See the [macOS source-development guide](../docs/development/macos.md) for the
+support boundary and continuation path.
 
 The installer:
 1. Validates the complete source closure before any install mutation.
@@ -66,7 +76,7 @@ committed:
 
 ```bash
 python scripts/codex_adapter.py
-python3.12 plamen.py install --codex
+python3.12 plamen.py install --codex  # supported Linux audit host
 ```
 
 ## Current Limitations
@@ -81,6 +91,8 @@ python3.12 plamen.py install --codex
   phases use governed local tools and Web precedent-research fallbacks. The
   managed user config may contain MCP entries, but audit launch isolation is
   authoritative.
-- **Platform**: The governed installer and public launchers support Windows,
-  Linux, and macOS. Do not hand-edit generated paths to work around an install
-  failure; use `plamen doctor` and reinstall from reviewed source.
+- **Platform**: The governed installer and public launchers support Windows and
+  admitted Linux hosts. macOS supports the isolated source-development
+  bootstrap described above; native audit installation remains an explicit
+  Plamen-v3 continuation requirement. Do not hand-edit generated paths to work
+  around an install failure.
