@@ -5133,6 +5133,15 @@ def test_signed_projection_state_accepts_only_exact_authenticated_multihop_ances
         state_a, receipt_d, allow_direct_predecessor=True,
     ) == state_a
     assert walked == [(receipt_d["transaction_id"], receipt_a["transaction_id"])]
+
+    historical_state = json.loads(json.dumps(state_a))
+    historical_state["generation"]["version"] = "2.2.4"
+    historical_state["signature"] = private.sign(
+        module._claude_projection_state_bytes(historical_state)
+    ).hex()
+    assert module._validate_claude_projection_state(
+        historical_state, receipt_d, allow_direct_predecessor=True,
+    ) == historical_state
     with pytest.raises(RuntimeError, match="direct predecessor"):
         module._validate_claude_projection_state(state_a, receipt_d)
 

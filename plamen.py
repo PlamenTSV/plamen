@@ -10555,7 +10555,17 @@ def _claude_projection_retire_exact_created_file(path, authority):
 def _claude_projection_generation_authority(generation):
     if not isinstance(generation, dict):
         raise RuntimeError("Claude projection committed generation is malformed")
-    value = {"schema": "plamen.claude_projection_authority.v1", "version": VERSION}
+    # A signed projection state may be the authenticated predecessor of the
+    # package currently being installed.  Preserve its historical release
+    # label; forcing the executing source's VERSION here makes every genuine
+    # cross-version upgrade noncanonical before predecessor-chain validation
+    # can run.  Receipts do not carry this display label, so current receipts
+    # use the executing package version while signed authorities retain theirs.
+    version = generation.get("version", VERSION)
+    value = {
+        "schema": "plamen.claude_projection_authority.v1",
+        "version": version,
+    }
     for field in _CLAUDE_PROJECTION_AUTHORITY_FIELDS - {"schema", "version"}:
         value[field] = generation.get(field)
     if value.get("projection_public_key") is None:
@@ -10563,7 +10573,9 @@ def _claude_projection_generation_authority(generation):
         if isinstance(terminal, dict):
             value["projection_public_key"] = terminal.get("projection_public_key")
     if (
-        not re.fullmatch(r"[0-9a-f]{32}", value.get("transaction_id", ""))
+        not isinstance(version, str)
+        or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None
+        or not re.fullmatch(r"[0-9a-f]{32}", value.get("transaction_id", ""))
         or any(
             not isinstance(value.get(field), int) or isinstance(value.get(field), bool)
             or value[field] < 0
@@ -10583,6 +10595,13 @@ def _claude_projection_generation_authority(generation):
     if not re.fullmatch(r"[0-9a-f]{64}", value.get("projection_public_key", "")):
         raise RuntimeError("Claude projection public key authority differs")
     return value
+
+
+def _claude_projection_same_generation(left, right):
+    """Compare receipt-bound generation identity, excluding release display."""
+
+    fields = _CLAUDE_PROJECTION_AUTHORITY_FIELDS - {"version"}
+    return all(left.get(field) == right.get(field) for field in fields)
 
 
 def _claude_projection_journal_bytes(value):
@@ -11585,11 +11604,19 @@ def _validate_claude_projection_state(
         successor = authenticated_ancestor is not None
     if (
         not (direct or successor)
-        or (direct and generation != current_generation)
+        or (
+            direct
+            and not _claude_projection_same_generation(
+                generation, current_generation,
+            )
+        )
         or (
             authenticated_ancestor is not None
-            and generation != _claude_projection_generation_authority(
-                authenticated_ancestor
+            and not _claude_projection_same_generation(
+                generation,
+                _claude_projection_generation_authority(
+                    authenticated_ancestor
+                ),
             )
         )
     ):
