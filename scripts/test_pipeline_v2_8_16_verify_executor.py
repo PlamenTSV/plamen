@@ -112,6 +112,8 @@ def test_l1_repair_hint_is_l1_aware():
     assert "NO `blind_spot_*`" in h
     assert "blind_spot_a_findings.md" not in h  # SC scanner names absent
     assert "chain" not in h.lower() or "no chain" in h.lower()
+    assert "write it" not in h.lower()
+    assert "not model repair targets" in h
 
 
 def test_sc_repair_hint_unchanged_default():

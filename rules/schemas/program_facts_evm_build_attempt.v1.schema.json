@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_build_attempt.v1.schema.json",
+  "title": "Program Facts EVM build attempt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "build_plan_digest",
+    "build_variant_id",
+    "eligible",
+    "attempted",
+    "compiled",
+    "compile_failed",
+    "policy_excluded",
+    "blocked_unattempted",
+    "outcome",
+    "terminal_partition",
+    "capability_coverage",
+    "diagnostic_refs",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_build_attempt.v1"
+    },
+    "build_plan_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_variant_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "eligible": {
+      "type": "boolean"
+    },
+    "attempted": {
+      "type": "boolean"
+    },
+    "compiled": {
+      "type": "boolean"
+    },
+    "compile_failed": {
+      "type": "boolean"
+    },
+    "policy_excluded": {
+      "type": "boolean"
+    },
+    "blocked_unattempted": {
+      "type": "boolean"
+    },
+    "outcome": {
+      "enum": [
+        "COMPILED",
+        "COMPILE_FAILED",
+        "POLICY_EXCLUDED",
+        "BLOCKED_UNATTEMPTED",
+        "UNAVAILABLE",
+        "STALE",
+        "RESOURCE_EXCEEDED",
+        "TIMEOUT",
+        "CANCELLED",
+        "INTERNAL_FAILURE"
+      ]
+    },
+    "terminal_partition": {
+      "enum": [
+        "ATTEMPTED_COMPILED",
+        "ATTEMPTED_COMPILE_FAILED",
+        "POLICY_EXCLUDED",
+        "BLOCKED_UNATTEMPTED"
+      ]
+    },
+    "capability_coverage": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/coverage"
+      },
+      "maxItems": 100000
+    },
+    "diagnostic_refs": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    },
+    "coverageStatus": {
+      "enum": [
+        "FULL",
+        "PARTIAL",
+        "FAILED",
+        "STALE",
+        "UNSUPPORTED",
+        "UNKNOWN"
+      ]
+    },
+    "exactEmptyProof": {
+      "enum": [
+        "PROVEN",
+        "NOT_PROVEN",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_id",
+        "status",
+        "exact_empty_proof"
+      ],
+      "properties": {
+        "capability_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "status": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "exact_empty_proof": {
+          "$ref": "#/$defs/exactEmptyProof"
+        }
+      }
+    }
+  }
+}

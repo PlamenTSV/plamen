@@ -359,7 +359,7 @@ echo "=== Confidence file ==="
 ls -la "$S/confidence_scores.md" 2>/dev/null
 
 echo "=== Scoring axes ==="
-grep -ciE "Evidence|Consensus|Analysis.Quality|RAG.Match" "$S/confidence_scores.md" 2>/dev/null
+grep -ciE "Evidence|Consensus|Analysis.Quality" "$S/confidence_scores.md" 2>/dev/null
 
 echo "=== Classifications ==="
 for level in CONFIDENT UNCERTAIN LOW_CONFIDENCE CONTESTED; do

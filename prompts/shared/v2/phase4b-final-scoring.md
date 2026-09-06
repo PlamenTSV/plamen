@@ -1,67 +1,33 @@
-# Phase 4b Final Composite Scoring Agent
+# Phase 4b Post-Precedent Boundary (Driver-Only)
 
-You are the Final Scoring Agent. You compute final composite confidence scores using real RAG validation data.
-Execute the instructions below directly and stop. Do not spawn subagents.
+This legacy prompt name remains for compatibility, but it is not an LLM
+re-scoring phase. The code-derived `confidence_scores.md` produced before
+external research is immutable at this boundary.
 
-> **Efficiency**: This is a mechanical formula-application task.
-> Prioritize responding quickly. Apply scoring formulas directly without
-> extensive reasoning.
-> **Mode gate**: Core and Thorough only. Light mode has no scoring.
-> **Prerequisite**: `rag_validation.md` exists with per-finding RAG scores.
-> **Purpose**: Replace the RAG axis floor scores (0.3) with actual RAG
-> validation results and compute final composite scores.
+The deterministic driver must:
 
----
+1. extract the single bounded proposal block from `rag_validation.md`;
+2. compare proposals with independently derived typed mechanism and
+   precondition facts;
+3. write `precedent_evidence_authority.json` plus its exact investigation
+   `precedent_context.md` and eligible-only `precedent_report_context.md` projections; and
+4. leave every confidence value, classification, verdict, severity, and
+   remaining-depth decision unchanged.
 
-## Your Inputs
-Read:
-- `{SCRATCHPAD}/confidence_scores.md` (current scores with RAG at 0.3 floor)
-- `{SCRATCHPAD}/rag_validation.md` (RAG sweep results with per-finding scores)
+Read `~/.claude/rules/precedent-evidence-policy.md`. Generic methodology
+literature supplies context only. Exact precedent requires a primary source,
+the same mechanism class, and matching preconditions. Exact precedent may
+raise investigation priority and report context only. RAG may never clear or
+demote, force `CONTESTED`, change severity, satisfy proof, or reduce depth.
+Family propagation requires typed equivalence; otherwise each sibling remains
+unscored.
 
-## Your Task
+If proposal extraction, research, or reconciliation fails, emit visible typed
+debt and continue with `UNSCORED` precedent. Never invent a numeric floor and
+never invoke a scoring agent to repair this boundary.
 
-For EACH finding in `confidence_scores.md`:
-
-1. Look up the finding's RAG score from `rag_validation.md`:
-   - If `validate_hypothesis` returned a score: use `score / 10`
-   - If RAG tool failed for this finding: use `0.3` (floor)
-   - If finding not in `rag_validation.md`: use `0.3` (floor)
-
-2. Recompute the composite score with the real RAG value:
-
-**4-axis formula (Thorough)**:
-```
-composite = Evidence * 0.25 + Consensus * 0.25 + Analysis_Quality * 0.3 + RAG_Match * 0.2
-```
-
-**2-axis formula (Core)**:
-```
-composite = Evidence * 0.5 + Analysis_Quality * 0.5
-```
-(Core does not use the RAG axis — this step only updates the RAG column for reference.)
-
-3. Reclassify based on updated composite:
-   - `>= 0.7`: CONFIDENT
-   - `0.4 – 0.7`: UNCERTAIN
-   - `< 0.4`: LOW_CONFIDENCE
-
-4. Any finding still `< 0.4` after all iterations and RAG: force to CONTESTED verdict.
-
-## Output
-
-Update `{SCRATCHPAD}/confidence_scores.md` with final scores. Add section:
-
-```
-## Final Scoring (Post-RAG Sweep)
-- Findings updated with RAG data: {N}
-- RAG tool failures (floor used): {F}
-- Classification changes from RAG: {C}
-- Final distribution: {CONFIDENT_count} CONFIDENT, {UNCERTAIN_count} UNCERTAIN, {LOW_count} LOW_CONFIDENCE
-- Forced CONTESTED (< 0.4 after all passes): {list of finding IDs}
-```
-
-Write your output directly to `{SCRATCHPAD}/confidence_scores.md` using the Write tool.
-Return ONLY a one-line summary: `DONE: {N} findings finalized — {C} CONFIDENT, {U} UNCERTAIN, {L} LOW, {F} forced CONTESTED`
-Do NOT return your full output as text.
-
-SCOPE: You MAY read `{SCRATCHPAD}/confidence_scores.md` and `{SCRATCHPAD}/rag_validation.md` as inputs. Write ONLY to `{SCRATCHPAD}/confidence_scores.md`. MUST NOT modify `rag_validation.md` or any upstream analysis artifact. Do NOT proceed to chain analysis, verification, or report. Return and stop.
+SCOPE: The deterministic reconciler MAY read `confidence_scores.md`,
+`rag_validation.md`, and current typed finding/equivalence facts as immutable
+inputs. It writes only `precedent_evidence_authority.json`,
+`precedent_context.md`, and `precedent_report_context.md`. It MUST NOT modify confidence scores, upstream analysis,
+verification, severity, disposition, or report artifacts.

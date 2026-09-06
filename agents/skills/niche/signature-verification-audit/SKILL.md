@@ -50,11 +50,26 @@ For each CHECK, execute three steps in order:
 
 For EACH signature verification call site:
 
-| Call Site | Invalid Signature Handled? | Signer Recovery Validated? | Nonce Verified? | Deadline Checked? | Scope Bound? | Gap? |
-|-----------|--------------------------|---------------------------|-----------------|-------------------|-------------|------|
+| Call Site | Proof Domain | Trust Anchor | Anchor Armed? | Degenerate Input Rejected? | Zero Derivation Rejected? | Nonce / Deadline / Scope Bound? | Gap? |
+|-----------|--------------|--------------|---------------|----------------------------|---------------------------|----------------------------------|------|
+
+For each call site, identify the stored key, signer set, threshold, root, or
+other trust anchor against which the derived identity/proof is checked.  Trace
+every deploy, initialization, upgrade, setter, and rotation path that can leave
+or return that anchor to its type's zero/empty value.  Verification must remain
+fail-closed until the anchor is armed, and setters must preserve non-empty set
+and threshold consistency.
+
+Test the paired boundary, not either half in isolation: substitute an empty or
+all-zero proof/signature/witness while the anchor is zero/empty and evaluate the
+actual acceptance predicate.  Require rejection of zero-length inputs before
+derivation and rejection of a zero/empty derived identity independently of the
+anchor comparison.  Flag only a reachable composition in which the degenerate
+input authorizes a privileged effect while the anchor is unarmed; otherwise
+record the individual boundary as safe or fail-closed evidence.
 
 Chain-specific verification functions:
-- **EVM**: `ecrecover` returns `address(0)` on invalid signature - must check return != address(0). `ECDSA.recover` reverts on invalid (safer).
+- **EVM**: `ecrecover` returns `address(0)` on invalid signature - must check return != address(0). Reject empty signature bytes before recovery. `ECDSA.recover` reverts on invalid (safer), but the stored signer/authority must still be armed and non-zero.
 - **Solana**: `ed25519_program` instruction introspection - verify the instruction exists in the transaction AND the signed data matches expectations. Missing verification = anyone can claim any signature.
 - **Aptos**: `ed25519::signature_verify_strict` returns bool - must check return value. `multi_ed25519::verify` for multisig schemes.
 - **Sui**: `ecdsa_k1::secp256k1_verify` / `ed25519::ed25519_verify` return bool - must check return value.

@@ -70,6 +70,20 @@ def _write_state_write_map(sp: Path, contract: str, variables: list[str]) -> Non
     (sp / "state_write_map.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _write_state_variables(sp: Path, rows: list[tuple[str, str, str]]) -> None:
+    lines = [
+        "# State Variables",
+        "",
+        "| File | Variable | Type | Line |",
+        "|------|----------|------|------|",
+    ]
+    for file_name, variable, variable_type in rows:
+        lines.append(f"| `{file_name}` | `{variable}` | `{variable_type}` | 10 |")
+    (sp / "state_variables.md").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Producer 1 — chain_candidate_pairs
 # ---------------------------------------------------------------------------
@@ -220,6 +234,73 @@ def test_candidate_pairs_fewer_than_two_findings(tmp_path):
     assert out["pairs"] == 0
 
 
+def test_candidate_pairs_fewer_than_two_replaces_stale_resume_artifacts(tmp_path):
+    cp = _cp()
+    _write_inventory(tmp_path, [
+        {"id": "INV-001", "severity": "High", "location": "Vault.sol:L10",
+         "root_cause": "sharedState write", "description": "sharedState alpha"},
+        {"id": "INV-002", "severity": "Medium", "location": "Vault.sol:L20",
+         "root_cause": "sharedState read", "description": "sharedState beta"},
+    ])
+    assert cp.compute_chain_candidate_pairs(tmp_path)["pairs"] == 1
+
+    _write_inventory(tmp_path, [
+        {"id": "INV-003", "severity": "Low", "location": "Other.sol:L1",
+         "root_cause": "single finding", "description": "no pair exists"},
+    ])
+    out = cp.compute_chain_candidate_pairs(tmp_path)
+
+    assert out["status"] == "skipped"
+    for name in ("chain_candidate_pairs.md", "chain_candidate_pairs_full.md"):
+        text = (tmp_path / name).read_text(encoding="utf-8")
+        assert "INV-001" not in text and "INV-002" not in text
+        assert "Total candidate pairs**: 0" in text
+    payload = __import__("json").loads(
+        (tmp_path / "chain_candidate_pairs_iter2.json").read_text(encoding="utf-8")
+    )
+    assert payload["schema_version"] == "plamen.chain_tail_manifest.v2"
+    assert payload["denominator"] == 0
+    assert payload["packet"] == [] and payload["overflow"] == []
+    receipt = __import__("json").loads(
+        (tmp_path / "chain_tail_coverage_receipt.json").read_text(encoding="utf-8")
+    )
+    assert receipt["status"] == "COMPLETE"
+    assert "**Status**: COMPLETE" in (
+        tmp_path / "chain_composition_coverage_gaps.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_candidate_pair_failure_replaces_stale_artifacts_with_unknown(tmp_path, monkeypatch):
+    cp = _cp()
+    _write_inventory(tmp_path, [
+        {"id": "INV-001", "severity": "High", "location": "Vault.sol:L10",
+         "root_cause": "sharedState write", "description": "sharedState alpha"},
+        {"id": "INV-002", "severity": "Medium", "location": "Vault.sol:L20",
+         "root_cause": "sharedState read", "description": "sharedState beta"},
+    ])
+    assert cp.compute_chain_candidate_pairs(tmp_path)["pairs"] == 1
+    monkeypatch.setattr(
+        cp, "_load_state_candidates",
+        lambda _scratchpad: (_ for _ in ()).throw(RuntimeError("fixture boom")),
+    )
+
+    out = cp.compute_chain_candidate_pairs(tmp_path)
+
+    assert out["status"] == "error"
+    for name in ("chain_candidate_pairs.md", "chain_candidate_pairs_full.md"):
+        text = (tmp_path / name).read_text(encoding="utf-8")
+        assert "**Status**: FAILED" in text
+        assert "INV-001" not in text and "INV-002" not in text
+    payload = __import__("json").loads(
+        (tmp_path / "chain_candidate_pairs_iter2.json").read_text(encoding="utf-8")
+    )
+    assert payload["status"] == "FAILED_GENERATOR"
+    assert cp.reconcile_chain_iter2_tail(tmp_path)["status"] == "FAILED_GENERATOR"
+    assert "**Status**: FAILED_GENERATOR" in (
+        tmp_path / "chain_composition_coverage_gaps.md"
+    ).read_text(encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # Producer 2 — variable_finding_map
 # ---------------------------------------------------------------------------
@@ -258,6 +339,327 @@ def test_variable_finding_map_no_state_map_writes_header(tmp_path):
     out = cp.compute_variable_finding_map(tmp_path)
     assert out["status"] == "skipped"
     assert (tmp_path / "variable_finding_map.md").exists()  # header still written
+
+
+def test_variable_finding_map_falls_back_to_state_inventory(tmp_path):
+    """A degraded graph bake must not discard the recon state inventory."""
+    cp = _cp()
+    _write_state_variables(
+        tmp_path,
+        [
+            ("contracts/Vault.sol", "pendingClaims", "mapping(bytes32 => uint256)"),
+            ("contracts/Vault.sol", "to", "address"),
+        ],
+    )
+    with (tmp_path / "state_variables.md").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\n## Recon Addendum\n\n"
+            "| Setter | Line | Event | Line |\n"
+            "|---|---|---|---|\n"
+            "| `setFee` | 32 | `FeeChanged` | 12 |\n"
+        )
+    _write_inventory(tmp_path, [
+        {"id": "INV-001", "severity": "High", "location": "Vault.sol:L1",
+         "root_cause": "pendingClaims deleted early",
+         "description": "pendingClaims mutation"},
+    ])
+
+    out = cp.compute_variable_finding_map(tmp_path)
+
+    assert out["status"] == "ok"
+    assert out["state_source"] == "state_variables.md"
+    text = (tmp_path / "variable_finding_map.md").read_text(encoding="utf-8")
+    assert "pendingClaims" in text and "INV-001" in text
+    assert "| 32 |" not in text
+    assert "| to |" not in text
+
+
+def test_candidate_pairs_fall_back_to_state_inventory(tmp_path):
+    cp = _cp()
+    _write_state_variables(
+        tmp_path,
+        [("src/ledger.move", "pending_claims", "Table<address, u64>")],
+    )
+    _write_inventory(tmp_path, [
+        {"id": "INV-001", "severity": "High", "location": "ledger.move:L1",
+         "root_cause": "pending_claims is cleared", "description": "first path"},
+        {"id": "INV-002", "severity": "Medium", "location": "router.move:L80",
+         "root_cause": "pending_claims is credited", "description": "second path"},
+    ])
+
+    out = cp.compute_chain_candidate_pairs(tmp_path)
+
+    assert out["status"] == "ok"
+    assert out["state_source"] == "state_variables.md"
+    assert out["state_pairs"] == 1
+
+
+def test_state_inventory_scalar_is_retained_but_addenda_does_not_leak(tmp_path):
+    cp = _cp()
+    _write_state_variables(tmp_path, [("src/Vault.sol", "owner", "address")])
+    with (tmp_path / "state_variables.md").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\n## Setter Addendum\n\n"
+            "| Setter | Written_Field |\n"
+            "|---|---|\n"
+            "| `setFee` | `fee_rate` |\n"
+        )
+
+    assert cp._parse_state_variable_inventory(tmp_path) == {
+        "owner": {"src/Vault.sol"}
+    }
+
+
+def test_partial_write_map_unions_inventory_only_state_candidates(tmp_path):
+    cp = _cp()
+    _write_state_write_map(tmp_path, "Vault", ["balances"])
+    _write_state_variables(
+        tmp_path,
+        [
+            ("src/Vault.sol", "balances", "mapping(address => uint256)"),
+            ("src/Vault.sol", "pendingClaims", "mapping(bytes32 => uint256)"),
+        ],
+    )
+    _write_inventory(tmp_path, [
+        {"id": "INV-001", "location": "Vault.sol:L1",
+         "root_cause": "pendingClaims cleared", "description": "first"},
+        {"id": "INV-002", "location": "Router.sol:L90",
+         "root_cause": "pendingClaims credited", "description": "second"},
+    ])
+
+    out = cp.compute_chain_candidate_pairs(tmp_path)
+
+    assert out["state_source"] == "state_write_map.md+state_variables.md"
+    assert out["state_pairs"] == 1
+
+
+def test_graph_backed_state_pair_cannot_be_displaced_by_fallback_inventory(
+    tmp_path, monkeypatch
+):
+    """A noisy lower-confidence inventory must not consume graph pair quota."""
+    cp = _cp()
+    monkeypatch.setattr(cp, "_BOUNDED_PER_TABLE", 1)
+    monkeypatch.setattr(cp, "_BOUNDED_PAIR_CAP", 1)
+    _write_state_write_map(tmp_path, "Vault", ["graphBacked"])
+    _write_state_variables(
+        tmp_path,
+        [
+            ("src/Vault.sol", "graphBacked", "mapping(address => uint256)"),
+            ("src/Vault.sol", "fallback_state", "mapping(address => uint256)"),
+        ],
+    )
+    _write_inventory(tmp_path, [
+        {"id": "INV-001", "severity": "Low", "location": "A.sol:L1",
+         "root_cause": "graphBacked is cleared", "description": "first"},
+        {"id": "INV-002", "severity": "Low", "location": "B.sol:L100",
+         "root_cause": "graphBacked is credited", "description": "second"},
+        {"id": "INV-003", "severity": "Critical", "location": "C.sol:L200",
+         "root_cause": "fallback_state is cleared", "description": "third"},
+        {"id": "INV-004", "severity": "Critical", "location": "D.sol:L300",
+         "root_cause": "fallback_state is credited", "description": "fourth"},
+    ])
+
+    out = cp.compute_chain_candidate_pairs(tmp_path)
+
+    assert out["status"] == "ok"
+    bounded = (tmp_path / "chain_candidate_pairs.md").read_text(encoding="utf-8")
+    # A Markdown write map is now an explicit compatibility tier below the
+    # typed mechanical graph, while still ranking above regex inventory rows.
+    assert "state-compat-map: Vault.graphBacked" in bounded
+    assert "INV-001" in bounded and "INV-002" in bounded
+    assert "state-fallback: src/Vault.sol::fallback_state" not in bounded
+
+
+def test_full_tail_gets_bounded_iter2_packet_and_durable_overflow_gaps(
+    tmp_path, monkeypatch
+):
+    cp = _cp()
+    monkeypatch.setattr(cp, "_BOUNDED_PER_TABLE", 1)
+    monkeypatch.setattr(cp, "_BOUNDED_PAIR_CAP", 1)
+    monkeypatch.setattr(cp, "_ITER2_TAIL_CAP", 2)
+    _write_state_write_map(tmp_path, "Vault", ["sharedVar"])
+    findings = [
+        {
+            "id": f"INV-{i:03d}",
+            "severity": ("High" if i % 2 else "Medium"),
+            "location": f"F{i}.sol:L{i * 100}",
+            "root_cause": f"sharedVar path {i}",
+            "description": f"sharedVar effect {i}",
+        }
+        for i in range(1, 6)
+    ]
+    _write_inventory(tmp_path, findings)
+
+    out = cp.compute_chain_candidate_pairs(tmp_path)
+
+    assert out["pairs"] == 10
+    assert out["bounded"] == 1
+    assert out["iter2_tail"] == 2
+    assert out["coverage_gaps"] == 7
+    packet = (tmp_path / "chain_candidate_pairs_iter2.md").read_text(
+        encoding="utf-8"
+    )
+    # The complete manifest is created before Chain Agent 2, but no Iteration-2
+    # shard is armed until that primary bounded coverage is reconciled.  This
+    # prevents a second model from racing the same rows.
+    assert len([line for line in packet.splitlines() if line.startswith("| CP-")]) == 0
+    gaps = (tmp_path / "chain_composition_coverage_gaps.md").read_text(
+        encoding="utf-8"
+    )
+    assert "**Exact denominator**: 10" in gaps
+    assert "PENDING_ANALYSIS" in gaps
+    ledger = __import__("json").loads(
+        (tmp_path / "chain_tail_disposition_ledger.json").read_text(encoding="utf-8")
+    )
+    assert len(ledger["pairs"]) == 10
+    assert sum(row["initial_route"] == "CHAIN_AGENT2" for row in ledger["pairs"]) == 1
+    assert sum(row["initial_route"] == "CHAIN_ITER2" for row in ledger["pairs"]) == 9
+    assert ledger["active_shard"] is None
+    assert all(row["disposition"] == "UNRESOLVED_COMPOSITION" for row in ledger["pairs"])
+
+
+def test_iter2_tail_reconciliation_marks_consumed_and_keeps_real_gaps(tmp_path):
+    cp = _cp()
+    payload = {
+        "schema_version": "plamen.chain_tail.v1",
+        "packet": [
+            {"a": "INV-001", "b": "INV-002", "signal": "state-graph: x"},
+            {"a": "INV-003", "b": "INV-004", "signal": "ident: settlePath"},
+        ],
+        "overflow": [
+            {"a": "INV-005", "b": "INV-006", "signal": "state-fallback: y"}
+        ],
+    }
+    (tmp_path / "chain_candidate_pairs_iter2.json").write_text(
+        __import__("json").dumps(payload), encoding="utf-8"
+    )
+    (tmp_path / "chain_iteration2.md").write_text(
+        "# Chain Iteration 2 Results\n\n"
+        "## Tail Pair Dispositions\n\n"
+        "| Finding A | Finding B | Disposition | Evidence |\n"
+        "|---|---|---|---|\n"
+        "| INV-001 | INV-002 | REJECTED | compared postcondition and precondition |\n",
+        encoding="utf-8",
+    )
+
+    receipt = cp.reconcile_chain_iter2_tail(tmp_path)
+
+    assert receipt["status"] == "DEGRADED_COVERAGE_GAPS"
+    assert receipt["consumed_pairs"] == 1
+    assert receipt["unresolved_packet_pairs"] == 1
+    gaps = (tmp_path / "chain_composition_coverage_gaps.md").read_text(
+        encoding="utf-8"
+    )
+    assert "INV-003" in gaps and "ITER2_UNRESOLVED" in gaps
+    assert "INV-005" in gaps and "UNEXAMINED_BOUNDED_LIMIT" in gaps
+    assert "INV-001" not in gaps
+
+
+def test_role_based_mutual_zero_pairs_different_vocabulary_halves(tmp_path):
+    cp = _cp()
+    findings = [
+        {
+            "id": "INV-001", "severity": "High", "location": "A.sol:L10",
+            "root_cause": "authentication authority has no arming check",
+            "description": "guarded operations can run while the authority remains unset",
+            "postconditions_created": (
+                "AUTH_ANCHOR_ROLE: authority remains at its default zero element "
+                "while privileged operations remain reachable"
+            ),
+        },
+        {
+            "id": "INV-002", "severity": "Medium", "location": "B.sol:L900",
+            "root_cause": "degenerate witness is not rejected before derivation",
+            "description": "an empty witness derives a null identity and is accepted as authorization",
+            "missing_precondition": (
+                "DERIVED_IDENTITY_ROLE: empty input derives zero and verification accepts it"
+            ),
+        },
+    ]
+    _write_inventory(tmp_path, findings)
+
+    # The ordinary state/identifier matcher has no common vocabulary.
+    entries = cp._load_inventory(tmp_path)
+    assert cp._extract_identifiers(cp._discovery_text(entries[0])).isdisjoint(
+        cp._extract_identifiers(cp._discovery_text(entries[1]))
+    )
+    out = cp.compute_chain_candidate_pairs(tmp_path)
+
+    assert out["pairs"] == 1
+    text = (tmp_path / "chain_candidate_pairs.md").read_text(encoding="utf-8")
+    assert "role: mutual-zero" in text
+
+
+def test_role_based_mutual_zero_requires_both_positive_halves(tmp_path):
+    cp = _cp()
+    _write_inventory(tmp_path, [
+        {
+            "id": "INV-010", "severity": "High", "location": "X.sol:L10",
+            "postconditions_created": (
+                "AUTH_ANCHOR_ROLE: trust root remains empty while verification can run"
+            ),
+            "root_cause": "unset trust material remains operational",
+            "description": "no initialization gate",
+        },
+        {
+            "id": "INV-011", "severity": "High", "location": "Y.sol:L900",
+            "missing_precondition": (
+                "DERIVED_IDENTITY_ROLE: zero-length proof derives a zero identity "
+                "and succeeds as a privileged authorization"
+            ),
+            "root_cause": "degenerate proof accepted",
+            "description": "null derivation authorizes the effect",
+        },
+    ])
+    assert cp.compute_chain_candidate_pairs(tmp_path)["pairs"] == 1
+
+
+def test_role_based_mutual_zero_does_not_pair_armed_anchor(tmp_path):
+    cp = _cp()
+    _write_inventory(tmp_path, [
+        {
+            "id": "INV-020", "severity": "Medium", "location": "X.sol:L10",
+            "postconditions_created": (
+                "AUTH_ANCHOR_ROLE: anchor is atomically armed non-zero before "
+                "verification and cannot operate until armed"
+            ),
+            "root_cause": "anchor is non-zero enforced",
+            "description": "there is no unarmed operational state",
+        },
+        {
+            "id": "INV-021", "severity": "Medium", "location": "Y.sol:L900",
+            "missing_precondition": (
+                "DERIVED_IDENTITY_ROLE: empty proof derives zero and is accepted"
+            ),
+            "root_cause": "sloppy input guard",
+            "description": "degenerate input acceptance",
+        },
+    ])
+    assert cp.compute_chain_candidate_pairs(tmp_path)["pairs"] == 0
+
+
+def test_role_based_mutual_zero_does_not_pair_fail_closed_verifier(tmp_path):
+    cp = _cp()
+    _write_inventory(tmp_path, [
+        {
+            "id": "INV-030", "severity": "Medium", "location": "X.sol:L10",
+            "postconditions_created": (
+                "AUTH_ANCHOR_ROLE: authority remains default zero while calls can run"
+            ),
+            "root_cause": "unset authority",
+            "description": "default state is reachable",
+        },
+        {
+            "id": "INV-031", "severity": "Medium", "location": "Y.sol:L900",
+            "missing_precondition": (
+                "DERIVED_IDENTITY_ROLE: empty proof derives zero but the verifier "
+                "rejects zero unconditionally and fails closed"
+            ),
+            "root_cause": "zero derivation is rejected",
+            "description": "degenerate input cannot authorize anything",
+        },
+    ])
+    assert cp.compute_chain_candidate_pairs(tmp_path)["pairs"] == 0
 
 
 # ---------------------------------------------------------------------------

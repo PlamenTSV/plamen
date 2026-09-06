@@ -12,6 +12,11 @@ from textwrap import dedent
 import pytest
 
 import plamen_mechanical as M
+from semantic_dedup_authority import extract_finding_records
+
+
+def _live_ids(text: str) -> set[str]:
+    return set(extract_finding_records(text))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -21,11 +26,6 @@ import plamen_mechanical as M
 _FULL_HEADER = (
     "| Finding A | Finding B | Title Score | Signal(s) | Same Sev? |\n"
     "|-----------|-----------|-------------|-----------|-----------|"
-)
-
-_QUEUE_HEADER = (
-    "| Queue # | Finding ID | Expected Output File | Severity | Title |\n"
-    "|---------|------------|---------------------|----------|-------|"
 )
 
 _INV_HEADER = (
@@ -50,19 +50,6 @@ def _write_live_pairs(scratchpad: Path, rows: list[str]) -> None:
     lines.extend(rows)
     lines.append("")
     (scratchpad / "dedup_candidate_pairs.md").write_text(
-        "\n".join(lines), encoding="utf-8",
-    )
-
-
-def _write_queue(scratchpad: Path, finding_ids: list[str]) -> None:
-    """Write ``verification_queue.md`` with pipe-delimited table."""
-    lines = ["# Verification Queue", "", _QUEUE_HEADER]
-    for i, fid in enumerate(finding_ids, 1):
-        lines.append(
-            f"| {i} | {fid} | verify_{fid}.md | Critical | Bug {fid} |"
-        )
-    lines.append("")
-    (scratchpad / "verification_queue.md").write_text(
         "\n".join(lines), encoding="utf-8",
     )
 
@@ -106,7 +93,7 @@ class TestSupplementalMechanicalDedup:
         ])
         # Regular file has an empty table (no data rows)
         _write_live_pairs(tmp_path, [])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -126,7 +113,7 @@ class TestSupplementalMechanicalDedup:
             " | 1.00 | location overlap (L10-20 vs L10-20)"
             " + title overlap 1.00 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -143,14 +130,14 @@ class TestSupplementalMechanicalDedup:
             " | 1.00 | location overlap (L117-120 vs L117-120)"
             " + title overlap 1.00 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
         assert n == 1
-        queue = (tmp_path / "verification_queue.md").read_text(encoding="utf-8")
-        assert "INV-001" in queue, "Lower INV# should be kept"
-        assert "INV-002" not in queue, "Higher INV# should be absorbed"
+        inventory = (tmp_path / "findings_inventory.md").read_text(encoding="utf-8")
+        assert "INV-001" in inventory, "Lower INV# should be kept"
+        assert "INV-002" not in _live_ids(inventory), "Higher INV# should be absorbed"
 
     # ------------------------------------------------------------------
     # 4. location overlap + low title score rejects
@@ -170,7 +157,7 @@ class TestSupplementalMechanicalDedup:
             " | 0.60 | location overlap (L117-120 vs L118-121)"
             " + title overlap 0.60 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -184,7 +171,7 @@ class TestSupplementalMechanicalDedup:
             " | 0.60 | location overlap (L117-120 vs L117-120)"
             " + title overlap 0.60 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -198,7 +185,7 @@ class TestSupplementalMechanicalDedup:
             " | 0.55 | location overlap (L42-42 vs L42-42)"
             " + title overlap 0.55 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -213,7 +200,7 @@ class TestSupplementalMechanicalDedup:
             " | 0.40 | location overlap (L117-120 vs L117-120)"
             " + title overlap 0.40 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -228,7 +215,7 @@ class TestSupplementalMechanicalDedup:
             " | 0.90 | location overlap (L10-30 vs L15-20)"
             " + title overlap 0.90 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -243,7 +230,7 @@ class TestSupplementalMechanicalDedup:
             " | 0.55 | location overlap (L117-120 vs L117-120)"
             " + title overlap 0.55 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -262,7 +249,7 @@ class TestSupplementalMechanicalDedup:
             " | 1.00 | location overlap (L117-120 vs L117-120)"
             " + title overlap 1.00 | No |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -272,7 +259,7 @@ class TestSupplementalMechanicalDedup:
     # 6. already-merged ID skipped
     # ------------------------------------------------------------------
     def test_supplemental_skips_already_merged(self, tmp_path: Path):
-        """Queue has only INV-001 (INV-002 already removed by LLM dedup).
+        """Inventory has only INV-001 (INV-002 already removed by LLM dedup).
         Pair file has INV-001/INV-002. Should return 0 because INV-002 is
         not present in the target file."""
         _write_full_pairs(tmp_path, [
@@ -281,7 +268,7 @@ class TestSupplementalMechanicalDedup:
             " + title overlap 1.00 | Yes |",
         ])
         # Only INV-001 in queue — INV-002 was already removed
-        _write_queue(tmp_path, ["INV-001"])
+        _write_inventory(tmp_path, ["INV-001"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -311,7 +298,7 @@ class TestSupplementalMechanicalDedup:
             " | 1.00 | location overlap (L10-20 vs L10-20)"
             " + title overlap 1.00 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -328,24 +315,24 @@ class TestSupplementalMechanicalDedup:
     # 8. in-place write (no *_deduped.md created)
     # ------------------------------------------------------------------
     def test_supplemental_inplace_write(self, tmp_path: Path):
-        """Supplemental mode modifies verification_queue.md in-place.
-        It should NOT create verification_queue_deduped.md."""
+        """Supplemental mode mutates the prequeue inventory, never a queue."""
         _write_full_pairs(tmp_path, [
             "| INV-001: Bug A | INV-002: Bug A"
             " | 1.00 | location overlap (L10-20 vs L10-20)"
             " + title overlap 1.00 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002", "INV-003"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002", "INV-003"])
         M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
-        queue = (tmp_path / "verification_queue.md").read_text(encoding="utf-8")
-        assert "INV-001" in queue
-        assert "INV-003" in queue
-        assert "INV-002" not in queue
-        # No deduped copy created
-        assert not (tmp_path / "verification_queue_deduped.md").exists(), \
-            "supplemental=True should write in-place, not create *_deduped.md"
+        inventory = (tmp_path / "findings_inventory.md").read_text(encoding="utf-8")
+        assert "INV-001" in inventory
+        assert "INV-003" in inventory
+        assert "INV-002" not in _live_ids(inventory)
+        # The supplemental legacy unit operates in-place. The live L1 driver
+        # wraps this proposal in the five-output prequeue transaction.
+        assert not any(tmp_path.glob("verification_queue*")), \
+            "L1 semantic dedup must never create or mutate a queue artifact"
 
     # ------------------------------------------------------------------
     # 9. source-ID subset is REJECTED in supplemental mode
@@ -358,7 +345,7 @@ class TestSupplementalMechanicalDedup:
             "| INV-001: Bug One | INV-002: Bug Two"
             " | 0.30 | source-ID subset (D-1 ⊂ D-1, D-2) | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -375,21 +362,21 @@ class TestSupplementalMechanicalDedup:
             " | 1.00 | location overlap (L50-60 vs L50-60)"
             " + title overlap 1.00 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-003", "INV-005"])
+        _write_inventory(tmp_path, ["INV-003", "INV-005"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
         assert n == 1
-        queue = (tmp_path / "verification_queue.md").read_text(encoding="utf-8")
-        assert "INV-003" in queue, "Lower INV# should remain"
-        assert "INV-005" not in queue, "Higher INV# should be absorbed"
+        inventory = (tmp_path / "findings_inventory.md").read_text(encoding="utf-8")
+        assert "INV-003" in inventory, "Lower INV# should remain"
+        assert "INV-005" not in _live_ids(inventory), "Higher INV# should be absorbed"
 
     # ------------------------------------------------------------------
     # 11. no pair files at all -> returns 0
     # ------------------------------------------------------------------
     def test_supplemental_noop_no_full_file(self, tmp_path: Path):
         """No pair files exist at all. supplemental=True returns 0."""
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -405,14 +392,14 @@ class TestSupplementalMechanicalDedup:
             "| INV-001: Bug One | INV-002: Bug Two"
             " | 0.30 | source-ID subset (D-1 ⊂ D-1, D-2) | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=False,
         )
         assert n == 1
         # Should create deduped copy (source -> target, not in-place)
-        assert (tmp_path / "verification_queue_deduped.md").exists(), \
-            "supplemental=False should create *_deduped.md"
+        assert (tmp_path / "findings_inventory_deduped.md").exists(), \
+            "fallback should derive the prequeue inventory successor"
         # Decisions file should have MECHANICAL_FALLBACK (overwrite, not append)
         dec = (tmp_path / "dedup_decisions.md").read_text(encoding="utf-8")
         assert "MECHANICAL_FALLBACK" in dec
@@ -435,7 +422,7 @@ class TestSupplementalMechanicalDedup:
         assert n == 1
         inv = (tmp_path / "findings_inventory.md").read_text(encoding="utf-8")
         assert "INV-001" in inv, "Lower INV# should remain"
-        assert "INV-002" not in inv, "Higher INV# should be absorbed"
+        assert "INV-002" not in _live_ids(inv), "Higher INV# should be absorbed"
         # No deduped copy for in-place mode
         assert not (tmp_path / "findings_inventory_deduped.md").exists()
 
@@ -444,7 +431,7 @@ class TestSupplementalMechanicalDedup:
     # ------------------------------------------------------------------
     def test_supplemental_multi_merge(self, tmp_path: Path):
         """Full file has 3 independent pairs all meeting criteria.
-        Queue has all 6 IDs. Should return 3."""
+        Inventory has all 6 IDs. Should return 3."""
         _write_full_pairs(tmp_path, [
             "| INV-001: Bug A | INV-002: Bug A"
             " | 1.00 | location overlap (L10-20 vs L10-20)"
@@ -456,7 +443,7 @@ class TestSupplementalMechanicalDedup:
             " | 1.00 | location overlap (L50-60 vs L50-60)"
             " + title overlap 1.00 | Yes |",
         ])
-        _write_queue(
+        _write_inventory(
             tmp_path,
             ["INV-001", "INV-002", "INV-003", "INV-004", "INV-005", "INV-006"],
         )
@@ -464,12 +451,12 @@ class TestSupplementalMechanicalDedup:
             tmp_path, "semantic_dedup", supplemental=True,
         )
         assert n == 3
-        queue = (tmp_path / "verification_queue.md").read_text(encoding="utf-8")
+        inventory = (tmp_path / "findings_inventory.md").read_text(encoding="utf-8")
         # Lower IDs kept, higher IDs absorbed
         for kept in ("INV-001", "INV-003", "INV-005"):
-            assert kept in queue, f"{kept} should remain (lower #)"
+            assert kept in inventory, f"{kept} should remain (lower #)"
         for absorbed in ("INV-002", "INV-004", "INV-006"):
-            assert absorbed not in queue, f"{absorbed} should be absorbed (higher #)"
+            assert absorbed not in _live_ids(inventory), f"{absorbed} should be absorbed (higher #)"
 
     # ------------------------------------------------------------------
     # 15. PERT lineage rejected in supplemental mode
@@ -482,7 +469,7 @@ class TestSupplementalMechanicalDedup:
             "| INV-001: Bug One | INV-002: Bug Two"
             " | 0.50 | PERT lineage (BOUNDARY_SHIFT variant) | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -502,7 +489,7 @@ class TestSupplementalMechanicalDedup:
         )
         _write_full_pairs(tmp_path, [pair_row])
         _write_live_pairs(tmp_path, [pair_row])
-        _write_queue(tmp_path, ["INV-001", "INV-002"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
@@ -528,16 +515,16 @@ class TestSupplementalMechanicalDedup:
             " | 1.00 | location overlap (L10-20 vs L10-20)"
             " + title overlap 1.00 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002", "INV-003", "INV-004"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002", "INV-003", "INV-004"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
         assert n == 1, "Only deferred pair should merge; live pair should be skipped"
-        queue = (tmp_path / "verification_queue.md").read_text(encoding="utf-8")
-        assert "INV-001" in queue, "Live-pair member should remain"
-        assert "INV-002" in queue, "Live-pair member should remain"
-        assert "INV-003" in queue, "Deferred keeper should remain"
-        assert "INV-004" not in queue, "Deferred absorbed should be removed"
+        inventory = (tmp_path / "findings_inventory.md").read_text(encoding="utf-8")
+        assert "INV-001" in inventory, "Live-pair member should remain"
+        assert "INV-002" in inventory, "Live-pair member should remain"
+        assert "INV-003" in inventory, "Deferred keeper should remain"
+        assert "INV-004" not in _live_ids(inventory), "Deferred absorbed should be removed"
 
     # ------------------------------------------------------------------
     # 18. double-absorb guard
@@ -554,18 +541,18 @@ class TestSupplementalMechanicalDedup:
             " | 1.00 | location overlap (L10-20 vs L10-20)"
             " + title overlap 1.00 | Yes |",
         ])
-        _write_queue(tmp_path, ["INV-001", "INV-002", "INV-003"])
+        _write_inventory(tmp_path, ["INV-001", "INV-002", "INV-003"])
         n = M._apply_mechanical_dedup_from_pairs(
             tmp_path, "semantic_dedup", supplemental=True,
         )
         assert n == 1, (
             "Second pair should be skipped because INV-002 is already absorbed"
         )
-        queue = (tmp_path / "verification_queue.md").read_text(encoding="utf-8")
-        assert "INV-001" in queue
-        assert "INV-003" in queue
+        inventory = (tmp_path / "findings_inventory.md").read_text(encoding="utf-8")
+        assert "INV-001" in inventory
+        assert "INV-003" in inventory
         # INV-002 absorbed by first pair
-        assert "INV-002" not in queue
+        assert "INV-002" not in _live_ids(inventory)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -590,7 +577,7 @@ class TestCodexDepthChecklist:
     def test_l1_thorough_mentions_confidence(self):
         text = _codex_depth_artifact_checklist("l1", "thorough")
         assert "confidence_scores.md" in text
-        assert "4-axis" in text
+        assert "3 code-evidence axes" in text
 
     def test_l1_core_no_design_stress(self):
         text = _codex_depth_artifact_checklist("l1", "core")
@@ -619,7 +606,7 @@ class TestCodexDepthChecklist:
     def test_sc_thorough_mentions_confidence(self):
         text = _codex_depth_artifact_checklist("sc", "thorough")
         assert "confidence_scores.md" in text
-        assert "4-axis" in text
+        assert "3 code-evidence axes" in text
 
     def test_sc_core_has_post_wait_verification(self):
         text = _codex_depth_artifact_checklist("sc", "core")
@@ -728,7 +715,7 @@ class TestTableCellExemption:
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestDedupAbsorbedCoverage:
-    """Verify that dedup-absorbed IDs get MERGED disposition, not UNACCOUNTED."""
+    """Only receipt-accepted absorptions may receive MERGED disposition."""
 
     def test_extract_dedup_absorbed_ids_basic(self, tmp_path):
         (tmp_path / "dedup_decisions.md").write_text(dedent("""\
@@ -741,7 +728,7 @@ class TestDedupAbsorbedCoverage:
             | INV-25 | MERGED into INV-003 | same root cause |
         """), encoding="utf-8")
         result = M._extract_dedup_absorbed_ids(tmp_path)
-        assert result == {"INV-24", "INV-25"}
+        assert result == set(), "raw proposal rows are not applied authority"
 
     def test_extract_dedup_absorbed_ids_empty(self, tmp_path):
         result = M._extract_dedup_absorbed_ids(tmp_path)
@@ -781,7 +768,7 @@ class TestDedupAbsorbedCoverage:
             if len(cells) >= 3:
                 dispositions[cells[1]] = cells[2]
         assert dispositions.get("INV-001") == "PROMOTED"
-        assert dispositions.get("INV-24") == "MERGED"
+        assert dispositions.get("INV-24") != "MERGED"
 
     def test_coverage_no_unaccounted_for_absorbed(self, tmp_path):
         (tmp_path / "dedup_decisions.md").write_text(dedent("""\
@@ -812,8 +799,9 @@ class TestDedupAbsorbedCoverage:
             promoted_ids={"INV-003", "INV-004", "INV-26"},
             excluded_ids=set(),
         )
-        for row in rows:
-            assert "UNACCOUNTED" not in row, f"Unexpected UNACCOUNTED: {row}"
+        # The raw Markdown may affect ordinary ledger classification through
+        # independent rules, but it can never authorize a MERGED disposition.
+        assert not any("MERGED" in row for row in rows)
 
     def test_l1_exact_scenario(self, tmp_path):
         """Reproduce an observed L1 Codex halt: 5 dedup-absorbed IDs
@@ -851,10 +839,8 @@ class TestDedupAbsorbedCoverage:
             promoted_ids=promoted,
             excluded_ids=set(),
         )
-        unaccounted = [r for r in rows if "UNACCOUNTED" in r]
         merged = [r for r in rows if "MERGED" in r]
-        assert len(unaccounted) == 0, f"UNACCOUNTED rows: {unaccounted}"
-        assert len(merged) >= 5, f"Expected >=5 MERGED rows, got {len(merged)}"
+        assert len(merged) == 0
 
 
 class TestCoverageGapFixes:
@@ -915,7 +901,7 @@ class TestCoverageGapFixes:
         )
         d = self._dispositions(rows)
         assert d.get("INV-001") == "PROMOTED"
-        assert d.get("INV-07") == "MERGED"
+        assert d.get("INV-07") != "MERGED"
 
     # -- Gap 2: Mechanical dedup format ---------------------------------------
 
@@ -930,7 +916,7 @@ class TestCoverageGapFixes:
             | MECHANICAL_MERGE | INV-12 | INV-03 | pert lineage |
         """), encoding="utf-8")
         result = M._extract_dedup_absorbed_ids(tmp_path)
-        assert result == {"INV-10", "INV-12"}
+        assert result == set()
 
     def test_extract_mechanical_supplement_format(self, tmp_path):
         (tmp_path / "dedup_decisions.md").write_text(dedent("""\
@@ -941,7 +927,7 @@ class TestCoverageGapFixes:
             | MECHANICAL_SUPPLEMENT | INV-20 | INV-15 | location overlap |
         """), encoding="utf-8")
         result = M._extract_dedup_absorbed_ids(tmp_path)
-        assert result == {"INV-20"}
+        assert result == set()
 
     def test_extract_mixed_formats(self, tmp_path):
         """Both LLM and mechanical formats parsed from same file."""
@@ -958,10 +944,10 @@ class TestCoverageGapFixes:
             | MECHANICAL_SUPPLEMENT | INV-30 | INV-15 | location overlap |
         """), encoding="utf-8")
         result = M._extract_dedup_absorbed_ids(tmp_path)
-        assert result == {"INV-24", "INV-25", "INV-30"}
+        assert result == set()
 
     def test_mechanical_absorbed_marks_merged_in_coverage(self, tmp_path):
-        """IDs absorbed by mechanical dedup get MERGED in coverage ledger."""
+        """Raw mechanical proposal rows do not authorize MERGED coverage."""
         (tmp_path / "dedup_decisions.md").write_text(dedent("""\
             | Action | Absorbed | Into | Signal |
             |--------|----------|------|--------|
@@ -978,7 +964,7 @@ class TestCoverageGapFixes:
         )
         d = self._dispositions(rows)
         assert d.get("INV-05") == "PROMOTED"
-        assert d.get("INV-10") == "MERGED"
+        assert d.get("INV-10") != "MERGED"
 
     # -- Gap 3+4: Evidence-excluded and pre-dedup backup skip ----------------
 
@@ -1146,10 +1132,10 @@ class TestCoverageGapFixes:
         )
         unaccounted = [r for r in rows if "UNACCOUNTED" in r]
         assert len(unaccounted) == 0, f"UNACCOUNTED rows: {unaccounted}"
-        # Verify absorbed IDs are MERGED
+        # Raw proposal rows cannot authorize MERGED coverage.
         d = self._dispositions(rows)
-        assert d.get("INV-24") == "MERGED"
-        assert d.get("INV-30") == "MERGED"
+        assert d.get("INV-24") != "MERGED"
+        assert d.get("INV-30") != "MERGED"
         # Verify no chain/backup/excluded IDs leaked in
         all_ids_in_rows = set(d.keys())
         assert "INV-999" not in all_ids_in_rows

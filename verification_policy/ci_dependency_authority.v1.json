@@ -1,0 +1,376 @@
+{
+  "checked_at": "2026-08-15T20:12:14Z",
+  "clean_claim": {
+    "offline_ci_claim": "hash-identity-compatibility-only",
+    "offline_install_behavior": "fail-loud-no-network-fallback",
+    "online_recheck_required": true,
+    "valid_after_checked_at": false
+  },
+  "github_actions": [
+    {
+      "commit_sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "name": "actions/checkout",
+      "observed_at": "2026-07-29T15:02:45Z",
+      "source": "https://github.com/actions/checkout/releases/tag/v7.0.1",
+      "version": "7.0.1"
+    },
+    {
+      "commit_sha": "5fda3b95a4ea91299a34e894583c3862153e4b97",
+      "name": "actions/setup-python",
+      "observed_at": "2026-07-29T15:02:45Z",
+      "source": "https://github.com/actions/setup-python/releases/tag/v7.0.0",
+      "version": "7.0.0"
+    },
+    {
+      "commit_sha": "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+      "name": "actions/dependency-review-action",
+      "observed_at": "2026-07-29T15:02:45Z",
+      "source": "https://github.com/actions/dependency-review-action/releases/tag/v5.0.0",
+      "version": "5.0.0"
+    }
+  ],
+  "matrix": {
+    "platform": [
+      "linux-x86_64",
+      "macos-arm64",
+      "macos-x86_64",
+      "windows-x86_64"
+    ],
+    "python": [
+      "3.11",
+      "3.12"
+    ]
+  },
+  "paths": {
+    "advisory_evidence": "verification_policy/ci_advisory_evidence.v1.json",
+    "constraints": "requirements-ci.constraints",
+    "lock": "requirements-ci.lock",
+    "receipt": "verification_policy/ci_dependency_provenance.v2.json",
+    "receipt_schema": "verification_policy/ci_dependency_provenance.v2.schema.json",
+    "release_evidence": "verification_policy/ci_release_metadata_evidence.v1.json",
+    "requirements": "requirements-dev.txt",
+    "resolver_input": "requirements-ci-resolver.in",
+    "resolver_lock": "requirements-ci-resolver.lock"
+  },
+  "resolver": {
+    "command": [
+      "python",
+      "-I",
+      "-m",
+      "piptools",
+      "compile",
+      "--generate-hashes",
+      "--allow-unsafe",
+      "--strip-extras",
+      "--resolver=backtracking",
+      "--no-config",
+      "--pip-args=--only-binary=:all:",
+      "--output-file",
+      "requirements-ci.lock",
+      "requirements-dev.txt"
+    ],
+    "index_url": "https://pypi.org/simple",
+    "name": "pip-tools",
+    "python_implementation": "CPython",
+    "python_version": "3.12",
+    "version": "7.5.2"
+  },
+  "schema": "plamen.ci-dependency-authority.v1",
+  "universal_wheels": [
+    {
+      "filename": "annotated_types-0.8.0-py3-none-any.whl",
+      "project": "annotated-types",
+      "sha256": "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0"
+    },
+    {
+      "filename": "attrs-26.1.0-py3-none-any.whl",
+      "project": "attrs",
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"
+    },
+    {
+      "filename": "colorama-0.4.6-py2.py3-none-any.whl",
+      "project": "colorama",
+      "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"
+    },
+    {
+      "filename": "execnet-2.1.2-py3-none-any.whl",
+      "project": "execnet",
+      "sha256": "67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec"
+    },
+    {
+      "filename": "iniconfig-2.3.0-py3-none-any.whl",
+      "project": "iniconfig",
+      "sha256": "f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12"
+    },
+    {
+      "filename": "InquirerPy-0.3.4-py3-none-any.whl",
+      "project": "inquirerpy",
+      "sha256": "c65fdfbac1fa00e3ee4fb10679f4d3ed7a012abf4833910e63c295827fe2a7d4"
+    },
+    {
+      "filename": "jsonschema-4.26.0-py3-none-any.whl",
+      "project": "jsonschema",
+      "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce"
+    },
+    {
+      "filename": "jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "project": "jsonschema-specifications",
+      "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe"
+    },
+    {
+      "filename": "markdown_it_py-4.2.0-py3-none-any.whl",
+      "project": "markdown-it-py",
+      "sha256": "9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a"
+    },
+    {
+      "filename": "mdurl-0.1.2-py3-none-any.whl",
+      "project": "mdurl",
+      "sha256": "84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"
+    },
+    {
+      "filename": "packaging-26.2-py3-none-any.whl",
+      "project": "packaging",
+      "sha256": "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e"
+    },
+    {
+      "filename": "pfzy-0.3.4-py3-none-any.whl",
+      "project": "pfzy",
+      "sha256": "5f50d5b2b3207fa72e7ec0ef08372ef652685470974a107d0d4999fc5a903a96"
+    },
+    {
+      "filename": "pluggy-1.6.0-py3-none-any.whl",
+      "project": "pluggy",
+      "sha256": "e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746"
+    },
+    {
+      "filename": "prompt_toolkit-3.0.53-py3-none-any.whl",
+      "project": "prompt-toolkit",
+      "sha256": "01c0891d7f9237d5e339f7d3e42cdae80b7534abb1c7c0e3352efba6231492f2"
+    },
+    {
+      "filename": "pydantic-2.13.4-py3-none-any.whl",
+      "project": "pydantic",
+      "sha256": "45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba"
+    },
+    {
+      "filename": "pygments-2.20.0-py3-none-any.whl",
+      "project": "pygments",
+      "sha256": "81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176"
+    },
+    {
+      "filename": "pytest-9.1.1-py3-none-any.whl",
+      "project": "pytest",
+      "sha256": "37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c"
+    },
+    {
+      "filename": "pytest_xdist-3.8.0-py3-none-any.whl",
+      "project": "pytest-xdist",
+      "sha256": "202ca578cfeb7370784a8c33d6d05bc6e13b4f25b5053c30a152269fd10f0b88"
+    },
+    {
+      "filename": "referencing-0.37.0-py3-none-any.whl",
+      "project": "referencing",
+      "sha256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231"
+    },
+    {
+      "filename": "rich-15.0.0-py3-none-any.whl",
+      "project": "rich",
+      "sha256": "33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb"
+    },
+    {
+      "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+      "project": "typing-extensions",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+    },
+    {
+      "filename": "typing_inspection-0.4.2-py3-none-any.whl",
+      "project": "typing-inspection",
+      "sha256": "4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7"
+    },
+    {
+      "filename": "wcwidth-0.8.2-py3-none-any.whl",
+      "project": "wcwidth",
+      "sha256": "d63947694a0539a1d51e01eda7caf800c291020e6cdd7e28ad7b14dd33ad4f85"
+    }
+  ],
+  "wheel_coverage": [
+    {
+      "artifacts": [
+        {
+          "filename": "pydantic_core-2.46.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "project": "pydantic-core",
+          "sha256": "f9fa868638bf362d3d138ea55829cefb3d5f4b0d7f142234382a15e2485dbec4"
+        },
+        {
+          "filename": "protobuf-7.35.1-cp310-abi3-manylinux2014_x86_64.whl",
+          "project": "protobuf",
+          "sha256": "74758715c53d7158fb76caf4f0cfdacc5329a4b1bb994f865d6cf302d413a1c4"
+        },
+        {
+          "filename": "rpds_py-2026.6.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "project": "rpds-py",
+          "sha256": "9c1255b302953c86a486b81d330d5ee1d5bd937691ce271b6be0ef0e299eaab7"
+        }
+      ],
+      "platform": "linux-x86_64",
+      "python": "3.11"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pydantic_core-2.46.4-cp311-cp311-macosx_11_0_arm64.whl",
+          "project": "pydantic-core",
+          "sha256": "e0d65b8c354be7fb5f720c3caa8bc940bc2d20ce749c8e06135f07f8ed95dd7c"
+        },
+        {
+          "filename": "protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl",
+          "project": "protobuf",
+          "sha256": "24f857477359a85c0c235261b8ba905fd51b2562f4a64ca1df5473f29850cbf6"
+        },
+        {
+          "filename": "rpds_py-2026.6.3-cp311-cp311-macosx_11_0_arm64.whl",
+          "project": "rpds-py",
+          "sha256": "db08f45aecde626498fb3df07bcf6d2ec040af42e859a4f5040d79c200342911"
+        }
+      ],
+      "platform": "macos-arm64",
+      "python": "3.11"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pydantic_core-2.46.4-cp311-cp311-macosx_10_12_x86_64.whl",
+          "project": "pydantic-core",
+          "sha256": "0e96592440881c74a213e5ad528e2b24d3d4f940de2766bed9010ab1d9e51594"
+        },
+        {
+          "filename": "protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl",
+          "project": "protobuf",
+          "sha256": "24f857477359a85c0c235261b8ba905fd51b2562f4a64ca1df5473f29850cbf6"
+        },
+        {
+          "filename": "rpds_py-2026.6.3-cp311-cp311-macosx_10_12_x86_64.whl",
+          "project": "rpds-py",
+          "sha256": "7b689145a1485c335569bd056464f3243a29af7ed3871c7be31ad624ba239bc7"
+        }
+      ],
+      "platform": "macos-x86_64",
+      "python": "3.11"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pydantic_core-2.46.4-cp311-cp311-win_amd64.whl",
+          "project": "pydantic-core",
+          "sha256": "6f2eeda33a839975441c86a4119e1383c50b47faf0cbb5176985565c6bb02c33"
+        },
+        {
+          "filename": "protobuf-7.35.1-cp310-abi3-win_amd64.whl",
+          "project": "protobuf",
+          "sha256": "230a75ddfc2de4806e56696ce9640c1cdfdb6543b7cfce98d42a4c0a0e7bdb87"
+        },
+        {
+          "filename": "pywinpty-2.0.15-cp311-cp311-win_amd64.whl",
+          "project": "pywinpty",
+          "sha256": "9a6bcec2df2707aaa9d08b86071970ee32c5026e10bcc3cc5f6f391d85baf7ca"
+        },
+        {
+          "filename": "rpds_py-2026.6.3-cp311-cp311-win_amd64.whl",
+          "project": "rpds-py",
+          "sha256": "2c54a076ca4d370980ab57bc0e31df57bbe8d41340436a90ef8b1219a3cbb127"
+        }
+      ],
+      "platform": "windows-x86_64",
+      "python": "3.11"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "project": "pydantic-core",
+          "sha256": "926c9541b14b12b1681dca8a0b75feb510b06c6341b70a8e500c2fdcff837cce"
+        },
+        {
+          "filename": "protobuf-7.35.1-cp310-abi3-manylinux2014_x86_64.whl",
+          "project": "protobuf",
+          "sha256": "74758715c53d7158fb76caf4f0cfdacc5329a4b1bb994f865d6cf302d413a1c4"
+        },
+        {
+          "filename": "rpds_py-2026.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "project": "rpds-py",
+          "sha256": "ecabd69db66de867690f9797f2f8fa27ba501bbc24540cbdbdc649cd15888ba6"
+        }
+      ],
+      "platform": "linux-x86_64",
+      "python": "3.12"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pydantic_core-2.46.4-cp312-cp312-macosx_11_0_arm64.whl",
+          "project": "pydantic-core",
+          "sha256": "962ccbab7b642487b1d8b7df90ef677e03134cf1fd8880bf698649b22a69371f"
+        },
+        {
+          "filename": "protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl",
+          "project": "protobuf",
+          "sha256": "24f857477359a85c0c235261b8ba905fd51b2562f4a64ca1df5473f29850cbf6"
+        },
+        {
+          "filename": "rpds_py-2026.6.3-cp312-cp312-macosx_11_0_arm64.whl",
+          "project": "rpds-py",
+          "sha256": "538949e262e46caa31ac01bdb3c1e8f642622922cacbabbae6a8445d9dc33eaf"
+        }
+      ],
+      "platform": "macos-arm64",
+      "python": "3.12"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pydantic_core-2.46.4-cp312-cp312-macosx_10_12_x86_64.whl",
+          "project": "pydantic-core",
+          "sha256": "3245406455a5d98187ec35530fd772b1d799b26667980872c8d4614991e2c4a2"
+        },
+        {
+          "filename": "protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl",
+          "project": "protobuf",
+          "sha256": "24f857477359a85c0c235261b8ba905fd51b2562f4a64ca1df5473f29850cbf6"
+        },
+        {
+          "filename": "rpds_py-2026.6.3-cp312-cp312-macosx_10_12_x86_64.whl",
+          "project": "rpds-py",
+          "sha256": "a0811d33247c3d6128a3001d763f2aa056bb3425204335400ac54f89eec3a0d0"
+        }
+      ],
+      "platform": "macos-x86_64",
+      "python": "3.12"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "pydantic_core-2.46.4-cp312-cp312-win_amd64.whl",
+          "project": "pydantic-core",
+          "sha256": "e9c26f834c65f5752f3f06cb08cb86a913ceb7274d0db6e267808a708b46bc89"
+        },
+        {
+          "filename": "protobuf-7.35.1-cp310-abi3-win_amd64.whl",
+          "project": "protobuf",
+          "sha256": "230a75ddfc2de4806e56696ce9640c1cdfdb6543b7cfce98d42a4c0a0e7bdb87"
+        },
+        {
+          "filename": "pywinpty-2.0.15-cp312-cp312-win_amd64.whl",
+          "project": "pywinpty",
+          "sha256": "83a8f20b430bbc5d8957249f875341a60219a4e971580f2ba694fbfb54a45ebc"
+        },
+        {
+          "filename": "rpds_py-2026.6.3-cp312-cp312-win_amd64.whl",
+          "project": "rpds-py",
+          "sha256": "2c958bf94822e9290a40aaf2a822d4bc5c88099093e3948ad6c571eca9272e5f"
+        }
+      ],
+      "platform": "windows-x86_64",
+      "python": "3.12"
+    }
+  ]
+}

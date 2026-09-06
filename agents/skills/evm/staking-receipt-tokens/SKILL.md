@@ -7,6 +7,7 @@ description: "Type Thought-template (instantiate before use) - Research basis Do
 
 > **Type**: Thought-template (instantiate before use)
 > **Research basis**: Donation attacks via unsolicited token transfers
+> **Inject Into**: Breadth agents, depth-token-flow
 
 ## Trigger Patterns
 ```

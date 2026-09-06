@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plamen.mechanical_gate_registry_candidate.provisional.v1",
+  "title": "Non-authoritative mechanical-gate registry candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "runtime_authority_granted",
+    "authoritative_registry",
+    "source_snapshot",
+    "independent_review_receipt_sha256",
+    "scope",
+    "gate_count",
+    "gate_records"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.mechanical_gate_registry_candidate.provisional.v1"
+    },
+    "status": {
+      "const": "PROVISIONAL_UNWRAPPED_UNREVIEWED"
+    },
+    "runtime_authority_granted": {
+      "const": false
+    },
+    "authoritative_registry": {
+      "$ref": "#/$defs/authoritative_registry"
+    },
+    "source_snapshot": {
+      "$ref": "#/$defs/source_snapshot"
+    },
+    "independent_review_receipt_sha256": {
+      "type": "null"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_semantics",
+        "included_authorities",
+        "excluded_controls",
+        "known_broader_validator_inventory_debt"
+      ],
+      "properties": {
+        "baseline_semantics": {
+          "const": "MINIMUM_INDEPENDENT_DECISION_AUTHORITIES"
+        },
+        "included_authorities": {
+          "$ref": "#/$defs/nonempty_unique_strings"
+        },
+        "excluded_controls": {
+          "$ref": "#/$defs/nonempty_unique_strings"
+        },
+        "known_broader_validator_inventory_debt": {
+          "const": true
+        }
+      }
+    },
+    "gate_count": {
+      "const": 33
+    },
+    "gate_records": {
+      "type": "array",
+      "minItems": 33,
+      "maxItems": 33,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "forensic_id",
+          "gate_id",
+          "display_name",
+          "owning_seam",
+          "decision_class",
+          "direction",
+          "candidate_lifecycle_state",
+          "activation_ids",
+          "component_owner",
+          "system_owner",
+          "independent_reviewer",
+          "admission_evidence_receipt_sha256",
+          "part0_status"
+        ],
+        "properties": {
+          "forensic_id": {
+            "pattern": "^MG-[0-9]{3}$"
+          },
+          "gate_id": {
+            "pattern": "^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$"
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owning_seam": {
+            "enum": [
+              "STARTUP_RESUME",
+              "PRE_DISCOVERY",
+              "POST_DISCOVERY",
+              "PRE_VERIFY",
+              "POST_VERIFY",
+              "REPORT_ASSEMBLY"
+            ]
+          },
+          "decision_class": {
+            "enum": [
+              "RC_AGENT_MECHANIZABLE",
+              "RECALL_GENERATOR",
+              "PIPELINE_INTEGRITY",
+              "PRECISION_DISCRIMINATOR",
+              "TELEMETRY_ONLY"
+            ]
+          },
+          "direction": {
+            "enum": [
+              "GENERATE_ADD_ONLY",
+              "REOPEN_ADD_ONLY",
+              "RECONCILE_LOSSLESS",
+              "CAP_DESTRUCTIVE",
+              "FLOOR_RECALL_OPEN",
+              "FLAG_TELEMETRY",
+              "ROUTE_RECALL_OPEN",
+              "CONSOLIDATE_LOSSLESS",
+              "BLOCK_EXECUTION",
+              "EXECUTE_TARGET",
+              "VETO_SHIP"
+            ]
+          },
+          "candidate_lifecycle_state": {
+            "const": "LEGACY_ACTIVE_UNGOVERNED"
+          },
+          "activation_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "pattern": "^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$"
+            }
+          },
+          "component_owner": {
+            "type": "null"
+          },
+          "system_owner": {
+            "type": "null"
+          },
+          "independent_reviewer": {
+            "type": "null"
+          },
+          "admission_evidence_receipt_sha256": {
+            "type": "null"
+          },
+          "part0_status": {
+            "const": "PASS_GENERIC_METADATA_ONLY"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nonempty_unique_strings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "authoritative_registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "schema_version"
+      ],
+      "properties": {
+        "path": {
+          "const": "rules/mechanical-gate-registry.json"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "schema_version": {
+          "const": "plamen.mechanical_gate_registry.v1"
+        }
+      }
+    },
+    "source_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_tree_digest_algorithm",
+        "source_tree_digest",
+        "digest_stability",
+        "git_head",
+        "files"
+      ],
+      "properties": {
+        "source_tree_digest_algorithm": {
+          "const": "sha256:plamen-source-tree-v1"
+        },
+        "source_tree_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "digest_stability": {
+          "const": "REGENERATE_AT_TREE_FREEZE"
+        },
+        "git_head": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^scripts/[A-Za-z0-9_./-]+\\.py$"
+              },
+              "sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

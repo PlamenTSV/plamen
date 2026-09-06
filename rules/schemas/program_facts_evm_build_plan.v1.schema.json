@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_build_plan.v1.schema.json",
+  "title": "Program Facts EVM build plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "run_id",
+    "run_generation",
+    "execution_authority_digest",
+    "build_input_snapshot_digest",
+    "candidate_universe_digest",
+    "selected_scope_digest",
+    "capability_selection_digest",
+    "variants",
+    "excluded_variant_ids",
+    "unresolved_variant_ids",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_build_plan.v1"
+    },
+    "status": {
+      "enum": [
+        "PLANNED",
+        "UNAVAILABLE",
+        "FAILED",
+        "STALE"
+      ]
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "execution_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_input_snapshot_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "candidate_universe_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "selected_scope_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "capability_selection_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "variants": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variant"
+      },
+      "maxItems": 100000
+    },
+    "excluded_variant_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "unresolved_variant_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    },
+    "buildSystem": {
+      "enum": [
+        "FOUNDRY",
+        "HARDHAT",
+        "SOLC_STANDARD_JSON",
+        "TRUFFLE",
+        "BROWNIE",
+        "APE",
+        "CUSTOM_REVIEWED"
+      ]
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build_variant_id",
+        "candidate_id",
+        "build_system",
+        "selected_capability_ids"
+      ],
+      "properties": {
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "build_system": {
+          "$ref": "#/$defs/buildSystem"
+        },
+        "selected_capability_ids": {
+          "$ref": "#/$defs/identifierSet"
+        }
+      }
+    }
+  }
+}

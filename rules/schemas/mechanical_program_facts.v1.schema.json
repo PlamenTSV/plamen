@@ -1,0 +1,410 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/mechanical_program_facts.v1.schema.json",
+  "title": "Plamen portable mechanical program facts v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "canonicalization_version",
+    "authority",
+    "snapshot_ref",
+    "ecosystem",
+    "build_variants",
+    "source_files",
+    "provider_capability_refs",
+    "nodes",
+    "occurrences",
+    "facts",
+    "coverage",
+    "payload_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "plamen.mechanical_program_facts.v1"},
+    "canonicalization_version": {"const": "plamen.canonical_json.v1"},
+    "authority": {"$ref": "#/$defs/authority"},
+    "snapshot_ref": {"$ref": "#/$defs/snapshot_ref"},
+    "ecosystem": {"$ref": "#/$defs/ecosystem"},
+    "build_variants": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/build_variant"}
+    },
+    "source_files": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/source_file"}
+    },
+    "provider_capability_refs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/capability_id"},
+      "uniqueItems": true
+    },
+    "nodes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/node"}
+    },
+    "occurrences": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/occurrence"}
+    },
+    "facts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fact"}
+    },
+    "coverage": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/coverage"}
+    },
+    "payload_sha256": {"$ref": "#/$defs/hex64"}
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "pfs_id": {"type": "string", "pattern": "^PFS-[0-9a-f]{24}$"},
+    "pfb_id": {"type": "string", "pattern": "^PFB-[0-9a-f]{24}$"},
+    "pfn_id": {"type": "string", "pattern": "^PFN-[0-9a-f]{24}$"},
+    "pfo_id": {"type": "string", "pattern": "^PFO-[0-9a-f]{24}$"},
+    "pff_id": {"type": "string", "pattern": "^PFF-[0-9a-f]{24}$"},
+    "pfc_id": {"type": "string", "pattern": "^PFC-[0-9a-f]{24}$"},
+    "capability_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+    },
+    "portable_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)(?!.*\\\\)(?!.*:)[^\\u0000]+$"
+    },
+    "ecosystem": {
+      "enum": ["evm", "go", "rust", "solana", "soroban", "aptos", "sui", "daml", "mixed"]
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_authority",
+        "terminal_negative_authority",
+        "can_suppress",
+        "can_demote",
+        "can_refute",
+        "can_mark_examined",
+        "can_certify_clean"
+      ],
+      "properties": {
+        "semantic_authority": {"const": "ADDITIVE_PROPOSAL_ONLY"},
+        "terminal_negative_authority": {"const": false},
+        "can_suppress": {"const": false},
+        "can_demote": {"const": false},
+        "can_refute": {"const": false},
+        "can_mark_examined": {"const": false},
+        "can_certify_clean": {"const": false}
+      }
+    },
+    "snapshot_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_digest", "source_scope_digest", "source_manifest_digest"],
+      "properties": {
+        "snapshot_digest": {"$ref": "#/$defs/hex64"},
+        "source_scope_digest": {"$ref": "#/$defs/hex64"},
+        "source_manifest_digest": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "source_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_file_id",
+        "path",
+        "path_casefold_key",
+        "source_sha256",
+        "size_bytes",
+        "language",
+        "scope_class",
+        "physical_identity_digest"
+      ],
+      "properties": {
+        "source_file_id": {"$ref": "#/$defs/pfs_id"},
+        "path": {"$ref": "#/$defs/portable_path"},
+        "path_casefold_key": {"type": "string", "minLength": 1},
+        "source_sha256": {"$ref": "#/$defs/hex64"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "language": {"type": "string", "minLength": 1},
+        "scope_class": {
+          "enum": ["PRODUCTION", "EXPLICIT_SCOPE", "BOUND_DEPENDENCY", "GENERATED_BOUND"]
+        },
+        "physical_identity_digest": {
+          "oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]
+        }
+      }
+    },
+    "manifest_digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/portable_path"},
+        "sha256": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "build_variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build_variant_id",
+        "ecosystem",
+        "build_system",
+        "build_root_id",
+        "manifest_digests",
+        "dependency_closure_digest",
+        "compiler_identity_digest",
+        "profile",
+        "features",
+        "tags",
+        "remappings",
+        "defines",
+        "target_triples",
+        "generated_source_policy",
+        "variant_digest"
+      ],
+      "properties": {
+        "build_variant_id": {"$ref": "#/$defs/pfb_id"},
+        "ecosystem": {"$ref": "#/$defs/ecosystem"},
+        "build_system": {"type": "string", "minLength": 1},
+        "build_root_id": {"type": "string", "minLength": 1},
+        "manifest_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/manifest_digest"}
+        },
+        "dependency_closure_digest": {"$ref": "#/$defs/hex64"},
+        "compiler_identity_digest": {"$ref": "#/$defs/hex64"},
+        "profile": {"type": "string"},
+        "features": {"$ref": "#/$defs/string_set"},
+        "tags": {"$ref": "#/$defs/string_set"},
+        "remappings": {"$ref": "#/$defs/string_set"},
+        "defines": {"$ref": "#/$defs/string_set"},
+        "target_triples": {"$ref": "#/$defs/string_set"},
+        "generated_source_policy": {"enum": ["BOUND_INCLUDED", "BOUND_EXCLUDED"]},
+        "variant_digest": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "string_set": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_file_id",
+        "start_byte",
+        "end_byte",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column",
+        "statement_sha256"
+      ],
+      "properties": {
+        "source_file_id": {"$ref": "#/$defs/pfs_id"},
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 0},
+        "start_line": {"type": "integer", "minimum": 1},
+        "start_column": {"type": "integer", "minimum": 0},
+        "end_line": {"type": "integer", "minimum": 1},
+        "end_column": {"type": "integer", "minimum": 0},
+        "statement_sha256": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "kind",
+        "qualified_name",
+        "display_name",
+        "build_variant_id",
+        "signature",
+        "attributes"
+      ],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/pfn_id"},
+        "kind": {
+          "enum": [
+            "COMPILATION_UNIT", "PACKAGE", "MODULE", "CONTRACT", "INTERFACE",
+            "LIBRARY", "TRAIT", "IMPL", "FUNCTION", "METHOD", "MODIFIER",
+            "CONSTRUCTOR", "BASIC_BLOCK", "PARAMETER", "LOCAL", "STATE_SYMBOL",
+            "TYPE", "RESOURCE", "OBJECT", "ACCOUNT_FIELD", "AUTH_SUBJECT",
+            "STORAGE_KEY", "EXTERNAL_SYMBOL", "UNKNOWN_TARGET"
+          ]
+        },
+        "qualified_name": {"type": "string", "minLength": 1},
+        "display_name": {"type": "string"},
+        "build_variant_id": {"$ref": "#/$defs/pfb_id"},
+        "source_binding": {"$ref": "#/$defs/source_binding"},
+        "signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["canonical", "language_specific", "signature_fact_ref"],
+          "properties": {
+            "canonical": {"type": "string"},
+            "language_specific": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0
+            },
+            "signature_fact_ref": {"type": "string"}
+          }
+        },
+        "attributes": {"$ref": "#/$defs/string_set"},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {"enum": ["EXTERNAL_SYMBOL", "UNKNOWN_TARGET"]}
+            },
+            "required": ["kind"]
+          },
+          "then": {"required": ["reason"]},
+          "else": {"required": ["source_binding"], "not": {"required": ["reason"]}}
+        }
+      ]
+    },
+    "ir_binding": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "maxProperties": 0},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["compilation_unit_digest", "block_id", "instruction_id", "ir_sha256"],
+          "properties": {
+            "compilation_unit_digest": {"$ref": "#/$defs/hex64"},
+            "block_id": {"type": "string", "minLength": 1},
+            "instruction_id": {"type": "string", "minLength": 1},
+            "ir_sha256": {"$ref": "#/$defs/hex64"}
+          }
+        }
+      ]
+    },
+    "occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["occurrence_id", "kind", "enclosing_node_id", "source_binding", "ir_binding"],
+      "properties": {
+        "occurrence_id": {"$ref": "#/$defs/pfo_id"},
+        "kind": {
+          "enum": [
+            "CALL_SITE", "READ_SITE", "WRITE_SITE", "BRANCH_PREDICATE",
+            "RETURN_SITE", "SINK_SITE", "AUTH_SITE", "TRANSFER_SITE", "CREATE_SITE"
+          ]
+        },
+        "enclosing_node_id": {"$ref": "#/$defs/pfn_id"},
+        "source_binding": {"$ref": "#/$defs/source_binding"},
+        "ir_binding": {"$ref": "#/$defs/ir_binding"}
+      }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fact_id", "relation_kind", "subject_id", "object_id", "occurrence_ids",
+        "build_variant_id", "provider_run_id", "capability_id", "provenance_origin",
+        "precision", "coverage_scope", "structural_confidence", "context",
+        "semantic_authority", "attestations"
+      ],
+      "properties": {
+        "fact_id": {"$ref": "#/$defs/pff_id"},
+        "relation_kind": {
+          "enum": [
+            "CONTAINS", "DECLARES", "INHERITS_OR_IMPLEMENTS", "EXACT_CFG_EDGE",
+            "EXACT_CFG_DOMINATES", "EXACT_CFG_POST_DOMINATES",
+            "MAY_DEPENDENCY_FUNCTION", "MAY_DEPENDENCY_CONTRACT",
+            "RESOLVED_STATIC_CALL", "MAY_REACH_CHA", "MAY_REACH_RTA",
+            "MAY_REACH_VTA", "UNRESOLVED_DYNAMIC_CALL", "READS_STATE",
+            "WRITES_STATE", "READS_ACCOUNT_FIELD", "WRITES_ACCOUNT_FIELD",
+            "SYNTACTIC_SINK", "HOST_SEMANTIC_SINK", "AUTH_CHECK_OCCURRENCE",
+            "VALUE_TRANSFER_OCCURRENCE", "CREATE_OCCURRENCE",
+            "RESOURCE_FLOW_OCCURRENCE", "OBJECT_FLOW_OCCURRENCE",
+            "HOST_CONSTRAINT_OCCURRENCE"
+          ]
+        },
+        "subject_id": {"$ref": "#/$defs/pfn_id"},
+        "object_id": {"$ref": "#/$defs/pfn_id"},
+        "occurrence_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pfo_id"},
+          "uniqueItems": true
+        },
+        "build_variant_id": {"$ref": "#/$defs/pfb_id"},
+        "provider_run_id": {"type": "string", "minLength": 1},
+        "capability_id": {"$ref": "#/$defs/capability_id"},
+        "provenance_origin": {
+          "enum": ["COMPILER_IR", "SSA", "AST", "BYTECODE", "SOURCE_PARSE", "INDEX_REFERENCE"]
+        },
+        "precision": {"enum": ["EXACT", "MAY", "HEURISTIC", "SYNTACTIC"]},
+        "coverage_scope": {"enum": ["OCCURRENCE", "FUNCTION", "CONTRACT", "PACKAGE", "BUILD_VARIANT"]},
+        "structural_confidence": {"enum": ["PROVIDER_EXACT", "PROVIDER_MAY", "SOURCE_FALLBACK", "UNKNOWN"]},
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "call_dispatch", "analysis_algorithm", "root_set_digest",
+            "dominating_predicates", "host_semantic_kind"
+          ],
+          "properties": {
+            "call_dispatch": {
+              "enum": ["INTERNAL", "LIBRARY", "INTERFACE", "HIGH_LEVEL", "LOW_LEVEL", "DELEGATE", "CREATE", "DYNAMIC", "UNKNOWN"]
+            },
+            "analysis_algorithm": {"type": "string"},
+            "root_set_digest": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]},
+            "dominating_predicates": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/pfo_id"},
+              "uniqueItems": true
+            },
+            "host_semantic_kind": {"type": "string"}
+          }
+        },
+        "semantic_authority": {"const": "ADDITIVE_PROPOSAL_ONLY"},
+        "attestations": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coverage_id", "capability_id", "build_variant_id", "status",
+        "eligible_source_file_ids", "covered_source_file_ids",
+        "excluded_source_file_ids", "unresolved_debt_ids",
+        "denominator_digest", "terminal_negative_authority"
+      ],
+      "properties": {
+        "coverage_id": {"$ref": "#/$defs/pfc_id"},
+        "capability_id": {"$ref": "#/$defs/capability_id"},
+        "build_variant_id": {"$ref": "#/$defs/pfb_id"},
+        "status": {"enum": ["FULL", "PARTIAL", "UNSUPPORTED", "UNKNOWN"]},
+        "eligible_source_file_ids": {"$ref": "#/$defs/pfs_id_set"},
+        "covered_source_file_ids": {"$ref": "#/$defs/pfs_id_set"},
+        "excluded_source_file_ids": {"$ref": "#/$defs/pfs_id_set"},
+        "unresolved_debt_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "denominator_digest": {"$ref": "#/$defs/hex64"},
+        "terminal_negative_authority": {"const": false}
+      }
+    },
+    "pfs_id_set": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/pfs_id"},
+      "uniqueItems": true
+    }
+  }
+}

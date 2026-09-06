@@ -74,7 +74,7 @@ Every finding in `findings_inventory.md` MUST contain these fields:
 **SC-specific** (when available):
 - Step Execution
 - Rules Applied
-- RAG Confidence
+- Precedent Context (`UNSCORED` only; never numeric and never decision authority)
 - Precondition Type / Postcondition Type (for chain summary)
 
 **L1-specific**:
@@ -128,7 +128,7 @@ Trust Assumption Table from `design_context.md`.
 
 | Condition | Tag | Severity Effect |
 |-----------|-----|----------------|
-| Attack requires `FULLY_TRUSTED` actor (governance multisig, DAO, timelock) to act maliciously | `[ASSUMPTION-DEP: TRUSTED-ACTOR]` | -1 tier (applied during report indexing) |
+| Attack may require an explicitly fully-trusted actor to violate a project-stated assumption | `[ASSUMPTION-DEP: TRUSTED-ACTOR]` | Advisory claim; independent evidence-bound adjudication required |
 | Attack requires `SEMI_TRUSTED` actor to act maliciously | No tag | No change -- Likelihood axis handles this |
 | Attack requires `SEMI_TRUSTED` actor to act WITHIN stated bounds | `[ASSUMPTION-DEP: WITHIN-BOUNDS]` | Flag only -- no severity change |
 | Attack requires `SEMI_TRUSTED` actor to EXCEED stated bounds | No tag | Real finding -- no change |
@@ -136,8 +136,9 @@ Trust Assumption Table from `design_context.md`.
 
 ### Hard Rules
 
-- `TRUSTED-ACTOR` is ONLY for `FULLY_TRUSTED` actors. NEVER tag
-  `SEMI_TRUSTED` actors as `TRUSTED-ACTOR`.
+- `TRUSTED-ACTOR` is a producer claim only and is ONLY eligible for explicitly
+  scoped `FULLY_TRUSTED` actors. Record the exact actor/capability and source.
+  NEVER tag `SEMI_TRUSTED` actors, and never apply a severity change here.
 - Only tag if the finding's ENTIRE attack path depends on the
   assumption. If BOTH a trusted-actor path AND an untrusted-actor path
   exist, do NOT tag.

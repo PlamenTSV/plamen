@@ -102,7 +102,7 @@ def test_chain_restatement_no_upgrade_is_clean(tmp_path):
          "CHAIN-RESTATEMENT - absorbed into M-07, Severity-Upgrade-Justified: NO"),
     ])
     issues = pv._validate_report_index_triage_safety(tmp_path)
-    assert issues == [], f"NO-upgrade CHAIN-RESTATEMENT should be allowed, got: {issues}"
+    assert issues, "raw CHAIN-RESTATEMENT must cite an applied alias authority"
 
 
 def test_chain_restatement_prose_absorbed_is_clean(tmp_path):
@@ -118,7 +118,7 @@ def test_chain_restatement_prose_absorbed_is_clean(tmp_path):
          "chain CH-02 absorbed into H-03 (no combined impact)"),
     ])
     issues = pv._validate_report_index_triage_safety(tmp_path)
-    assert issues == [], f"prose CHAIN-RESTATEMENT should be allowed, got: {issues}"
+    assert issues, "prose chain absorption is not an applied alias receipt"
 
 
 def test_chain_downgrade_trust_adj_is_clean(tmp_path):
@@ -133,7 +133,7 @@ def test_chain_downgrade_trust_adj_is_clean(tmp_path):
         ("CH-03", "Medium", "downgraded chain", "CHAIN-DOWNGRADE(Medium)"),
     ])
     issues = pv._validate_report_index_triage_safety(tmp_path)
-    assert issues == [], f"CHAIN-DOWNGRADE should be allowed, got: {issues}"
+    assert issues, "CHAIN-DOWNGRADE prose cannot authorize non-body treatment"
 
 
 # ──────────── (2) NEGATIVE CONTROL: YES-upgrade orphan still flagged ────────────

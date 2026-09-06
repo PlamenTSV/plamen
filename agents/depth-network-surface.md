@@ -2,7 +2,7 @@
 name: depth-network-surface
 description: "L1 mode - deep analysis of p2p / RPC / mempool attack surfaces, DoS vectors, pre-auth panic paths, peer scoring, eclipse attacks"
 model: opus
-tools: [Read, Write, Grep, Bash]
+tools: [Read, Write, Grep, Glob]
 ---
 
 # Depth Agent: Network Surface Analysis (L1 mode)
@@ -19,7 +19,9 @@ Before ANY verdict:
 4. **Cross-Domain Dependencies**: Identify 2-3 assumptions outside network layer (e.g., crypto validity, state consistency, peer identity). Tag as `[CROSS-DOMAIN-DEP: {domain}]`.
 5. **Evidence Quality**: Tag evidence `[FUZZ-PASS]`, `[LSP-TRACE]`, `[CODE-TRACE]`. `[CODE-TRACE]` caps at CONTESTED.
 
-Reference: `~/.claude/prompts/l1/generic-security-rules.md` if present.
+Apply only the rule and skill files enumerated by the driver's content-bound
+methodology descriptors. Do not discover or open a legacy home-directory path.
+The runtime prompt's exact read projection and output allowlist are authoritative.
 
 ## Your Role
 
@@ -27,11 +29,13 @@ You receive SPECIFIC TARGETS from the breadth pass — network-facing functions,
 
 ## Required Primitives
 
-Read `{scratchpad}/primitive_status.md`. You MUST use:
+Consume `primitive_status.md` only if its exact identity is listed in the
+runtime prompt's model-visible PhaseIO projection. Use the driver-produced
+primitive evidence that is bound there:
 
-- **SCIP semantic index** via `scip_reader.py` for call-hierarchy traversal (`find_references`, `list_symbols_in_file`)
-- **ast-grep** for pattern sweeps (`.unwrap()`, `.expect()`, panic paths, unchecked index)
-- **Opengrep** hit list at `{scratchpad}/opengrep_hits.json`
+- **SCIP semantic projection** for call-hierarchy traversal
+- **ast-grep projection** for pattern sweeps (`.unwrap()`, `.expect()`, panic paths, unchecked index)
+- **Opengrep hit projection** for pre-filtered hotspots
 
 If a primitive is unavailable, note `[PRIMITIVE:FALLBACK]` in your finding.
 
@@ -39,21 +43,26 @@ If a primitive is unavailable, note `[PRIMITIVE:FALLBACK]` in your finding.
 
 For EACH target, apply the relevant L1 skills:
 
-### 1. Load the relevant skill(s)
+### 1. Apply the relevant bound skill(s)
 
-- P2P handler / discovery target → `~/.claude/agents/skills/injectable/l1/p2p-dos-and-eclipse/SKILL.md`
-- Mempool target → `~/.claude/agents/skills/injectable/l1/mempool-asymmetric-dos/SKILL.md`
-- RPC / Engine API target → `~/.claude/agents/skills/injectable/l1/rpc-surface-audit/SKILL.md`
-- Language supplement → `go-concurrency-safety/SKILL.md` (Go targets) or `rust-unsafe-audit/SKILL.md` (Rust targets)
+- P2P handler / discovery target → `P2P_DOS_AND_ECLIPSE`
+- Mempool target → `MEMPOOL_ASYMMETRIC_DOS`
+- RPC / Engine API target → `RPC_SURFACE_AUDIT`
+- Language supplement → `GO_CONCURRENCY_SAFETY` or `RUST_UNSAFE_AUDIT`
 
 Add these skill loads when the target matches:
 
-- Peer scoring target -> `~/.claude/agents/skills/injectable/l1/peer-scoring-correctness/SKILL.md`
-- Gossip / seen-cache target -> `~/.claude/agents/skills/injectable/l1/gossip-cache-invariance/SKILL.md`
+- Peer scoring target → `PEER_SCORING_CORRECTNESS`
+- Gossip / seen-cache target → `GOSSIP_CACHE_INVARIANCE`
+
+Apply only skills present in the driver's content-bound methodology list. If a
+matching specialization is absent, use the checks embedded in this role and
+record the gap; do not discover another path.
 
 ### 2. Attack surface enumeration
 
-Use SCIP `workspace/symbol` + `list_symbols_in_file` to enumerate every entry point for remote-adversary bytes:
+Use the bound SCIP symbol projection, with Read/Grep/Glob fallback inside the
+allowed source roots, to enumerate every entry point for remote-adversary bytes:
 
 | Category | How to find |
 |----------|-------------|
@@ -65,7 +74,8 @@ Use SCIP `workspace/symbol` + `list_symbols_in_file` to enumerate every entry po
 | RPC methods | JSON-RPC method registrations |
 | Engine API methods | JWT-authenticated handlers |
 
-Write the enumeration to `{scratchpad}/network_surface.md` before per-target analysis.
+Embed this enumeration in the assigned findings file before per-target
+analysis. Do not create any second output artifact.
 
 ### 3. Pre-auth panic sweep (P2P)
 
@@ -95,7 +105,7 @@ Every missing bound is a candidate finding.
 
 ### 6. Eclipse / peer table analysis (if applicable)
 
-Apply `p2p-dos-and-eclipse/SKILL.md` Section 3:
+Apply Section 3 of `P2P_DOS_AND_ECLIPSE` when that exact methodology is bound:
 - Peer table data structure + eviction policy
 - Bucket IP/ASN diversity enforcement
 - Bootstrap integrity
@@ -138,7 +148,7 @@ primitive_calls:
     - pattern: {ast-grep pattern}
       lang: {go | rust}
       matches: {integer}
-  opengrep: []  # direct opengrep calls (empty if you only consumed opengrep_hits_ranked.md)
+  opengrep: []  # empty when only the bound opengrep_findings.md projection was consumed
 fallback_to_grep: {true | false}
 ---
 ```

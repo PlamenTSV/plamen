@@ -7,6 +7,8 @@ import concurrent.futures
 import threading
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pty_exec import (  # noqa: E402
@@ -45,8 +47,8 @@ def _assistant(stop_reason: str, text: str = "", usage: dict | None = None) -> d
 
 
 def test_project_dir_encoding_matches_local_claude_shape():
-    encoded = encode_claude_project_dir(r"C:\Users\plmnt\.claude")
-    assert encoded.endswith("C--Users-plmnt--claude")
+    encoded = encode_claude_project_dir(r"C:\Users\tester\.claude")
+    assert encoded.endswith("C--Users-tester--claude")
 
 
 def test_project_dir_encoding_converts_underscore_to_hyphen(tmp_path):
@@ -255,6 +257,41 @@ def test_claude_pty_rate_limit_accepts_string_status_codes():
         assert event_is_rate_limited(event) is True
 
 
+@pytest.mark.parametrize("status", ["allowed", "allowed_warning"])
+def test_claude_rate_limit_telemetry_does_not_trigger_replay(
+    tmp_path, status
+):
+    event = {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": status,
+            "resetsAt": 1788452400,
+            "rateLimitType": "five_hour",
+        },
+    }
+    log = tmp_path / "stdio.log"
+    _write_jsonl(log, event, {"type": "result", "subtype": "success"})
+
+    assert event_is_rate_limited(event) is False
+    assert D.detect_rate_limit(log) is False
+
+
+def test_claude_rejected_rate_limit_telemetry_triggers_replay(tmp_path):
+    event = {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": "rejected",
+            "resetsAt": 1788452400,
+            "rateLimitType": "five_hour",
+        },
+    }
+    log = tmp_path / "stdio.log"
+    _write_jsonl(log, event)
+
+    assert event_is_rate_limited(event) is True
+    assert D.detect_rate_limit(log) is True
+
+
 def test_claude_pty_usage_cap_screen_text_is_rate_limited(tmp_path):
     log = tmp_path / "stdio.log"
     log.write_text(
@@ -387,26 +424,47 @@ def test_worker_pool_halt_terminates_registered_active_sessions():
 
     assert session.terminated is True
     assert future.cancelled() is True
-    assert executor.shutdown_args == (False, True)
+    assert executor.shutdown_args == (True, True)
 
 
-def test_worker_pool_context_exit_does_not_wait_for_running_future():
+def test_worker_pool_context_exit_waits_until_running_future_is_terminal():
     release = threading.Event()
 
     def _blocked():
         release.wait(timeout=5)
 
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
     start = time.time()
     try:
-        try:
-            with D._NonBlockingWorkerPool(max_workers=1) as executor:
+        with pytest.raises(RuntimeError, match="abort pool"):
+            with D._JoiningWorkerPool(max_workers=1) as executor:
                 executor.submit(_blocked)
                 raise RuntimeError("abort pool")
-        except RuntimeError:
-            pass
-        assert time.time() - start < 1.0
+        assert time.time() - start >= 0.10
     finally:
         release.set()
+        timer.cancel()
+
+
+def test_worker_pool_cancellation_token_reaches_started_worker_before_join():
+    started = threading.Event()
+    observed_cancel = threading.Event()
+
+    def _worker():
+        token = D._current_worker_cancel_token()
+        assert token is not None
+        started.set()
+        assert token.wait(timeout=2)
+        observed_cancel.set()
+
+    executor = D._JoiningWorkerPool(max_workers=1)
+    future = executor.submit(_worker)
+    assert started.wait(timeout=1)
+    D._cancel_pending_worker_futures({future}, executor)
+
+    assert future.done()
+    assert observed_cancel.is_set()
 
 
 def test_posix_pty_spawn_uses_popen_not_raw_fork_waitpid():

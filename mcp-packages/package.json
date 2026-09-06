@@ -2,12 +2,17 @@
   "name": "plamen-mcp-servers",
   "version": "1.0.0",
   "private": true,
-  "description": "Pinned MCP server packages to prevent schema breakage from npx auto-updates",
+  "description": "Integrity-locked Plamen Node runtimes (MCP servers and admitted CLIs)",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.252",
     "@mcpdotdirect/evm-mcp-server": "2.0.4",
-    "@pranesh.asp/foundry-mcp-server": "0.1.5",
-    "tavily-mcp": "0.2.18",
     "@modelcontextprotocol/server-memory": "2026.1.26",
-    "@mcp-dockmaster/mcp-server-helius": "0.1.6"
+    "@openai/codex": "0.152.0",
+    "@pranesh.asp/foundry-mcp-server": "0.1.5",
+    "helius-mcp": "1.3.0",
+    "tavily-mcp": "0.2.18"
   }
 }

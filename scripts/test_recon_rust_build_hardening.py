@@ -33,7 +33,7 @@ class FakeRunHardened:
         self.envs = []
         self.cmds = []
 
-    def __call__(self, cmd, cwd=None, timeout=None, env=None):
+    def __call__(self, cmd, cwd=None, timeout=None, env=None, **_kwargs):
         self.envs.append(env)
         self.cmds.append(list(cmd))
         idx = min(self.calls, len(self.scripted) - 1)

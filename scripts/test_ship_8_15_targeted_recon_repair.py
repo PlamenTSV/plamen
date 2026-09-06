@@ -6,9 +6,9 @@ A 443-byte recon_summary.md failure quarantined 5 VALID drafts (design_context,
 contract_inventory, state_variables, function_list, template_recommendations),
 forcing a full re-run + recompaction.
 
-Fix: quarantine ONLY the artifacts implicated by the gate-failure messages
-(the `missing` list, previously passed-but-ignored). Fallback to broad
-quarantine when no expected artifact is named (global/structural failure).
+Current worker-pool fix: canonical recon artifacts are authenticated
+prepass/canonical-merge authority and are never retry-owned. Recon quarantine
+targets only isolated worker shards; other phases retain targeted quarantine.
 """
 
 from __future__ import annotations
@@ -66,19 +66,16 @@ def test_pattern_implicated_empty_missing_is_false():
 # targeted quarantine
 # --------------------------------------------------------------------------
 
-def test_targeted_quarantines_only_implicated_artifact(tmp_path):
-    """A failure naming design_context.md (large/stale) quarantines ONLY it;
-    the other valid drafts stay on disk."""
+def test_recon_canonical_artifact_is_not_worker_retry_owned(tmp_path):
+    """A canonical failure cannot remove the prepass producer bundle."""
     sp = tmp_path / ".scratchpad"
     _seed_recon(sp)
     missing = ["recon content: design_context.md missing Operational Implications"]
     renamed = _quarantine_stale_on_retry(sp, RECON, missing)
-    assert renamed == ["design_context.md"]
-    # valid drafts NOT quarantined
-    for keep in ("contract_inventory.md", "state_variables.md",
-                 "function_list.md", "template_recommendations.md"):
+    assert renamed == []
+    for keep in RECON.expected_artifacts:
         assert (sp / keep).exists(), f"{keep} should be preserved"
-    assert not (_qdir(sp) / "contract_inventory.md").exists()
+        assert not (_qdir(sp) / keep).exists()
 
 
 def test_undersized_summary_preserves_valid_drafts(tmp_path):
@@ -99,17 +96,14 @@ def test_undersized_summary_preserves_valid_drafts(tmp_path):
         assert (sp / keep).exists(), f"{keep} must be preserved (was destroyed pre-8.15)"
 
 
-def test_fallback_broad_quarantine_when_no_artifact_named(tmp_path):
-    """A global/structural failure that names no expected artifact keeps the
-    old broad behavior so the retry is not blind."""
+def test_recon_global_failure_preserves_whole_canonical_bundle(tmp_path):
+    """A structural failure still cannot split prepass producer authority."""
     sp = tmp_path / ".scratchpad"
     _seed_recon(sp)
     missing = ["structural: phase produced no valid handoff"]
     renamed = _quarantine_stale_on_retry(sp, RECON, missing)
-    # all large artifacts quarantined (summary is 800 bytes here too)
-    assert "design_context.md" in renamed
-    assert "contract_inventory.md" in renamed
-    assert len(renamed) >= 5
+    assert renamed == []
+    assert all((sp / name).is_file() for name in RECON.expected_artifacts)
 
 
 def test_accumulate_phases_still_skip_quarantine(tmp_path):

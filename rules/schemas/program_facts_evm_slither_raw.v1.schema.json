@@ -1,0 +1,318 @@
+{
+  "$id": "https://plamen.local/schemas/program_facts_evm_slither_raw.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "build_variant_id": {"$ref": "#/$defs/id"},
+    "capability_dispositions": {
+      "items": {"$ref": "#/$defs/capability_disposition"},
+      "type": "array"
+    },
+    "compiled_source_file_ids": {
+      "items": {"pattern": "^PFS-[0-9a-f]{24}$", "type": "string"},
+      "type": "array",
+      "uniqueItems": true
+    },
+    "debts": {"items": {"$ref": "#/$defs/debt"}, "type": "array"},
+    "facts": {"items": {"$ref": "#/$defs/fact"}, "type": "array"},
+    "nodes": {"items": {"$ref": "#/$defs/node"}, "type": "array"},
+    "occurrences": {
+      "items": {"$ref": "#/$defs/occurrence"},
+      "type": "array"
+    },
+    "plan_id": {"$ref": "#/$defs/id"},
+    "provider_run_id": {"$ref": "#/$defs/id"},
+    "schema_version": {"const": "plamen.evm_slither_raw.v1"},
+    "source_manifest_digest": {"$ref": "#/$defs/hex64"},
+    "tool": {"$ref": "#/$defs/tool"},
+    "zero_positive_denominators": {
+      "items": {"$ref": "#/$defs/zero_positive"},
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "plan_id",
+    "provider_run_id",
+    "source_manifest_digest",
+    "build_variant_id",
+    "tool",
+    "compiled_source_file_ids",
+    "capability_dispositions",
+    "nodes",
+    "occurrences",
+    "facts",
+    "debts",
+    "zero_positive_denominators"
+  ],
+  "title": "Plamen EVM Slither raw provider result v1",
+  "type": "object",
+  "$defs": {
+    "capability_disposition": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_id": {"$ref": "#/$defs/id"},
+        "debt_codes": {"$ref": "#/$defs/string_set"},
+        "diagnostic_codes": {"$ref": "#/$defs/string_set"},
+        "disposition": {"enum": ["PARSED", "PARTIAL", "UNAVAILABLE"]}
+      },
+      "required": [
+        "capability_id",
+        "disposition",
+        "diagnostic_codes",
+        "debt_codes"
+      ],
+      "type": "object"
+    },
+    "context": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_algorithm": {"type": "string"},
+        "call_dispatch": {
+          "enum": [
+            "INTERNAL",
+            "LIBRARY",
+            "INTERFACE",
+            "HIGH_LEVEL",
+            "LOW_LEVEL",
+            "DELEGATE",
+            "CREATE",
+            "DYNAMIC",
+            "UNKNOWN"
+          ]
+        },
+        "dominating_predicates": {"$ref": "#/$defs/string_set"},
+        "host_semantic_kind": {"type": "string"},
+        "root_set_digest": {
+          "oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]
+        }
+      },
+      "required": [
+        "call_dispatch",
+        "analysis_algorithm",
+        "root_set_digest",
+        "dominating_predicates",
+        "host_semantic_kind"
+      ],
+      "type": "object"
+    },
+    "debt": {
+      "additionalProperties": false,
+      "properties": {
+        "blocks_reuse": {"type": "boolean"},
+        "capability_id": {"$ref": "#/$defs/id"},
+        "evidence_refs": {
+          "items": {"pattern": "^sha256:[0-9a-f]{64}$", "type": "string"},
+          "type": "array",
+          "uniqueItems": true
+        },
+        "explanation": {"minLength": 1, "type": "string"},
+        "reason": {"pattern": "^[A-Z][A-Z0-9_]{0,127}$", "type": "string"},
+        "retryable": {"type": "boolean"},
+        "scope_local_ids": {"$ref": "#/$defs/string_set"}
+      },
+      "required": [
+        "reason",
+        "capability_id",
+        "scope_local_ids",
+        "explanation",
+        "evidence_refs",
+        "retryable",
+        "blocks_reuse"
+      ],
+      "type": "object"
+    },
+    "fact": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_id": {"$ref": "#/$defs/id"},
+        "context": {"$ref": "#/$defs/context"},
+        "coverage_scope": {"enum": ["LOCAL", "FUNCTION", "CONTRACT", "BUILD"]},
+        "object_local_id": {"$ref": "#/$defs/id"},
+        "occurrence_local_ids": {"$ref": "#/$defs/string_set"},
+        "precision": {"enum": ["EXACT", "MAY", "HEURISTIC", "SYNTACTIC"]},
+        "provenance_origin": {
+          "enum": [
+            "COMPILER_IR",
+            "SSA",
+            "AST",
+            "BYTECODE",
+            "SOURCE_PARSE",
+            "INDEX_REFERENCE"
+          ]
+        },
+        "relation_kind": {"minLength": 1, "type": "string"},
+        "structural_confidence": {
+          "enum": ["PROVIDER_EXACT", "PROVIDER_MAY", "SOURCE_FALLBACK"]
+        },
+        "subject_local_id": {"$ref": "#/$defs/id"}
+      },
+      "required": [
+        "capability_id",
+        "relation_kind",
+        "subject_local_id",
+        "object_local_id",
+        "occurrence_local_ids",
+        "provenance_origin",
+        "precision",
+        "coverage_scope",
+        "structural_confidence",
+        "context"
+      ],
+      "type": "object"
+    },
+    "hex64": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "type": "string"
+    },
+    "ir_binding": {
+      "oneOf": [
+        {"additionalProperties": false, "maxProperties": 0, "type": "object"},
+        {
+          "additionalProperties": false,
+          "properties": {
+            "block_id": {"type": "string"},
+            "instruction_id": {"type": "string"},
+            "opcode_kind": {"type": "string"},
+            "ssa_value_ids": {"$ref": "#/$defs/string_set"}
+          },
+          "required": [
+            "block_id",
+            "instruction_id",
+            "opcode_kind",
+            "ssa_value_ids"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "node": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {"$ref": "#/$defs/string_set"},
+        "canonical_signature": {"type": "string"},
+        "display_name": {"type": "string"},
+        "kind": {"minLength": 1, "type": "string"},
+        "local_id": {"$ref": "#/$defs/id"},
+        "qualified_name": {"minLength": 1, "type": "string"},
+        "reason": {"type": "string"},
+        "source": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/source"}]
+        }
+      },
+      "required": [
+        "local_id",
+        "kind",
+        "qualified_name",
+        "display_name",
+        "canonical_signature",
+        "attributes",
+        "source",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "occurrence": {
+      "additionalProperties": false,
+      "properties": {
+        "enclosing_local_id": {"$ref": "#/$defs/id"},
+        "ir_binding": {"$ref": "#/$defs/ir_binding"},
+        "kind": {"minLength": 1, "type": "string"},
+        "local_id": {"$ref": "#/$defs/id"},
+        "source": {"$ref": "#/$defs/source"}
+      },
+      "required": [
+        "local_id",
+        "kind",
+        "enclosing_local_id",
+        "source",
+        "ir_binding"
+      ],
+      "type": "object"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "end_byte": {"minimum": 0, "type": "integer"},
+        "path": {"minLength": 1, "type": "string"},
+        "source_file_id": {
+          "pattern": "^PFS-[0-9a-f]{24}$",
+          "type": "string"
+        },
+        "start_byte": {"minimum": 0, "type": "integer"}
+      },
+      "required": ["source_file_id", "path", "start_byte", "end_byte"],
+      "type": "object"
+    },
+    "string_set": {
+      "items": {"minLength": 1, "type": "string"},
+      "type": "array",
+      "uniqueItems": true
+    },
+    "tool": {
+      "additionalProperties": false,
+      "properties": {
+        "distribution_checksum": {"$ref": "#/$defs/hex64"},
+        "distribution_name": {"minLength": 1, "type": "string"},
+        "distribution_version": {"minLength": 1, "type": "string"},
+        "executable_or_module_digest": {"$ref": "#/$defs/hex64"},
+        "name": {"minLength": 1, "type": "string"},
+        "parser_source_digest": {"$ref": "#/$defs/hex64"},
+        "raw_schema_digest": {"$ref": "#/$defs/hex64"},
+        "toolchains": {
+          "items": {"$ref": "#/$defs/toolchain"},
+          "type": "array",
+          "uniqueItems": true
+        },
+        "version_output": {"minLength": 1, "type": "string"}
+      },
+      "required": [
+        "name",
+        "executable_or_module_digest",
+        "distribution_name",
+        "distribution_version",
+        "distribution_checksum",
+        "version_output",
+        "parser_source_digest",
+        "raw_schema_digest",
+        "toolchains"
+      ],
+      "type": "object"
+    },
+    "toolchain": {
+      "additionalProperties": false,
+      "properties": {
+        "identity_digest": {"$ref": "#/$defs/hex64"},
+        "name": {"minLength": 1, "type": "string"},
+        "version": {"minLength": 1, "type": "string"}
+      },
+      "required": ["name", "version", "identity_digest"],
+      "type": "object"
+    },
+    "zero_positive": {
+      "additionalProperties": false,
+      "properties": {
+        "build_variant_id": {"$ref": "#/$defs/id"},
+        "capability_id": {"$ref": "#/$defs/id"},
+        "denominator_kind": {"minLength": 1, "type": "string"},
+        "node_local_ids": {"$ref": "#/$defs/string_set"},
+        "source_file_ids": {
+          "items": {"pattern": "^PFS-[0-9a-f]{24}$", "type": "string"},
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "capability_id",
+        "build_variant_id",
+        "denominator_kind",
+        "node_local_ids",
+        "source_file_ids"
+      ],
+      "type": "object"
+    }
+  }
+}

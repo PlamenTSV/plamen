@@ -6,7 +6,7 @@ description: "Trigger REENTRANCY flag detected (dynamic dispatch, closures, disp
 # Skill: REENTRANCY_ANALYSIS
 
 > **Trigger**: REENTRANCY flag detected (dynamic dispatch, closures, dispatchable FA, function values)
-> **Used by**: Breadth agents, depth-state-trace
+> **Inject Into**: Breadth agents, depth-state-trace
 > **Covers**: Cross-module reentrancy via closures, dispatchable FA hook reentrancy, direct/indirect reentrancy, resource lock gaps
 
 ## Purpose

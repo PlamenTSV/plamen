@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_content_pack_manifest.v1.schema.json",
+  "title": "Program Facts content pack manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pack_format",
+    "content_pack_digest",
+    "content_pack_size",
+    "members",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_content_pack_manifest.v1"
+    },
+    "pack_format": {
+      "const": "PFCAS_V1"
+    },
+    "content_pack_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "content_pack_size": {
+      "$ref": "#/$defs/size"
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/member"
+      },
+      "maxItems": 1000000
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "portablePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._/-]+$"
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_path",
+        "role",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "logical_path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "role": {
+          "enum": [
+            "SOURCE",
+            "CONFIG",
+            "LOCK",
+            "DEPENDENCY",
+            "GENERATED_INPUT",
+            "TOOL_SUPPORT"
+          ]
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

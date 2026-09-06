@@ -1,0 +1,2120 @@
+{
+  "owners": [
+    {
+      "legacy_normalization_or_null": {
+        "content_sha256_lf_nfc": "c6a6a1f83e70d70b925a539b71a75273bf8d2fd1d638cdab0c26580e96f28f70",
+        "format": "markdown"
+      },
+      "normalized_owner_sha256": "c6a6a1f83e70d70b925a539b71a75273bf8d2fd1d638cdab0c26580e96f28f70",
+      "normative_document": {
+        "path": "benchmarks/application-coverage-evaluation-plan.md",
+        "sha256": "c6a6a1f83e70d70b925a539b71a75273bf8d2fd1d638cdab0c26580e96f28f70",
+        "size_bytes": 19384
+      },
+      "owner_key": "evaluation",
+      "status": "INHERITED_V1"
+    },
+    {
+      "legacy_normalization_or_null": {
+        "content_sha256_lf_nfc": "2db7f1c77bf1776b7ebc00633e146e13a57ebbabf0675b05a151459a0ccb4342",
+        "format": "markdown"
+      },
+      "normalized_owner_sha256": "2db7f1c77bf1776b7ebc00633e146e13a57ebbabf0675b05a151459a0ccb4342",
+      "normative_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.md",
+        "sha256": "2db7f1c77bf1776b7ebc00633e146e13a57ebbabf0675b05a151459a0ccb4342",
+        "size_bytes": 16638
+      },
+      "owner_key": "graph",
+      "status": "INHERITED_V1"
+    },
+    {
+      "legacy_normalization_or_null": {
+        "content_sha256_lf_nfc": "b6e3375d5e8e7d3a04d8ae08006e09e5d5609b89b4f91f4f09370c0732d698b2",
+        "format": "json"
+      },
+      "normalized_owner_sha256": "b6e3375d5e8e7d3a04d8ae08006e09e5d5609b89b4f91f4f09370c0732d698b2",
+      "normative_document": {
+        "path": "methodology/method-cards-v1.yaml",
+        "sha256": "b6e3375d5e8e7d3a04d8ae08006e09e5d5609b89b4f91f4f09370c0732d698b2",
+        "size_bytes": 41462
+      },
+      "owner_key": "method_catalog",
+      "status": "INHERITED_V1"
+    },
+    {
+      "legacy_normalization_or_null": null,
+      "normalized_owner_sha256": "2f2025cf636ca80df560d7568760f6ebfc114a2c344a895940ea76566c953c79",
+      "normative_document": {
+        "path": "architecture/program-facts-runtime-cutover-spec.md",
+        "sha256": "2f2025cf636ca80df560d7568760f6ebfc114a2c344a895940ea76566c953c79",
+        "size_bytes": 238989
+      },
+      "owner_key": "program_facts_runtime",
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "legacy_normalization_or_null": {
+        "content_sha256_lf_nfc": "2778af4391ec5a7f725d908c446bb3d9ebaf105fe13f08a3a46f37cadd0f35b4",
+        "format": "markdown"
+      },
+      "normalized_owner_sha256": "2778af4391ec5a7f725d908c446bb3d9ebaf105fe13f08a3a46f37cadd0f35b4",
+      "normative_document": {
+        "path": "architecture/method-application-rfc.md",
+        "sha256": "2778af4391ec5a7f725d908c446bb3d9ebaf105fe13f08a3a46f37cadd0f35b4",
+        "size_bytes": 37080
+      },
+      "owner_key": "rfc",
+      "status": "INHERITED_V1"
+    },
+    {
+      "legacy_normalization_or_null": {
+        "content_sha256_lf_nfc": "e94344e0dd9f0ba7b6a5bcc0d742998e0eca5632986ca278a9bde4ab86803110",
+        "format": "markdown"
+      },
+      "normalized_owner_sha256": "e94344e0dd9f0ba7b6a5bcc0d742998e0eca5632986ca278a9bde4ab86803110",
+      "normative_document": {
+        "path": "architecture/work-unit-scheduler.md",
+        "sha256": "e94344e0dd9f0ba7b6a5bcc0d742998e0eca5632986ca278a9bde4ab86803110",
+        "size_bytes": 16081
+      },
+      "owner_key": "scheduler",
+      "status": "INHERITED_V1"
+    }
+  ],
+  "predecessor": {
+    "path": "architecture/canonical-requirement-ownership.v1.json",
+    "sha256": "04f7af72fbe840872ec2c00cfac7f28bb4823a98206e01c083df60f89350ca85",
+    "size_bytes": 18770
+  },
+  "redirects": [
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-01",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-02",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-03",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-04",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-05",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-06",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-07",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-08",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-09",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-10",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-11",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-12",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-13",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-14",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-15",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-16",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-17",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    },
+    {
+      "predecessor_owner_key": "graph",
+      "predecessor_requirement_id": "GP-18",
+      "reason": "public-v3-shadow-contract-successor",
+      "successor_document": {
+        "path": "architecture/ecosystem-graph-provider-contract.v2.md",
+        "sha256": "92a25f0d4506be18868f3b43483d5653cefd6c8cd3e30ae2c59bc5b41b5874c8",
+        "size_bytes": 19126
+      },
+      "successor_owner_key": "graph"
+    }
+  ],
+  "registry_body_sha256": "d238dfbe8d5ab54f7a0060a0e142d3f8d1049057ed66de3ec943ccb472c39d5e",
+  "requirements": [
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 0,
+      "requirement_id": "MA-01",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 1,
+      "requirement_id": "MA-02",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 2,
+      "requirement_id": "MA-03",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "obligation-application-evidence-receipt"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 3,
+      "requirement_id": "MA-04",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "obligation-application-evidence-receipt"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 4,
+      "requirement_id": "MA-05",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 5,
+      "requirement_id": "MA-06",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "premises"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 6,
+      "requirement_id": "MA-07",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 7,
+      "requirement_id": "MA-08",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 8,
+      "requirement_id": "MA-09",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 9,
+      "requirement_id": "MA-10",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "disposition-policy"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 10,
+      "requirement_id": "MA-11",
+      "section_ordinal_or_null": 23,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "disposition-policy"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 11,
+      "requirement_id": "MA-12",
+      "section_ordinal_or_null": 23,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "disposition-policy"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 12,
+      "requirement_id": "MA-13",
+      "section_ordinal_or_null": 23,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "terminal-negatives"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 13,
+      "requirement_id": "MA-14",
+      "section_ordinal_or_null": 24,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 14,
+      "requirement_id": "MA-15",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 15,
+      "requirement_id": "MA-16",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 16,
+      "requirement_id": "MA-17",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 17,
+      "requirement_id": "MA-18",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 18,
+      "requirement_id": "MA-19",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 19,
+      "requirement_id": "MA-20",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 20,
+      "requirement_id": "MA-21",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 21,
+      "requirement_id": "MA-22",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 22,
+      "requirement_id": "MA-23",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 23,
+      "requirement_id": "MA-24",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 24,
+      "requirement_id": "MA-25",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 25,
+      "requirement_id": "MA-26",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "common-evidence-validation-interface"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 26,
+      "requirement_id": "MA-27",
+      "section_ordinal_or_null": 11,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 27,
+      "requirement_id": "MA-28",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 28,
+      "requirement_id": "MA-29",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 29,
+      "requirement_id": "MA-30",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 30,
+      "requirement_id": "MA-31",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 31,
+      "requirement_id": "MA-32",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "requirement-ownership-and-residual-matrix"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 32,
+      "requirement_id": "MA-33",
+      "section_ordinal_or_null": 34,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 33,
+      "requirement_id": "GP-01",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 34,
+      "requirement_id": "GP-02",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 35,
+      "requirement_id": "GP-03",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 36,
+      "requirement_id": "GP-04",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 37,
+      "requirement_id": "GP-05",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 38,
+      "requirement_id": "GP-06",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 39,
+      "requirement_id": "GP-07",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 40,
+      "requirement_id": "GP-08",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 41,
+      "requirement_id": "GP-09",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 42,
+      "requirement_id": "GP-10",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 43,
+      "requirement_id": "GP-11",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 44,
+      "requirement_id": "GP-12",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 45,
+      "requirement_id": "GP-13",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 46,
+      "requirement_id": "GP-14",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 47,
+      "requirement_id": "GP-15",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 48,
+      "requirement_id": "GP-16",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 49,
+      "requirement_id": "GP-17",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "provider-conformance-matrix"
+      },
+      "owner_key": "graph",
+      "registry_ordinal": 50,
+      "requirement_id": "GP-18",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 51,
+      "requirement_id": "MC-01",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 52,
+      "requirement_id": "MC-02",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 53,
+      "requirement_id": "MC-03",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 54,
+      "requirement_id": "MC-04",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 55,
+      "requirement_id": "MC-05",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 56,
+      "requirement_id": "MC-06",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 57,
+      "requirement_id": "MC-07",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 58,
+      "requirement_id": "MC-08",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 59,
+      "requirement_id": "MC-09",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 60,
+      "requirement_id": "MC-10",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 61,
+      "requirement_id": "MC-11",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 62,
+      "requirement_id": "MC-12",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 63,
+      "requirement_id": "MC-13",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "JSON_POINTER",
+        "value": "/schema_version"
+      },
+      "owner_key": "method_catalog",
+      "registry_ordinal": 64,
+      "requirement_id": "MC-14",
+      "section_ordinal_or_null": null,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 65,
+      "requirement_id": "FL-01",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 66,
+      "requirement_id": "FL-02",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 67,
+      "requirement_id": "FL-03",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 68,
+      "requirement_id": "FL-04",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 69,
+      "requirement_id": "FL-05",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 70,
+      "requirement_id": "FL-06",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 71,
+      "requirement_id": "FL-07",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 72,
+      "requirement_id": "FL-08",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 73,
+      "requirement_id": "FL-09",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 74,
+      "requirement_id": "FL-10",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 75,
+      "requirement_id": "FL-11",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-storage-and-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 76,
+      "requirement_id": "FL-12",
+      "section_ordinal_or_null": 30,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "rollbackparser-retirement"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 77,
+      "requirement_id": "FL-13",
+      "section_ordinal_or_null": 31,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "rollbackparser-retirement"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 78,
+      "requirement_id": "FL-14",
+      "section_ordinal_or_null": 31,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "rollbackparser-retirement"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 79,
+      "requirement_id": "FL-15",
+      "section_ordinal_or_null": 31,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "rollbackparser-retirement"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 80,
+      "requirement_id": "FL-16",
+      "section_ordinal_or_null": 31,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 81,
+      "requirement_id": "EV-01",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 82,
+      "requirement_id": "EV-02",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 83,
+      "requirement_id": "EV-03",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 84,
+      "requirement_id": "EV-04",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 85,
+      "requirement_id": "EV-05",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 86,
+      "requirement_id": "EV-06",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 87,
+      "requirement_id": "EV-07",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 88,
+      "requirement_id": "EV-08",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 89,
+      "requirement_id": "EV-09",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 90,
+      "requirement_id": "EV-10",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 91,
+      "requirement_id": "EV-11",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 92,
+      "requirement_id": "EV-12",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 93,
+      "requirement_id": "EV-13",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 94,
+      "requirement_id": "EV-14",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 95,
+      "requirement_id": "EV-15",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "lifecycle-localization"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 96,
+      "requirement_id": "EV-16",
+      "section_ordinal_or_null": 10,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "typed-authority-ablations"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 97,
+      "requirement_id": "EV-17",
+      "section_ordinal_or_null": 21,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "pashov-adapter"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 98,
+      "requirement_id": "EV-18",
+      "section_ordinal_or_null": 24,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "pashov-adapter"
+      },
+      "owner_key": "evaluation",
+      "registry_ordinal": 99,
+      "requirement_id": "EV-19",
+      "section_ordinal_or_null": 24,
+      "status": "REPRESENTED_WITH_EXTERNAL_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 100,
+      "requirement_id": "WS-01",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 101,
+      "requirement_id": "WS-02",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 102,
+      "requirement_id": "WS-03",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 103,
+      "requirement_id": "WS-04",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 104,
+      "requirement_id": "WS-05",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 105,
+      "requirement_id": "WS-06",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 106,
+      "requirement_id": "WS-07",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 107,
+      "requirement_id": "WS-08",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 108,
+      "requirement_id": "WS-09",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 109,
+      "requirement_id": "WS-10",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 110,
+      "requirement_id": "WS-11",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 111,
+      "requirement_id": "WS-12",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 112,
+      "requirement_id": "WS-13",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 113,
+      "requirement_id": "WS-14",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 114,
+      "requirement_id": "WS-15",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 115,
+      "requirement_id": "WS-16",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "follow-up-trigger-contract"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 116,
+      "requirement_id": "WS-17",
+      "section_ordinal_or_null": 8,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "multi-output-projection-recovery"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 117,
+      "requirement_id": "WS-18",
+      "section_ordinal_or_null": 17,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "multi-output-projection-recovery"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 118,
+      "requirement_id": "WS-19",
+      "section_ordinal_or_null": 17,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "multi-output-projection-recovery"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 119,
+      "requirement_id": "WS-20",
+      "section_ordinal_or_null": 17,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "multi-output-projection-recovery"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 120,
+      "requirement_id": "WS-21",
+      "section_ordinal_or_null": 17,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "multi-output-projection-recovery"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 121,
+      "requirement_id": "WS-22",
+      "section_ordinal_or_null": 17,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "multi-output-projection-recovery"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 122,
+      "requirement_id": "WS-23",
+      "section_ordinal_or_null": 17,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "multi-output-projection-recovery"
+      },
+      "owner_key": "scheduler",
+      "registry_ordinal": 123,
+      "requirement_id": "WS-24",
+      "section_ordinal_or_null": 17,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "premises"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 124,
+      "requirement_id": "PD-01",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "premises"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 125,
+      "requirement_id": "PD-02",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "premises"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 126,
+      "requirement_id": "PD-03",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "premises"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 127,
+      "requirement_id": "PD-04",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "premises"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 128,
+      "requirement_id": "PD-05",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "premises"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 129,
+      "requirement_id": "PD-06",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "premises"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 130,
+      "requirement_id": "PD-07",
+      "section_ordinal_or_null": 22,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "disposition-policy"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 131,
+      "requirement_id": "PD-08",
+      "section_ordinal_or_null": 23,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "disposition-policy"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 132,
+      "requirement_id": "PD-09",
+      "section_ordinal_or_null": 23,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "disposition-policy"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 133,
+      "requirement_id": "PD-10",
+      "section_ordinal_or_null": 23,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "disposition-policy"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 134,
+      "requirement_id": "PD-11",
+      "section_ordinal_or_null": 23,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "disposition-policy"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 135,
+      "requirement_id": "PD-12",
+      "section_ordinal_or_null": 23,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "disposition-policy"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 136,
+      "requirement_id": "PD-13",
+      "section_ordinal_or_null": 23,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "terminal-negatives"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 137,
+      "requirement_id": "PD-14",
+      "section_ordinal_or_null": 24,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "terminal-negatives"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 138,
+      "requirement_id": "PD-15",
+      "section_ordinal_or_null": 24,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "terminal-negatives"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 139,
+      "requirement_id": "PD-16",
+      "section_ordinal_or_null": 24,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "terminal-negatives"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 140,
+      "requirement_id": "PD-17",
+      "section_ordinal_or_null": 24,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "terminal-negatives"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 141,
+      "requirement_id": "PD-18",
+      "section_ordinal_or_null": 24,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "r10-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 142,
+      "requirement_id": "PD-19",
+      "section_ordinal_or_null": 25,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "r10-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 143,
+      "requirement_id": "PD-20",
+      "section_ordinal_or_null": 25,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "r10-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 144,
+      "requirement_id": "PD-21",
+      "section_ordinal_or_null": 25,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "r10-migration"
+      },
+      "owner_key": "rfc",
+      "registry_ordinal": 145,
+      "requirement_id": "PD-22",
+      "section_ordinal_or_null": 25,
+      "status": "REPRESENTED_WITH_RESIDUAL"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "1-authority-boundary-and-hard-preconditions"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 146,
+      "requirement_id": "PFR-01",
+      "section_ordinal_or_null": 1,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "2-required-public-contract-amendment"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 147,
+      "requirement_id": "PFR-02",
+      "section_ordinal_or_null": 2,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "3-deterministic-primitives"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 148,
+      "requirement_id": "PFR-03",
+      "section_ordinal_or_null": 3,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "4-exact-schemas-and-artifact-paths"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 149,
+      "requirement_id": "PFR-04",
+      "section_ordinal_or_null": 4,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "5-acyclic-identity-construction"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 150,
+      "requirement_id": "PFR-05",
+      "section_ordinal_or_null": 5,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "6-sub-stages-and-exact-ownership"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 151,
+      "requirement_id": "PFR-06",
+      "section_ordinal_or_null": 6,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "7-crash-safe-generation-indirected-publication"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 152,
+      "requirement_id": "PFR-07",
+      "section_ordinal_or_null": 7,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "8-deterministic-runner-and-replay"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 153,
+      "requirement_id": "PFR-08",
+      "section_ordinal_or_null": 8,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "9-ecosystem-host-toolchain-and-package-decisions"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 154,
+      "requirement_id": "PFR-09",
+      "section_ordinal_or_null": 9,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "10-failure-taxonomy"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 155,
+      "requirement_id": "PFR-10",
+      "section_ordinal_or_null": 10,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "11-cache-concurrency-migration-and-rollback"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 156,
+      "requirement_id": "PFR-11",
+      "section_ordinal_or_null": 11,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "12-independent-oracle-and-exact-acceptance-denominator"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 157,
+      "requirement_id": "PFR-12",
+      "section_ordinal_or_null": 12,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "13-security-and-no-self-certification"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 158,
+      "requirement_id": "PFR-13",
+      "section_ordinal_or_null": 13,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "14-governance-freeze-and-independent-review-workflow"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 159,
+      "requirement_id": "PFR-14",
+      "section_ordinal_or_null": 14,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "15-mandatory-gate-3-order"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 160,
+      "requirement_id": "PFR-15",
+      "section_ordinal_or_null": 15,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "16-current-blockers-and-exact-non-cutover-consequences"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 161,
+      "requirement_id": "PFR-16",
+      "section_ordinal_or_null": 16,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "17-source-and-decision-provenance"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 162,
+      "requirement_id": "PFR-17",
+      "section_ordinal_or_null": 17,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "18-eight-residual-implementation-readiness-repair-map"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 163,
+      "requirement_id": "PFR-18",
+      "section_ordinal_or_null": 18,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "19-explicit-invariants-and-assumptions"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 164,
+      "requirement_id": "PFR-19",
+      "section_ordinal_or_null": 19,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    },
+    {
+      "anchor": {
+        "kind": "MARKDOWN_ANCHOR",
+        "value": "20-non-goals-and-authority-ceiling"
+      },
+      "owner_key": "program_facts_runtime",
+      "registry_ordinal": 165,
+      "requirement_id": "PFR-20",
+      "section_ordinal_or_null": 20,
+      "status": "CONTRACT_ONLY_PENDING_IMPLEMENTATION"
+    }
+  ],
+  "schema_version": "plamen.canonical_requirement_ownership.v2"
+}

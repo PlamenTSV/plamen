@@ -5,11 +5,11 @@ findings while the Master Finding Index actually listed 74 distinct report IDs.
 Tier writers dispatched against that inconsistent index then hallucinated ghost
 IDs to fill the 45->74 gap, producing report findings with no backing section.
 
-`validate_report_index_summary_master_parity` is the UPSTREAM root fix at
-report_index (before tier writers dispatch): the Master Finding Index is the
-cardinality contract, so the gate rewrites the `## Summary` table to match the
-distinct Master report-ID set. It is a NO-OP (no false flag) when consistent,
-and it NEVER adds/drops Master rows — only the summary metadata is corrected.
+The pure derivation is the upstream root fix at report_index: the Master
+Finding Index is the cardinality contract, so the canonical DRIVER successor
+publishes a derived `## Summary` table that matches the distinct Master
+report-ID set. The observational validator never writes raw or canonical
+artifacts. A consistent index is a byte-identical derivation.
 
 Run: pytest scripts/test_report_index_summary_master_parity_a2.py -q
 """
@@ -66,6 +66,12 @@ def _summary_count(scratchpad: Path, sev_name: str) -> int:
     return int(m.group(1)) if m else -1
 
 
+def _summary_count_bytes(raw: bytes, sev_name: str) -> int:
+    txt = raw.decode("utf-8", errors="strict")
+    m = re.search(rf"\|\s*{sev_name}\s*\|\s*(\d+)\s*\|", txt)
+    return int(m.group(1)) if m else -1
+
+
 def _master_row_count(scratchpad: Path) -> int:
     return len(V._parse_master_finding_index_rows(scratchpad))
 
@@ -80,13 +86,17 @@ def test_a2_drift_shape_summary_repaired_to_master_cardinality():
     _mk_index(d, summary={"M": 45}, master={"M": 74})
 
     master_before = _master_row_count(d)
+    raw = (d / "report_index.md").read_bytes()
+    derivation = V.derive_report_index_summary_master_parity(raw)
     notes = V.validate_report_index_summary_master_parity(d)
 
     assert notes, "drift must be flagged"
     assert any("Master" in n for n in notes)
-    # Summary self-healed to Master cardinality.
-    assert _summary_count(d, "Medium") == 74
-    assert _summary_count(d, "Total") == 74
+    assert derivation.repair_required
+    assert _summary_count_bytes(derivation.output_bytes, "Medium") == 74
+    assert _summary_count_bytes(derivation.output_bytes, "Total") == 74
+    # Observation cannot rewrite the raw MODEL/canonical pointer.
+    assert (d / "report_index.md").read_bytes() == raw
     # Master rows themselves are untouched (no findings added/dropped).
     assert _master_row_count(d) == master_before == 74
 
@@ -99,14 +109,17 @@ def test_a2_multi_tier_drift_all_repaired():
         summary={"C": 1, "H": 2, "M": 3, "L": 0, "I": 0},
         master={"C": 2, "H": 5, "M": 10, "L": 4, "I": 1},
     )
+    raw = (d / "report_index.md").read_bytes()
+    derivation = V.derive_report_index_summary_master_parity(raw)
     notes = V.validate_report_index_summary_master_parity(d)
     assert notes
-    assert _summary_count(d, "Critical") == 2
-    assert _summary_count(d, "High") == 5
-    assert _summary_count(d, "Medium") == 10
-    assert _summary_count(d, "Low") == 4
-    assert _summary_count(d, "Informational") == 1
-    assert _summary_count(d, "Total") == 22
+    assert _summary_count_bytes(derivation.output_bytes, "Critical") == 2
+    assert _summary_count_bytes(derivation.output_bytes, "High") == 5
+    assert _summary_count_bytes(derivation.output_bytes, "Medium") == 10
+    assert _summary_count_bytes(derivation.output_bytes, "Low") == 4
+    assert _summary_count_bytes(derivation.output_bytes, "Informational") == 1
+    assert _summary_count_bytes(derivation.output_bytes, "Total") == 22
+    assert (d / "report_index.md").read_bytes() == raw
 
 
 # --------------------------------------------------------------------------- #
@@ -134,9 +147,16 @@ def test_a2_master_total_equals_summary_total_after_repair():
     total — the invariant tier writers rely on."""
     d = Path(tempfile.mkdtemp())
     _mk_index(d, summary={"M": 3}, master={"C": 1, "H": 1, "M": 12, "L": 2})
+    raw = (d / "report_index.md").read_bytes()
+    derivation = V.derive_report_index_summary_master_parity(raw)
     V.validate_report_index_summary_master_parity(d)
     distinct_master = len(V._distinct_master_report_ids(d))
-    assert _summary_count(d, "Total") == distinct_master == 16
+    assert (
+        _summary_count_bytes(derivation.output_bytes, "Total")
+        == distinct_master
+        == 16
+    )
+    assert (d / "report_index.md").read_bytes() == raw
 
 
 # --------------------------------------------------------------------------- #

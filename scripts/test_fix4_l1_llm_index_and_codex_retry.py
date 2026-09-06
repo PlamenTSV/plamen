@@ -156,7 +156,7 @@ def test_codex_extra_retry_loop_wired_into_driver():
         "driver must consult the Codex retry-budget helper in the retry loop"
     )
     # The extra-attempt block re-runs the same gated phase and re-validates.
-    loop_idx = src.index("_codex_max_attempts_for_phase(\n")
+    loop_idx = src.index("_codex_budget = _codex_max_attempts_for_phase(")
     window = src[loop_idx:loop_idx + 4000]
     assert "run_phase(phase, config, attempt=_codex_attempt)" in window, (
         "extra attempt must re-run the same phase via run_phase"

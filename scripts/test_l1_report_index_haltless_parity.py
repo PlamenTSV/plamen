@@ -30,8 +30,11 @@ Index rows, and a real report_coverage.md ledger.
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pytest
+
+import plamen_parsers as P
 
 from plamen_validators import (
     _validate_verify_files_for_queue,
@@ -40,22 +43,33 @@ from plamen_validators import (
     _repair_report_index_severity_provenance,
     _rescan_manifest_exact_missing,
 )
-from plamen_types import Phase
+from plamen_types import L1_VERIFY_SHARD_MANIFESTS, Phase
+from queue_work_items import VerifierOutputIdentity, VerifierOutputReceipt
+from test_verifier_output_receipt_runtime_p0_aj import (
+    LAUNCH_DIGEST,
+    _proposal_bytes,
+)
 
 
 # --------------------------------------------------------------------------- #
 # Fixture builders                                                            #
 # --------------------------------------------------------------------------- #
 def _write_queue(sp: Path, ids_sevs: list[tuple[str, str]]) -> None:
-    lines = [
-        "# Verification Queue",
-        "",
-        "| Finding ID | Title | Severity | Preferred Tag |",
-        "|------------|-------|----------|---------------|",
-    ]
-    for fid, sev in ids_sevs:
-        lines.append(f"| {fid} | Some bug in {fid} | {sev} | CODE-TRACE |")
-    (sp / "verification_queue.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    rows = []
+    for number, (fid, sev) in enumerate(ids_sevs, 1):
+        rows.append({
+            "queue #": str(number),
+            "finding id": fid,
+            "expected output file": f"verify_{fid}.md",
+            "severity": sev,
+            "title": f"Some bug in {fid}",
+            "bug class": "state-transition",
+            "preferred tag": "CODE-TRACE",
+            "location": "src/Mod.go:100",
+            "primary artifact": "findings_inventory.md",
+            "poc class": "structural",
+        })
+    P._write_queue_subset_manifest(sp / "verification_queue.md", rows)
 
 
 def _write_verify(sp: Path, fid: str, severity: str, verdict: str = "CONFIRMED") -> None:
@@ -83,7 +97,41 @@ def _write_verify(sp: Path, fid: str, severity: str, verdict: str = "CONFIRMED")
         "- Result: NOT_EXECUTED\n"
         "- Evidence Tag: [CODE-TRACE]\n"
     )
-    (sp / f"verify_{fid}.md").write_text(body, encoding="utf-8")
+    output_path = sp / f"verify_{fid}.md"
+    output_path.write_text(body, encoding="utf-8")
+
+    # A plausible Markdown file is no longer verifier-completion authority.
+    # Bind the fixture through the same typed queue/work-plan/output-receipt
+    # contract consumed by the report denominator.  This deliberately uses the
+    # pre-roster compatibility branch: these unit fixtures exercise report
+    # provenance, not the dynamic worker coordinator.
+    items = P._read_typed_queue_work_items(sp / "verification_queue.md")
+    owner = next(iter(L1_VERIFY_SHARD_MANIFESTS))
+    partitions = {name: [] for name in L1_VERIFY_SHARD_MANIFESTS}
+    partitions[owner] = [
+        {"finding id": item.work_item_id}
+        for item in items
+    ]
+    plan = P._write_or_validate_queue_work_plan(sp, items, partitions, "l1")
+    item = next(item for item in items if item.work_item_id == fid)
+    identity = VerifierOutputIdentity.for_assignment(item, plan, owner)
+    proposal_path = sp / f"verify_{fid}.severity_proposal.json"
+    proposal_path.write_bytes(_proposal_bytes(item))
+    receipt = VerifierOutputReceipt.bind(
+        identity,
+        output_path.read_bytes(),
+        severity_proposal=proposal_path.read_bytes(),
+        launch_digest=LAUNCH_DIGEST,
+        verifier_backend="claude",
+    )
+    (sp / f"verify_{fid}.identity.json").write_text(
+        json.dumps(identity.to_dict(), sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    (sp / f"verify_{fid}.receipt.json").write_text(
+        receipt.to_json(),
+        encoding="utf-8",
+    )
 
 
 def _write_report_index(sp: Path, rows: list[tuple[str, str, str, str]]) -> None:
@@ -356,8 +404,19 @@ def test_l1_report_index_branch_uses_repair_then_degrade():
     # Bound the branch at the next top-level `if phase.name.startswith(`.
     l1_end = src.index('if phase.name.startswith("report_body_writer_")', l1_start)
     l1_block = src[l1_start:l1_end]
-    assert "_repair_report_index_severity_provenance" in l1_block, (
-        "L1 report_index must run severity-provenance repair before degrading"
+    assert "_run_report_index_canonicalization_transaction" in l1_block, (
+        "L1 report_index must route all deterministic repairs through the "
+        "canonical staged successor before degrading"
+    )
+    canonical_start = src.index(
+        "def _derive_report_index_canonical_staged_target("
+    )
+    canonical_end = src.index(
+        "\ndef _report_index_canonical_journal_digest", canonical_start
+    )
+    canonical_block = src[canonical_start:canonical_end]
+    assert "_repair_report_index_severity_provenance" in canonical_block, (
+        "the canonical staged successor must apply severity-provenance repair"
     )
     assert "report_semantic_severity_repairs.md" in l1_block, (
         "L1 report_index must flag prose provenance to a human-review artifact"

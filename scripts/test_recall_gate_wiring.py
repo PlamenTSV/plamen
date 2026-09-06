@@ -280,8 +280,7 @@ def test_hook4_cited_external_assumption_is_not_flagged(tmp_path: Path):
     )
     n = D._check_external_research_citation_gaps(sp)
     assert n == 0
-    ledger = (sp / "external_research_gaps.md").read_text(encoding="utf-8")
-    assert "H-08" not in ledger
+    assert not (sp / "external_research_gaps.md").exists()
 
 
 def test_hook4_uncited_finding_at_researched_surface_location_is_flagged(tmp_path: Path):
@@ -324,7 +323,17 @@ def test_hook4_never_raises_when_inputs_absent(tmp_path: Path):
     # No findings_inventory.md, no verify_*.md, no research ledger.
     n2 = D._check_external_research_citation_gaps(sp2)
     assert n2 == 0
-    assert (sp2 / "external_research_gaps.md").exists()
+    assert not (sp2 / "external_research_gaps.md").exists()
+
+
+def test_hook4_zero_denominator_removes_stale_projection(tmp_path: Path):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    stale = sp / "external_research_gaps.md"
+    stale.write_text("stale prior gap\n", encoding="utf-8")
+
+    assert D._check_external_research_citation_gaps(sp) == 0
+    assert not stale.exists()
 
 
 def test_hook4_never_raises_on_garbage_inputs(tmp_path: Path):

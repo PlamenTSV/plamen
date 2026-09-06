@@ -32,7 +32,7 @@ verbatim — do NOT re-derive the label from raw verify prose.
 
 | Status | Meaning | Evidence |
 |--------|---------|----------|
-| `VERIFIED` | Verdict CONFIRMED **and** effective best evidence is proof-grade | `[POC-PASS]` / `[MEDUSA-PASS]` / `[PROD-*]` (a tag demoted to `[CODE-TRACE]` by `(was [POC-PASS], …)` is NOT proof-grade) |
+| `VERIFIED` | Verdict CONFIRMED **and** the candidate-bound typed report evidence record is `PROOF_GRADE_HARM` | Authenticated execution, established result, harm scope, harm-capable independently authorized oracle; labels alone are insufficient |
 | `CONFIRMED` | Verdict CONFIRMED but effective best evidence is only `[CODE-TRACE]` | A real confirmed finding — **NOT** `UNVERIFIED` |
 | `CONTESTED` | Disputed (verifier CONTESTED / UNRESOLVED / PARTIAL) | — |
 | `UNVERIFIED` | Refuted / false-positive / none | — |
@@ -40,6 +40,14 @@ verbatim — do NOT re-derive the label from raw verify prose.
 Sort strength: `VERIFIED` > `CONFIRMED` > `CONTESTED` > `UNVERIFIED`. `CONFIRMED`
 is a **non-speculative** status: a Critical/High that is `VERIFIED` or
 `CONFIRMED` is never capped as "unverified" on a label basis.
+
+The status token is not evidence authority. Before body rendering, the driver
+dual-writes `report_evidence_records.json` and per-shard
+`report_evidence_manifests/*.json`. Those typed records separately bind verdict,
+evidence authenticity/result, proof scope/capabilities, source digests, and
+limitations. `[CONFIRMED]`, `[POC-*]`, `[FUZZ-*]`, or similar Markdown text can
+never mint proof-grade language. A code-trace confirmation is presented as a
+confirmed mechanism, not as executed proof of harm.
 
 ---
 
@@ -55,7 +63,7 @@ is a **non-speculative** status: a Critical/High that is `VERIFIED` or
 **Downgrade modifiers** (applied after matrix lookup):
 - On-chain-only exploit (no UI/off-chain path) → −1 tier. NOTE: this applies ONLY when the impact is confined to on-chain state. If the impact crosses the on-chain/off-chain boundary (e.g., corrupted events affecting indexers, frontends, or monitoring systems), do NOT downgrade.
 - View-function-only impact → cap at Medium
-- Attack path requires fully-trusted actor (per project's stated trust assumptions) to act maliciously → −1 tier (floor: Informational). This applies ONLY to `FULLY_TRUSTED` actors (governance multisig, DAO, timelock). Semi-trusted actors (admin, operator, keeper, oracle) are NOT downgraded here - their likelihood is already captured by the matrix ("specific conditions" or "unlikely/complex setup"). Finding is still reported with a note: *"Severity adjusted - attack requires {actor} to violate stated trust assumption: {assumption}."*
+- An independently adjudicated, evidence-bound `FULLY_TRUSTED_ACTOR` modifier may apply −1 tier (floor: Informational) only when the exact actor/capability and project-stated trust assumption are proven. Inventory labels and generic role names are not authority. Semi-trusted actors (admin, operator, keeper, oracle) are never adjusted here; their likelihood belongs in the matrix. Missing/conflicting trust evidence retains upstream severity with a visible uncertainty note.
 
 ---
 
@@ -84,8 +92,13 @@ Findings that share the same root cause MUST be consolidated into a single findi
 The report **body** is reserved for findings with a real security consequence.
 Pure-quality findings are routed to **Appendix C: Quality & Hardening
 Observations** (a table), never deleted. This is **mechanically enforced** by
-the driver against `disposition.md`; the wording below is the authoritative
-policy.
+the driver against `report_disposition_authority.json`. `disposition.md` and
+lexical classification are proposal/veto inputs only. Non-body status requires
+an exact independent typed full-claim refutation, a typed zero-security-
+consequence decision with no contradictory mechanism/impact/premise record, or
+an already-applied hash-bound alias naming its delivered survivor. Missing,
+stale, partial, contested, or mismatched authority defaults to BODY at upstream
+severity with visible human-review debt.
 
 For every finding, classify BODY or APPENDIX:
 
@@ -105,10 +118,9 @@ For every finding, classify BODY or APPENDIX:
   corruption leading to loss.
 - **Recall-safe default: when in doubt, BODY.** Burying a real finding in the
   appendix is the unacceptable error; an extra body finding is cheap.
-- This applies at EVERY severity. A Medium/High that is pure
-  observability/quality (e.g. "admin call emits no event", no
-  fund/liveness/privilege impact) -> APPENDIX. A Low/Info with a real
-  consequence -> BODY.
+- Unsupported High/Medium quality labels remain BODY at upstream severity.
+  Low/Info also remain BODY unless the exact independent zero-harm decision is
+  present. A Low/Info with a real consequence is always BODY.
 - DROP/FALSE_POSITIVE (verifier-refuted) is unchanged and **separate** from
   APPENDIX — those go to Appendix A (Excluded Findings), not Appendix C.
 
@@ -124,6 +136,7 @@ For every finding, classify BODY or APPENDIX:
 **Severity**: Critical/High/Medium/Low/Informational
 **Location**: `SourceFile:L123-L145`
 **Confidence**: HIGH/MEDIUM/LOW (N agents confirmed, Static Analysis: Y/N, PoC: PASS/FAIL/SKIPPED)
+**Evidence assurance**: Proof-grade harm evidence / Confirmed mechanism; harm proof not established / Evidence limited
 
 **Description**:
 [Clear explanation of what's wrong. Include relevant code snippet. Do NOT reference any internal audit IDs - describe the bug directly.]
@@ -136,16 +149,24 @@ For every finding, classify BODY or APPENDIX:
 
 **Recommendation**:
 [How to fix. If the verifier generated a `### Suggested Fix` diff in verify_{id}.md, paste it here verbatim. Otherwise provide a text recommendation.]
+
+> **Evidence and report limitation**: [Required when the typed record retains
+> unresolved proof-scope or report-field debt after the single bounded repair.
+> Keep the finding and name the limitation; do not invent missing prose or
+> silently omit the section.]
 ```
 
 ### UNRESOLVED finding format
 
-When the Skeptic-Judge phase returns `UNRESOLVED` for a finding (verifier and skeptic disagree, no clean resolution reached), the finding still goes in the **report body** — NOT Appendix A. Use this format:
+When independent skeptic/adjudication artifacts record `UNRESOLVED` for a
+finding, the finding stays in the **report body** at the highest still-supported
+upstream or typed-adjudicated severity. `UNRESOLVED` is an evidence/disagreement
+state, not an automatic severity discount. Use this format:
 
 ```markdown
 ### [X-NN] Title [UNRESOLVED — needs human review]
 
-**Severity**: {demoted by 1 tier from original} (was {original}; demoted under skeptic disagreement)
+**Severity**: {highest still-supported upstream or typed-adjudicated tier}
 **Location**: `SourceFile:L123-L145`
 **Confidence**: CONTESTED — verifier and skeptic disagree
 
@@ -165,13 +186,11 @@ When the Skeptic-Judge phase returns `UNRESOLVED` for a finding (verifier and sk
 Human reviewer: confirm deployment-context assumption {X} before triage. If verifier is correct, treat as {original_severity}. If skeptic is correct, treat as informational/false-positive.
 ```
 
-**Severity demotion rule**:
-- Critical UNRESOLVED → **High** with `[UNRESOLVED]` flag
-- High UNRESOLVED → **Medium**
-- Medium UNRESOLVED → **Low**
-- Low / Informational UNRESOLVED → unchanged (floor)
-
-The Trust Adj. column in `report_index.md` Master Finding Index records `UNRESOLVED(original_sev)`.
+The Trust Adj. column in `report_index.md` records
+`UNRESOLVED(original_sev)` as a visibility marker only. A tier change requires a
+separate, exact-identity, premise/evidence-bound, distinct-worker decision in the
+typed severity ledger. If that authority is absent, incomplete, stale, or
+ambiguous, preserve the upstream tier and flag human review.
 
 **Why body and not Appendix A**: in security audits, the cost of missing a real exploit (false negative) exceeds the cost of an extra body section flagged for human triage (false positive). Burying UNRESOLVED in Appendix A inverts that tradeoff and historically caused real findings to disappear from human attention.
 
@@ -181,8 +200,10 @@ The Trust Adj. column in `report_index.md` Master Finding Index records `UNRESOL
 used only when `_severity_override_ledger.json` exists and names the affected
 finding, original severity, final severity, and reason. Report agents must not
 invent severity overrides from prose; without the ledger, use the normal
-severity matrix, verifier result, UNRESOLVED/PARTIAL, trusted-actor, chain, or
-PoC-fail rules.
+severity matrix plus mechanically authorized trusted-actor or chain rules.
+`poc_demotion_proposals` is review evidence only: a failed/non-established PoC
+MUST NOT lower severity or authorize a negative lifecycle effect. `UNRESOLVED`
+and `PARTIAL` never authorize a tier change by themselves.
 
 ### EXTERNAL-ASSUMPTION-CAP token
 
@@ -362,8 +383,10 @@ field, produces no cap at all (falls back to the claimed severity — recall-saf
 > with ZERO security consequence (pure quality/hardening/observability/style).
 > This is **DISTINCT** from Appendix A (Excluded = false-positive/duplicate):
 > Appendix C findings are valid observations, just not body material. The driver
-> mechanically relocates any APPENDIX finding that still has a body `###`
-> section into this table — it is never dropped. One row per finding.
+> mechanically relocates any authorized APPENDIX finding that still has a body
+> `###` section into this table and preserves the full original section bytes
+> in `report_appendix_full_content.json`, with a validated client-field diff.
+> It is never dropped. One row per finding.
 
 | ID | Severity | Title | Location | Reason |
 |----|----------|-------|----------|--------|
@@ -378,7 +401,7 @@ field, produces no cap at all (falls back to the claimed severity — recall-saf
 Before the report is considered complete, verify:
 
 1. **Every finding has its own section** - no finding exists only in a table row (exceptions: findings routed to the Quality Observations megasection, and APPENDIX-dispositioned findings routed to Appendix C by the material-harm body floor, appear as table rows by design)
-1a. **Material-harm body floor applied** - the body contains ONLY findings with a real security consequence; pure-quality/hardening/observability findings appear in Appendix C, not as body `###` sections. Driver-enforced against `disposition.md`.
+1a. **Material-harm body floor applied** - the body contains findings with a real security consequence plus every unresolved/unauthorized non-body proposal; only independently authorized zero-harm observations appear in Appendix C. Driver-enforced against typed disposition authority with a lossless sidecar.
 2. **No internal IDs anywhere in AUDIT_REPORT.md** - search the report for patterns like `[CS-`, `[AC-`, `[TF-`, `[BLIND-`, `[EN-`, `[SE-`, `[VS-`, `[DEPTH-`, `[SLITHER-`, `[RS-`, `[PC-`, `[SP-`, `[DST-`, `[DE-`, `[DX-`, `[DS-`, `[DT-`, `CH-`, and hypothesis `H-` followed by a number in brackets. NONE should appear in the delivered report.
 3. **Finding count matches summary** - the number of `###` sections per severity tier equals the count in the summary table
 4. **Cross-references valid** - every `see X-NN` reference points to a finding that exists in the report

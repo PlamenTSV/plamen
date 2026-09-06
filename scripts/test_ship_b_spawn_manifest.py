@@ -8,8 +8,6 @@ without the heading still parse via full-document fallback.
 
 from __future__ import annotations
 
-import glob
-import shutil
 import sys
 from pathlib import Path
 
@@ -81,17 +79,27 @@ def test_legacy_no_heading_still_parses(tmp_path):
     ]
 
 
-def test_real_manifest_regression(tmp_path):
-    hits = glob.glob(
-        r"D:\Programming\Web3\Contests\Acme Crosschain Dex\2025-05-acme-cross-chain-dex"
-        r"\omni-chain-contracts\contracts\.scratchpad\_retry_quarantine\instantiate"
-        r"\spawn_manifest.md"
+def _eight_agent_manifest() -> str:
+    lines = [
+        "# Spawn Manifest",
+        "",
+        "## Breadth Agents",
+        "",
+        "| Row Type | Template | Required? | Agent ID | Focus Area | Expected Output | Status |",
+        "|----------|----------|-----------|----------|------------|-----------------|--------|",
+    ]
+    lines.extend(
+        f"| AGENT | GENERIC_{i:02d} | YES | B{i} | role_{i:02d} | analysis_role_{i:02d}.md | QUEUED |"
+        for i in range(1, 9)
     )
-    if not hits:
-        import pytest
-        pytest.skip("Manifest fixture not on this machine")
+    return "\n".join(lines) + "\n"
+
+
+def test_hermetic_eight_agent_manifest_regression(tmp_path):
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
-    shutil.copy(hits[0], sp / "spawn_manifest.md")
+    (sp / "spawn_manifest.md").write_text(
+        _eight_agent_manifest(), encoding="utf-8"
+    )
     assert P.parse_breadth_manifest_count(sp) == 8
     assert len(P.parse_breadth_manifest_outputs(sp)) == 8

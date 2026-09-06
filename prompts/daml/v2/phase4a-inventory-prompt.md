@@ -41,7 +41,7 @@ Write to {SCRATCHPAD}/findings_inventory.md:
 
 ## Findings Inventory
 **Total: {N} findings from {M} agents**
-| # | Finding ID | Agent | Severity | Location | Title | Verdict | Step Execution | Rules Applied | RAG Confidence |
+| # | Finding ID | Agent | Severity | Location | Title | Verdict | Step Execution | Rules Applied | Precedent Context (UNSCORED) |
 
 ## Chain Summary
 | Finding ID | Location | Root Cause (1-line) | Verdict | Severity | Precondition Type | Postcondition Type |
@@ -332,7 +332,7 @@ Depth skips ONLY if ALL conditions met:
 - [ ] 0 findings with incomplete step execution
 - [ ] 0 rule application violations
 - [ ] 0 `[DML-DT-N]` reachable-abort promotions
-- [ ] All findings have RAG confidence > 0.8
+- [ ] No inventory verdict, severity, confidence, or depth decision depends on external precedent
 - [ ] No UNVERIFIED external deps (cross-package `data-dependencies` / interface instances)
 - [ ] 0 choice-consequence trace coverage gaps
 - [ ] 0 `[AUTH:ARG-DERIVED]`, `[AUTH:FETCH-BASED]`, or `[AUTH:SINGLE]` choices

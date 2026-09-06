@@ -3,8 +3,8 @@
 > **Mode gate**: Thorough only. The Python driver schedules this phase
 > ONLY when `mode == "thorough"`.
 > **Soft phase**: failure → log warning + sentinel, pipeline proceeds.
-> No re-verification of extracted findings — the verifier already
-> produced the evidence.
+> Every extracted finding is independently re-queued by the driver. The
+> verifier that noticed a side issue is its producer, not its discriminator.
 
 You are the Post-Verification Extraction Agent.
 
@@ -15,9 +15,10 @@ reading source, or related vulnerabilities the original inventory
 missed. These show up as `[VER-NEW-*]` tags or in "New Observations" /
 "Side Findings" sections of verify files.
 
-Your job: extract these, deduplicate them against the existing
-hypothesis list, promote genuinely new ones into `hypotheses.md` so the
-report writers know about them.
+Your job: extract these and deduplicate them against the existing hypothesis
+list. Emit every genuinely new observation as a complete candidate block in
+`post_verify_extract.md`; deterministic driver code owns inventory promotion,
+independent verification, and report delivery.
 
 ## Your Inputs
 
@@ -52,7 +53,7 @@ For each candidate observation:
   matching inventory/hypothesis ID in the audit trail.
 - If no hit: candidate is genuinely new.
 
-### Step 3: Promote new observations
+### Step 3: Emit new candidate records
 
 For each genuinely-new observation:
 - Assign a new finding ID using the `[VER-N]` prefix (continuing from
@@ -63,14 +64,12 @@ For each genuinely-new observation:
     on-chain-only)
   - If the verifier provided an explicit Severity in their note, USE
     THAT — the verifier had context you don't
-- Write the new hypothesis entry to `hypotheses.md` using the standard
-  hypothesis format (Title, Severity, Location, Root Cause, Verifier
-  Evidence pointer)
-- Mark the entry with `Verdict: NEW_FROM_VERIFY` so downstream report
-  writers know this was a post-verification discovery
-- **DO NOT re-queue for verification.** The original verifier already
-  documented the evidence; re-verifying wastes budget. Report writers
-  cite the original `verify_*.md` file in the Evidence section.
+- Write a complete `### Finding [VER-N]: <title>` block under
+  `## Promoted Candidate Records` in `post_verify_extract.md` with Severity,
+  Location, Root Cause, Source Verify File, and Evidence Pointer.
+- Mark the producer assessment `Origin Assessment: NEW_FROM_VERIFY`.
+- Do not append to `hypotheses.md` and do not assign a final verdict. The
+  driver re-queues every emitted candidate to an independent verifier.
 
 ### Step 4: Audit trail
 
@@ -82,9 +81,9 @@ Write a summary to `{SCRATCHPAD}/post_verify_extract.md`:
 - verify files scanned: {N}
 - candidate observations: {C}
 - already-covered (deduped): {D}
-- promoted to hypotheses.md: {P}
+- promoted candidate records: {P}
 
-## Promoted Hypotheses
+## Promoted Candidate Records
 
 | VER-ID | Source verify file | Title | Severity | Location |
 |--------|--------------------|-------|----------|----------|
@@ -97,22 +96,18 @@ Write a summary to `{SCRATCHPAD}/post_verify_extract.md`:
 
 ## Output
 
-Two writes:
+Write only `{SCRATCHPAD}/post_verify_extract.md`: the summary tables plus every
+complete promoted candidate block. The driver owns all later mutations.
 
-1. **NEW artifact** `{SCRATCHPAD}/post_verify_extract.md` (summary)
-2. **APPEND** new hypothesis blocks to `{SCRATCHPAD}/hypotheses.md`
-   (only if Step 3 produced any)
-
-Return: `DONE: {P} new hypotheses promoted from {N} verify files`
+Return: `DONE: {P} new candidate records emitted from {N} verify files`
 
 ## Scope Discipline
 
-- Read-only on every input except `hypotheses.md` (append only) and
-  the new summary file
+- Read-only on every input; write only the new summary/candidate file
 - Do NOT modify `findings_inventory.md`, `verify_*.md`, or any earlier
   phase artifact
-- Do NOT re-trigger verification — these findings ride on the original
-  verifier's evidence
+- Do NOT self-verify or assign a terminal verdict; the driver schedules a new
+  independent verification transaction
 - Do NOT spawn additional Task subagents
 - Return and stop
 

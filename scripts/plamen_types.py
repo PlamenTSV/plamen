@@ -3,18 +3,23 @@
 Layer 0: no internal plamen_* imports. All other modules depend on this.
 """
 import functools
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
 import time
+import unicodedata
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional
+from pathlib import Path, PurePosixPath
+from typing import Iterable, Mapping, Optional
 
 __all__ = [
     "CLAUDE_BIN", "CODEX_BIN", "Checkpoint",
+    "GateFailure", "GateClearance", "PhaseCommit", "RetryReceipt",
+    "PHASE_COMMIT_STATES", "GATE_FAILURE_CLASSES",
+    "GATE_FALLBACK_POLICIES", "RETRY_RECEIPT_STATUSES",
     "plamen_home",
     "EVIDENCE_TAGS_PROOF", "EVIDENCE_TAGS_TRACE", "EVIDENCE_TAGS_FAIL",
     "EVIDENCE_TAGS_PROD", "has_proof_grade_evidence",
@@ -24,15 +29,25 @@ __all__ = [
     "DEPTH_EVIDENCE_TAG_NAMES", "DEPTH_EVIDENCE_TAG_RE",
     "FINDING_BLOCK_HEADING_RE",
     "EXIT_CONFIG_MISSING", "EXIT_DEGRADED", "EXIT_ERROR",
+    "EXIT_STARTUP_DECISION",
     "EXIT_HIBERNATING", "EXIT_RATE_LIMITED", "EXIT_SUCCESS",
     "CODEX_MULTI_AGENT_PHASES",
     "L1_NEVER_CUT_ARTIFACT_GROUPS", "L1_PHASES",
     "L1_VERIFY_CRITHIGH_PHASE_NAMES", "L1_VERIFY_PHASE_NAMES",
-    "L1_VERIFY_SHARD_MANIFESTS", "PLAMEN_OPUS_MODEL", "Phase",
+    "L1_VERIFY_SHARD_MANIFESTS", "PLAMEN_OPUS_MODEL", "PLAMEN_SONNET_MODEL",
+    "PLAMEN_HAIKU_MODEL", "PLAMEN_THOROUGH_OPUS_MODEL", "Phase",
+    "resolve_claude_recovery_model", "validate_model_routing_authority",
     "SC_NEVER_CUT_BASE", "SC_NEVER_CUT_CORE_EXTRAS",
     "SC_NEVER_CUT_THOROUGH_EXTRAS", "SC_PHASES",
     "SC_VERIFY_CRITHIGH_PHASE_NAMES", "SC_VERIFY_PHASE_NAMES",
     "SC_VERIFY_SHARD_MANIFESTS",
+    "SC_DEPTH_SKILL_ROLE_SPECS", "SC_DEPTH_SKILL_ROLES",
+    "SC_DEPTH_SKILL_DESTINATIONS", "canonical_sc_depth_skill_role",
+    "SOURCE_SUFFIXES_BY_ECOSYSTEM", "L1_SOURCE_SUFFIXES",
+    "ALL_AUDIT_SOURCE_SUFFIXES", "source_suffixes_for",
+    "normalize_scope_match_mode", "parse_exact_scope_text",
+    "validate_exact_scope_authority",
+    "attention_queue_binding_sha256",
     "SEVERITY_ORDER", "SEVERITY_LETTER", "SEVERITY_FROM_LETTER",
     "_CODEX_MODEL_MAP", "_CODEX_FALLBACK_MODEL_ORDER",
     "_NEVER_CUT_SKIP_REASONS", "_PHASE_NAME_RE",
@@ -48,6 +63,286 @@ __all__ = [
 ]
 
 # --- Constants ---
+
+SOURCE_SUFFIXES_BY_ECOSYSTEM = {
+    "evm": (".sol", ".vy"),
+    "solana": (".rs",),
+    "soroban": (".rs",),
+    "aptos": (".move",),
+    "sui": (".move",),
+    "daml": (".daml",),
+    "go": (".go",),
+    "rust": (".rs",),
+}
+L1_SOURCE_SUFFIXES = (".go", ".rs", ".move", ".proto")
+ALL_AUDIT_SOURCE_SUFFIXES = tuple(sorted(
+    {
+        suffix
+        for values in SOURCE_SUFFIXES_BY_ECOSYSTEM.values()
+        for suffix in values
+    }
+    | set(L1_SOURCE_SUFFIXES)
+))
+
+
+def attention_queue_binding_sha256(
+    rows: Iterable[Mapping[str, object]],
+) -> str:
+    """Bind the complete semantic content of an attention-repair queue."""
+
+    payload = [
+        {
+            "row": int(row["row"]),
+            "kind": str(row["kind"]),
+            "target": str(row["target"]),
+            "reason": str(row["reason"]),
+            "source": str(row["source"]),
+            "evidence": str(row.get("evidence", "")),
+        }
+        for row in rows
+    ]
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def source_suffixes_for(
+    pipeline: str,
+    ecosystem: str,
+    *,
+    strict: bool = False,
+) -> tuple[str, ...]:
+    """Return the central auditable-source suffix denominator."""
+
+    pipeline_n = str(pipeline or "").strip().lower()
+    ecosystem_n = str(ecosystem or "").strip().lower()
+    if pipeline_n == "l1":
+        return L1_SOURCE_SUFFIXES
+    if strict and pipeline_n != "sc":
+        raise ValueError(f"unsupported audit pipeline: {pipeline!r}")
+    if strict and ecosystem_n not in SOURCE_SUFFIXES_BY_ECOSYSTEM:
+        raise ValueError(f"unsupported exact-scope ecosystem: {ecosystem!r}")
+    return SOURCE_SUFFIXES_BY_ECOSYSTEM.get(
+        ecosystem_n,
+        ALL_AUDIT_SOURCE_SUFFIXES,
+    )
+
+
+def normalize_scope_match_mode(value: object) -> str:
+    """Return the supported scope-authority mode or fail closed."""
+
+    mode = str(value or "legacy").strip().lower()
+    if mode not in {"legacy", "exact"}:
+        raise ValueError(f"unsupported scope_match_mode: {value!r}")
+    return mode
+
+
+def parse_exact_scope_text(
+    text: str,
+    *,
+    pipeline: str = "sc",
+    ecosystem: str = "",
+) -> tuple[str, ...]:
+    """Parse a portable, project-relative, exact source-file authority.
+
+    Exact mode intentionally accepts no path aliases, globs, directories,
+    absolute paths, traversal, or Windows separators.  The same parser is
+    consumed by snapshotting, coverage gates, and private acquisition
+    wrappers so those boundaries cannot silently disagree about scope.
+    """
+
+    suffixes = frozenset(
+        source_suffixes_for(pipeline, ecosystem, strict=True)
+    )
+    paths: set[str] = set()
+    portable_identities: dict[str, str] = {}
+    invalid: list[str] = []
+    meaningful_rows = 0
+    for line_number, line in enumerate(str(text or "").splitlines(), start=1):
+        candidate = line.strip()
+        if not candidate or candidate.startswith(("#", "<!--")):
+            continue
+        if candidate.startswith(("- ", "* ", "+ ")):
+            candidate = candidate[2:].strip()
+        if candidate.startswith("|"):
+            cells = [cell.strip() for cell in candidate.strip("|").split("|")]
+            source_cells = [
+                cell.strip("`\"' ")
+                for cell in cells
+                if PurePosixPath(cell.strip("`\"' ")).suffix.lower()
+                in suffixes
+            ]
+            if not source_cells:
+                if all(
+                    not cell
+                    or re.fullmatch(r":?-{3,}:?", cell)
+                    or cell.casefold() in {
+                        "file", "path", "source", "lines", "description",
+                    }
+                    for cell in cells
+                ):
+                    continue
+                invalid.append(f"line {line_number}")
+                continue
+            if len(source_cells) != 1:
+                invalid.append(f"line {line_number}")
+                continue
+            candidate = source_cells[0]
+        candidate = candidate.strip("`\"' ")
+        meaningful_rows += 1
+        if (
+            not candidate
+            or "\\" in candidate
+            or "\x00" in candidate
+            or any(ord(char) < 32 for char in candidate)
+            or candidate.startswith(("/", "./", "../", "~"))
+            or re.match(r"^[A-Za-z]:", candidate)
+            or any(char in candidate for char in '<>:"|?*[]')
+            or unicodedata.normalize("NFC", candidate) != candidate
+        ):
+            invalid.append(f"line {line_number}")
+            continue
+        portable = PurePosixPath(candidate)
+        parts = portable.parts
+        windows_reserved = {
+            "con", "prn", "aux", "nul",
+            *(f"com{index}" for index in range(1, 10)),
+            *(f"lpt{index}" for index in range(1, 10)),
+        }
+        if (
+            not parts
+            or any(part in {"", ".", ".."} for part in parts)
+            or any(part.endswith((".", " ")) for part in parts)
+            or any(
+                part.split(".", 1)[0].casefold() in windows_reserved
+                for part in parts
+            )
+            or portable.as_posix() != candidate
+            or portable.suffix.lower() not in suffixes
+        ):
+            invalid.append(f"line {line_number}")
+            continue
+        portable_identity = unicodedata.normalize(
+            "NFC", candidate
+        ).casefold()
+        prior = portable_identities.get(portable_identity)
+        if prior is not None and prior != candidate:
+            invalid.append(
+                f"line {line_number} (portable collision with {prior!r})"
+            )
+            continue
+        portable_identities[portable_identity] = candidate
+        paths.add(candidate)
+
+    if invalid:
+        raise ValueError(
+            "exact scope_file contains non-portable or unsupported path "
+            "rows: " + ", ".join(invalid[:20])
+        )
+    if not str(text or "").strip() or meaningful_rows == 0:
+        raise ValueError("exact scope_file is empty")
+    if not paths:
+        raise ValueError("exact scope_file contains no auditable source paths")
+    return tuple(sorted(paths))
+
+
+def validate_exact_scope_authority(
+    project_root: str | Path,
+    scope_file: str | Path,
+    *,
+    pipeline: str = "sc",
+    ecosystem: str = "",
+) -> tuple[str, ...]:
+    """Validate exact scope syntax and bind every row to one source file."""
+
+    root = Path(project_root).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(
+            f"exact scope project_root is missing or not a directory: {root}"
+        )
+    raw_scope = str(scope_file or "").strip()
+    if not raw_scope:
+        raise ValueError("exact scope matching requires a scope_file")
+    scope_path = Path(raw_scope).expanduser()
+    if not scope_path.is_absolute():
+        scope_path = root / scope_path
+    try:
+        text = scope_path.read_text(encoding="utf-8-sig", errors="strict")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(
+            f"exact scope_file is unreadable UTF-8: {scope_path}"
+        ) from exc
+    rows = parse_exact_scope_text(
+        text,
+        pipeline=pipeline,
+        ecosystem=ecosystem,
+    )
+    for row in rows:
+        lexical = root
+        for component in PurePosixPath(row).parts:
+            try:
+                sibling_names = [
+                    entry.name for entry in os.scandir(lexical)
+                ]
+            except OSError as exc:
+                raise ValueError(
+                    f"exact scope target parent is unreadable: {row}"
+                ) from exc
+            component_identity = unicodedata.normalize(
+                "NFC", component
+            ).casefold()
+            portable_aliases = [
+                name for name in sibling_names
+                if unicodedata.normalize("NFC", name).casefold()
+                == component_identity
+            ]
+            if component not in sibling_names:
+                if portable_aliases:
+                    raise ValueError(
+                        "exact scope path spelling/case differs from disk: "
+                        f"{row} (disk component {portable_aliases[0]!r})"
+                    )
+                raise ValueError(
+                    f"exact scope target is missing or unreadable: {row}"
+                )
+            if len(portable_aliases) != 1:
+                raise ValueError(
+                    "exact scope target has a cross-OS case/Unicode collision: "
+                    f"{row}"
+                )
+            lexical = lexical / component
+            try:
+                metadata = os.lstat(lexical)
+            except OSError as exc:
+                raise ValueError(
+                    f"exact scope target is missing or unreadable: {row}"
+                ) from exc
+            is_junction = bool(
+                getattr(lexical, "is_junction", lambda: False)()
+            )
+            is_reparse = bool(
+                getattr(metadata, "st_file_attributes", 0) & 0x400
+            )
+            if lexical.is_symlink() or is_junction or is_reparse:
+                raise ValueError(
+                    "exact scope target traverses a symbolic link, junction, "
+                    f"or reparse point: {row}"
+                )
+        target = lexical.resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"exact scope target escapes project_root: {row}"
+            ) from exc
+        if not target.is_file():
+            raise ValueError(f"exact scope target is missing or not a file: {row}")
+    return rows
 
 def _resolve_claude_bin() -> str:
     """Return the platform-appropriate claude binary path.
@@ -105,33 +400,144 @@ def plamen_home() -> Path:
     return Path.home() / ".claude"
 
 
-# Opus phases run on 4.8 by default (all modes). 4.8's stronger multi-step
-# instruction-following materially reduces attempt-1 misses on recon coverage
-# (enumerate-every-module), breadth/rescan fan-out, and verification rigor.
-# Override via PLAMEN_OPUS_MODEL only when explicitly benchmarking/cost-capping.
-PLAMEN_OPUS_MODEL = os.environ.get("PLAMEN_OPUS_MODEL", "claude-opus-4-8").strip()
+# Pin every Claude tier to an admitted canonical model ID. Audit provenance
+# must not silently follow an old/arbitrary environment override: upgrades are
+# an explicit reviewed source change, not a per-machine routing decision.
+_CLAUDE_OPUS_MODEL = "claude-opus-5"
+_CLAUDE_SONNET_MODEL = "claude-sonnet-5"
+_CLAUDE_ADMITTED_OPUS_SONNET_MODELS = frozenset({
+    _CLAUDE_OPUS_MODEL,
+    _CLAUDE_SONNET_MODEL,
+})
+
+
+def _admit_claude_tier_model(value: object, *, tier: str) -> str:
+    expected = {
+        "opus": _CLAUDE_OPUS_MODEL,
+        "sonnet": _CLAUDE_SONNET_MODEL,
+    }.get(tier)
+    if expected is None:
+        raise ValueError(f"unknown Claude model tier: {tier!r}")
+    if not isinstance(value, str) or value != expected:
+        raise ValueError(
+            f"{tier} model must be the admitted current ID {expected!r}"
+        )
+    return expected
+
+
+PLAMEN_OPUS_MODEL = _admit_claude_tier_model(
+    os.environ.get("PLAMEN_OPUS_MODEL", _CLAUDE_OPUS_MODEL), tier="opus"
+)
+PLAMEN_SONNET_MODEL = _admit_claude_tier_model(
+    os.environ.get("PLAMEN_SONNET_MODEL", _CLAUDE_SONNET_MODEL), tier="sonnet"
+)
+# Claude's nested ``haiku`` alias is executable launch authority too.  The
+# audit mode contract admits only Opus 5 and Sonnet 5, so deliberately bind
+# that compatibility alias to Sonnet rather than allowing a hidden Haiku
+# route through Claude's ANTHROPIC_DEFAULT_HAIKU_MODEL environment variable.
+PLAMEN_HAIKU_MODEL = _admit_claude_tier_model(
+    os.environ.get("PLAMEN_HAIKU_MODEL", _CLAUDE_SONNET_MODEL), tier="sonnet"
+)
 
 # v2.8.11: Thorough-mode promotion target. Reasoning-critical roles (discovery
-# = breadth+depth, verification shards, skeptic-judge) run on Opus 4.8 in
-# THOROUGH ONLY (opus resolves to the 4.8 default; Light stays Sonnet) to bound plan
+# = breadth+depth, verification shards, skeptic-judge) run on Opus 5 in
+# THOROUGH ONLY (opus resolves to the pinned default; Light stays Sonnet) to bound plan
 # usage. Rationale: <70% strict recall traces to reasoning-hard miss-classes
 # (cross-VM encoding, swap mechanics), and verification quality is model-bound.
-PLAMEN_THOROUGH_OPUS_MODEL = os.environ.get(
-    "PLAMEN_THOROUGH_OPUS_MODEL", "claude-opus-4-8"
-).strip()
+PLAMEN_THOROUGH_OPUS_MODEL = _admit_claude_tier_model(
+    os.environ.get("PLAMEN_THOROUGH_OPUS_MODEL", PLAMEN_OPUS_MODEL),
+    tier="opus",
+)
+
+
+def _resolve_claude_breadth_override(model: object) -> str:
+    """Resolve a user breadth override without widening Claude authority."""
+    if not isinstance(model, str):
+        raise ValueError("Claude breadth model override must be a string")
+    resolved = model
+    if resolved not in _CLAUDE_ADMITTED_OPUS_SONNET_MODELS:
+        raise ValueError(
+            "Claude breadth model override must resolve to "
+            f"{_CLAUDE_OPUS_MODEL!r} or {_CLAUDE_SONNET_MODEL!r}"
+        )
+    return resolved
+
+
+def resolve_claude_recovery_model(model: object) -> str:
+    """Resolve one recovery model through the closed reviewed Claude set."""
+    if not isinstance(model, str):
+        raise ValueError("Claude verification recovery model must be a string")
+    aliases = {
+        "opus": _CLAUDE_OPUS_MODEL,
+        "sonnet": _CLAUDE_SONNET_MODEL,
+    }
+    resolved = aliases.get(model, model)
+    admitted = {
+        _CLAUDE_OPUS_MODEL,
+        _CLAUDE_SONNET_MODEL,
+    }
+    if resolved not in admitted:
+        raise ValueError(
+            "Claude verification recovery model must be an admitted current "
+            "ID or exact tier alias"
+        )
+    return resolved
+
+
+def validate_model_routing_authority(config: object) -> None:
+    """Validate every externally supplied model route before driver startup."""
+    if not isinstance(config, dict):
+        raise ValueError("model routing config must be an object")
+    backend = config.get("cli_backend") or "claude"
+    if not isinstance(backend, str):
+        raise ValueError("model routing backend must be a string")
+    backend = backend.strip().lower()
+
+    recovery_present = "_verification_recovery_model" in config
+    recovery = config.get("_verification_recovery_model")
+    if backend == "codex":
+        if recovery_present and recovery not in (None, ""):
+            if not isinstance(recovery, str) or recovery != recovery.strip():
+                raise ValueError("Codex verification recovery model is noncanonical")
+            _resolve_codex_model_alias(recovery)
+        return
+    if backend != "claude":
+        raise ValueError(f"unsupported model routing backend: {backend!r}")
+
+    for name, expected, tier in (
+        ("PLAMEN_OPUS_MODEL", _CLAUDE_OPUS_MODEL, "opus"),
+        ("PLAMEN_SONNET_MODEL", _CLAUDE_SONNET_MODEL, "sonnet"),
+        ("PLAMEN_HAIKU_MODEL", _CLAUDE_SONNET_MODEL, "sonnet"),
+        ("PLAMEN_THOROUGH_OPUS_MODEL", _CLAUDE_OPUS_MODEL, "opus"),
+    ):
+        _admit_claude_tier_model(os.environ.get(name, expected), tier=tier)
+
+    if "breadth_model_override" in config:
+        configured_breadth = config.get("breadth_model_override")
+        if configured_breadth not in (None, ""):
+            _resolve_claude_breadth_override(configured_breadth)
+    environment_breadth = os.environ.get("PLAMEN_BREADTH_MODEL_OVERRIDE")
+    if environment_breadth is not None and environment_breadth != "":
+        _resolve_claude_breadth_override(environment_breadth)
+
+    if recovery_present and recovery not in (None, ""):
+        resolve_claude_recovery_model(recovery)
 
 
 def _resolve_model_alias(model: str) -> str:
     m = (model or "").strip()
-    if m == "opus":
-        return PLAMEN_OPUS_MODEL or "claude-opus-4-8"
-    return m or "sonnet"
+    aliases = {
+        "opus": PLAMEN_OPUS_MODEL or "claude-opus-5",
+        "sonnet": PLAMEN_SONNET_MODEL or "claude-sonnet-5",
+        "haiku": PLAMEN_HAIKU_MODEL or "claude-sonnet-5",
+    }
+    return aliases.get(m, m or aliases["sonnet"])
 
 
 _CODEX_MODEL_MAP: dict[str, str] = {
-    "opus": os.environ.get("PLAMEN_CODEX_OPUS_MODEL", "gpt-5.5"),
-    "sonnet": os.environ.get("PLAMEN_CODEX_SONNET_MODEL", "gpt-5.4"),
-    "haiku": os.environ.get("PLAMEN_CODEX_HAIKU_MODEL", "gpt-5.4-mini"),
+    "opus": os.environ.get("PLAMEN_CODEX_OPUS_MODEL", "gpt-5.6-sol"),
+    "sonnet": os.environ.get("PLAMEN_CODEX_SONNET_MODEL", "gpt-5.6-terra"),
+    "haiku": os.environ.get("PLAMEN_CODEX_HAIKU_MODEL", "gpt-5.6-luna"),
 }
 
 _CODEX_FALLBACK_MODEL_ORDER: tuple[str, ...] = tuple(dict.fromkeys(
@@ -141,8 +547,8 @@ _CODEX_FALLBACK_MODEL_ORDER: tuple[str, ...] = tuple(dict.fromkeys(
         or ",".join([
             _CODEX_MODEL_MAP["sonnet"],
             _CODEX_MODEL_MAP["haiku"],
-            "gpt-5.4-mini",
-            "gpt-5.4-nano",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
         ])
     ).split(",")
     if m.strip()
@@ -152,21 +558,23 @@ _CODEX_FALLBACK_MODEL_ORDER: tuple[str, ...] = tuple(dict.fromkeys(
 def _resolve_codex_model_alias(model: str) -> str:
     """Map Plamen tier aliases (opus/sonnet/haiku) to Codex-compatible models.
 
-    Concrete model IDs (gpt-5.5, o3, etc.) pass through unchanged.
-    Unknown aliases default to the sonnet-tier model.
+    Concrete OpenAI model IDs pass through unchanged. Unknown tier aliases
+    fail closed so a typo cannot silently route an audit to another model.
     """
     m = (model or "").strip().lower()
     if m in _CODEX_MODEL_MAP:
         return _CODEX_MODEL_MAP[m]
-    if m in ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "o3", "o4-mini"):
+    configured = {value.strip().lower() for value in _CODEX_MODEL_MAP.values() if value.strip()}
+    if m in configured or re.fullmatch(r"(?:gpt|codex)-[a-z0-9._-]+|o\d[a-z0-9._-]*", m):
         return model.strip()
-    return _CODEX_MODEL_MAP["sonnet"]
+    raise ValueError(f"unknown Codex model alias: {model!r}")
 
 EXIT_SUCCESS = 0
 EXIT_ERROR = 1
 EXIT_RATE_LIMITED = 2    # user should re-run when quota refreshes
 EXIT_DEGRADED = 3        # pipeline finished with >N degraded phases
 EXIT_CONFIG_MISSING = 4
+EXIT_STARTUP_DECISION = 5  # startup stopped pending an explicit safe decision
 EXIT_HIBERNATING = 42    # long wait detected; resume after wake_at_utc
 
 log = logging.getLogger("plamen")
@@ -510,7 +918,7 @@ def l1_never_cut_groups(mode: str) -> list:
 # depth agents run in every SC mode (Light/Core/Thorough) per the AUDIT
 # MODES table; validation sweep + 2-axis confidence scoring run in
 # Core/Thorough; design stress + perturbation + skill execution +
-# 4-axis confidence run only in Thorough. The Light set is the recall-
+# 3-code-axis confidence run only in Thorough. The Light set is the recall-
 # floor — catches the "orchestrator merged depth agents to save
 # context" failure mode mechanically.
 SC_NEVER_CUT_BASE = [
@@ -542,6 +950,50 @@ def sc_never_cut_groups(mode: str) -> list:
     if mode == "thorough":
         groups = groups + SC_NEVER_CUT_THOROUGH_EXTRAS
     return groups
+
+
+# Closed backend-neutral registry for the only SC depth roles that may inherit
+# a recon-selected SKILL.md. Driver scheduling, producer validation, binding
+# parsing, and prompt construction all consume this same finite contract.
+SC_DEPTH_SKILL_ROLE_SPECS: tuple[dict[str, str], ...] = (
+    {
+        "agent_id": "depth-token-flow", "role": "token_flow",
+        "output": "depth_token_flow_findings.md", "category": "standard",
+        "focus": "Token/value flow, accounting, transfers, fees, share conversions",
+    },
+    {
+        "agent_id": "depth-state-trace", "role": "state_trace",
+        "output": "depth_state_trace_findings.md", "category": "standard",
+        "focus": "Cross-function state mutation and invariant enforcement",
+    },
+    {
+        "agent_id": "depth-edge-case", "role": "edge_case",
+        "output": "depth_edge_case_findings.md", "category": "standard",
+        "focus": "Boundary values, zero/max state, rounding, empty state",
+    },
+    {
+        "agent_id": "depth-external", "role": "external",
+        "output": "depth_external_findings.md", "category": "standard",
+        "focus": "External calls, callbacks, MEV, oracle and cross-chain boundaries",
+    },
+)
+SC_DEPTH_SKILL_ROLES = frozenset(
+    str(spec["role"]) for spec in SC_DEPTH_SKILL_ROLE_SPECS
+)
+SC_DEPTH_SKILL_DESTINATIONS = {
+    str(spec["agent_id"]): str(spec["role"])
+    for spec in SC_DEPTH_SKILL_ROLE_SPECS
+}
+
+
+def canonical_sc_depth_skill_role(value: str) -> str | None:
+    """Resolve an exact scheduled skill-bearing SC role, else ``None``."""
+    normalized = str(value or "").strip().strip("`*").lower()
+    if normalized in SC_DEPTH_SKILL_DESTINATIONS:
+        return SC_DEPTH_SKILL_DESTINATIONS[normalized]
+    if normalized in SC_DEPTH_SKILL_ROLES:
+        return normalized
+    return None
 
 
 L1_VERIFY_SHARD_MANIFESTS = {
@@ -630,6 +1082,526 @@ CODEX_MULTI_AGENT_PHASES: frozenset[str] = frozenset({
 
 # --- Dataclasses ---
 
+PHASE_COMMIT_STATES: frozenset[str] = frozenset({
+    "CLEAN",
+    "COMPLETED_WITH_DEBT",
+    "DEGRADED_WITH_OUTPUT",
+    "INCOMPLETE_WITH_DEBT",
+})
+
+GATE_FAILURE_CLASSES: frozenset[str] = frozenset({
+    "ARTIFACT_PRESENCE",
+    "SCHEMA",
+    "SEMANTIC_IDENTITY",
+    "METHODOLOGY_SELECTION",
+    "METHODOLOGY_APPLICATION",
+    "EVIDENCE_INTEGRITY",
+    "INDEPENDENT_DISPOSITION",
+    "DELIVERED_PROJECTION",
+    "CONTAINMENT",
+    "ADVISORY_QUALITY",
+    "REPORT_INTEGRITY",
+})
+
+GATE_FALLBACK_POLICIES: frozenset[str] = frozenset({
+    "NONE",
+    "CONSUME_WITH_DEBT",
+    "BLOCK_AS_AUTHORITY",
+    "UNPROVEN_ONLY",
+    "RETAIN_UNDISPOSED",
+    "HUMAN_REVIEW_DELIVERY",
+    "NO_SHIP_QUARANTINE",
+})
+
+RETRY_RECEIPT_STATUSES: frozenset[str] = frozenset({
+    "CLEARED", "PROGRESSED", "NO_PROGRESS", "FAILED",
+})
+
+
+def _required_nonempty_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"{field_name} must be a non-empty string")
+    return value.strip()
+
+
+def _optional_string(value: object, field_name: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise RuntimeError(f"{field_name} must be a string")
+    return value
+
+
+def _string_tuple(value: object, field_name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise RuntimeError(f"{field_name} must be a list of strings")
+    if not all(isinstance(item, str) and item.strip() for item in value):
+        raise RuntimeError(f"{field_name} entries must be non-empty strings")
+    return tuple(str(item).strip() for item in value)
+
+
+@dataclass(frozen=True)
+class GateFailure:
+    """One unresolved predicate at a phase boundary.
+
+    Gate classes are intentionally explicit: an artifact-presence fallback may
+    not clear a methodology, identity, evidence, containment, disposition, or
+    delivery failure merely because some Markdown exists on disk.
+    """
+
+    gate_id: str
+    gate_class: str
+    message: str
+    affected_identities: tuple[str, ...] = ()
+    input_digest: str = ""
+    output_digest: str = ""
+    contract_digest: str = ""
+    evidence_paths: tuple[str, ...] = ()
+    repair_owner: str = ""
+    fallback_policy: str = "NONE"
+    allowed_fallback: str = ""
+    schema_id: str = "legacy-validator-string"
+    schema_version: int = 1
+    denominator_count: Optional[int] = None
+    denominator_digest: str = ""
+    predicate_digest: str = ""
+    failure_instance_id: str = ""
+
+    def __post_init__(self) -> None:
+        _required_nonempty_string(self.gate_id, "gate_id")
+        if self.gate_class not in GATE_FAILURE_CLASSES:
+            raise RuntimeError(
+                f"gate_class must be one of {sorted(GATE_FAILURE_CLASSES)}"
+            )
+        _required_nonempty_string(self.message, "message")
+        _string_tuple(self.affected_identities, "affected_identities")
+        _string_tuple(self.evidence_paths, "evidence_paths")
+        for name in (
+            "input_digest", "output_digest", "contract_digest",
+            "repair_owner", "allowed_fallback", "denominator_digest",
+        ):
+            _optional_string(getattr(self, name), name)
+        if self.fallback_policy not in GATE_FALLBACK_POLICIES:
+            raise RuntimeError(
+                "fallback_policy must be one of "
+                f"{sorted(GATE_FALLBACK_POLICIES)}"
+            )
+        _required_nonempty_string(self.schema_id, "schema_id")
+        if type(self.schema_version) is not int or self.schema_version < 1:
+            raise RuntimeError("schema_version must be a positive integer")
+        if self.denominator_count is not None and (
+            type(self.denominator_count) is not int
+            or self.denominator_count < 0
+        ):
+            raise RuntimeError("denominator_count must be null or non-negative")
+        predicate_digest = self.predicate_digest or hashlib.sha256(
+            json.dumps(
+                {
+                    "gate_id": self.gate_id,
+                    "message": self.message,
+                    "affected_identities": list(self.affected_identities),
+                    "denominator_count": self.denominator_count,
+                    "denominator_digest": self.denominator_digest,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        object.__setattr__(self, "predicate_digest", predicate_digest)
+        failure_instance_id = self.failure_instance_id or hashlib.sha256(
+            "\0".join((
+                self.gate_id,
+                self.input_digest,
+                self.output_digest,
+                self.contract_digest,
+                predicate_digest,
+            )).encode("utf-8")
+        ).hexdigest()
+        object.__setattr__(self, "failure_instance_id", failure_instance_id)
+
+    def to_dict(self) -> dict:
+        return {
+            "gate_id": self.gate_id,
+            "gate_class": self.gate_class,
+            "message": self.message,
+            "affected_identities": list(self.affected_identities),
+            "input_digest": self.input_digest,
+            "output_digest": self.output_digest,
+            "contract_digest": self.contract_digest,
+            "evidence_paths": list(self.evidence_paths),
+            "repair_owner": self.repair_owner,
+            "fallback_policy": self.fallback_policy,
+            "allowed_fallback": self.allowed_fallback,
+            "schema_id": self.schema_id,
+            "schema_version": self.schema_version,
+            "denominator_count": self.denominator_count,
+            "denominator_digest": self.denominator_digest,
+            "predicate_digest": self.predicate_digest,
+            "failure_instance_id": self.failure_instance_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> "GateFailure":
+        if not isinstance(data, dict):
+            raise RuntimeError("gate failure must be an object")
+        return cls(
+            gate_id=_required_nonempty_string(data.get("gate_id"), "gate_id"),
+            gate_class=_required_nonempty_string(
+                data.get("gate_class"), "gate_class"
+            ),
+            message=_required_nonempty_string(data.get("message"), "message"),
+            affected_identities=_string_tuple(
+                data.get("affected_identities", []), "affected_identities"
+            ),
+            input_digest=_optional_string(
+                data.get("input_digest", ""), "input_digest"
+            ),
+            output_digest=_optional_string(
+                data.get("output_digest", ""), "output_digest"
+            ),
+            contract_digest=_optional_string(
+                data.get("contract_digest", ""), "contract_digest"
+            ),
+            evidence_paths=_string_tuple(
+                data.get("evidence_paths", []), "evidence_paths"
+            ),
+            repair_owner=_optional_string(
+                data.get("repair_owner", ""), "repair_owner"
+            ),
+            fallback_policy=_required_nonempty_string(
+                data.get("fallback_policy", "NONE"), "fallback_policy"
+            ),
+            allowed_fallback=_optional_string(
+                data.get("allowed_fallback", ""), "allowed_fallback"
+            ),
+            schema_id=_required_nonempty_string(
+                data.get("schema_id", "legacy-validator-string"), "schema_id"
+            ),
+            schema_version=data.get("schema_version", 1),
+            denominator_count=data.get("denominator_count"),
+            denominator_digest=_optional_string(
+                data.get("denominator_digest", ""), "denominator_digest"
+            ),
+            predicate_digest=_optional_string(
+                data.get("predicate_digest", ""), "predicate_digest"
+            ),
+            failure_instance_id=_optional_string(
+                data.get("failure_instance_id", ""), "failure_instance_id"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class GateClearance:
+    """Explicit evidence that discharges one previously failed predicate."""
+
+    gate_id: str
+    clearing_gate_id: str
+    evidence_digest: str
+    authority: str
+    cleared_at: str = ""
+
+    def __post_init__(self) -> None:
+        _required_nonempty_string(self.gate_id, "gate_id")
+        _required_nonempty_string(self.clearing_gate_id, "clearing_gate_id")
+        _required_nonempty_string(self.evidence_digest, "evidence_digest")
+        _required_nonempty_string(self.authority, "authority")
+        _optional_string(self.cleared_at, "cleared_at")
+
+    def to_dict(self) -> dict:
+        return {
+            "gate_id": self.gate_id,
+            "clearing_gate_id": self.clearing_gate_id,
+            "evidence_digest": self.evidence_digest,
+            "authority": self.authority,
+            "cleared_at": self.cleared_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> "GateClearance":
+        if not isinstance(data, dict):
+            raise RuntimeError("gate clearance must be an object")
+        return cls(
+            gate_id=_required_nonempty_string(data.get("gate_id"), "gate_id"),
+            clearing_gate_id=_required_nonempty_string(
+                data.get("clearing_gate_id"), "clearing_gate_id"
+            ),
+            evidence_digest=_required_nonempty_string(
+                data.get("evidence_digest"), "evidence_digest"
+            ),
+            authority=_required_nonempty_string(
+                data.get("authority"), "authority"
+            ),
+            cleared_at=_optional_string(
+                data.get("cleared_at", ""), "cleared_at"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PhaseCommit:
+    """Immutable semantic completion record for one resolved work unit."""
+
+    phase_name: str
+    state: str
+    run_id: str
+    work_unit_id: str = "phase"
+    contract_digest: str = ""
+    launch_digest: str = ""
+    artifact_digest: str = ""
+    unresolved_failures: tuple[GateFailure, ...] = ()
+    clearance_events: tuple[GateClearance, ...] = ()
+    committed_at: str = ""
+
+    def __post_init__(self) -> None:
+        _required_nonempty_string(self.phase_name, "phase_name")
+        _required_nonempty_string(self.work_unit_id, "work_unit_id")
+        if self.state not in PHASE_COMMIT_STATES:
+            raise RuntimeError(
+                f"state must be one of {sorted(PHASE_COMMIT_STATES)}"
+            )
+        if re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+            self.run_id,
+        ) is None:
+            raise RuntimeError("run_id must be a canonical UUIDv4")
+        if self.state == "CLEAN" and self.unresolved_failures:
+            raise RuntimeError("CLEAN phase commit cannot carry unresolved failures")
+        if self.state != "CLEAN" and not self.unresolved_failures:
+            raise RuntimeError(
+                f"{self.state} phase commit must carry at least one failure"
+            )
+        if not all(isinstance(item, GateFailure) for item in self.unresolved_failures):
+            raise RuntimeError("unresolved_failures must contain GateFailure records")
+        if not all(isinstance(item, GateClearance) for item in self.clearance_events):
+            raise RuntimeError("clearance_events must contain GateClearance records")
+        for name in (
+            "contract_digest", "launch_digest", "artifact_digest", "committed_at"
+        ):
+            _optional_string(getattr(self, name), name)
+
+    def to_dict(self) -> dict:
+        return {
+            "phase_name": self.phase_name,
+            "state": self.state,
+            "run_id": self.run_id,
+            "work_unit_id": self.work_unit_id,
+            "contract_digest": self.contract_digest,
+            "launch_digest": self.launch_digest,
+            "artifact_digest": self.artifact_digest,
+            "unresolved_failures": [
+                failure.to_dict() for failure in self.unresolved_failures
+            ],
+            "clearance_events": [
+                clearance.to_dict() for clearance in self.clearance_events
+            ],
+            "committed_at": self.committed_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> "PhaseCommit":
+        if not isinstance(data, dict):
+            raise RuntimeError("phase commit must be an object")
+        failures = data.get("unresolved_failures", [])
+        if not isinstance(failures, list):
+            raise RuntimeError("unresolved_failures must be a list")
+        clearances = data.get("clearance_events", [])
+        if not isinstance(clearances, list):
+            raise RuntimeError("clearance_events must be a list")
+        return cls(
+            phase_name=_required_nonempty_string(
+                data.get("phase_name"), "phase_name"
+            ),
+            state=_required_nonempty_string(data.get("state"), "state"),
+            run_id=_required_nonempty_string(data.get("run_id"), "run_id"),
+            work_unit_id=_required_nonempty_string(
+                data.get("work_unit_id", "phase"), "work_unit_id"
+            ),
+            contract_digest=_optional_string(
+                data.get("contract_digest", ""), "contract_digest"
+            ),
+            launch_digest=_optional_string(
+                data.get("launch_digest", ""), "launch_digest"
+            ),
+            artifact_digest=_optional_string(
+                data.get("artifact_digest", ""), "artifact_digest"
+            ),
+            unresolved_failures=tuple(
+                GateFailure.from_dict(item) for item in failures
+            ),
+            clearance_events=tuple(
+                GateClearance.from_dict(item) for item in clearances
+            ),
+            committed_at=_optional_string(
+                data.get("committed_at", ""), "committed_at"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class RetryReceipt:
+    """Predicate-aware result of one bounded producer repair attempt."""
+
+    run_id: str
+    phase_name: str
+    work_unit_id: str
+    attempt: int
+    status: str
+    failure_instance_ids_before: tuple[str, ...]
+    failure_instance_ids_after: tuple[str, ...]
+    gate_ids_before: tuple[str, ...]
+    gate_ids_after: tuple[str, ...]
+    schema_id: str
+    schema_version: int
+    denominator_count: Optional[int]
+    denominator_digest: str
+    input_digest: str
+    output_digest_before: str
+    output_digest_after: str
+    predicate_digest_before: str
+    predicate_digest_after: str
+    repair_owner: str
+    prompt_digest: str
+    launch_digest: str
+    contract_digest: str
+    quarantine_lineage: tuple[str, ...] = ()
+    created_at: str = ""
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+            self.run_id,
+        ) is None:
+            raise RuntimeError("run_id must be a canonical UUIDv4")
+        for name in (
+            "phase_name", "work_unit_id", "schema_id", "input_digest",
+            "output_digest_before", "output_digest_after",
+            "predicate_digest_before", "predicate_digest_after",
+            "repair_owner", "prompt_digest", "launch_digest", "contract_digest",
+        ):
+            _required_nonempty_string(getattr(self, name), name)
+        if type(self.attempt) is not int or self.attempt < 1:
+            raise RuntimeError("attempt must be a positive integer")
+        if self.status not in RETRY_RECEIPT_STATUSES:
+            raise RuntimeError(
+                f"status must be one of {sorted(RETRY_RECEIPT_STATUSES)}"
+            )
+        if type(self.schema_version) is not int or self.schema_version < 1:
+            raise RuntimeError("schema_version must be a positive integer")
+        if self.denominator_count is not None and (
+            type(self.denominator_count) is not int
+            or self.denominator_count < 0
+        ):
+            raise RuntimeError("denominator_count must be null or non-negative")
+        for name in (
+            "failure_instance_ids_before", "failure_instance_ids_after",
+            "gate_ids_before", "gate_ids_after", "quarantine_lineage",
+        ):
+            _string_tuple(getattr(self, name), name)
+
+    def to_dict(self) -> dict:
+        return {
+            "run_id": self.run_id,
+            "phase_name": self.phase_name,
+            "work_unit_id": self.work_unit_id,
+            "attempt": self.attempt,
+            "status": self.status,
+            "failure_instance_ids_before": list(self.failure_instance_ids_before),
+            "failure_instance_ids_after": list(self.failure_instance_ids_after),
+            "gate_ids_before": list(self.gate_ids_before),
+            "gate_ids_after": list(self.gate_ids_after),
+            "schema_id": self.schema_id,
+            "schema_version": self.schema_version,
+            "denominator_count": self.denominator_count,
+            "denominator_digest": self.denominator_digest,
+            "input_digest": self.input_digest,
+            "output_digest_before": self.output_digest_before,
+            "output_digest_after": self.output_digest_after,
+            "predicate_digest_before": self.predicate_digest_before,
+            "predicate_digest_after": self.predicate_digest_after,
+            "repair_owner": self.repair_owner,
+            "prompt_digest": self.prompt_digest,
+            "launch_digest": self.launch_digest,
+            "contract_digest": self.contract_digest,
+            "quarantine_lineage": list(self.quarantine_lineage),
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> "RetryReceipt":
+        if not isinstance(data, dict):
+            raise RuntimeError("retry receipt must be an object")
+        return cls(
+            run_id=_required_nonempty_string(data.get("run_id"), "run_id"),
+            phase_name=_required_nonempty_string(
+                data.get("phase_name"), "phase_name"
+            ),
+            work_unit_id=_required_nonempty_string(
+                data.get("work_unit_id"), "work_unit_id"
+            ),
+            attempt=data.get("attempt"),
+            status=_required_nonempty_string(data.get("status"), "status"),
+            failure_instance_ids_before=_string_tuple(
+                data.get("failure_instance_ids_before", []),
+                "failure_instance_ids_before",
+            ),
+            failure_instance_ids_after=_string_tuple(
+                data.get("failure_instance_ids_after", []),
+                "failure_instance_ids_after",
+            ),
+            gate_ids_before=_string_tuple(
+                data.get("gate_ids_before", []), "gate_ids_before"
+            ),
+            gate_ids_after=_string_tuple(
+                data.get("gate_ids_after", []), "gate_ids_after"
+            ),
+            schema_id=_required_nonempty_string(
+                data.get("schema_id"), "schema_id"
+            ),
+            schema_version=data.get("schema_version"),
+            denominator_count=data.get("denominator_count"),
+            denominator_digest=_optional_string(
+                data.get("denominator_digest", ""), "denominator_digest"
+            ),
+            input_digest=_required_nonempty_string(
+                data.get("input_digest"), "input_digest"
+            ),
+            output_digest_before=_required_nonempty_string(
+                data.get("output_digest_before"), "output_digest_before"
+            ),
+            output_digest_after=_required_nonempty_string(
+                data.get("output_digest_after"), "output_digest_after"
+            ),
+            predicate_digest_before=_required_nonempty_string(
+                data.get("predicate_digest_before"), "predicate_digest_before"
+            ),
+            predicate_digest_after=_required_nonempty_string(
+                data.get("predicate_digest_after"), "predicate_digest_after"
+            ),
+            repair_owner=_required_nonempty_string(
+                data.get("repair_owner"), "repair_owner"
+            ),
+            prompt_digest=_required_nonempty_string(
+                data.get("prompt_digest"), "prompt_digest"
+            ),
+            launch_digest=_required_nonempty_string(
+                data.get("launch_digest"), "launch_digest"
+            ),
+            contract_digest=_required_nonempty_string(
+                data.get("contract_digest"), "contract_digest"
+            ),
+            quarantine_lineage=_string_tuple(
+                data.get("quarantine_lineage", []), "quarantine_lineage"
+            ),
+            created_at=_optional_string(
+                data.get("created_at", ""), "created_at"
+            ),
+        )
+
 @dataclass
 class Phase:
     name: str                          # "recon", "breadth", etc.
@@ -692,48 +1664,34 @@ def phase_model(phase: Phase, mode: str, config: Optional[dict] = None) -> str:
     Core/Thorough honor the phase-level model.
     For Codex backend, maps tier aliases to OpenAI model IDs.
     """
-    if config and config.get("cli_backend") == "codex":
-        tier = "sonnet" if mode == "light" else (phase.model or "sonnet")
-        resolved = _resolve_codex_model_alias(tier)
-        phase_fallbacks = config.get("_codex_phase_model_fallbacks") or {}
-        if isinstance(phase_fallbacks, dict) and phase.name in phase_fallbacks:
-            return phase_fallbacks[phase.name]
-        # If a model was found unavailable, downgrade only phases that would
-        # use it — sonnet/haiku-tier phases keep their natural model.
-        unavail = config.get("_codex_model_unavailable")
-        if unavail and resolved == unavail:
-            return config.get("_codex_model_fallback", _CODEX_MODEL_MAP.get("sonnet", "gpt-5.4"))
-        return resolved
-    if mode == "light":
-        return "sonnet"
-
     def _breadth_override() -> str:
         if config and phase.name == "breadth":
-            return (
+            value = (
                 config.get("breadth_model_override")
                 or os.environ.get("PLAMEN_BREADTH_MODEL_OVERRIDE")
                 or ""
-            ).strip()
+            )
+            if not isinstance(value, str):
+                raise ValueError("Claude breadth model override must be a string")
+            return value
         return ""
 
-    # v2.8.11: THOROUGH + SC-only model promotion to Opus 4.8 for the
+    # THOROUGH model promotion to pinned Opus 5 for the
     # reasoning-critical roles — discovery (breadth + depth) + SC verification
     # shards (sc_verify_*) + skeptic-judge. Depth/critical-writer are already
-    # `opus` and ride the 4.8 resolution below; breadth (normally Sonnet), the
+    # `opus` and ride the pinned resolution below; breadth (normally Sonnet), the
     # sc_verify shards, and skeptic are force-promoted to the opus tier here.
     # Queue/aggregate verify phases (routing/summary, not reasoning) are NOT
     # promoted. Applies to SC AND L1 Thorough: breadth + skeptic + the opus-tier
-    # reasoning phases (depth/critical-writer) promote to 4.8. L1 verify shards
+    # reasoning phases (depth/critical-writer) promote to Opus 5. L1 verify shards
     # are named `verify_*` (not `sc_verify_*`) and are Sonnet-tier, so they do
     # NOT match the promotion below — L1's deliberate verify cost cap (Sonnet
     # shards, Haiku queue/aggregate) is preserved automatically. Core/Light are
     # untouched. Rescan/per-contract stay Sonnet (model-diversity + cost).
     # Env override: PLAMEN_THOROUGH_OPUS_MODEL.
+    promoted_to_opus = False
     if mode == "thorough" and config and config.get("pipeline") in ("sc", "l1"):
         name = phase.name
-        override = _breadth_override()
-        if override:
-            return _resolve_model_alias(override)
         is_sc_verify_shard = (
             name.startswith("sc_verify_")
             and not name.endswith("_queue")
@@ -775,9 +1733,9 @@ def phase_model(phase: Phase, mode: str, config: Optional[dict] = None) -> str:
         # SC Thorough chain analysis (Phase 4c: chain agent 1, chain agent 2,
         # chain iter2) → Opus. Chain matching reasons over the full hypothesis /
         # composition / candidate-pair set and reads large compact ledgers;
-        # Sonnet's smaller context window autocompact-thrashes on big bounties
+        # Earlier Sonnet generations autocompact-thrashed on big bounties
         # (observed: chain_agent2 thrash → idle-prompt zombie hang on a
-        # ~99-finding bounty). Opus 4.8's larger budget absorbs the bounded
+        # ~99-finding bounty). The Opus tier's reasoning budget absorbs the bounded
         # ledgers and improves match precision. SC-only (L1 has no chain phase —
         # Phase 4c is removed for L1). Core/Light stay sonnet.
         is_sc_chain = (
@@ -804,7 +1762,7 @@ def phase_model(phase: Phase, mode: str, config: Optional[dict] = None) -> str:
             (config.get("pipeline") if config else None) == "sc"
             and name.startswith("report_body_writer_")
         )
-        promote = (
+        promoted_to_opus = (
             name in ("breadth", "skeptic")
             or is_sc_verify_shard
             or is_l1_verify_shard
@@ -814,17 +1772,87 @@ def phase_model(phase: Phase, mode: str, config: Optional[dict] = None) -> str:
             or is_sc_inventory
             or is_sc_tier_writer
         )
-        tier = "opus" if promote else (phase.model or "sonnet").strip()
-        if tier == "opus":
-            return PLAMEN_THOROUGH_OPUS_MODEL or _resolve_model_alias("opus")
-        return _resolve_model_alias(tier)
+    breadth_override = _breadth_override()
+    tier = (
+        "sonnet"
+        if mode == "light"
+        else ("opus" if promoted_to_opus else (phase.model or "sonnet").strip())
+    )
 
-    # Core, L1, and config-less calls: honor phase model; opus resolves to the
-    # 4.8 default via _resolve_model_alias.
-    override = _breadth_override()
-    if override:
-        return _resolve_model_alias(override)
-    return _resolve_model_alias(phase.model)
+    # Resolve the shared phase-tier policy only after promotions have been
+    # computed. Claude's opus tier becomes Opus 5; Codex's becomes Sol.
+    if config and config.get("cli_backend") == "codex":
+        resolved = _resolve_codex_model_alias(tier)
+        phase_fallbacks = config.get("_codex_phase_model_fallbacks") or {}
+        if isinstance(phase_fallbacks, dict) and phase.name in phase_fallbacks:
+            return phase_fallbacks[phase.name]
+        # If a model was found unavailable, downgrade only phases that would
+        # use it — sonnet/haiku-tier phases keep their natural model.
+        unavail = config.get("_codex_model_unavailable")
+        if unavail and resolved == unavail:
+            return config.get(
+                "_codex_model_fallback",
+                _CODEX_MODEL_MAP.get("sonnet", "gpt-5.6-terra"),
+            )
+        return resolved
+
+    if breadth_override:
+        # Validate even in Light mode so a stale/arbitrary config cannot hide
+        # dormant authority. A valid override is deliberately ignored in
+        # Light: its defining contract is that every phase uses Sonnet.
+        admitted_breadth_override = _resolve_claude_breadth_override(
+            breadth_override
+        )
+        if mode != "light":
+            return admitted_breadth_override
+    if tier == "opus" and mode == "thorough":
+        return PLAMEN_THOROUGH_OPUS_MODEL or _resolve_model_alias("opus")
+    return _resolve_model_alias(tier)
+
+
+_RUNTIME_DEBT_ID_RE = re.compile(
+    r"[A-Z][A-Z0-9]*(?:[-_.][A-Z0-9]+)*"
+)
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _valid_runtime_debt_entry(debt_id: object, receipt_sha256: object) -> bool:
+    """Return whether one runtime-debt binding is canonical.
+
+    Runtime debt is process-level state, not a phase projection.  Its identity
+    therefore uses a deliberately phase-agnostic, bounded symbolic name and
+    binds to the exact lowercase SHA-256 digest of the evidence receipt that
+    established the debt.
+    """
+    return (
+        isinstance(debt_id, str)
+        and 0 < len(debt_id) <= 128
+        and _RUNTIME_DEBT_ID_RE.fullmatch(debt_id) is not None
+        and isinstance(receipt_sha256, str)
+        and _SHA256_HEX_RE.fullmatch(receipt_sha256) is not None
+    )
+
+
+def _validate_runtime_debt_identity(
+    debt_id: object,
+    receipt_sha256: object,
+) -> None:
+    if (
+        not isinstance(debt_id, str)
+        or not debt_id
+        or len(debt_id) > 128
+        or _RUNTIME_DEBT_ID_RE.fullmatch(debt_id) is None
+    ):
+        raise ValueError(
+            "runtime debt ID must be a canonical non-empty symbolic name"
+        )
+    if (
+        not isinstance(receipt_sha256, str)
+        or _SHA256_HEX_RE.fullmatch(receipt_sha256) is None
+    ):
+        raise ValueError(
+            "runtime debt receipt must be a lowercase SHA-256 digest"
+        )
 
 
 @dataclass
@@ -834,6 +1862,10 @@ class Checkpoint:
     rate_limited_at: Optional[str] = None
     config: Optional[dict] = None
     audit_snapshot: Optional[dict] = None
+    run_id: Optional[str] = None
+    phase_commits: dict[str, PhaseCommit] = field(default_factory=dict)
+    semantic_mutation_acks: dict[str, str] = field(default_factory=dict)
+    runtime_debts: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, scratchpad: Path) -> "Checkpoint":
@@ -895,12 +1927,85 @@ class Checkpoint:
             raise RuntimeError(
                 f"Invalid checkpoint {p}: audit_snapshot must be null or an object"
             )
+        run_id = data.get("run_id")
+        if run_id is not None and (
+            not isinstance(run_id, str)
+            or re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+                r"[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+                run_id,
+            ) is None
+        ):
+            raise RuntimeError(
+                f"Invalid checkpoint {p}: run_id must be a canonical UUIDv4"
+            )
+        raw_phase_commits = data.get("phase_commits", {})
+        if not isinstance(raw_phase_commits, dict):
+            raise RuntimeError(
+                f"Invalid checkpoint {p}: phase_commits must be an object"
+            )
+        phase_commits: dict[str, PhaseCommit] = {}
+        for key, raw_commit in raw_phase_commits.items():
+            if not isinstance(key, str) or not key:
+                raise RuntimeError(
+                    f"Invalid checkpoint {p}: phase_commits keys must be strings"
+                )
+            try:
+                commit = PhaseCommit.from_dict(raw_commit)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"Invalid checkpoint {p}: phase_commits[{key!r}]: {exc}"
+                ) from exc
+            expected_key = (
+                commit.phase_name if commit.work_unit_id == "phase"
+                else f"{commit.phase_name}::{commit.work_unit_id}"
+            )
+            if expected_key != key:
+                raise RuntimeError(
+                    f"Invalid checkpoint {p}: phase_commits[{key!r}] has "
+                    f"canonical key {expected_key!r}"
+                )
+            if run_id is not None and commit.run_id != run_id:
+                raise RuntimeError(
+                    f"Invalid checkpoint {p}: phase_commits[{key!r}] run_id "
+                    "does not match checkpoint run_id"
+                )
+            phase_commits[key] = commit
+        raw_mutation_acks = data.get("semantic_mutation_acks", {})
+        if not isinstance(raw_mutation_acks, dict) or any(
+            not isinstance(key, str)
+            or re.fullmatch(r"SMUT-[A-F0-9]{24}", key) is None
+            or not isinstance(value, str)
+            or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for key, value in raw_mutation_acks.items()
+        ):
+            raise RuntimeError(
+                f"Invalid checkpoint {p}: semantic_mutation_acks must map "
+                "canonical event IDs to SHA-256 digests"
+            )
+        raw_runtime_debts = data.get("runtime_debts", {})
+        if not isinstance(raw_runtime_debts, dict) or any(
+            not _valid_runtime_debt_entry(debt_id, receipt_sha256)
+            for debt_id, receipt_sha256 in (
+                raw_runtime_debts.items()
+                if isinstance(raw_runtime_debts, dict)
+                else ()
+            )
+        ):
+            raise RuntimeError(
+                f"Invalid checkpoint {p}: runtime_debts must map canonical "
+                "non-empty debt IDs to lowercase SHA-256 receipt digests"
+            )
         return cls(
             completed=_string_list("completed"),
             degraded=_string_list("degraded"),
             rate_limited_at=rate_limited_at,
             config=cfg,
             audit_snapshot=audit_snapshot,
+            run_id=run_id,
+            phase_commits=phase_commits,
+            semantic_mutation_acks=dict(sorted(raw_mutation_acks.items())),
+            runtime_debts=dict(sorted(raw_runtime_debts.items())),
         )
 
     def validate_phase_names(self, phase_names: set[str]) -> list[str]:
@@ -912,6 +2017,34 @@ class Checkpoint:
                     unknown.append(f"{key}:{name}")
         if self.rate_limited_at and self.rate_limited_at not in phase_names:
             unknown.append(f"rate_limited_at:{self.rate_limited_at}")
+        debt_by_phase = {
+            commit.phase_name: any(
+                sibling.phase_name == commit.phase_name
+                and sibling.state != "CLEAN"
+                for sibling in self.phase_commits.values()
+            )
+            for commit in self.phase_commits.values()
+        }
+        for commit_key, commit in self.phase_commits.items():
+            name = commit.phase_name
+            if name not in phase_names:
+                unknown.append(f"phase_commits:{commit_key}")
+            if commit.work_unit_id == "phase":
+                is_incomplete = commit.state == "INCOMPLETE_WITH_DEBT"
+                if is_incomplete and name in self.completed:
+                    unknown.append(
+                        f"phase_commits_incomplete_but_completed:{commit_key}"
+                    )
+                if not is_incomplete and name not in self.completed:
+                    unknown.append(f"phase_commits_not_completed:{commit_key}")
+            # Degraded is a phase projection, whereas typed commits may be
+            # per-child.  A clean sibling cannot contradict another child's
+            # debt, and cannot demand that the shared phase marker be cleared.
+            should_be_degraded = debt_by_phase.get(name, False)
+            if should_be_degraded and name not in self.degraded:
+                unknown.append(f"phase_commits_debt_not_degraded:{commit_key}")
+            if not should_be_degraded and name in self.degraded:
+                unknown.append(f"phase_commits_clean_but_degraded:{commit_key}")
         return unknown
 
     def save(self, scratchpad: Path):
@@ -934,6 +2067,66 @@ class Checkpoint:
             if not isinstance(self.audit_snapshot, dict):
                 raise RuntimeError("audit_snapshot must be an object before checkpoint save")
             data["audit_snapshot"] = self.audit_snapshot
+        if self.run_id is not None:
+            if re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+                r"[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+                self.run_id,
+            ) is None:
+                raise RuntimeError("run_id must be a canonical UUIDv4 before save")
+            data["run_id"] = self.run_id
+        if self.phase_commits:
+            if self.run_id is None:
+                raise RuntimeError(
+                    "phase_commits cannot be saved without a checkpoint run_id"
+                )
+            serialized_commits: dict[str, dict] = {}
+            for key, commit in self.phase_commits.items():
+                if not isinstance(key, str) or not key:
+                    raise RuntimeError("phase_commits keys must be non-empty strings")
+                if not isinstance(commit, PhaseCommit):
+                    raise RuntimeError("phase_commits values must be PhaseCommit records")
+                expected_key = (
+                    commit.phase_name if commit.work_unit_id == "phase"
+                    else f"{commit.phase_name}::{commit.work_unit_id}"
+                )
+                if expected_key != key:
+                    raise RuntimeError(
+                        f"phase_commits key {key!r} disagrees with canonical "
+                        f"key {expected_key!r}"
+                    )
+                if commit.run_id != self.run_id:
+                    raise RuntimeError(
+                        f"phase_commits[{key!r}] run_id does not match checkpoint"
+                    )
+                serialized_commits[key] = commit.to_dict()
+            data["phase_commits"] = serialized_commits
+        if self.semantic_mutation_acks:
+            if any(
+                re.fullmatch(r"SMUT-[A-F0-9]{24}", str(key)) is None
+                or re.fullmatch(r"[0-9a-f]{64}", str(value)) is None
+                for key, value in self.semantic_mutation_acks.items()
+            ):
+                raise RuntimeError(
+                    "semantic_mutation_acks contains a malformed identity/digest"
+                )
+            data["semantic_mutation_acks"] = dict(
+                sorted(self.semantic_mutation_acks.items())
+            )
+        if not isinstance(self.runtime_debts, dict) or any(
+            not _valid_runtime_debt_entry(debt_id, receipt_sha256)
+            for debt_id, receipt_sha256 in (
+                self.runtime_debts.items()
+                if isinstance(self.runtime_debts, dict)
+                else ()
+            )
+        ):
+            raise RuntimeError(
+                "runtime_debts must map canonical non-empty debt IDs to "
+                "lowercase SHA-256 receipt digests before checkpoint save"
+            )
+        if self.runtime_debts:
+            data["runtime_debts"] = dict(sorted(self.runtime_debts.items()))
         payload = json.dumps(data, indent=2)
         try:
             tmp.write_text(payload, encoding="utf-8")
@@ -945,12 +2138,68 @@ class Checkpoint:
                 pass
             raise
 
+    def record_runtime_debt(
+        self,
+        debt_id: str,
+        receipt_sha256: str,
+    ) -> None:
+        """Bind one process-level debt to its exact evidence receipt.
+
+        Re-recording the same binding is idempotent.  Re-recording an existing
+        identity with a newer receipt replaces only that identity; unrelated
+        debts remain intact.
+        """
+        _validate_runtime_debt_identity(debt_id, receipt_sha256)
+        if not isinstance(self.runtime_debts, dict):
+            raise ValueError("runtime_debts must be a mapping")
+        self.runtime_debts[debt_id] = receipt_sha256
+        self.runtime_debts = dict(sorted(self.runtime_debts.items()))
+
+    def clear_runtime_debt(
+        self,
+        debt_id: str,
+        receipt_sha256: str,
+    ) -> bool:
+        """Compare-and-clear one exact debt binding.
+
+        A stale repair receipt cannot clear a newer debt recorded under the
+        same identity.  Missing or changed bindings are a harmless no-op.
+        """
+        _validate_runtime_debt_identity(debt_id, receipt_sha256)
+        if not isinstance(self.runtime_debts, dict):
+            raise ValueError("runtime_debts must be a mapping")
+        if self.runtime_debts.get(debt_id) != receipt_sha256:
+            return False
+        del self.runtime_debts[debt_id]
+        self.runtime_debts = dict(sorted(self.runtime_debts.items()))
+        return True
+
     def mark_completed(self, phase_name: str):
         """Record a successful phase commit. Clears any stale `degraded`
         entry for the same phase so resume-after-degrade runs don't leave
         false-positive markers in the final checkpoint."""
+        typed_commit = self.phase_commits.get(phase_name)
+        if (
+            typed_commit is not None
+            and typed_commit.state == "INCOMPLETE_WITH_DEBT"
+        ):
+            # A failed attempt is durable evidence, not a completion token.
+            # Legacy callers cannot make resume skip the phase merely by
+            # projecting ``mark_completed`` after typed authority rejected it.
+            self.completed = [
+                name for name in self.completed if name != phase_name
+            ]
+            if phase_name not in self.degraded:
+                self.degraded.append(phase_name)
+            return
         if phase_name not in self.completed:
             self.completed.append(phase_name)
+        if typed_commit is not None and typed_commit.state != "CLEAN":
+            # Legacy completion is only a projection once typed authority
+            # exists. It cannot erase unresolved debt recorded by the commit.
+            if phase_name not in self.degraded:
+                self.degraded.append(phase_name)
+            return
         if phase_name in self.degraded:
             self.degraded = [d for d in self.degraded if d != phase_name]
         if self.rate_limited_at == phase_name:
@@ -1267,10 +2516,6 @@ SC_PHASES = [
           ["attention_repair_summary.md"],
           base_timeout_s=3000, model="sonnet", critical=True,
           modes={"thorough"}),
-    Phase("rag_sweep", ["Phase 4b.5: RAG Validation"],
-          ["rag_validation.md"],
-          base_timeout_s=2400, needs_mcp=True, model="sonnet",
-          modes={"core", "thorough"}, critical=True),
     # Phase 4b.6: Independent exploration-completeness verifier. Thorough
     # only. Recall-positive / ADDITIVE — may add, upgrade, or re-open
     # findings; may never drop, merge, or downgrade. Runs AFTER the depth
@@ -1301,24 +2546,43 @@ SC_PHASES = [
           ["enumgap_exploration_findings.md"],
           base_timeout_s=3600, modes={"core", "thorough"}, critical=False,
           model="sonnet"),
-    # Phase 4b.8: Multi-Axis Coverage Meta-Pass (M2). Thorough only. Builds a
-    # driver-owned, DETERMINISTIC `function × axis` completeness matrix over the
-    # mechanically-hot functions and spawns a targeted deriver-worker ONLY for
-    # orthogonal risk axes that were never examined (axis-EXAMINED read from the
-    # CLOSED depth-evidence tag vocabulary; ambiguous ⇒ GAP, recall-safe). The
-    # driver computes the matrix FIRST and skips the LLM spawn when no GAP cells
-    # exist; the worker is strictly ADDITIVE. Placed AFTER exploration_skeptic
-    # (4b.6) and enumgap_exploration (4b.7) so THEIR findings count as coverage
-    # (shrinking the worklist), and BEFORE sc_semantic_dedup/chain so an added
-    # axis finding is deduped + chained + verified. Soft (critical=False):
-    # degrade-and-continue, never halts. Sonnet (not in the opus-promotion set).
+    # Phase 4b.8: Multi-Axis Coverage Meta-Pass (M2). Thorough only. The
+    # driver owns the exact function x axis worklist; the model must publish
+    # both candidate prose and a strict AXW disposition ledger. Placed before
+    # application_skeptic so axis negatives enter the independent challenge
+    # denominator, and before semantic dedup so promoted findings follow the
+    # normal chain -> verify -> report lifecycle. Soft/degrade-and-continue.
     Phase("axis_coverage", ["Phase 4b.8: Multi-Axis Coverage Meta-Pass"],
-          ["axis_coverage_findings.md"],
+          ["axis_coverage_findings.md",
+           "axis_coverage_dispositions.json"],
           base_timeout_s=3600, modes={"thorough"}, critical=False,
+          model="sonnet"),
+    # Independent discriminator for producer-authored methodology-step
+    # NEGATIVE/NOT_APPLICABLE outcomes.  Driver-planned and sharded from the
+    # exact breadth/rescan/depth original+repair typed queues; disagreement is
+    # additive and enters the registered candidate lifecycle before dedup.
+    Phase("application_skeptic", ["Phase 4b.7.5: Application Skeptic"],
+          ["application_skeptic_work_plan.json",
+           "application_skeptic_receipt.json",
+           "application_skeptic_proposals.md",
+           "candidate_negative_skeptic_work_plan.json",
+           "candidate_negative_skeptic_receipt.json",
+           "candidate_negative_skeptic_proposals.md",
+           "candidate_negative_denominator.json"],
+          base_timeout_s=2400, modes={"core", "thorough"}, critical=False,
           model="sonnet"),
     Phase("sc_semantic_dedup", ["Phase 4e: Semantic Dedup"],
           ["dedup_decisions.md", "findings_inventory_deduped.md"],
           base_timeout_s=1200, model="sonnet", critical=True),
+    # External precedent is reconciled only after every additive discovery
+    # phase and the canonical inventory dedup commit. Its typed denominator is
+    # therefore the final candidate freeze consumed by chain/report. This
+    # phase is context-only and cannot change confidence, verdict, severity,
+    # proof, or remaining depth.
+    Phase("rag_sweep", ["Phase 4b.5: Post-Freeze Precedent Context"],
+          ["rag_validation.md"],
+          base_timeout_s=2400, needs_mcp=True, model="sonnet",
+          modes={"core", "thorough"}, critical=True),
     Phase("chain", ["Phase 4: Synthesis, Adaptive Depth, Chain Analysis"],
           ["hypotheses.md", "finding_mapping.md", "enabler_results.md"],
           base_timeout_s=3000, critical=True),
@@ -1328,8 +2592,9 @@ SC_PHASES = [
     # v2.8.8: Iteration 2 chain composition. Thorough only. Skipped via
     # driver pre-check when composition_coverage.md has zero unexplored
     # cross-class Medium+ pairs. Soft phase — failure → log, proceed.
-    # Appends new chains to chain_hypotheses.md + writes chain_iteration2.md
-    # as a new artifact.
+    # The model writes only chain_iteration2.md.  A deterministic, digest-bound
+    # driver merge owns the recall-monotonic append into chain_hypotheses.md and
+    # composition_coverage.md after the delta passes its semantic gates.
     Phase("chain_iter2", ["Phase 4c Iteration 2: Chain Composition Re-evaluation"],
           ["chain_iteration2.md"],
           base_timeout_s=1800, modes={"thorough"}, critical=False,
@@ -1475,6 +2740,20 @@ SC_PHASES = [
           base_timeout_s=900, model="sonnet",
           modes={"core", "thorough"},
           critical=False),
+    Phase(
+        "severity_adjudication_shadow",
+        ["Phase 5.3: Independent Severity Adjudication"],
+        [
+            "severity_adjudication_work_manifest.json",
+            "severity_adjudication_work_plan.json",
+            "severity_adjudication_work_reconciliation.json",
+            "trust_evidence_authority.json",
+            "trust_evidence_provider_receipt.json",
+        ],
+        base_timeout_s=3600,
+        model="opus",
+        critical=False,
+    ),
     Phase("report_index", ["Step 6a: Index Agent", "Step 6a.1: Index Completeness"],
           ["report_index.md", "report_coverage.md"],
           base_timeout_s=3000, model="sonnet", critical=True),
@@ -1512,7 +2791,8 @@ SC_PHASES = [
     # proposes cross-tier / no-location MERGES and Quality-Observation
     # reclassifications that the mechanical signals cannot pair. Writes a
     # decisions file ONLY — it never edits the report; the Python report_dedup
-    # phase below executes its proposals through the zero-data-loss gate.
+    # phase below evaluates proposals through applied-alias authority and the
+    # zero-data-loss gate.
     # critical=False is LOAD-BEARING: a crash/timeout/degrade here MUST NOT
     # halt the run — report_dedup then runs its mechanical-only pass exactly as
     # before this phase existed.
@@ -1521,12 +2801,12 @@ SC_PHASES = [
           base_timeout_s=900, model="sonnet", critical=False),
     # Python-native cross-tier dedup. critical=False is LOAD-BEARING: a
     # crash/timeout/data-loss-veto here MUST NOT halt the run or corrupt the
-    # delivered AUDIT_REPORT.md. Gate artifact is the always-written mapping,
-    # NOT AUDIT_REPORT.md (the phase must not change it on a no-op/veto).
+    # delivered AUDIT_REPORT.md. Gate artifacts are the transaction-written
+    # mapping + applied-alias receipt, never AUDIT_REPORT.md itself.
     # Consumes report_dedup_agent_decisions.md (when present) as additional
     # MERGE candidate pairs + QO reclassification IDs.
     Phase("report_dedup", ["Step 6d: Report Dedup"],
-          ["report_dedup_mapping.md"],
+          ["report_dedup_mapping.md", "report_dedup_applied_alias_receipt.json"],
           base_timeout_s=900, model="sonnet", critical=False),
     # Phase 6e LLM material-harm disposition PROPOSER. Reads the final deduped
     # AUDIT_REPORT.md and writes disposition.md (BODY/APPENDIX per finding) using
@@ -1607,27 +2887,43 @@ L1_PHASES = [
           ["attention_repair_summary.md"],
           base_timeout_s=3000, model="sonnet", critical=True,
           modes={"thorough"}),
-    Phase("rag_sweep", ["Step 4b.6: RAG Validation"],
-          ["rag_validation.md"],
-          base_timeout_s=2400, needs_mcp=True, model="sonnet", critical=True,
-          modes={"core", "thorough"}),
     # Step 4b.7: Enumeration-Obligation Exploration (L1 parity with SC). The
     # post-depth enumeration gate fires for L1 too; this routes each flagged
     # obligation to a depth EXPLORATION agent that TRACES it before verify
     # instead of dismissing it as a raw candidate. Soft + skipped when there are
     # no obligations (degrades to the prior candidate->verify fallback). Placed
-    # AFTER rag_sweep and BEFORE verify_queue so its promoted findings are in the
-    # inventory when the verification queue is built. (L1 has no chain phase.)
+    # BEFORE semantic_dedup and verify_queue so its promoted findings enter the
+    # same precision and verification boundaries. (L1 has no chain phase.)
     Phase("enumgap_exploration", ["Step 4b.7: Enumeration-Obligation Exploration"],
           ["enumgap_exploration_findings.md"],
           base_timeout_s=3600, modes={"core", "thorough"}, critical=False,
           model="sonnet"),
+    Phase("application_skeptic", ["Step 4b.7.5: Application Skeptic"],
+          ["application_skeptic_work_plan.json",
+           "application_skeptic_receipt.json",
+           "application_skeptic_proposals.md",
+           "candidate_negative_skeptic_work_plan.json",
+           "candidate_negative_skeptic_receipt.json",
+           "candidate_negative_skeptic_proposals.md",
+           "candidate_negative_denominator.json"],
+          base_timeout_s=2400, modes={"core", "thorough"}, critical=False,
+          model="sonnet"),
+    # L1 semantic dedup is an inventory precision boundary, not a queue
+    # mutator. It must run after every ordinary additive inventory producer
+    # and before precedent context / the authenticated T0--T9 queue
+    # transaction.
+    Phase("semantic_dedup", ["Step 4e: Semantic Dedup"],
+          ["dedup_decisions.md"],
+          base_timeout_s=3000, model="sonnet", critical=True),
+    # L1 precedent consumes the receipt-authorized post-dedup inventory and
+    # completes before queue T0. It has context authority only.
+    Phase("rag_sweep", ["Step 4b.6: Post-Freeze Precedent Context"],
+          ["rag_validation.md"],
+          base_timeout_s=2400, needs_mcp=True, model="sonnet", critical=True,
+          modes={"core", "thorough"}),
     Phase("verify_queue", ["Step 4d: Verification Queue Manifest"],
           ["verification_queue.md"],
           base_timeout_s=600, critical=True, model="haiku"),
-    Phase("semantic_dedup", ["Step 4e: Semantic Dedup"],
-          ["dedup_decisions.md", "verification_queue_deduped.md"],
-          base_timeout_s=3000, model="sonnet", critical=True),
     Phase("verify_crithigh", ["Step 5: Verification"],
           [],
           base_timeout_s=4200, critical=True, model="sonnet"),
@@ -1714,6 +3010,20 @@ L1_PHASES = [
           ["cross_batch_consistency.md"],
           base_timeout_s=900, model="sonnet", critical=False,
           modes={"core", "thorough"}),
+    Phase(
+        "severity_adjudication_shadow",
+        ["Step 5.7: Independent Severity Adjudication"],
+        [
+            "severity_adjudication_work_manifest.json",
+            "severity_adjudication_work_plan.json",
+            "severity_adjudication_work_reconciliation.json",
+            "trust_evidence_authority.json",
+            "trust_evidence_provider_receipt.json",
+        ],
+        base_timeout_s=3600,
+        model="opus",
+        critical=False,
+    ),
     Phase("report_index", ["6a. Index Agent", "6a.1: Index Completeness Gate"],
           ["report_index.md", "report_coverage.md"],
           base_timeout_s=3000, model="sonnet", critical=True),
@@ -1754,10 +3064,10 @@ L1_PHASES = [
           base_timeout_s=4800, model="sonnet", critical=True),
     # Python-native cross-tier dedup (L1 parity). critical=False is
     # LOAD-BEARING: a crash/timeout/data-loss-veto MUST NOT halt the run or
-    # corrupt the delivered AUDIT_REPORT.md. Gate artifact is the always-written
-    # mapping, NOT AUDIT_REPORT.md (the phase must not change it on no-op/veto).
+    # corrupt the delivered AUDIT_REPORT.md. Gate artifacts are the mapping and
+    # applied-alias receipt, never AUDIT_REPORT.md itself.
     Phase("report_dedup", ["6d. Report Dedup"],
-          ["report_dedup_mapping.md"],
+          ["report_dedup_mapping.md", "report_dedup_applied_alias_receipt.json"],
           base_timeout_s=900, model="sonnet", critical=False),
     # Phase 6e LLM material-harm disposition PROPOSER (L1 parity). Reads the
     # final deduped AUDIT_REPORT.md and writes disposition.md (BODY/APPENDIX per

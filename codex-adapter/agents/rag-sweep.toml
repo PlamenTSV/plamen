@@ -1,6 +1,6 @@
 name = "rag-sweep"
 description = "RAG validation sweep: validate every finding against historical vulnerability databases"
-model = "gpt-5.4"
+model = "gpt-5.6-terra"
 
 developer_instructions = """
             You are the RAG Validation Sweep Agent. Read your full methodology from:

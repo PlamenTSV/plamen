@@ -6,7 +6,7 @@ description: "Performs comprehensive token flow analysis by tracing all token en
 # TOKEN_FLOW_TRACING Skill
 
 > **Trigger Pattern**: `transfer\|transferFrom\|safeTransfer\|mint\|burn\|balanceOf.*this`
-> **Inject Into**: Lifecycle, External-Env agents
+> **Inject Into**: Breadth agents, depth-token-flow
 
 For every token the protocol handles:
 

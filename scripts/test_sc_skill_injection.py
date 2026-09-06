@@ -156,18 +156,22 @@ def test_recon_and_verifier_skills_excluded():
 
 def test_skill_path_resolves_evm_skill():
     # CROSS_CHAIN_MESSAGE_INTEGRITY lives under agents/skills/evm/
-    p = D._sc_skill_path_for_name("CROSS_CHAIN_MESSAGE_INTEGRITY")
+    p = D._sc_skill_path_for_name("CROSS_CHAIN_MESSAGE_INTEGRITY", "evm")
     assert p is not None and p.name == "SKILL.md" and "cross-chain-message-integrity" in p.as_posix()
 
 
 def test_injection_block_is_mandatory_and_lists_skills():
-    blk = D._sc_skill_injection_block(["CROSS_CHAIN_MESSAGE_INTEGRITY"], agent_kind="breadth")
+    blk = D._sc_skill_injection_block(
+        ["CROSS_CHAIN_MESSAGE_INTEGRITY"], agent_kind="breadth", language="evm"
+    )
     assert "MANDATORY" in blk
     assert "Step Execution Checklist" in blk
     assert "cross-chain-message-integrity/SKILL.md" in blk
     # empty for an unbound / unresolvable skill set
-    assert D._sc_skill_injection_block([], agent_kind="breadth") == ""
-    assert D._sc_skill_injection_block(["NONEXISTENT_SKILL_XYZ"], agent_kind="breadth") == ""
+    assert D._sc_skill_injection_block([], agent_kind="breadth", language="evm") == ""
+    assert D._sc_skill_injection_block(
+        ["NONEXISTENT_SKILL_XYZ"], agent_kind="breadth", language="evm"
+    ) == ""
 
 
 def test_breadth_worker_prompt_injects_bound_skill():

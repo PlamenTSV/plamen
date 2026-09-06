@@ -10,10 +10,28 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _rp():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     return importlib.import_module("recon_prepass")
+
+
+@pytest.fixture(autouse=True)
+def _force_visible_slither_authority_debt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rp = _rp()
+    monkeypatch.setattr(
+        rp,
+        "_capture_python_provider_authority",
+        lambda *_args, **_kwargs: {
+            "authority_status": "UNAVAILABLE",
+            "deterministic_provider_authority": False,
+            "reason": "fixture exercises source fallback",
+        },
+    )
 
 
 _SRC = (

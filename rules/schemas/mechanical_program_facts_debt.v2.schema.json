@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/mechanical_program_facts_debt.v2.schema.json",
+  "title": "Plamen mechanical Program Facts debt v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "run_id",
+    "run_generation",
+    "authority_bindings",
+    "debts",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.mechanical_program_facts_debt.v2"
+    },
+    "status": {
+      "$ref": "#/$defs/publicStatus"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "authority_bindings": {
+      "$ref": "#/$defs/authorityBindings"
+    },
+    "debts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/debt"
+      },
+      "maxItems": 10000000
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 10000000,
+      "uniqueItems": true
+    },
+    "digestSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sha256"
+      },
+      "maxItems": 10000000,
+      "uniqueItems": true
+    },
+    "publicStatus": {
+      "enum": [
+        "WRITTEN",
+        "DEGRADED",
+        "UNAVAILABLE",
+        "FAILED",
+        "STALE"
+      ]
+    },
+    "activationPermit": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "digest"
+          ],
+          "properties": {
+            "state": {
+              "const": "PRESENT_VALIDATED"
+            },
+            "digest": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "const": "ABSENT_DENIED"
+            }
+          }
+        }
+      ]
+    },
+    "authorityBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_authority_digest",
+        "composition_authority_digest",
+        "methodology_package_digest",
+        "activation_decision_digest",
+        "activation_permit"
+      ],
+      "properties": {
+        "execution_authority_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "composition_authority_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "methodology_package_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "activation_decision_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "activation_permit": {
+          "$ref": "#/$defs/activationPermit"
+        }
+      }
+    },
+    "reason": {
+      "enum": [
+        "CANDIDATE_UNIVERSE_UNRESOLVED",
+        "CAPABILITY_EXCLUDED",
+        "CAPABILITY_UNRESOLVED",
+        "BUILD_INPUT_MISSING",
+        "BUILD_INPUT_DRIFTED",
+        "BUILD_BLOCKED_BEFORE_ATTEMPT",
+        "BUILD_FAILED",
+        "REQUEST_STDIN_MISMATCH",
+        "ENVIRONMENT_AUTHORITY_MISSING",
+        "READ_AUTHORITY_MISSING",
+        "EXECUTE_AUTHORITY_MISSING",
+        "WRITE_AUTHORITY_MISSING",
+        "NETWORK_AUTHORITY_MISSING",
+        "PROCESS_AUTHORITY_MISSING",
+        "RESOURCE_AUTHORITY_MISSING",
+        "CAS_INPUT_MISSING",
+        "CAS_INPUT_DRIFTED",
+        "EXECUTION_AUTHORITY_MISMATCH",
+        "COMPOSITION_AUTHORITY_MISMATCH",
+        "ACTIVATION_PERMIT_ABSENT_OR_INVALID",
+        "PUBLIC_PROJECTION_LOSS_PREVENTED",
+        "GENERATION_PUBLICATION_UNAVAILABLE",
+        "GENERATION_DURABILITY_UNAVAILABLE",
+        "RUNTIME_DIAGNOSTIC_PERSISTENCE_FAILED",
+        "PROVIDER_UNAVAILABLE",
+        "PROVIDER_DISAGREEMENT",
+        "RAW_OUTPUT_MALFORMED",
+        "OUTPUT_TRUNCATED",
+        "TIMEOUT",
+        "RESOURCE_LIMIT",
+        "STALE_INPUT",
+        "INTERNAL_FAILURE"
+      ]
+    },
+    "scopeKind": {
+      "enum": [
+        "RUN",
+        "BUILD_VARIANT",
+        "CAPABILITY",
+        "SOURCE_FILE",
+        "WORK_UNIT",
+        "GENERATION"
+      ]
+    },
+    "debt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "debt_id",
+        "reason",
+        "scope_kind",
+        "scope_ids",
+        "evidence_digests",
+        "retryable",
+        "reuse_blocking",
+        "terminal_negative_authority"
+      ],
+      "properties": {
+        "debt_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "scope_kind": {
+          "$ref": "#/$defs/scopeKind"
+        },
+        "scope_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "evidence_digests": {
+          "$ref": "#/$defs/digestSet"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "reuse_blocking": {
+          "type": "boolean"
+        },
+        "terminal_negative_authority": {
+          "const": false
+        }
+      }
+    }
+  }
+}

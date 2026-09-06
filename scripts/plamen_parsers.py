@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import logging
 import math
@@ -11,9 +12,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Optional
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable, Mapping, Optional
 
 from plamen_types import (
     Phase, Checkpoint, SC_PHASES, L1_PHASES, log,
@@ -26,11 +27,57 @@ from plamen_types import (
     DEPTH_EVIDENCE_TAG_RE, FINDING_BLOCK_HEADING_RE,
     SEVERITY_ORDER, SEVERITY_LETTER, SEVERITY_FROM_LETTER,
     has_mechanical_proof, normalize_severity, severity_letter_from_name,
-    severity_rank,
+    severity_rank, normalize_scope_match_mode, parse_exact_scope_text,
 )
+from queue_work_items import (
+    MARKDOWN_HEADERS,
+    QUEUE_RECORD_SET_SCHEMA_VERSION,
+    QueueWorkPlan,
+    QueueWorkItem,
+    build_queue_work_plan,
+    parse_queue_markdown,
+    queue_records_from_json,
+    queue_records_to_json,
+    validate_exact_partition,
+    validate_queue_work_items,
+)
+from compound_plan_adapter import (
+    adapt_chain_composition_candidates,
+    adapt_chain_hypotheses,
+)
+from artifact_ledger import ArtifactLedgerError, read_artifact_ledger
+from bounded_artifact_io import read_bounded_regular_bytes
+from operational_markdown import operational_markdown_view
+from finding_producer_registry import (
+    FINDING_PRODUCERS as _REGISTERED_FINDING_PRODUCERS,
+    classify_producer_id as _classify_producer_id,
+    producer_accepts_local_id as _registered_producer_accepts_local_id,
+    producer_for_artifact as _registered_producer_for_artifact,
+    producer_id_pattern as _registered_producer_id_pattern,
+    producer_numeric_id_pattern as _registered_numeric_id_pattern,
+    producer_patterns as _registered_producer_patterns,
+    resolve_effective_scopes as _resolve_effective_scopes,
+)
+from internal_identity_privacy import (
+    classify_private_legacy_eip_ids,
+    redact_private_legacy_eip_ids,
+)
+from trust_evidence_authority import (
+    record_trust_review_debt,
+    resolve_trust_evidence,
+)
+import fuzz_workspace_authority as _fuzz_workspace_authority
 
 __all__ = [
     "DedupSignature",
+    "_dedup_source_ids_by_report_id",
+    "_deliver_compound_candidates_to_queue",
+    "_ensure_typed_queue_authority",
+    "_require_typed_queue_authority",
+    "_extract_trust_scope",
+    "_typed_queue_item_legacy_row",
+    "_typed_queue_items_from_rows",
+    "render_verification_queue_work_item_markdown",
     "classify_quality_observation",
     "classify_body_or_appendix",
     "parse_disposition_md",
@@ -59,6 +106,8 @@ __all__ = [
     "_FINDING_ID_EXTRACT_RE",
     "_ID_ALL_INTERNAL",
     "_ID_ALL_NONHYPO",
+    "extract_unambiguous_internal_ids",
+    "classify_private_legacy_eip_ids",
     "_ID_DAML_ALTS",
     "_ID_DEPTH_ALTS",
     "_ID_HYPO_ALTS",
@@ -75,6 +124,8 @@ __all__ = [
     "_parse_skeptic_judge_table",
     "read_judge_decisions_json_sidecar",
     "write_judge_decisions_json_sidecar",
+    "read_skeptic_challenges_json_sidecar",
+    "write_skeptic_challenges_json_sidecar",
     "_ID_LEDGER_NAME",
     "_ID_LEDGER_SCHEMA_VERSION",
     "_id_ledger_load",
@@ -153,6 +204,12 @@ __all__ = [
     "_niche_heading_match",
     "_niche_required_cell_yes",
     "_field_from_markdown",
+    "_EXPLICIT_FINDING_HEADING_RE",
+    "_canonical_finding_blocks",
+    "_match_explicit_finding_heading",
+    "_read_finding_artifact_bytes",
+    "FINDING_ARTIFACT_MAX_BYTES",
+    "FindingArtifactLimitError",
     "_field_or_section",
     "parse_plamen_signals",
     "_find_report_index_cut_for_active_recovery",
@@ -170,6 +227,10 @@ __all__ = [
     "_compute_dedup_candidate_pairs",
     "_compute_dedup_candidate_blocks",
     "_compute_report_dedup_candidate_pairs",
+    "_REPORT_DEDUP_CANDIDATE_LEDGER",
+    "_REPORT_DEDUP_CANDIDATE_LEDGER_SCHEMA",
+    "_report_dedup_pair_key",
+    "_load_report_dedup_candidate_ledger",
     "_dedup_extract_findings",
     "_dedup_live_pair_cap",
     "_dedup_block_max",
@@ -236,6 +297,12 @@ __all__ = [
     "_read_queue_json_sidecar",
     "_write_queue_excluded_manifest",
     "_write_queue_subset_manifest",
+    "_write_queue_work_item_records_manifest",
+    "_read_typed_queue_work_items",
+    "_write_typed_queue_work_items",
+    "_write_or_validate_queue_work_plan",
+    "_write_or_validate_compound_adapter_artifacts",
+    "read_queue_work_plan",
     "_queue_rows_from_inventory_with_exclusions",
     "_read_pipeline_from_config",
     "_matches_l1_nondeterminism_class",
@@ -286,6 +353,11 @@ COMMITTED_INVARIANT_ID_PATTERN = (
     r"(?:[A-Z][A-Z0-9]*-)*CI(?:-[A-Z0-9]+)+"
 )
 
+# Legacy Claude breadth workers use ``B<agent>-<ordinal>`` (for example
+# ``B1-4``). Unlike the artifact-scoped discovery catch-all, this bounded
+# lineage spelling is safe to recognize in downstream, context-free prose.
+_LEGACY_BREADTH_LINEAGE_PATTERN = r"B\d{1,4}-\d+"
+
 
 # Depth agent structural IDs (produced by depth-*, scanners, niche agents)
 _ID_DEPTH_ALTS = (
@@ -299,20 +371,46 @@ _ID_DEPTH_ALTS = (
     r"INV-\d+|DCI-\d+|DEC-\d+|DX-\d+|DN-\d+|DNS-\d+|"
     r"DA-[A-Z0-9_-]+-\d+|DA\d+-[A-Z0-9_-]+-\d+|DCOV\d*-\d+|"
     r"DST-(?:[A-Z0-9_-]+-)?\d+|PERT-\d+|PAIR-\d+|ATT-\d+|"
+    # Methodology-application repair candidates: breadth, rescan, depth.
+    r"MAB-\d+|MAR-\d+|MAD-\d+|"
     r"PANIC(?:-EXPLOIT)?-\d+"
 )
 
 # Tool feeder IDs (Slither, fuzzer, scanner, sibling propagation)
 _ID_TOOL_ALTS = r"SLITHER-\d+|FUZZ-\d+|MEDUSA-\d+|RSW-\d+|SP-\d+"
 
-# Niche/injectable skill prefixes — 2-4 letter codes
-_ID_NICHE_ALTS = (
-    r"(?:AA|AB|AC|AL|AR|AV|BLS|BS|CBS|CCT|CFG|CI|CM|CMI|CPI|CR|CS|CT|CU|"
-    r"DEP|DEX|ED|EDA|EN|EP|EPA|EVT|EX|FA|FC|FL|GO|GOV|HF|IHR|II|LC|"
-    r"LEND|MG|MP|MSS|NFT|NS|OD|OF|OO|OR|P2P|PDA|PSC|PTB|PV|RE|REENT|REF|"
-    r"RPC|RS|SA|SAF|SCOUT|SE|SGI|SHIFT|SIG|SL|SLS|SR|SS|SSC|ST|STATIC|STR|"
-    r"T22|TF|TPS|TS|TXI|VA|VL|VS|WED|XE|XFER|ZS)-\d+"
+# Registry-owned post-inventory producer IDs.  This may overlap older static
+# components; regex alternation overlap is harmless, while omission is a
+# lineage/promotion loss.  New producers therefore join the unified grammar
+# through the registry rather than another prefix allow-list.
+_ID_REGISTERED_ALTS = _registered_producer_id_pattern(include_lineage=True)
+
+# Context-free prose has no artifact owner, so it must not use the breadth /
+# graph-sweep catch-all prefix grammar.  Those producers intentionally accept a
+# spawn-manifest-selected token inside their OWN artifacts, but globally
+# applying that grammar launders standards/version tokens such as OZ-4626 or
+# WETH-9 into findings and even misclassifies public H-NN report IDs as private
+# leaks.  Specific producer and lineage namespaces remain context-free-safe;
+# generic discovery IDs are still parsed through the owning-artifact boundary.
+_CONTEXT_FREE_REGISTERED_PRODUCERS = tuple(
+    producer
+    for producer in _REGISTERED_FINDING_PRODUCERS
+    # Several L1 derivative producers deliberately reuse the same manifest-
+    # selected catch-all grammar as breadth.  Classify by grammar behaviour,
+    # not a second key allow/deny list, so future artifact-scoped producers do
+    # not silently reopen the context-free namespace.
+    if not any(
+        re.fullmatch(pattern, "ZZZSTD-987654", re.IGNORECASE)
+        for pattern in producer.local_id_patterns
+    )
 )
+_ID_CONTEXT_FREE_REGISTERED_ALTS = _registered_producer_id_pattern(
+    include_lineage=True,
+    producers=_CONTEXT_FREE_REGISTERED_PRODUCERS,
+)
+
+# Manifest-derived producer-local numeric IDs, including alphanumeric prefixes.
+_ID_NICHE_ALTS = _registered_numeric_id_pattern()
 
 # Hypothesis/chain/structural IDs (used in report index mapping).
 # F1 (hardening from a prior run): the SC chain phase emits grouped-by-severity
@@ -444,9 +542,23 @@ def parse_split_parent_hypothesis_id(status: str) -> str:
 # DML-CC-/DML-CID- token before the bare CC-/niche alts can grab a substring.
 _ID_DAML_ALTS = r"DML-(?:AUTH|ASM|CID|SK|BI|PR|IF|AM|CHS|CK|CC|PD|LK|EI)-\d+"
 
-# Convenience: all internal IDs (daml + depth + tool + niche + hypothesis)
+# Artifact-scoped superset. This deliberately includes the discovery/L1
+# producer catch-all because parsers that have already resolved the owning
+# artifact must retain a manifest-selected local namespace. Never use this
+# grammar to mine unowned prose: ordinary tokens such as ``version-2`` and
+# ``block-1234`` satisfy that catch-all.
 _ID_ALL_INTERNAL = "|".join([
-    _ID_DAML_ALTS, _ID_DEPTH_ALTS, _ID_TOOL_ALTS, _ID_NICHE_ALTS, _ID_HYPO_ALTS,
+    _ID_DAML_ALTS, _ID_DEPTH_ALTS, _ID_TOOL_ALTS, _ID_NICHE_ALTS,
+    _ID_REGISTERED_ALTS, _ID_HYPO_ALTS,
+])
+
+# Context-free internal-ID grammar. It keeps every closed ecosystem/phase
+# namespace plus bounded legacy breadth lineage while excluding only the
+# manifest-selected discovery/L1 catch-all.
+_ID_ALL_CONTEXT_FREE = "|".join([
+    _ID_DAML_ALTS, _ID_DEPTH_ALTS, _ID_TOOL_ALTS, _ID_NICHE_ALTS,
+    _ID_CONTEXT_FREE_REGISTERED_ALTS, _ID_HYPO_ALTS,
+    _LEGACY_BREADTH_LINEAGE_PATTERN,
 ])
 
 # All unambiguously-internal IDs for client-body sanitization. Excludes
@@ -454,9 +566,45 @@ _ID_ALL_INTERNAL = "|".join([
 # report IDs in SC). Only strips IDs that a report reader should never see.
 _ID_ALL_NONHYPO = "|".join([
     _ID_DAML_ALTS, _ID_DEPTH_ALTS, _ID_TOOL_ALTS, _ID_NICHE_ALTS,
+    _ID_CONTEXT_FREE_REGISTERED_ALTS,
     # L1-prefixed hypothesis IDs are never client-facing
     r"L1-[CHMLI]-\d+|CC-\d+|F-\d+",
 ])
+
+# Client-report identity matching uses ASCII token boundaries, not ``\b``.
+# ``\b`` sees the hyphen before ``of-1`` in ordinary prose such as
+# ``price-of-1`` as a word boundary and therefore manufactures an internal-ID
+# leak.  A pipeline identity may be adjacent to punctuation, code backticks,
+# path separators, underscores, or a Unicode dash, but it may not begin/end in
+# the middle of an ASCII alphanumeric-or-hyphen token.  Keep this policy beside
+# the canonical grammar so report validation cannot invent a divergent wrapper.
+_INTERNAL_ID_TOKEN_RE = re.compile(
+    rf"(?<![A-Za-z0-9-])(?:{_ID_ALL_NONHYPO})(?![A-Za-z0-9-])",
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def extract_unambiguous_internal_ids(
+    text: str,
+    *,
+    known_internal_ids: Iterable[str] = (),
+) -> list[str]:
+    """Return exact unambiguously-private IDs with stable de-duplication.
+
+    The original spelling is retained for diagnostics while comparison is
+    case-insensitive. Ambiguous H/CH identities remain governed by the ID
+    ledger/public-report policy in ``_report_internal_hypothesis_ids``.
+    """
+    found: dict[str, str] = {}
+    for match in _INTERNAL_ID_TOKEN_RE.finditer(text or ""):
+        token = match.group(0)
+        found.setdefault(token.upper(), token)
+    for occurrence in classify_private_legacy_eip_ids(
+        text or "", known_internal_ids=known_internal_ids
+    ):
+        token = (text or "")[occurrence.start:occurrence.end]
+        found.setdefault(occurrence.canonical_id, token)
+    return [found[key] for key in sorted(found)]
 
 
 _INVENTORY_SOURCE_PATTERNS: tuple[str, ...] = (
@@ -493,6 +641,35 @@ _FID_ALLOWED_PREFIXES: frozenset = frozenset({
     # formats" rule).
     "INVARIANT", "AXISGAP",
 }) | frozenset(re.findall(r"[A-Z][A-Z0-9]+", _ID_NICHE_ALTS))
+
+# Registry-owned producers are the source of truth for producer-local and
+# lineage namespaces.  Keep the small core/report prefix set above for legacy
+# canonical IDs, but never require a second hand-maintained edit when a typed
+# producer adds ASKP/SKEP/ECLR/DXRE-style identities.  Legacy producer aliases
+# (notably the public EIP namespace) are intentionally absent from the global
+# grammar because producer_id_pattern() excludes them.
+_REGISTERED_FINDING_ID_PATTERN = _registered_producer_id_pattern(
+    "pre_dedup_promotion",
+    include_lineage=True,
+    producers=_CONTEXT_FREE_REGISTERED_PRODUCERS,
+)
+_CORE_FINDING_PREFIX_PATTERN = r"(?:" + "|".join(
+    re.escape(prefix)
+    for prefix in sorted(_FID_ALLOWED_PREFIXES, key=lambda value: (-len(value), value))
+) + r")"
+_GLOBAL_FINDING_ID_PATTERN = (
+    rf"(?:{_CORE_FINDING_PREFIX_PATTERN}-\d+|"
+    rf"{_LEGACY_BREADTH_LINEAGE_PATTERN}|"
+    rf"{_REGISTERED_FINDING_ID_PATTERN})"
+)
+_REGISTERED_FINDING_ID_RE = re.compile(
+    rf"(?<![A-Za-z0-9_-])({_REGISTERED_FINDING_ID_PATTERN})"
+    rf"(?![A-Za-z0-9_-])",
+    re.IGNORECASE,
+)
+_REGISTERED_FINDING_ID_FULL_RE = re.compile(
+    rf"^(?:{_REGISTERED_FINDING_ID_PATTERN})$", re.IGNORECASE
+)
 
 _SEVERITY_RE = re.compile(
     r"(?im)"
@@ -1362,12 +1539,17 @@ _QUEUE_HEADER_ALIASES = {
     "bug class": ("bug class", "category", "class"),
     "primary artifact": ("primary artifact", "artifact", "source artifact"),
     "poc class": ("poc class", "poc_class", "testability", "poc category"),
+    "evidence debt": (
+        "evidence debt", "evidence repair", "repair debt", "human review debt",
+    ),
 }
 
 
-# v2.4.3: derived from unified _ID_* components above.
+# Queue/table cells are context-free, not producer-owned artifacts. Using the
+# artifact-scoped catch-all here launders arbitrary ``word-N`` prose into a
+# finding identity and can manufacture queue/skeptic obligations.
 _FINDING_ID_EXTRACT_RE = re.compile(
-    _ASCII_ID_LEFT + r"(" + _ID_ALL_INTERNAL + r")" + _ASCII_ID_RIGHT,
+    _ASCII_ID_LEFT + r"(" + _ID_ALL_CONTEXT_FREE + r")" + _ASCII_ID_RIGHT,
     re.IGNORECASE | re.ASCII,
 )
 
@@ -1431,6 +1613,42 @@ def _match_canonical_header(header_lc: str) -> Optional[str]:
     return best[0] if best else None
 
 
+_TYPED_QUEUE_ROW_KEY = "_typed_work_item_json"
+
+
+def _typed_queue_item_legacy_row(item: QueueWorkItem) -> dict[str, Any]:
+    """Expose a legacy-Claude view while retaining one exact typed record.
+
+    The ordinary Markdown columns remain available to old prompts and shard
+    logic.  The private canonical JSON field is carried only in deterministic
+    sidecars/in-memory rows and is never rendered into the legacy prompt table.
+    """
+
+    locations = [record.to_dict() for record in item.location_records]
+    location = item.location_records[0].artifact if item.location_records else ""
+    artifacts = list(item.primary_artifacts)
+    return {
+        "queue #": str(item.queue_priority),
+        "finding id": item.work_item_id,
+        "expected output file": item.expected_output_file,
+        "severity": item.severity_proposal.level,
+        "title": item.title,
+        "bug class": item.bug_class,
+        "preferred tag": item.preferred_tag,
+        "location": location,
+        "location_records": locations,
+        "primary artifact": artifacts[0] if artifacts else "",
+        "primary_artifacts": artifacts,
+        "poc class": item.poc_class,
+        "constituents": ",".join(item.constituents),
+        "effective evidence scope": item.effective_evidence_scope,
+        "effective proof scope": item.effective_proof_scope,
+        "effective harm scope": item.effective_harm_scope,
+        "required disposition": item.required_disposition,
+        _TYPED_QUEUE_ROW_KEY: item.to_json(),
+    }
+
+
 def parse_verification_queue_rows(scratchpad: Path) -> list[dict[str, str]]:
     """Parse verification_queue.md into structured rows.
 
@@ -1449,18 +1667,34 @@ def parse_verification_queue_rows(scratchpad: Path) -> list[dict[str, str]]:
     """
     p = scratchpad / "verification_queue.md"
     json_rows = _read_queue_json_sidecar(p)
-    if json_rows:
-        try:
-            if not p.exists() or p.with_suffix(".json").stat().st_mtime_ns >= p.stat().st_mtime_ns:
-                return json_rows
-        except Exception:
-            return json_rows
     if not p.exists():
         return json_rows
     try:
-        text = _llm_norm(p.read_text(encoding="utf-8", errors="replace"))
+        raw_text = p.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return json_rows
+    first_line = next(
+        (line.strip() for line in raw_text.splitlines() if line.strip()), ""
+    )
+    typed_header = "| " + " | ".join(MARKDOWN_HEADERS) + " |"
+    if first_line == typed_header:
+        try:
+            return [
+                _typed_queue_item_legacy_row(item)
+                for item in parse_queue_markdown(raw_text)
+            ]
+        except (TypeError, ValueError) as exc:
+            # A projection claiming the exact typed schema is never re-read as
+            # a looser legacy table or hidden behind a stale JSON sidecar.
+            log.error("typed verification queue is malformed: %s", exc)
+            return []
+    if json_rows:
+        try:
+            if p.with_suffix(".json").stat().st_mtime_ns >= p.stat().st_mtime_ns:
+                return json_rows
+        except Exception:
+            return json_rows
+    text = _llm_norm(raw_text)
     # Anchor on a single highly-stable header. The alias map handles the rest.
     headers, rows = _parse_markdown_table(text, ["severity"])
     if not headers:
@@ -1517,12 +1751,984 @@ def _severity_bucket(sev: str) -> str:
 # that the `min(len(names), ...)` ceiling never throttles a tier below this
 # target; over-provisioned slots are harmless (empty manifests are no-ops).
 VERIFY_TARGET_PER_SHARD = 4
+VERIFY_WORK_PLAN_NAME = "verification_queue.work_plan.json"
+VERIFY_WORK_PLAN_PLANNER_VERSION = "plamen.queue_sharder.v1"
+COMPOUND_CANDIDATES_NAME = "compound_candidates.json"
+COMPOUND_WORK_PLAN_NAME = "compound_verification_work_plan.json"
 
 
-def compute_verify_shards(scratchpad: Path) -> dict[str, list[dict[str, str]]]:
-    rows = parse_verification_queue_rows(scratchpad)
-    crit_high = [r for r in rows if _severity_bucket(r.get("severity", "")) in {"critical", "high"}]
-    medium = [r for r in rows if _severity_bucket(r.get("severity", "")) == "medium"]
+@dataclass(frozen=True, slots=True)
+class _CompoundFinalAuthority:
+    source_artifact: str
+    owner_suffix: str
+    writer: str
+    terminal_snapshot: str = ""
+    generation_scoped: bool = False
+
+
+_COMPOUND_FINAL_AUTHORITY_BY_PIPELINE_MODE = {
+    ("SC", "light"): _CompoundFinalAuthority(
+        "chain_hypotheses.md", "/chain_agent2/model", "MODEL"
+    ),
+    ("SC", "core"): _CompoundFinalAuthority(
+        "chain_hypotheses.md", "/chain_agent2/model", "MODEL"
+    ),
+    ("SC", "thorough"): _CompoundFinalAuthority(
+        "chain_composition_verification_candidates.json",
+        "/chain_iter2/tail_reconcile",
+        "DRIVER",
+        "chain_tail_terminal_snapshot.json",
+        True,
+    ),
+    # L1 has no SC chain phase. An SC chain artifact in an L1 scratchpad is
+    # foreign state, not an optional source that may be adopted.
+    ("L1", "light"): None,
+    ("L1", "core"): None,
+    ("L1", "thorough"): None,
+}
+
+
+def _queue_work_plan_path(scratchpad: Path) -> Path:
+    return scratchpad / VERIFY_WORK_PLAN_NAME
+
+
+def read_queue_work_plan(scratchpad: Path) -> QueueWorkPlan:
+    """Read and validate the persisted verifier work-plan authority.
+
+    A work plan is never accepted only because its self-digest is valid: when
+    the authoritative typed queue is present, its parent record set and every
+    shard projection must still validate against those current records.
+    """
+    path = _queue_work_plan_path(scratchpad)
+    plan = QueueWorkPlan.from_json(path.read_text(encoding="utf-8", errors="strict"))
+    queue_path = scratchpad / "verification_queue.md"
+    typed_path = _typed_queue_sidecar_path(queue_path)
+    if typed_path.is_file():
+        plan.validate_against(_read_typed_queue_work_items(queue_path))
+    return plan
+
+
+def _write_or_validate_queue_work_plan(
+    scratchpad: Path,
+    typed_items: tuple[QueueWorkItem, ...],
+    shards: dict[str, list[dict[str, str]]],
+    pipeline: str,
+) -> QueueWorkPlan:
+    """Persist one digest-bound queue partition for all verifier consumers.
+
+    Replanning is allowed only when the authoritative parent queue changed.
+    With an unchanged parent, a different partition is resume drift and is
+    rejected instead of silently giving prompts and gates different work.
+    """
+    if pipeline not in {"l1", "sc"}:
+        raise ValueError(f"unsupported verifier work-plan pipeline: {pipeline!r}")
+    expected_shards = (
+        L1_VERIFY_SHARD_MANIFESTS if pipeline == "l1" else SC_VERIFY_SHARD_MANIFESTS
+    )
+    if set(shards) != set(expected_shards):
+        missing = sorted(set(expected_shards) - set(shards))
+        extra = sorted(set(shards) - set(expected_shards))
+        raise ValueError(
+            "verifier work plan must include every configured shard, including "
+            f"empty shards; missing={missing}, extra={extra}"
+        )
+    partitions = {
+        shard_id: tuple(
+            (row.get("finding id") or "").strip() for row in shard_rows
+        )
+        for shard_id, shard_rows in shards.items()
+    }
+    expected = build_queue_work_plan(
+        typed_items,
+        partitions,
+        planner_version=VERIFY_WORK_PLAN_PLANNER_VERSION,
+    )
+    path = _queue_work_plan_path(scratchpad)
+    if path.is_file():
+        recorded = QueueWorkPlan.from_json(
+            path.read_text(encoding="utf-8", errors="strict")
+        )
+        if recorded == expected:
+            recorded.validate_against(typed_items)
+            return recorded
+        if recorded.parent_record_set_digest == expected.parent_record_set_digest:
+            raise ValueError(
+                "verifier work-plan partition drift for an unchanged queue; "
+                "refusing to replan during resume"
+            )
+
+    scratchpad.mkdir(parents=True, exist_ok=True)
+    payload = expected.to_json() + "\n"
+    fd, temporary_name = tempfile.mkstemp(
+        dir=str(scratchpad), prefix=f".{VERIFY_WORK_PLAN_NAME}.", suffix=".tmp"
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return expected
+
+
+def _compound_payload_digest(payload: dict[str, Any]) -> str:
+    unsigned = dict(payload)
+    declared = unsigned.pop("payload_digest", None)
+    if not isinstance(declared, str):
+        raise ValueError("compound payload is missing payload_digest")
+    encoded = json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    computed = hashlib.sha256(encoded).hexdigest()
+    if declared != computed:
+        raise ValueError(
+            f"compound payload_digest mismatch: declared {declared}, computed {computed}"
+        )
+    return computed
+
+
+def _read_valid_compound_payload(path: Path, schema_version: str) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8", errors="strict"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path.name} must contain a JSON object")
+    if payload.get("schema_version") != schema_version:
+        raise ValueError(
+            f"{path.name} has unsupported schema_version "
+            f"{payload.get('schema_version')!r}"
+        )
+    _compound_payload_digest(payload)
+    return payload
+
+
+def _atomic_write_json_if_changed(path: Path, payload: str) -> None:
+    rendered = payload + "\n"
+    if path.is_file():
+        existing = path.read_text(encoding="utf-8", errors="strict")
+        if existing == rendered:
+            return
+    fd, temporary_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.stem}_", suffix=".tmp"
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(rendered)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _read_committed_compound_final_authority(
+    scratchpad: Path,
+    rule: _CompoundFinalAuthority,
+    *,
+    expected_owner_prefix: str,
+) -> bytes:
+    """Return exact final-source bytes only for the mapped committed owner."""
+
+    prefix = str(expected_owner_prefix or "")
+    if (
+        not re.fullmatch(
+            r"[a-z0-9_.-]+/[a-z0-9_.-]+/[a-z0-9_.-]+/"
+            r"[a-z0-9_.-]+/",
+            prefix,
+        )
+    ):
+        raise ValueError(
+            "compound final authority expected owner prefix is invalid"
+        )
+    expected_generation: tuple[int, int] | None = None
+    generation_id = ""
+    if rule.generation_scoped:
+        from chain_tail_authority import (
+            _digest as chain_tail_digest,
+            _load_manifest_ledger,
+            chain_tail_control_generation,
+            chain_tail_generation_id,
+        )
+
+        expected_generation = chain_tail_control_generation(scratchpad)
+        if (
+            not isinstance(expected_generation, tuple)
+            or len(expected_generation) != 2
+        ):
+            raise ValueError(
+                "compound final authority current generation is malformed"
+            )
+        pass_index, shard_count = expected_generation
+        if (
+            not isinstance(pass_index, int)
+            or isinstance(pass_index, bool)
+            or not isinstance(shard_count, int)
+            or isinstance(shard_count, bool)
+            or not 0 <= pass_index <= 9999
+            or not 0 <= shard_count <= 9999
+        ):
+            raise ValueError(
+                "compound final authority current generation is invalid"
+            )
+        generation_id = chain_tail_generation_id(
+            pass_index,
+            shard_count,
+        )
+    else:
+        chain_tail_digest = None
+        _load_manifest_ledger = None
+
+    source_path = scratchpad / rule.source_artifact
+    if not source_path.is_file():
+        raise ValueError(
+            f"compound final authority is missing: {rule.source_artifact}"
+        )
+    try:
+        artifact_state = read_artifact_ledger(scratchpad)
+    except ArtifactLedgerError as exc:
+        raise ValueError(
+            "compound final authority lacks committed final producer "
+            "ancestry: "
+            f"{exc}"
+        ) from exc
+    identity = f"scratchpad:{rule.source_artifact}"
+    binding = artifact_state.get("artifact_bindings", {}).get(identity)
+    owner_key = (
+        str(binding.get("owner_key") or "")
+        if isinstance(binding, Mapping)
+        else ""
+    )
+    owner = (
+        artifact_state.get("work_units", {}).get(owner_key)
+        if owner_key
+        else None
+    )
+    owner_artifact = (
+        owner.get("artifacts", {}).get(identity)
+        if isinstance(owner, Mapping)
+        else None
+    )
+    raw = source_path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    expected_owner_suffix = (
+        f"{rule.owner_suffix}.{generation_id}"
+        if rule.generation_scoped
+        else rule.owner_suffix
+    )
+    expected_owner_key = (
+        prefix + expected_owner_suffix.removeprefix("/")
+    )
+    authority_ok = bool(
+        isinstance(binding, Mapping)
+        and owner_key == expected_owner_key
+        and binding.get("writer") == rule.writer
+        and binding.get("status") == "ACTIVE"
+        and binding.get("sha256") == digest
+        and binding.get("size") == len(raw)
+        and isinstance(owner, Mapping)
+        and owner.get("execution_state") == "OUTPUT_COMMITTED"
+        and owner.get("semantic_status") == "ACTIVE"
+        and owner.get("run_id") == binding.get("run_id")
+        and owner.get("contract_digest")
+        == binding.get("contract_digest")
+        and isinstance(owner_artifact, Mapping)
+        and owner_artifact.get("status") == "ACTIVE"
+        and owner_artifact.get("sha256") == digest
+        and owner_artifact.get("size") == len(raw)
+        and owner_artifact.get("contract_digest")
+        == owner.get("contract_digest")
+    )
+    if rule.terminal_snapshot:
+        snapshot_path = scratchpad / rule.terminal_snapshot
+        snapshot_identity = f"scratchpad:{rule.terminal_snapshot}"
+        snapshot_binding = (
+            owner.get("input_bindings", {}).get(snapshot_identity)
+            if isinstance(owner, Mapping)
+            else None
+        )
+        snapshot_owner_key = (
+            prefix + f"chain_iter2/tail_snapshot.{generation_id}"
+            if rule.generation_scoped
+            else ""
+        )
+        snapshot_owner = (
+            artifact_state.get("work_units", {}).get(snapshot_owner_key)
+            if snapshot_owner_key
+            else None
+        )
+        snapshot_artifact = (
+            snapshot_owner.get("artifacts", {}).get(snapshot_identity)
+            if isinstance(snapshot_owner, Mapping)
+            and isinstance(snapshot_owner.get("artifacts"), Mapping)
+            else None
+        )
+        snapshot_commit = (
+            snapshot_owner.get("commit_authority")
+            if isinstance(snapshot_owner, Mapping)
+            else None
+        )
+        try:
+            snapshot_raw = snapshot_path.read_bytes()
+            snapshot_payload = json.loads(
+                snapshot_raw.decode("utf-8", errors="strict")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            snapshot_raw = b""
+            snapshot_payload = {}
+        if not isinstance(snapshot_payload, Mapping):
+            snapshot_payload = {}
+        snapshot_generation = (
+            snapshot_payload.get("terminal_generation")
+        )
+        semantic_ledger = (
+            snapshot_payload.get("semantic_ledger")
+        )
+        try:
+            root_semantic_ledger = json.loads(
+                (
+                    scratchpad
+                    / "chain_tail_disposition_ledger.json"
+                ).read_text(encoding="utf-8", errors="strict")
+            )
+            if _load_manifest_ledger is None:
+                raise ValueError(
+                    "chain-tail control authority helper is unavailable"
+                )
+            _manifest, control_semantic_ledger = (
+                _load_manifest_ledger(scratchpad)
+            )
+        except (
+            OSError,
+            UnicodeError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            root_semantic_ledger = {}
+            control_semantic_ledger = {}
+        snapshot_generation_ok = bool(
+            expected_generation is not None
+            and snapshot_payload.get("schema_version")
+            == "plamen.chain_tail.terminal_snapshot.v2"
+            and isinstance(snapshot_generation, Mapping)
+            and set(snapshot_generation)
+            == {"pass_index", "shard_count", "generation_id"}
+            and snapshot_generation.get("pass_index")
+            == expected_generation[0]
+            and snapshot_generation.get("shard_count")
+            == expected_generation[1]
+            and snapshot_generation.get("generation_id") == generation_id
+            and isinstance(semantic_ledger, Mapping)
+            and semantic_ledger.get("pass_index")
+            == expected_generation[0]
+            and isinstance(semantic_ledger.get("shards"), list)
+            and len(semantic_ledger.get("shards") or [])
+            == expected_generation[1]
+            and chain_tail_digest is not None
+            and snapshot_payload.get("snapshot_sha256")
+            == chain_tail_digest(
+                snapshot_payload,
+                "snapshot_sha256",
+            )
+            and semantic_ledger.get("ledger_sha256")
+            == chain_tail_digest(
+                semantic_ledger,
+                "ledger_sha256",
+            )
+            and semantic_ledger == root_semantic_ledger
+            and semantic_ledger == control_semantic_ledger
+        )
+        authority_ok = bool(
+            authority_ok
+            and isinstance(snapshot_binding, Mapping)
+            and snapshot_binding.get("status") == "ACTIVE"
+            and snapshot_path.is_file()
+            and snapshot_binding.get("sha256")
+            == hashlib.sha256(snapshot_raw).hexdigest()
+            and snapshot_binding.get("size")
+            == len(snapshot_raw)
+            and snapshot_generation_ok
+            and snapshot_binding.get("producer_work_unit_key")
+            == snapshot_owner_key
+            and snapshot_binding.get("producer_run_id")
+            == owner.get("run_id")
+            and snapshot_binding.get("producer_writer") == "DRIVER"
+            and isinstance(snapshot_owner, Mapping)
+            and snapshot_owner.get("execution_state")
+            == "OUTPUT_COMMITTED"
+            and snapshot_owner.get("semantic_status") == "ACTIVE"
+            and snapshot_owner.get("run_id") == owner.get("run_id")
+            and snapshot_binding.get("producer_contract_digest")
+            == snapshot_owner.get("contract_digest")
+            and snapshot_binding.get("producer_launch_digest")
+            == snapshot_owner.get("launch_digest")
+            and isinstance(snapshot_commit, Mapping)
+            and snapshot_binding.get("producer_commit_receipt_digest")
+            == snapshot_commit.get("receipt_digest")
+            and isinstance(snapshot_artifact, Mapping)
+            and snapshot_artifact.get("status") == "ACTIVE"
+            and snapshot_artifact.get("owner_key")
+            == snapshot_owner_key
+            and snapshot_artifact.get("run_id")
+            == snapshot_owner.get("run_id")
+            and snapshot_artifact.get("contract_digest")
+            == snapshot_owner.get("contract_digest")
+            and snapshot_binding.get("sha256")
+            == snapshot_artifact.get("sha256")
+            and snapshot_binding.get("size")
+            == snapshot_artifact.get("size")
+        )
+    if not authority_ok:
+        raise ValueError(
+            "compound final authority lacks committed final producer "
+            "ancestry: binding or digest is invalid"
+        )
+    return raw
+
+
+def _write_or_validate_compound_adapter_artifacts(
+    scratchpad: Path,
+    typed_items: tuple[QueueWorkItem, ...],
+    pipeline: str,
+    mode: Optional[str] = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Persist strict chain candidates and their queue-bound compound plan."""
+    pipeline_label = str(pipeline or "").strip().upper()
+    if pipeline_label not in {"SC", "L1"}:
+        raise ValueError(f"unsupported compound adapter pipeline: {pipeline!r}")
+    try:
+        config_payload = json.loads(
+            (Path(scratchpad) / "config.json").read_text(
+                encoding="utf-8",
+                errors="strict",
+            )
+        )
+        if not isinstance(config_payload, Mapping):
+            config_payload = {}
+    except (OSError, UnicodeError, ValueError, TypeError):
+        config_payload = {}
+    resolved_mode = str(mode or "").strip().lower()
+    if not resolved_mode:
+        resolved_mode = str(
+            config_payload.get("mode") or "thorough"
+        ).lower()
+
+    def closed_owner_prefix() -> str:
+        configured_pipeline = str(
+            config_payload.get("pipeline") or ""
+        ).strip().lower()
+        expected_pipeline = pipeline_label.lower()
+        if (
+            configured_pipeline
+            and configured_pipeline != expected_pipeline
+        ):
+            raise ValueError(
+                "compound final authority pipeline differs from config"
+            )
+        configured_mode = str(
+            config_payload.get("mode") or ""
+        ).strip().lower()
+        if configured_mode and configured_mode != resolved_mode:
+            raise ValueError(
+                "compound final authority mode differs from config"
+            )
+        ecosystem = str(
+            config_payload.get("language")
+            or config_payload.get("ecosystem")
+            or ""
+        ).strip().lower()
+        backend = str(
+            config_payload.get("cli_backend")
+            or config_payload.get("backend")
+            or ""
+        ).strip().lower()
+        if backend == "claude-headless":
+            backend = "claude"
+        components = (
+            expected_pipeline,
+            resolved_mode,
+            ecosystem,
+            backend,
+        )
+        if any(
+            not re.fullmatch(r"[a-z0-9_.-]+", component)
+            for component in components
+        ):
+            raise ValueError(
+                "compound final authority cannot derive a closed owner prefix"
+            )
+        return "/".join(components) + "/"
+    authority_key = (pipeline_label, resolved_mode)
+    if authority_key not in _COMPOUND_FINAL_AUTHORITY_BY_PIPELINE_MODE:
+        raise ValueError(
+            "unsupported compound adapter pipeline/mode authority: "
+            f"{pipeline_label}/{resolved_mode}"
+        )
+    authority = _COMPOUND_FINAL_AUTHORITY_BY_PIPELINE_MODE[authority_key]
+    typed_source = (
+        scratchpad / "chain_composition_verification_candidates.json"
+    )
+    markdown_source = scratchpad / "chain_hypotheses.md"
+    if authority is None:
+        if typed_source.is_file() or markdown_source.is_file():
+            raise ValueError(
+                "L1 compound adapter cannot consume SC chain authority"
+            )
+        bundle = adapt_chain_hypotheses(
+            "",
+            (item.work_item_id for item in typed_items),
+            pipeline=pipeline_label,
+            mode=resolved_mode,
+        )
+    elif authority.source_artifact == typed_source.name:
+        if not typed_source.is_file():
+            if markdown_source.is_file():
+                raise ValueError(
+                    "Thorough compound final typed authority is missing; "
+                    "Markdown fallback is forbidden"
+                )
+            bundle = adapt_chain_hypotheses(
+                "",
+                (item.work_item_id for item in typed_items),
+                pipeline=pipeline_label,
+                mode=resolved_mode,
+            )
+        else:
+            # Thorough's terminal typed successor is final. Stale or malformed
+            # terminal authority never falls back to an earlier Markdown view.
+            from chain_tail_authority import validate_chain_tail_authority
+
+            authority_issues = validate_chain_tail_authority(scratchpad)
+            if authority_issues:
+                raise ValueError(
+                    "chain-tail typed authority invalid: "
+                    + "; ".join(authority_issues)
+                )
+            raw = _read_committed_compound_final_authority(
+                scratchpad,
+                authority,
+                expected_owner_prefix=closed_owner_prefix(),
+            )
+            typed_payload = json.loads(raw.decode("utf-8", errors="strict"))
+            bundle = adapt_chain_composition_candidates(
+                typed_payload,
+                (item.work_item_id for item in typed_items),
+                {
+                    item.work_item_id: item.severity_proposal.level
+                    for item in typed_items
+                },
+                pipeline=pipeline_label,
+                mode=resolved_mode,
+            )
+    else:
+        if not markdown_source.is_file():
+            if typed_source.is_file():
+                raise ValueError(
+                    "Light/Core compound final ChainAgent2 authority is "
+                    "missing; initial state-resolution sidecar is not final"
+                )
+            source = ""
+        else:
+            raw = _read_committed_compound_final_authority(
+                scratchpad,
+                authority,
+                expected_owner_prefix=closed_owner_prefix(),
+            )
+            source = raw.decode("utf-8", errors="strict")
+        bundle = adapt_chain_hypotheses(
+            source,
+            (item.work_item_id for item in typed_items),
+            pipeline=pipeline_label,
+            mode=resolved_mode,
+        )
+    expected_candidates = json.loads(bundle.compound_candidates_json)
+    expected_plan = json.loads(bundle.compound_work_plan_json)
+    candidates_path = scratchpad / COMPOUND_CANDIDATES_NAME
+    plan_path = scratchpad / COMPOUND_WORK_PLAN_NAME
+
+    # Validate every existing companion before replacing either one. A
+    # malformed/tampered half cannot be silently blessed by regenerating it.
+    if candidates_path.is_file():
+        _read_valid_compound_payload(
+            candidates_path, "plamen.compound_candidates.v1"
+        )
+    if plan_path.is_file():
+        _read_valid_compound_payload(
+            plan_path, "plamen.compound_adapter_work_plan.v1"
+        )
+
+    _atomic_write_json_if_changed(candidates_path, bundle.compound_candidates_json)
+    _atomic_write_json_if_changed(plan_path, bundle.compound_work_plan_json)
+    return expected_candidates, expected_plan
+
+
+def _write_empty_compound_adapter_artifacts_from_delivery_debt(
+    scratchpad: Path,
+    typed_items: tuple[QueueWorkItem, ...],
+    pipeline: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Materialize exact empty outputs for an empty ordinary queue.
+
+    A quarantined optional composition source remains visible in the delivery
+    debt and is never consumed as candidate authority.  The queue transaction
+    still owes every declared deterministic output, so bind a schema-valid
+    empty bundle to the exact debt bytes rather than emitting untyped stubs or
+    quarantining an otherwise empty base queue.
+    """
+
+    if typed_items:
+        raise ValueError(
+            "compound delivery debt fallback is valid only for an empty "
+            "ordinary verification queue"
+        )
+    root = Path(scratchpad)
+    debt_path = root / "compound_verification_delivery_debt.json"
+    debt_bytes = debt_path.read_bytes()
+    try:
+        debt = json.loads(debt_bytes.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"compound delivery debt is malformed: {exc}"
+        ) from exc
+    if not (
+        isinstance(debt, Mapping)
+        and debt.get("schema_version")
+        == "plamen.compound_verification_delivery_debt.v1"
+        and debt.get("status") == "COMPLETED_WITH_DEBT"
+        and debt.get("ordinary_verification_delivery_complete") is False
+        and debt.get("proof_authority") == "NONE"
+    ):
+        raise ValueError("compound delivery debt cannot authorize empty outputs")
+
+    resolved_mode = "thorough"
+    try:
+        config_payload = json.loads(
+            (root / "config.json").read_text(
+                encoding="utf-8", errors="strict"
+            )
+        )
+        resolved_mode = str(config_payload.get("mode") or resolved_mode)
+    except (OSError, UnicodeError, ValueError, TypeError):
+        pass
+    bundle = adapt_chain_hypotheses(
+        "",
+        (),
+        pipeline=str(pipeline or "").strip().upper(),
+        mode=resolved_mode,
+        source_artifact=debt_path.name,
+    )
+    bundle = replace(
+        bundle,
+        parse_result=replace(
+            bundle.parse_result,
+            source_digest=hashlib.sha256(debt_bytes).hexdigest(),
+        ),
+    )
+    if (
+        bundle.parse_result.candidates
+        or bundle.parse_result.issues
+        or bundle.work_plan.work_items
+        or bundle.work_plan.alias_relations
+        or bundle.work_plan.issues
+        or bundle.work_plan.blocked_candidates
+    ):
+        raise ValueError("compound debt fallback did not compile to an empty plan")
+
+    expected_candidates = json.loads(bundle.compound_candidates_json)
+    expected_plan = json.loads(bundle.compound_work_plan_json)
+    candidates_path = root / COMPOUND_CANDIDATES_NAME
+    plan_path = root / COMPOUND_WORK_PLAN_NAME
+    if candidates_path.is_file():
+        _read_valid_compound_payload(
+            candidates_path, "plamen.compound_candidates.v1"
+        )
+    if plan_path.is_file():
+        _read_valid_compound_payload(
+            plan_path, "plamen.compound_adapter_work_plan.v1"
+        )
+    _atomic_write_json_if_changed(
+        candidates_path, bundle.compound_candidates_json
+    )
+    _atomic_write_json_if_changed(
+        plan_path, bundle.compound_work_plan_json
+    )
+    return expected_candidates, expected_plan
+
+
+def _compound_delivery_digest(payload: Mapping[str, Any]) -> str:
+    unsigned = {key: value for key, value in payload.items() if key != "receipt_digest"}
+    return hashlib.sha256(
+        json.dumps(
+            unsigned, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validated_legacy_compound_owned_ids(
+    root: Path,
+    typed_items: tuple[QueueWorkItem, ...],
+) -> set[str]:
+    """Authenticate legacy compound rows without claiming every ``CH-*`` ID."""
+
+    receipt_path = root / "compound_verification_delivery_receipt.json"
+    if not receipt_path.is_file():
+        return set()
+    payload = json.loads(
+        receipt_path.read_text(encoding="utf-8", errors="strict")
+    )
+    if (
+        not isinstance(payload, Mapping)
+        or payload.get("schema_version")
+        != "plamen.compound_verification_delivery.v1"
+        or payload.get("receipt_digest") != _compound_delivery_digest(payload)
+        or payload.get("proof_authority") != "NONE"
+    ):
+        raise ValueError("legacy compound ownership receipt is invalid")
+    current = {item.work_item_id: item for item in typed_items}
+    owned = payload.get("owned_work_item_digests")
+    if owned is None:
+        # Backward-compatible migration is accepted only while the receipt
+        # still binds the entire exact queue.  The next successful delivery
+        # writes per-row ownership and removes this global-hash dependency.
+        typed_path = root / "verification_queue.work_items.json"
+        if payload.get("queue_work_items_sha256") != hashlib.sha256(
+            typed_path.read_bytes()
+        ).hexdigest():
+            return set()
+        delivered = payload.get("delivered_work_item_ids")
+        if not isinstance(delivered, list):
+            raise ValueError("legacy compound delivered denominator is malformed")
+        owned = {
+            work_id: current[work_id].digest
+            for work_id in delivered
+            if isinstance(work_id, str) and work_id in current
+        }
+    if not isinstance(owned, Mapping):
+        raise ValueError("legacy compound ownership map is malformed")
+    authenticated: set[str] = set()
+    source_artifact = str(payload.get("source_artifact") or "")
+    for work_id, digest in owned.items():
+        item = current.get(str(work_id))
+        if not isinstance(work_id, str) or not isinstance(digest, str):
+            raise ValueError("legacy compound ownership row is malformed")
+        if item is None:
+            # A caller may have reconstructed the pre-compound base queue.
+            # The authenticated prior identity can be deterministically
+            # re-derived; absence is not foreign ownership drift.
+            authenticated.add(work_id)
+            continue
+        if (
+            item.digest != digest
+            or item.bug_class != "chain-composition"
+            or source_artifact not in item.primary_artifacts
+        ):
+            raise ValueError(
+                f"legacy compound ownership drift for {work_id}"
+            )
+        authenticated.add(str(work_id))
+    return authenticated
+
+
+def _deliver_compound_candidates_to_queue(
+    scratchpad: Path,
+    pipeline: str,
+) -> dict[str, Any]:
+    """Project typed compound work into the ordinary verifier denominator."""
+
+    root = Path(scratchpad)
+    queue_path = root / "verification_queue.md"
+    receipt_path = root / "compound_verification_delivery_receipt.json"
+    debt_path = root / "compound_verification_delivery_debt.json"
+    try:
+        rows = parse_verification_queue_rows(root)
+        typed = _require_typed_queue_authority(queue_path, rows)
+        legacy_owned = _validated_legacy_compound_owned_ids(root, typed)
+        # Only receipt-authenticated rows belong to this legacy adapter.  A
+        # public CH-* identity may instead be owned by P0-AF v2 or a future
+        # producer and must remain a foreign constituent/collision boundary.
+        source_items = tuple(
+            item for item in typed if item.work_item_id not in legacy_owned
+        )
+        candidates, plan = _write_or_validate_compound_adapter_artifacts(
+            root, source_items, pipeline
+        )
+        work_plan = plan["compound_work_plan"]
+        ready = [
+            item for item in work_plan["work_items"]
+            if item.get("readiness") == "READY"
+        ]
+        existing = {str(row.get("finding id") or "").upper(): row for row in rows}
+        delivered: list[str] = []
+        for work in ready:
+            subject = str(work["subject_id"]).upper()
+            constituents = [str(value).upper() for value in work["constituent_ids"]]
+            claim_digest = str(work["candidate_digest"])
+            claim_pointer = (
+                f"{candidates['source_artifact']}#candidate={subject}"
+                f"&claim_sha256={claim_digest}"
+            )
+            evidence = re.sub(
+                r"\s+", " ", str(work["combined_impact_claim"] or "")
+            ).strip()
+            expected_row = {
+                "queue #": str(len(rows) + 1),
+                "finding id": subject,
+                "expected output file": f"verify_{subject}.md",
+                "severity": str(work["proposed_severity"]),
+                "title": f"Independent verification of composed candidate {subject}",
+                "bug class": "chain-composition",
+                "preferred tag": "CODE-TRACE",
+                "location": claim_pointer,
+                "primary artifact": candidates["source_artifact"],
+                "poc class": "sequence",
+                "constituents": ",".join(constituents),
+                "evidence debt": (
+                    "UNVERIFIED_COMPOSITION: discovery evidence has no proof "
+                    "authority; ordinary independent verification is mandatory; "
+                    f"constituents={','.join(constituents)}; exact_evidence={evidence}"
+                ),
+            }
+            current = existing.get(subject)
+            if current is not None:
+                if subject not in legacy_owned:
+                    raise ValueError(
+                        f"compound delivery identity collision for {subject}"
+                    )
+                if (
+                    str(current.get("bug class") or "") != "chain-composition"
+                    or str(current.get("primary artifact") or "")
+                    != candidates["source_artifact"]
+                ):
+                    raise ValueError(
+                        f"compound delivery identity collision for {subject}"
+                    )
+                # This adapter owns CH-* projections. Refresh an older lossy
+                # projection from the validated typed claim rather than
+                # accepting a semantically unbound row on resume.
+                expected_row["queue #"] = str(current.get("queue #") or "")
+                index = rows.index(current)
+                rows[index] = expected_row
+                existing[subject] = expected_row
+                delivered.append(subject)
+                continue
+            rows.append(expected_row)
+            existing[subject] = expected_row
+            delivered.append(subject)
+        blocked = [
+            item.get("subject_id")
+            for item in work_plan.get("blocked_candidates") or []
+            if isinstance(item, dict)
+        ]
+        issues = list(work_plan.get("issues") or []) + list(plan.get("adapter_issues") or [])
+        if blocked or issues:
+            raise ValueError(
+                "compound work delivery has blocked typed work: "
+                + json.dumps(
+                    {"blocked": blocked, "issues": issues},
+                    sort_keys=True,
+                    ensure_ascii=True,
+                )
+            )
+        prospective_typed = _typed_queue_items_from_rows(rows)
+        if delivered and prospective_typed != typed:
+            _write_queue_subset_manifest(queue_path, rows)
+        source_name = str(candidates["source_artifact"])
+        source_path = root / source_name
+        source_sha = (
+            hashlib.sha256(source_path.read_bytes()).hexdigest()
+            if source_path.is_file()
+            else hashlib.sha256(b"").hexdigest()
+        )
+        payload: dict[str, Any] = {
+            "schema_version": "plamen.compound_verification_delivery.v1",
+            "status": "DELIVERED" if delivered else "CLEAN_NO_OP",
+            "source_artifact": source_name,
+            "source_sha256": source_sha,
+            "compound_candidates_digest": candidates["payload_digest"],
+            "compound_work_plan_digest": plan["payload_digest"],
+            "delivered_work_item_ids": sorted(delivered),
+            "ordinary_verification_required": bool(delivered),
+            "proof_authority": "NONE",
+            "queue_work_items_sha256": hashlib.sha256(
+                _typed_queue_sidecar_path(queue_path).read_bytes()
+            ).hexdigest(),
+        }
+        delivered_items = {
+            item.work_item_id: item
+            for item in _read_typed_queue_work_items(queue_path)
+            if item.work_item_id in set(delivered)
+        }
+        payload["owned_work_item_digests"] = {
+            work_id: delivered_items[work_id].digest
+            for work_id in sorted(delivered_items)
+        }
+        payload["receipt_digest"] = _compound_delivery_digest(payload)
+        _atomic_write_json_if_changed(
+            receipt_path,
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+        debt_path.unlink(missing_ok=True)
+        return payload
+    except Exception as exc:
+        source = root / "chain_composition_verification_candidates.json"
+        debt: dict[str, Any] = {
+            "schema_version": "plamen.compound_verification_delivery_debt.v1",
+            "status": "COMPLETED_WITH_DEBT",
+            "source_artifact": source.name,
+            "source_sha256": (
+                hashlib.sha256(source.read_bytes()).hexdigest()
+                if source.is_file() else hashlib.sha256(b"").hexdigest()
+            ),
+            "ordinary_verification_delivery_complete": False,
+            "proof_authority": "NONE",
+            "error_class": type(exc).__name__,
+            "error": str(exc),
+        }
+        debt["receipt_digest"] = _compound_delivery_digest(debt)
+        # A prior successful delivery receipt is not authority for the current
+        # invocation once any bound COMPOSED artifact is malformed or stale.
+        # Keep exactly one current disposition visible to downstream consumers.
+        receipt_path.unlink(missing_ok=True)
+        _atomic_write_json_if_changed(
+            debt_path,
+            json.dumps(debt, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+        return debt
+
+
+def compute_verify_shards_from_typed(
+    items: Iterable[QueueWorkItem],
+    *,
+    pipeline: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """Pure exact sharding over the canonical typed queue authority."""
+
+    pipeline_n = str(pipeline or "").strip().lower()
+    if pipeline_n not in {"sc", "l1"}:
+        raise ValueError("typed verify shard pipeline must be sc or l1")
+    typed_items = validate_queue_work_items(tuple(items))
+    rows = [_typed_queue_item_legacy_row(item) for item in typed_items]
+    crit_high = [
+        row for row in rows
+        if _severity_bucket(str(row.get("severity", "")))
+        in {"critical", "high"}
+    ]
+    medium = [
+        row for row in rows
+        if _severity_bucket(str(row.get("severity", ""))) == "medium"
+    ]
     # v2.2.2 Fix 4: low_info shard. Pre-v2.2.2 Low and Informational
     # findings were silently dropped from verification — verify_queue
     # produced shards for crithigh/medium only. CLAUDE.md Thorough Mode
@@ -1531,57 +2737,318 @@ def compute_verify_shards(scratchpad: Path) -> dict[str, list[dict[str, str]]]:
     # 7 H-L01..H-L07 hypotheses never verified; H-L01 was a confirmed
     # human-GT match (a High-severity finding). Recall lost.
     low_info = [
-        r for r in rows
-        if _severity_bucket(r.get("severity", "")) in {"low", "info"}
+        row for row in rows
+        if _severity_bucket(str(row.get("severity", ""))) in {"low", "info"}
     ]
-    def assign_chunks(names: list[str], items: list[dict[str, str]], target: int) -> dict[str, list[dict[str, str]]]:
+    def assign_chunks(
+        names: list[str],
+        rows_to_assign: list[dict[str, Any]],
+        target: int,
+    ) -> dict[str, list[dict[str, Any]]]:
         out = {name: [] for name in names}
-        if not items:
+        if not rows_to_assign:
             return out
-        chunk_count = min(len(names), max(1, math.ceil(len(items) / max(target, 1))))
+        chunk_count = min(
+            len(names),
+            max(1, math.ceil(len(rows_to_assign) / max(target, 1))),
+        )
         idx = 0
         for i, name in enumerate(names[:chunk_count]):
             remaining_chunks = chunk_count - i
-            remaining_items = len(items) - idx
+            remaining_items = len(rows_to_assign) - idx
             take = math.ceil(remaining_items / max(remaining_chunks, 1))
-            out[name] = items[idx:idx + take]
+            out[name] = rows_to_assign[idx:idx + take]
             idx += take
-        if idx < len(items):
-            out[names[-1]].extend(items[idx:])
+        if idx < len(rows_to_assign):
+            out[names[-1]].extend(rows_to_assign[idx:])
         return out
 
     shards = {}
+    crit_high_names = (
+        list(SC_VERIFY_CRITHIGH_PHASE_NAMES)
+        if pipeline_n == "sc"
+        else list(L1_VERIFY_CRITHIGH_PHASE_NAMES)
+    )
+    medium_names = (
+        [
+            name for name in SC_VERIFY_SHARD_MANIFESTS
+            if name.startswith("sc_verify_medium")
+        ]
+        if pipeline_n == "sc"
+        else [
+            "verify_medium_a", "verify_medium_b", "verify_medium_c",
+            "verify_medium_d", "verify_medium_e", "verify_medium_f",
+        ]
+    )
+    low_names = (
+        [
+            name for name in SC_VERIFY_SHARD_MANIFESTS
+            if name.startswith("sc_verify_low")
+        ]
+        if pipeline_n == "sc"
+        else [
+            "verify_low_a", "verify_low_b", "verify_low_c", "verify_low_d",
+        ]
+    )
     shards.update(assign_chunks(
-        list(L1_VERIFY_CRITHIGH_PHASE_NAMES),
+        crit_high_names,
         crit_high,
         VERIFY_TARGET_PER_SHARD,
     ))
     shards.update(assign_chunks(
-        ["verify_medium_a", "verify_medium_b", "verify_medium_c", "verify_medium_d", "verify_medium_e", "verify_medium_f"],
+        medium_names,
         medium,
         VERIFY_TARGET_PER_SHARD,
     ))
     shards.update(assign_chunks(
-        ["verify_low_a", "verify_low_b", "verify_low_c", "verify_low_d"],
+        low_names,
         low_info,
         VERIFY_TARGET_PER_SHARD,
     ))
+    validate_exact_partition(
+        typed_items,
+        {
+            name: [row.get("finding id", "") for row in shard_rows]
+            for name, shard_rows in shards.items()
+        },
+    ).require_valid()
     return shards
+
+
+def compute_verify_shards(
+    scratchpad: Path,
+) -> dict[str, list[dict[str, Any]]]:
+    rows = parse_verification_queue_rows(scratchpad)
+    typed_items = _project_typed_queue_authority(
+        scratchpad / "verification_queue.md", rows
+    )
+    return compute_verify_shards_from_typed(typed_items, pipeline="l1")
 
 
 def _queue_sidecar_path(path: Path) -> Path:
     return path.with_suffix(".json")
 
 
+def _typed_queue_sidecar_path(path: Path) -> Path:
+    return path.with_suffix(".work_items.json")
+
+
+def _typed_queue_items_from_rows(
+    rows: list[dict[str, str]],
+) -> tuple[QueueWorkItem, ...]:
+    promoted: list[QueueWorkItem] = []
+    for row in rows:
+        exact_json = row.get(_TYPED_QUEUE_ROW_KEY)
+        if exact_json:
+            item = QueueWorkItem.from_json(str(exact_json))
+            expected = _typed_queue_item_legacy_row(item)
+            # The legacy JSON sidecar deliberately stores only its rendered
+            # scalar columns plus the exact canonical carrier.  Rich list
+            # projections are compared when present (canonical typed Markdown
+            # and in-memory rows), but their absence from the legacy sidecar is
+            # not loss because the authenticated carrier is authoritative.
+            comparable = {
+                key for key in expected
+                if key not in {"location_records", "primary_artifacts"}
+                or key in row
+            }
+            mismatched = [
+                key for key, value in expected.items() if key in comparable
+                if row.get(key) != value
+            ]
+            if mismatched:
+                raise ValueError(
+                    "typed queue/legacy projection drift for "
+                    f"{item.work_item_id}: {', '.join(sorted(mismatched))}"
+                )
+            promoted.append(item)
+            continue
+        normalized = dict(row)
+        fid = _normalize_finding_id(row.get("finding id") or "") or str(
+            row.get("finding id", "") or ""
+        ).strip()
+        if not fid:
+            continue
+        normalized["finding id"] = fid
+        normalized["severity"] = normalize_severity(
+            row.get("severity", "") or "Medium"
+        )
+        promoted.append(QueueWorkItem.from_legacy_row(normalized))
+    return validate_queue_work_items(promoted)
+
+
+def _write_typed_queue_work_items(
+    path: Path,
+    rows: list[dict[str, str]],
+) -> tuple[QueueWorkItem, ...]:
+    """Dual-write exact queue identity without changing the legacy prompt view."""
+    items = _typed_queue_items_from_rows(rows)
+    payload = queue_records_to_json(items) + "\n"
+    sidecar = _typed_queue_sidecar_path(path)
+    if sidecar.exists():
+        try:
+            if sidecar.read_text(encoding="utf-8", errors="strict") == payload:
+                return items
+        except (OSError, UnicodeError):
+            pass
+    temporary = sidecar.with_suffix(sidecar.suffix + ".tmp")
+    temporary.write_text(payload, encoding="utf-8", newline="\n")
+    os.replace(temporary, sidecar)
+    return items
+
+
+def _read_typed_queue_work_items(path: Path) -> tuple[QueueWorkItem, ...]:
+    sidecar = _typed_queue_sidecar_path(path)
+    return queue_records_from_json(sidecar.read_text(encoding="utf-8"))
+
+
+def _require_typed_queue_authority(
+    path: Path,
+    rows: list[dict[str, str]],
+) -> tuple[QueueWorkItem, ...]:
+    """Read and validate an existing canonical queue authority without writes.
+
+    Projection, validation, timeout sizing, and owner-enumeration callers are
+    not queue producers.  A missing or legacy sidecar is therefore PhaseIO
+    debt, not permission to synthesize/migrate authority outside the armed
+    routing transaction.
+    """
+
+    expected = _typed_queue_items_from_rows(rows)
+    sidecar = _typed_queue_sidecar_path(path)
+    if not sidecar.is_file():
+        raise FileNotFoundError(
+            f"required typed queue authority is missing: {sidecar.name}"
+        )
+    raw = sidecar.read_text(encoding="utf-8", errors="strict")
+    recorded = queue_records_from_json(raw)
+    payload = json.loads(raw)
+    if payload.get("schema_version") != QUEUE_RECORD_SET_SCHEMA_VERSION:
+        raise ValueError(
+            f"canonical typed queue schema required for {sidecar.name}; "
+            f"got {payload.get('schema_version')!r}"
+        )
+
+    recorded_by_id = {item.work_item_id: item for item in recorded}
+    expected_by_id = {item.work_item_id: item for item in expected}
+    if set(recorded_by_id) != set(expected_by_id):
+        raise ValueError(
+            f"typed queue/Markdown identity drift for {path.name}; "
+            "refusing to guess which queue is executable"
+        )
+
+    # Markdown deliberately omits typed-only constituents, scopes, aliases,
+    # and lineage.  Reverse-projecting the human table and comparing those
+    # omitted fields rejects every legitimately rich T9 record.  Authenticate
+    # the typed record set first, render its one canonical human projection,
+    # and require exact bytes instead.  This preserves typed-only authority
+    # while rejecting every visible-field mutation, row reorder, insertion,
+    # deletion, or alternate rendering.
+    canonical_markdown = render_verification_queue_work_item_markdown(recorded)
+    observed_markdown = path.read_text(encoding="utf-8", errors="strict")
+    if observed_markdown != canonical_markdown:
+        raise ValueError(
+            f"typed queue/Markdown record drift for {path.name}: "
+            + ", ".join(sorted(recorded_by_id)[:20])
+        )
+    return recorded
+
+
+def _project_typed_queue_authority(
+    path: Path,
+    rows: list[dict[str, str]],
+) -> tuple[QueueWorkItem, ...]:
+    """Return a pure in-memory queue projection, validating authority if present.
+
+    Before the routing producer runs, startup containment and timeout-sizing
+    callers still need a deterministic shard shape.  They may project legacy
+    Markdown in memory, but may not mint a sidecar.  Once a typed authority
+    exists, even those read callers must reject drift instead of bypassing it.
+    """
+
+    if _typed_queue_sidecar_path(path).is_file():
+        return _require_typed_queue_authority(path, rows)
+    return _typed_queue_items_from_rows(rows)
+
+
+def _ensure_typed_queue_authority(
+    path: Path,
+    rows: list[dict[str, str]],
+) -> tuple[QueueWorkItem, ...]:
+    """Create once for model Markdown, then reject typed/Markdown divergence."""
+    expected = _typed_queue_items_from_rows(rows)
+    sidecar = _typed_queue_sidecar_path(path)
+    if not sidecar.exists():
+        return _write_typed_queue_work_items(path, rows)
+    recorded = _read_typed_queue_work_items(path)
+    recorded_by_id = {item.work_item_id: item for item in recorded}
+    expected_by_id = {item.work_item_id: item for item in expected}
+    if set(recorded_by_id) != set(expected_by_id):
+        raise ValueError(
+            f"typed queue/Markdown identity drift for {path.name}; "
+            "refusing to guess which queue is executable"
+        )
+    # The canonical Markdown projection intentionally cannot preserve legacy
+    # aliases/candidate lineage.  Compare every executable/analysis field but
+    # allow the typed record to retain that strictly richer identity history.
+    def executable_projection(item: QueueWorkItem) -> tuple[object, ...]:
+        return (
+            item.work_item_id,
+            item.expected_output_file,
+            item.constituents,
+            item.severity_proposal.level,
+            item.evidence_class,
+            item.bug_class,
+            item.preferred_tag,
+            item.queue_priority,
+            item.location_records,
+            item.primary_artifacts,
+            item.poc_class,
+            item.title,
+            item.effective_evidence_scope,
+            item.effective_proof_scope,
+            item.effective_harm_scope,
+            item.required_disposition,
+        )
+    mismatched = [
+        work_id
+        for work_id in sorted(recorded_by_id)
+        if executable_projection(recorded_by_id[work_id])
+        != executable_projection(expected_by_id[work_id])
+    ]
+    if mismatched:
+        raise ValueError(
+            f"typed queue/Markdown record drift for {path.name}: "
+            + ", ".join(mismatched[:20])
+        )
+    # A validated pre-v4 sidecar is migrated in place only after parity
+    # succeeds at this authorized queue-producer boundary.
+    # Serialize the migrated typed records themselves so richer legacy lineage
+    # is preserved instead of being reconstructed from the lossy Markdown.
+    try:
+        raw_payload = json.loads(sidecar.read_text(encoding="utf-8", errors="strict"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raw_payload = {}
+    if raw_payload.get("schema_version") in {
+        "plamen.queue_work_items.v2",
+        "plamen.queue_work_items.v3",
+    }:
+        payload = queue_records_to_json(recorded) + "\n"
+        temporary = sidecar.with_suffix(sidecar.suffix + ".tmp")
+        temporary.write_text(payload, encoding="utf-8", newline="\n")
+        os.replace(temporary, sidecar)
+    return recorded
+
+
 def _canonical_queue_row(row: dict[str, str]) -> dict[str, str]:
     fid = _normalize_finding_id(row.get("finding id") or "") or str(row.get("finding id", "") or "").strip()
-    return {
+    canonical = {
         "queue #": str(row.get("queue #", "") or ""),
         "finding id": fid,
-        "expected output file": str(
-            row.get("expected output file")
-            or (f"verify_{fid}.md" if fid else "")
-        ),
+        # Executable output identity is computed from the current normalized
+        # finding ID. A stale inventory/alias filename is retained only in the
+        # typed lineage sidecar created before this projection is normalized.
+        "expected output file": f"verify_{fid}.md" if fid else "",
         "severity": normalize_severity(row.get("severity", "") or "Medium"),
         "title": str(row.get("title", "") or ""),
         "bug class": str(row.get("bug class", "") or ""),
@@ -1589,8 +3056,35 @@ def _canonical_queue_row(row: dict[str, str]) -> dict[str, str]:
         "location": str(row.get("location", "") or ""),
         "primary artifact": str(row.get("primary artifact", "") or ""),
         "poc class": str(row.get("poc class", "") or "structural"),
+        # Not rendered into the legacy Markdown table, but retained in the
+        # deterministic JSON/typed sidecars so a proven-equivalent group cannot
+        # erase the identities that still require per-member evidence.
+        "constituents": str(row.get("constituents", "") or ""),
+        "effective evidence scope": str(
+            row.get("effective evidence scope", "") or "UNSPECIFIED"
+        ),
+        "effective proof scope": str(
+            row.get("effective proof scope", "") or "ANALYTICAL"
+        ),
+        "effective harm scope": str(
+            row.get("effective harm scope", "") or "UNPROVEN"
+        ),
+        "required disposition": str(
+            row.get("required disposition", "") or "STANDARD"
+        ),
+        "relation kind": str(row.get("relation kind", "") or ""),
+        # Advisory only: this records the inventory producer's assessment so
+        # the independent verifier can challenge it.  It is deliberately not
+        # an exclusion/disposition field.
+        "origin assessment": str(row.get("origin assessment", "") or ""),
+        "evidence debt": str(row.get("evidence debt", "") or ""),
         "exclusion reason": str(row.get("exclusion reason", "") or ""),
     }
+    if row.get(_TYPED_QUEUE_ROW_KEY):
+        # This is a deterministic sidecar-only carrier.  It is validated by
+        # _typed_queue_items_from_rows before every authoritative typed write.
+        canonical[_TYPED_QUEUE_ROW_KEY] = str(row[_TYPED_QUEUE_ROW_KEY])
+    return canonical
 
 
 def _canonical_queue_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -1629,11 +3123,11 @@ def _write_queue_json_sidecar(path: Path, rows: list[dict[str, str]], *, kind: s
     content = json.dumps(payload, indent=2, sort_keys=True)
     if sidecar.exists():
         try:
-            if sidecar.read_text(encoding="utf-8", errors="replace") == content:
+            if sidecar.read_bytes() == (content + "\n").encode("utf-8"):
                 return
         except Exception:
             pass
-    sidecar.write_text(content + "\n", encoding="utf-8")
+    sidecar.write_text(content + "\n", encoding="utf-8", newline="\n")
 
 
 # v2.0.5 (P0.1, Codex fix 1): allowed Decision tokens for the skeptic-judge
@@ -1641,7 +3135,7 @@ def _write_queue_json_sidecar(path: Path, rows: list[dict[str, str]], *, kind: s
 # judge decision row — could be an unrelated 4+ column table elsewhere in
 # the same file (Evidence Integrity Notes, etc).
 _SKEPTIC_JUDGE_ALLOWED_DECISIONS = frozenset({
-    "KEEP", "DOWNGRADE", "UNRESOLVED", "PARTIAL", "DISMISS",
+    "KEEP", "DOWNGRADE", "UPGRADE", "UNRESOLVED", "PARTIAL", "DISMISS",
 })
 
 
@@ -2173,6 +3667,246 @@ def read_judge_decisions_json_sidecar(scratchpad: Path) -> list[dict]:
     return decisions
 
 
+_SKEPTIC_CHALLENGES_SCHEMA = "plamen.skeptic_challenges.v1"
+
+
+def _canonical_json_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _skeptic_section_by_id(text: str) -> dict[str, str]:
+    matches = list(re.finditer(
+        r"(?m)^##\s+\[?([A-Za-z][A-Za-z0-9_-]*-\d+[A-Za-z]?)\]?\b[^\n]*$",
+        text or "",
+    ))
+    out: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        fid = _normalize_finding_id(match.group(1)) or match.group(1).upper()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        out[fid] = text[match.start():end].strip()
+    return out
+
+
+def _skeptic_section_field(section: str, name: str) -> str:
+    match = re.search(
+        rf"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?{re.escape(name)}"
+        rf"(?:\*\*)?\s*:\s*(.+?)\s*$",
+        section or "",
+    )
+    return match.group(1).strip().strip("`* ") if match else ""
+
+
+def write_skeptic_challenges_json_sidecar(scratchpad: Path) -> int:
+    """Bind skeptic proposal Markdown to a non-authoritative typed receipt.
+
+    The sidecar is a challenge transport only.  It intentionally contains the
+    source/manifest hashes, exact trigger denominator, and an explicit
+    ``report_authoritative: false`` boundary so no downstream consumer can
+    reinterpret the legacy ``skeptic_judge_decisions.md`` filename as a judge
+    decision.
+    """
+
+    root = Path(scratchpad)
+    findings_path = root / "skeptic_findings.md"
+    projection_path = root / "skeptic_judge_decisions.md"
+    manifest_path = root / "skeptic_manifest.json"
+    if not all(path.is_file() for path in (
+        findings_path, projection_path, manifest_path
+    )):
+        return 0
+    try:
+        findings_bytes = findings_path.read_bytes()
+        projection_bytes = projection_path.read_bytes()
+        manifest_bytes = manifest_path.read_bytes()
+        findings_text = findings_bytes.decode("utf-8", errors="strict")
+        projection_text = projection_bytes.decode("utf-8", errors="strict")
+        manifest = json.loads(manifest_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return 0
+    if not isinstance(manifest, dict):
+        return 0
+    manifest_rows = manifest.get("findings")
+    if not isinstance(manifest_rows, list):
+        return 0
+    manifest_by_id = {
+        str(row.get("finding_id") or "").upper(): row
+        for row in manifest_rows
+        if isinstance(row, dict) and row.get("finding_id")
+    }
+    table_rows = {
+        str(row.get("finding_id") or "").upper(): row
+        for row in _parse_skeptic_judge_table(projection_text)
+        if row.get("finding_id")
+    }
+    sections = _skeptic_section_by_id(findings_text)
+    if set(table_rows) != set(manifest_by_id) or set(sections) != set(manifest_by_id):
+        return 0
+
+    challenges: list[dict[str, Any]] = []
+    for fid in manifest_by_id:
+        manifest_row = manifest_by_id[fid]
+        table_row = table_rows[fid]
+        section = sections[fid]
+        fields = {
+            "proposal_authority": _skeptic_section_field(
+                section, "Proposal Authority"
+            ),
+            "proposed_direction": _skeptic_section_field(
+                section, "Proposed Direction"
+            ),
+            "proposed_disposition": _skeptic_section_field(
+                section, "Proposed Disposition"
+            ),
+            "affected_constituents": _skeptic_section_field(
+                section, "Affected Constituents"
+            ),
+            "impact_premise_id": _skeptic_section_field(
+                section, "Impact Premise ID"
+            ),
+            "likelihood_premise_id": _skeptic_section_field(
+                section, "Likelihood Premise ID"
+            ),
+            "premise_challenged": _skeptic_section_field(
+                section, "Premise Challenged"
+            ),
+            "evidence_receipt_ids": _skeptic_section_field(
+                section, "Evidence Receipt IDs"
+            ),
+            "proof_scope": _skeptic_section_field(section, "Proof Scope"),
+        }
+        complete = (
+            fields["proposal_authority"].upper() == "CHALLENGE_ONLY"
+            and bool(fields["impact_premise_id"])
+            and bool(fields["likelihood_premise_id"])
+            and bool(fields["premise_challenged"])
+            and bool(fields["proof_scope"])
+        )
+        challenges.append({
+            "finding_id": fid,
+            "challenge_triggers": list(
+                manifest_row.get("challenge_triggers") or []
+            ),
+            "constituent_ids": list(
+                manifest_row.get("constituent_ids") or []
+            ),
+            "original_severity": table_row.get("original_severity") or "",
+            "proposed_severity": table_row.get("final_severity") or "",
+            "decision": table_row.get("decision") or "",
+            "rationale": table_row.get("rationale") or "",
+            "typed_fields": fields,
+            "schema_status": "COMPLETE" if complete else "SCHEMA_INCOMPLETE",
+            "source_section_sha256": hashlib.sha256(
+                section.encode("utf-8")
+            ).hexdigest(),
+        })
+    unsigned = {
+        "schema_version": _SKEPTIC_CHALLENGES_SCHEMA,
+        "authority": "CHALLENGE_ONLY",
+        "report_authoritative": False,
+        "source_files": [
+            {
+                "name": findings_path.name,
+                "sha256": hashlib.sha256(findings_bytes).hexdigest(),
+                "size_bytes": len(findings_bytes),
+            },
+            {
+                "name": projection_path.name,
+                "sha256": hashlib.sha256(projection_bytes).hexdigest(),
+                "size_bytes": len(projection_bytes),
+            },
+        ],
+        "manifest_file": manifest_path.name,
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "manifest_size_bytes": len(manifest_bytes),
+        "challenge_count": len(challenges),
+        "challenges": challenges,
+    }
+    payload = {**unsigned, "receipt_digest": _canonical_json_digest(unsigned)}
+    target = root / "skeptic_challenges.json"
+    content = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    try:
+        if target.read_text(encoding="utf-8", errors="strict") == content:
+            return len(challenges)
+    except (OSError, UnicodeError):
+        pass
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return len(challenges)
+
+
+def read_skeptic_challenges_json_sidecar(scratchpad: Path) -> dict[str, Any]:
+    """Return a hash/freshness-validated skeptic challenge receipt or ``{}``."""
+
+    root = Path(scratchpad)
+    path = root / "skeptic_challenges.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    unsigned = {key: value for key, value in payload.items() if key != "receipt_digest"}
+    if (
+        payload.get("schema_version") != _SKEPTIC_CHALLENGES_SCHEMA
+        or payload.get("authority") != "CHALLENGE_ONLY"
+        or payload.get("report_authoritative") is not False
+        or payload.get("receipt_digest") != _canonical_json_digest(unsigned)
+    ):
+        return {}
+    source_files = payload.get("source_files")
+    if not isinstance(source_files, list) or len(source_files) != 2:
+        return {}
+    for row in source_files:
+        if not isinstance(row, dict):
+            return {}
+        source = root / str(row.get("name") or "")
+        try:
+            data = source.read_bytes()
+        except OSError:
+            return {}
+        if (
+            row.get("size_bytes") != len(data)
+            or row.get("sha256") != hashlib.sha256(data).hexdigest()
+        ):
+            return {}
+    manifest = root / str(payload.get("manifest_file") or "")
+    try:
+        manifest_bytes = manifest.read_bytes()
+    except OSError:
+        return {}
+    if (
+        payload.get("manifest_size_bytes") != len(manifest_bytes)
+        or payload.get("manifest_sha256")
+        != hashlib.sha256(manifest_bytes).hexdigest()
+    ):
+        return {}
+    challenges = payload.get("challenges")
+    if (
+        not isinstance(challenges, list)
+        or payload.get("challenge_count") != len(challenges)
+    ):
+        return {}
+    ids = [
+        str(row.get("finding_id") or "").upper()
+        for row in challenges
+        if isinstance(row, dict)
+    ]
+    if len(ids) != len(challenges) or len(ids) != len(set(ids)) or any(not fid for fid in ids):
+        return {}
+    return payload
+
+
 def _read_queue_json_sidecar(path: Path) -> list[dict[str, str]]:
     sidecar = _queue_sidecar_path(path)
     if not sidecar.exists():
@@ -2206,18 +3940,34 @@ def _read_queue_json_sidecar(path: Path) -> list[dict[str, str]]:
     return out
 
 
-def _write_queue_subset_manifest(path: Path, rows: list[dict[str, str]]):
+def _render_queue_subset_manifest(rows: list[dict[str, str]]) -> str:
+    """Render the deterministic legacy queue view without filesystem fallback.
+
+    The lossless routing authority lives in ``*.work_items.json``.  This view
+    remains an intentionally human-oriented compatibility projection, but its
+    bytes are still part of the authenticated T9 publication and therefore
+    need one production renderer shared by writers and consumers.
+    """
+
     rows = _canonical_queue_rows(rows)
-    header = (
-        "# Verification Queue Manifest\n"
-        "| Queue # | Finding ID | Expected Output File | Severity | Title | Bug Class | Preferred Tag | Location | Primary Artifact | PoC Class |\n"
-        "|---------|------------|----------------------|----------|-------|-----------|---------------|----------|------------------|-----------|\n"
-    )
+    has_evidence_debt = any(row.get("evidence debt", "").strip() for row in rows)
+    if has_evidence_debt:
+        header = (
+            "# Verification Queue Manifest\n"
+            "| Queue # | Finding ID | Expected Output File | Severity | Title | Bug Class | Preferred Tag | Location | Primary Artifact | PoC Class | Evidence Debt |\n"
+            "|---------|------------|----------------------|----------|-------|-----------|---------------|----------|------------------|-----------|---------------|\n"
+        )
+    else:
+        header = (
+            "# Verification Queue Manifest\n"
+            "| Queue # | Finding ID | Expected Output File | Severity | Title | Bug Class | Preferred Tag | Location | Primary Artifact | PoC Class |\n"
+            "|---------|------------|----------------------|----------|-------|-----------|---------------|----------|------------------|-----------|\n"
+        )
     body = []
     for row in rows:
         fid = row.get("finding id", "")
-        body.append(
-            "| {queue} | {finding} | verify_{finding}.md | {severity} | {title} | {bug_class} | {tag} | {location} | {artifact} | {poc_class} |".format(
+        rendered = (
+            "| {queue} | {finding} | verify_{finding}.md | {severity} | {title} | {bug_class} | {tag} | {location} | {artifact} | {poc_class}".format(
                 queue=row.get("queue #", ""),
                 finding=fid,
                 severity=row.get("severity", ""),
@@ -2229,19 +3979,118 @@ def _write_queue_subset_manifest(path: Path, rows: list[dict[str, str]]):
                 poc_class=row.get("poc class", "structural"),
             )
         )
+        if has_evidence_debt:
+            rendered += " | " + row.get("evidence debt", "").replace("|", "/")
+        body.append(rendered + " |")
     footer = (
         f"\nTotal: {len(rows)} findings | Expected verify_<ID>.md files: {len(rows)}\n"
     )
-    content = header + "\n".join(body) + footer
+    return header + "\n".join(body) + footer
+
+
+def _queue_work_item_legacy_rows(
+    items: Iterable[QueueWorkItem],
+) -> tuple[tuple[QueueWorkItem, ...], list[dict[str, str]]]:
+    records = validate_queue_work_items(tuple(items))
+    rows: list[dict[str, str]] = []
+    for item in records:
+        location = ""
+        if item.location_records:
+            first = item.location_records[0]
+            location = first.artifact
+            if first.start_line is not None:
+                location += f":L{first.start_line}"
+                if first.end_line is not None and first.end_line != first.start_line:
+                    location += f"-L{first.end_line}"
+        rows.append({
+            "queue #": str(item.queue_priority),
+            "finding id": item.work_item_id,
+            "candidate identity": item.candidate_identity,
+            "aliases": ",".join(item.aliases),
+            "constituents": ",".join(item.constituents),
+            "severity": item.severity_proposal.level,
+            "title": item.title,
+            "evidence class": item.evidence_class,
+            "bug class": item.bug_class,
+            "preferred tag": item.preferred_tag,
+            "location": location,
+            "primary artifact": ",".join(item.primary_artifacts),
+            "poc class": item.poc_class,
+            "effective evidence scope": item.effective_evidence_scope,
+            "effective proof scope": item.effective_proof_scope,
+            "effective harm scope": item.effective_harm_scope,
+            "required disposition": item.required_disposition,
+        })
+    return records, rows
+
+
+def render_verification_queue_work_item_markdown(
+    items: Iterable[QueueWorkItem],
+) -> str:
+    """Return the exact production Markdown projection for typed queue items."""
+
+    _records, rows = _queue_work_item_legacy_rows(items)
+    return _render_queue_subset_manifest(rows)
+
+
+def _write_queue_subset_manifest(path: Path, rows: list[dict[str, str]]):
+    # Capture aliases/lineage before normalizing the human projection's
+    # executable filename to the current ID.
+    records = tuple(sorted(
+        _write_typed_queue_work_items(path, rows),
+        key=lambda item: (
+            item.queue_priority,
+            item.work_item_id.casefold(),
+            item.work_item_id,
+        ),
+    ))
+    canonical_rows = _canonical_queue_rows(rows)
+    # ``validate_queue_work_items`` defines the canonical record order used by
+    # the authenticated typed sidecar.  Publish the human projection in that
+    # same order; otherwise an arbitrary caller row order can produce two
+    # contradictory byte-level authorities that no read-only consumer can
+    # safely reconcile.
+    canonical_by_id = {row["finding id"]: row for row in canonical_rows}
+    canonical_rows = [canonical_by_id[item.work_item_id] for item in records]
+    content = _render_queue_subset_manifest(canonical_rows)
     if path.exists():
         try:
-            if path.read_text(encoding="utf-8", errors="replace") == content:
-                _write_queue_json_sidecar(path, rows, kind="active")
+            if path.read_bytes() == content.encode("utf-8"):
+                _write_queue_json_sidecar(path, canonical_rows, kind="active")
                 return
         except Exception:
             pass
-    path.write_text(content, encoding="utf-8")
-    _write_queue_json_sidecar(path, rows, kind="active")
+    path.write_text(content, encoding="utf-8", newline="\n")
+    _write_queue_json_sidecar(path, canonical_rows, kind="active")
+
+
+def _write_queue_work_item_records_manifest(
+    path: Path,
+    items: Iterable[QueueWorkItem],
+) -> tuple[QueueWorkItem, ...]:
+    """Losslessly write an already-typed queue plus its legacy projection.
+
+    ``_write_queue_subset_manifest`` is the compatibility entry point for
+    legacy rows and therefore reconstructs typed lineage from Markdown-shaped
+    fields.  Recall gates that restore work *after* grouping/filtering already
+    hold authoritative ``QueueWorkItem`` records; sending those records back
+    through the legacy shape would erase candidate/constituent lineage.  This
+    helper renders the same human/JSON projections, then atomically restores
+    the exact typed records and verifies round-trip equality.
+    """
+
+    records, rows = _queue_work_item_legacy_rows(items)
+    _write_queue_subset_manifest(path, rows)
+    payload = queue_records_to_json(records) + "\n"
+    sidecar = _typed_queue_sidecar_path(path)
+    if sidecar.read_text(encoding="utf-8", errors="strict") != payload:
+        temporary = sidecar.with_suffix(sidecar.suffix + ".tmp")
+        temporary.write_text(payload, encoding="utf-8", newline="\n")
+        os.replace(temporary, sidecar)
+    replay = _read_typed_queue_work_items(path)
+    if replay != records:
+        raise ValueError("typed queue record render/write replay mismatch")
+    return replay
 
 
 def _write_queue_excluded_manifest(path: Path, rows: list[dict[str, str]]):
@@ -2276,54 +4125,163 @@ def _write_queue_excluded_manifest(path: Path, rows: list[dict[str, str]]):
 
 
 def ensure_verify_shard_manifests(scratchpad: Path) -> dict[str, list[dict[str, str]]]:
+    queue_path = scratchpad / "verification_queue.md"
+    _require_typed_queue_authority(
+        queue_path, parse_verification_queue_rows(scratchpad)
+    )
+    compound_delivery = _deliver_compound_candidates_to_queue(scratchpad, "l1")
     shards = compute_verify_shards(scratchpad)
     for phase_name, rows in shards.items():
         _write_queue_subset_manifest(scratchpad / L1_VERIFY_SHARD_MANIFESTS[phase_name], rows)
+    typed_items = _read_typed_queue_work_items(
+        scratchpad / "verification_queue.md"
+    )
+    _write_or_validate_queue_work_plan(scratchpad, typed_items, shards, "l1")
+    if compound_delivery.get("ordinary_verification_delivery_complete") is not False:
+        _write_or_validate_compound_adapter_artifacts(
+            scratchpad,
+            tuple(item for item in typed_items if not item.work_item_id.startswith("CH-")),
+            "l1",
+        )
+    elif not typed_items:
+        _write_empty_compound_adapter_artifacts_from_delivery_debt(
+            scratchpad, typed_items, "l1"
+        )
     return shards
 
 
-def compute_sc_verify_shards(scratchpad: Path) -> dict[str, list[dict[str, str]]]:
+def compute_sc_verify_shards(
+    scratchpad: Path,
+) -> dict[str, list[dict[str, Any]]]:
     """SC variant of compute_verify_shards with SC-prefixed phase names."""
     rows = parse_verification_queue_rows(scratchpad)
-    crit_high = [r for r in rows if _severity_bucket(r.get("severity", "")) in {"critical", "high"}]
-    medium = [r for r in rows if _severity_bucket(r.get("severity", "")) == "medium"]
-    low_info = [
-        r for r in rows
-        if _severity_bucket(r.get("severity", "")) in {"low", "info"}
-    ]
-    def assign_chunks(names: list[str], items: list[dict[str, str]], target: int) -> dict[str, list[dict[str, str]]]:
-        out = {name: [] for name in names}
-        if not items:
-            return out
-        chunk_count = min(len(names), max(1, math.ceil(len(items) / max(target, 1))))
-        idx = 0
-        for i, name in enumerate(names[:chunk_count]):
-            remaining_chunks = chunk_count - i
-            remaining_items = len(items) - idx
-            take = math.ceil(remaining_items / max(remaining_chunks, 1))
-            out[name] = items[idx:idx + take]
-            idx += take
-        if idx < len(items):
-            out[names[-1]].extend(items[idx:])
-        return out
-
-    shards = {}
-    shards.update(assign_chunks(
-        list(SC_VERIFY_CRITHIGH_PHASE_NAMES),
-        crit_high,
-        VERIFY_TARGET_PER_SHARD,
-    ))
-    sc_medium_names = [k for k in SC_VERIFY_SHARD_MANIFESTS if k.startswith("sc_verify_medium")]
-    sc_low_names = [k for k in SC_VERIFY_SHARD_MANIFESTS if k.startswith("sc_verify_low")]
-    shards.update(assign_chunks(sc_medium_names, medium, VERIFY_TARGET_PER_SHARD))
-    shards.update(assign_chunks(sc_low_names, low_info, VERIFY_TARGET_PER_SHARD))
-    return shards
+    typed_items = _project_typed_queue_authority(
+        scratchpad / "verification_queue.md", rows
+    )
+    return compute_verify_shards_from_typed(typed_items, pipeline="sc")
 
 
-def ensure_sc_verify_shard_manifests(scratchpad: Path) -> dict[str, list[dict[str, str]]]:
+def ensure_sc_verify_shard_manifests(
+    scratchpad: Path,
+    *,
+    p0af_runtime_config: Mapping[str, Any] | None = None,
+) -> dict[str, list[dict[str, str]]]:
+    root = Path(scratchpad)
+    queue_projection_names = (
+        "verification_queue.md",
+        "verification_queue.json",
+        "verification_queue.work_items.json",
+    )
+    status_path = root / "p0af_v2_queue_delivery_status.json"
+    journal_path = root / "p0af_v2_queue_delivery_transaction.json"
+    typed_before = _require_typed_queue_authority(
+        root / "verification_queue.md",
+        parse_verification_queue_rows(root),
+    )
+    has_adapter_rows = any(
+        item.evidence_class == "p0af-v2-generator" for item in typed_before
+    )
+    committed_successor = False
+    status_payload: Mapping[str, Any] | None = None
+    if journal_path.is_file():
+        try:
+            journal_payload = json.loads(
+                journal_path.read_text(encoding="utf-8", errors="strict")
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"P0-AF v2 transaction journal is malformed: {exc}"
+            ) from exc
+        if not isinstance(journal_payload, Mapping):
+            raise ValueError("P0-AF v2 transaction journal is not an object")
+        if journal_payload.get("state") == "PREPARED":
+            raise ValueError(
+                "P0-AF v2 queue transaction is PREPARED and not consumable"
+            )
+        if journal_payload.get("state") != "COMMITTED" or not status_path.is_file():
+            raise ValueError("P0-AF v2 transaction/status commit boundary is invalid")
+        if p0af_runtime_config is None:
+            raise ValueError(
+                "P0-AF v2 successor exists but sharder lacks runtime authority"
+            )
+        from p0af_v2_queue_runtime import validate_p0af_v2_queue_commit
+
+        commit_issues = validate_p0af_v2_queue_commit(root, p0af_runtime_config)
+        if commit_issues:
+            raise ValueError(
+                "P0-AF v2 queue successor is not consumable: "
+                + "; ".join(commit_issues)
+            )
+        committed_successor = True
+    elif status_path.is_file():
+        try:
+            status_payload = json.loads(
+                status_path.read_text(encoding="utf-8", errors="strict")
+            )
+        except Exception as exc:
+            raise ValueError(f"P0-AF v2 successor status is malformed: {exc}") from exc
+        if (
+            not isinstance(status_payload, Mapping)
+            or status_payload.get("transaction_id") is not None
+            or status_payload.get("state") != "COMPLETED_WITH_DEBT"
+            or status_payload.get("proof_authority") != "NONE"
+        ):
+            raise ValueError("P0-AF v2 uncommitted successor status is invalid")
+        if has_adapter_rows:
+            # A fail-visible precondition debt did not publish P1-M work.  It
+            # may not block unrelated ordinary verification, but it also may
+            # not coexist with a row that looks like delivered P0-AF-v2 work.
+            raise ValueError(
+                "uncommitted P0-AF v2 debt coexists with active adapter work"
+            )
+    elif has_adapter_rows:
+        raise ValueError(
+            "active P0-AF v2 adapter work has no committed successor authority"
+        )
+
+    before_projection = {
+        name: (root / name).read_bytes()
+        for name in queue_projection_names
+        if (root / name).is_file()
+    }
+    compound_delivery = _deliver_compound_candidates_to_queue(root, "sc")
+    if committed_successor:
+        from p0af_v2_queue_runtime import validate_p0af_v2_queue_commit
+
+        commit_issues = validate_p0af_v2_queue_commit(root, p0af_runtime_config)
+        after_projection = {
+            name: (root / name).read_bytes()
+            for name in queue_projection_names
+            if (root / name).is_file()
+        }
+        if commit_issues or before_projection != after_projection:
+            raise ValueError(
+                "legacy compound delivery changed/invalidated the receipt-bound "
+                "P0-AF v2 queue: " + "; ".join(commit_issues)
+            )
     shards = compute_sc_verify_shards(scratchpad)
     for phase_name, rows in shards.items():
         _write_queue_subset_manifest(scratchpad / SC_VERIFY_SHARD_MANIFESTS[phase_name], rows)
+    typed_items = _read_typed_queue_work_items(
+        scratchpad / "verification_queue.md"
+    )
+    _write_or_validate_queue_work_plan(scratchpad, typed_items, shards, "sc")
+    if compound_delivery.get("ordinary_verification_delivery_complete") is not False:
+        legacy_owned = _validated_legacy_compound_owned_ids(
+            Path(scratchpad), typed_items
+        )
+        _write_or_validate_compound_adapter_artifacts(
+            scratchpad,
+            tuple(
+                item for item in typed_items
+                if item.work_item_id not in legacy_owned
+            ),
+            "sc",
+        )
+    elif not typed_items:
+        _write_empty_compound_adapter_artifacts_from_delivery_debt(
+            scratchpad, typed_items, "sc"
+        )
     return shards
 
 
@@ -2586,6 +4544,62 @@ def _read_pipeline_from_config(scratchpad: Path) -> str:
     return ""
 
 
+def _closed_grouping_policy(
+    required_disposition: str,
+    relation_kind: str,
+) -> tuple[str, str, str]:
+    """Normalize grouping authority without inferring semantic equivalence.
+
+    Only the two closed equivalence relations may remain STANDARD.  A
+    constituent/enabler relation is composition context, not permission to
+    replace the claim with its parent.  Unknown or conflicting policy is
+    routed toward independent verification with visible debt.
+    """
+
+    required = re.sub(
+        r"[\s-]+",
+        "_",
+        str(required_disposition or "").strip().upper(),
+    )
+    relation = re.sub(
+        r"[\s-]+",
+        "_",
+        str(relation_kind or "").strip().upper(),
+    )
+    collapsible = {"", "EQUIVALENT", "SAME_CLAIM_ALIAS"}
+    noncollapsible = {"CONSTITUENT", "ENABLER_CONSTITUENT"}
+    if required == "VERIFY_INDEPENDENTLY":
+        debt = (
+            "GROUPING_RELATION_UNKNOWN"
+            if relation not in collapsible | noncollapsible
+            else ""
+        )
+        return "VERIFY_INDEPENDENTLY", relation, debt
+    if required not in {"", "STANDARD"}:
+        return (
+            "VERIFY_INDEPENDENTLY",
+            relation,
+            "GROUPING_REQUIRED_DISPOSITION_UNKNOWN",
+        )
+    if relation in noncollapsible:
+        return (
+            "VERIFY_INDEPENDENTLY",
+            relation,
+            (
+                "GROUPING_POLICY_CONFLICT"
+                if required == "STANDARD"
+                else ""
+            ),
+        )
+    if relation not in collapsible:
+        return (
+            "VERIFY_INDEPENDENTLY",
+            relation,
+            "GROUPING_RELATION_UNKNOWN",
+        )
+    return "STANDARD", relation, ""
+
+
 def _queue_rows_from_inventory_with_exclusions(
     scratchpad: Path,
     pipeline: str = "",
@@ -2634,9 +4648,12 @@ def _queue_rows_from_inventory_with_exclusions(
             or block.get("title", "")
             or "Unclassified"
         )
+        primary_artifact_field = _field_from_markdown(
+            raw, ("Primary Artifact", "Source Artifact", "Artifact")
+        )
         source = (
             block.get("source_ids", "")
-            or _field_from_markdown(raw, ("Primary Artifact", "Source Artifact", "Artifact"))
+            or primary_artifact_field
             or "findings_inventory.md"
         )
         title_val = block.get("title", "") or fid
@@ -2644,6 +4661,39 @@ def _queue_rows_from_inventory_with_exclusions(
         preferred_tag_val = _strip_md(preferred).strip("[]") or "CODE-TRACE"
         poc_class = classify_poc_testability(
             bug_class_val, preferred_tag_val, title_val, severity, resolved_pipeline
+        )
+        producer = None
+        if primary_artifact_field:
+            try:
+                producer = _registered_producer_for_artifact(
+                    Path(primary_artifact_field).name,
+                    consumer="pre_dedup_promotion",
+                )
+            except Exception:
+                producer = None
+        scopes = _resolve_effective_scopes(
+            producer=producer,
+            evidence_scope=(
+                _field_from_markdown(raw, ("Evidence Scope",))
+                or _field_from_markdown(raw, ("Effective Evidence Scope",))
+            ),
+            proof_scope=(
+                _field_from_markdown(raw, ("Proof Scope",))
+                or _field_from_markdown(raw, ("Effective Proof Scope",))
+            ),
+            harm_scope=(
+                _field_from_markdown(raw, ("Harm Scope",))
+                or _field_from_markdown(raw, ("Effective Harm Scope",))
+            ),
+        )
+        required_raw = _strip_md(
+            _field_from_markdown(raw, ("Required Disposition",))
+        )
+        relation_raw = _strip_md(
+            _field_from_markdown(raw, ("Relation Kind",))
+        )
+        required_disposition, relation_kind, grouping_debt = (
+            _closed_grouping_policy(required_raw, relation_raw)
         )
         rows.append({
             "queue #": str(len(rows) + 1),
@@ -2655,12 +4705,22 @@ def _queue_rows_from_inventory_with_exclusions(
             "location": block.get("location", "") or _field_from_markdown(raw, ("Location", "Locations")),
             "primary artifact": _strip_md(source),
             "poc class": poc_class,
+            "effective evidence scope": str(
+                scopes["effective_evidence_scope"]
+            ),
+            "effective proof scope": str(scopes["effective_proof_scope"]),
+            "effective harm scope": str(scopes["effective_harm_scope"]),
+            "required disposition": required_disposition,
+            "relation kind": relation_kind,
+            "evidence debt": grouping_debt,
         })
         if verdict:
-            status = _verifier_status_from_text(f"**Verdict**: {verdict}")
-            if not _is_reportable_verdict(status):
-                rows[-1]["exclusion reason"] = f"Inventory verdict {status}"
-                excluded.append(rows.pop())
+            # Inventory is a producer/normalizer, not an independent
+            # discriminator.  Preserve its verdict as advisory provenance but
+            # never let it remove its own content-bearing candidate from the
+            # verification denominator.  An independently receipt-bound
+            # lifecycle decision is the only later exclusion authority.
+            rows[-1]["origin assessment"] = _verifier_status_from_text(raw)
     return rows, excluded
 
 
@@ -2670,9 +4730,15 @@ def _queue_rows_from_inventory(scratchpad: Path) -> list[dict[str, str]]:
     return rows
 
 
-def _write_mechanical_verification_queue_from_inventory(scratchpad: Path) -> int:
+def _write_mechanical_verification_queue_from_inventory(
+    scratchpad: Path,
+    *,
+    pipeline: str = "",
+) -> int:
     """Write verification_queue.md directly from findings_inventory.md."""
-    rows, excluded = _queue_rows_from_inventory_with_exclusions(scratchpad)
+    rows, excluded = _queue_rows_from_inventory_with_exclusions(
+        scratchpad, pipeline=pipeline
+    )
     _write_queue_subset_manifest(scratchpad / "verification_queue.md", rows)
     _write_queue_excluded_manifest(
         scratchpad / "verification_queue_evidence_excluded.md",
@@ -2705,7 +4771,11 @@ def _filter_verification_queue_by_mode(
     excluded: list[dict[str, str]] = []
     for row in rows:
         bucket = _severity_bucket(row.get("severity", ""))
-        if bucket in {"low", "info"}:
+        mandatory = (
+            str(row.get("required disposition") or "").strip().upper()
+            == "VERIFY_INDEPENDENTLY"
+        )
+        if bucket in {"low", "info"} and not mandatory:
             item = dict(row)
             item["exclusion reason"] = (
                 f"Excluded from active {pipeline_label} verification in {mode} mode "
@@ -2867,16 +4937,19 @@ def _parse_hypothesis_constituents(
     standalone_severities: dict[str, str] | None = None,
     *,
     include_split_parent_aliases: bool = False,
+    include_composition_aliases: bool = False,
+    apply_chain_grouping_authority: bool = True,
 ) -> dict[str, list[str]]:
     """Parse hypothesis → constituent finding ID mapping.
 
     Tries finding_mapping.md first (table: constituent → hypothesis).
     Falls back to hypotheses.md (section headings + body scan for INV-* IDs).
     Returns {hypothesis_id: [constituent_id, ...]}. By default this contains
-    only exact active owners. ``include_split_parent_aliases=True`` adds the
-    union under an explicitly declared pre-split parent for lookup consumers
-    such as R10; enumeration, repair, coverage, and anti-absorption callers
-    must use the default so a retired parent cannot be re-minted.
+    only exact active owners. ``include_split_parent_aliases=True`` adds only
+    the union under an explicitly declared pre-split parent.
+    ``include_composition_aliases=True`` separately exposes raw composition
+    aliases for additive evidence/challenge lookup. Neither flag may be used by
+    coverage, demotion, deletion, completion, or queue-accounting consumers.
 
     ``standalone_severities`` ({finding ID: severity} for findings that appear as
     their own rows) is forwarded to ``_parse_chain_constituents`` so a "justified"
@@ -2904,7 +4977,50 @@ def _parse_hypothesis_constituents(
                         union.append(source_id)
             if union:
                 mapping[parent_id] = union
-        return mapping
+        if not apply_chain_grouping_authority:
+            return mapping
+        # P0-W: raw Markdown grouping is a composition proposal. Overlay the
+        # source-bound driver decision only after every legacy source has been
+        # parsed. Rejected/unproven groups disappear from active identity while
+        # remaining available as explicit lookup aliases. Invalid/stale
+        # receipts are a conservative no-op; the chain gate will rebuild them.
+        try:
+            from chain_grouping_authority import apply_chain_grouping_projection
+
+            return apply_chain_grouping_projection(
+                scratchpad,
+                mapping,
+                include_group_aliases=include_composition_aliases,
+                independently_bound_group_ids=tuple(
+                    dict.fromkeys(
+                        [
+                            child_id
+                            for child_ids in split_parent_children.values()
+                            for child_id in child_ids
+                        ]
+                        + (
+                            list(split_parent_children)
+                            if include_split_parent_aliases
+                            else []
+                        )
+                    )
+                ),
+            )
+        except Exception:
+            # Authority/parser failure cannot reactivate an unproven grouping.
+            # Single-member relations remain harmless lookup links; every
+            # multi-member proposal stays independently addressable.
+            return {
+                group_id: members
+                for group_id, members in mapping.items()
+                if len(list(dict.fromkeys(members))) < 2
+                or include_composition_aliases
+                or group_id in {
+                    child_id
+                    for child_ids in split_parent_children.values()
+                    for child_id in child_ids
+                }
+            }
 
     # --- Source 1: finding_mapping.md (preferred, written by Chain Agent 1)
     fm = scratchpad / "finding_mapping.md"
@@ -3037,7 +5153,7 @@ _CHAIN_ENABLER_RE = re.compile(
     r"Enabler\s+Finding\s*\(B\)", re.IGNORECASE
 )
 _CHAIN_ID_FIELD_RE = re.compile(
-    r"\*\*ID\*\*\s*:\s*\[?\s*(" + _ID_ALL_INTERNAL + r")\s*\]?",
+    r"\*\*ID\*\*\s*:\s*\[?\s*(" + _ID_ALL_CONTEXT_FREE + r")\s*\]?",
     re.IGNORECASE,
 )
 _CHAIN_MACHINE_LINE_RE = re.compile(
@@ -3135,7 +5251,7 @@ def _parse_chain_constituents(
             if mm:
                 for tok in re.split(r"[,\s]+", mm.group("ids") or ""):
                     tok = tok.strip().upper()
-                    if tok and re.fullmatch(r"(?:" + _ID_ALL_INTERNAL + r")", tok, re.IGNORECASE):
+                    if tok and re.fullmatch(r"(?:" + _ID_ALL_CONTEXT_FREE + r")", tok, re.IGNORECASE):
                         if tok != chain_id and tok not in constituents:
                             constituents.append(tok)
 
@@ -3191,6 +5307,17 @@ def _enumgap_exploration_has_no_obligations(scratchpad: Path) -> bool:
     """
     try:
         scratchpad = Path(scratchpad)
+        worklist_path = scratchpad / "enumgap_worklist.json"
+        if worklist_path.exists():
+            try:
+                from enumgap_disposition import load_enumgap_worklist
+
+                worklist = load_enumgap_worklist(worklist_path)
+                return not bool(worklist.get("requires_execution"))
+            except Exception:
+                # A malformed exact worklist is debt, never evidence of zero
+                # work.  Run the additive phase so the failure stays visible.
+                return False
         jp = scratchpad / "_enumeration_obligations.json"
         if jp.exists():
             try:
@@ -3222,78 +5349,42 @@ def _enumgap_exploration_has_no_obligations(scratchpad: Path) -> bool:
 
 
 def _chain_iter2_has_no_unexplored_pairs(scratchpad: Path) -> bool:
-    """Pre-spawn early-exit signal for phase `chain_iter2`.
+    """Return True only when typed chain-tail authority proves completion.
 
-    Returns True when there's nothing for iteration 2 to do — i.e. either
-    `composition_coverage.md` is missing (chain phase didn't produce it,
-    which is itself a soft-degraded state — defer rather than spawn an
-    LLM with no input), OR the coverage map's Explored? column shows no
-    NO rows that are cross-class AND have at least one Medium+ side.
-
-    Per rules/phase4c-chain-prompt.md ITERATIVE_CHAIN_COMPOSITION:
-    "If Agent 2 reported 0 new chains AND 0 unexplored cross-class
-    Medium+ pairs → skip iteration 2."
-
-    Conservative on parse failure: returns True (skip) rather than spawn
-    an LLM that would then have no work. The soft phase model means a
-    false-positive skip is cheap (we lose 0 chains we couldn't find
-    anyway); a false-negative spawn wastes ~$1-2 of sonnet time.
+    Markdown coverage is an operational projection, never a denominator or a
+    clean-no-op proof. Missing, malformed, stale, incomplete, or hash-divergent
+    typed artifacts therefore return False and preserve repair work/debt.
     """
-    coverage = scratchpad / "composition_coverage.md"
-    if not coverage.exists():
-        return True
-    try:
-        text = coverage.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return True
-    # Parse the coverage table. Header should include Finding A, Finding B,
-    # Explored?, Result, Notes. We look for table rows whose `Explored?`
-    # cell is `NO` (case-insensitive) AND at least one severity column on
-    # either side mentions Critical/High/Medium. Tolerant of column
-    # ordering and exact header wording.
-    unexplored_medium_plus = 0
-    in_table = False
-    header_keys: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("|"):
-            in_table = False
-            header_keys = []
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if cells and all(set(c) <= {"-", ":", " "} for c in cells):
-            # Markdown separator row → previous line was the header.
-            continue
-        norm = [re.sub(r"[^a-z0-9]+", "", c.lower()) for c in cells]
-        if "findinga" in norm or "findingb" in norm or "explored" in norm:
-            in_table = True
-            header_keys = norm
-            continue
-        if not in_table or not header_keys:
-            continue
-        # Look for explored column = NO
+    tail_payload = scratchpad / "chain_candidate_pairs_iter2.json"
+    # P0-T: legacy Markdown is an operational projection, never a clean-no-op
+    # authority.  Without the exact typed manifest there is no denominator to
+    # prove that all composition work is terminal.
+    if not tail_payload.exists():
+        return False
+    if tail_payload.exists():
         try:
-            explored_idx = header_keys.index("explored")
-        except ValueError:
-            try:
-                explored_idx = header_keys.index("exploredq")
-            except ValueError:
-                continue
-        if explored_idx >= len(cells):
-            continue
-        explored_val = cells[explored_idx].strip().lower()
-        if explored_val not in ("no", "n", "false", "pending", "unexplored"):
-            continue
-        # Severity heuristic: if any cell in the row mentions Critical/High/Medium
-        # → count as Medium+ unexplored.
-        row_text = " ".join(cells).lower()
-        if re.search(r"\b(critical|high|medium)\b", row_text):
-            unexplored_medium_plus += 1
-            if unexplored_medium_plus > 0:
-                return False
-    return unexplored_medium_plus == 0
+            payload = json.loads(
+                tail_payload.read_text(encoding="utf-8", errors="replace")
+            )
+            if (
+                isinstance(payload, dict)
+                and payload.get("schema_version")
+                == "plamen.chain_tail_manifest.v2"
+            ):
+                # P0-T: the compatibility packet is deliberately immutable
+                # and therefore cannot describe live cursor state.  Only the
+                # hash-bound authority may prove a typed clean no-op.
+                from chain_tail_authority import validate_chain_tail_authority
 
-
+                return not validate_chain_tail_authority(
+                    scratchpad, require_complete=True
+                )
+            # Legacy or unknown packet schemas cannot authorize an early exit.
+            return False
+        except Exception:
+            # An unparseable mechanical packet is not evidence that the tail is
+            # empty. Spawn the soft repair pass and preserve a coverage gap.
+            return False
 def _extract_chain_summaries_compact(scratchpad: Path) -> int:
     """Extract ## Chain Summary sections from depth/scanner findings into a compact file.
 
@@ -3401,6 +5492,15 @@ def _dedup_queue_by_hypothesis(scratchpad: Path) -> int:
     groups: dict[str, list[dict[str, str]]] = {}
     solo: list[dict[str, str]] = []
     for row in rows:
+        if (
+            str(row.get("required disposition") or "").strip().upper()
+            == "VERIFY_INDEPENDENTLY"
+        ):
+            # A composition/enabler relation supplies context only.  It is
+            # never equivalence authority and therefore cannot relabel,
+            # fan-out, or collapse this independently assessable claim.
+            solo.append(dict(row))
+            continue
         fid = (row.get("finding id") or "").upper()
         hypos = constituent_to_hypos.get(fid, [])
         if hypos:
@@ -3457,6 +5557,9 @@ def _dedup_queue_by_hypothesis(scratchpad: Path) -> int:
                     locations.append(loc)
             if len(locations) > 1:
                 rep["location"] = locations[0] + f" (+{len(locations)-1} more)"
+            exact_members = list(dict.fromkeys(mapping.get(hypo_id, [])))
+            if exact_members:
+                rep["constituents"] = ", ".join(exact_members)
             collapsed.append(rep)
 
     # Combine: collapsed hypothesis rows + solo rows, sorted by severity
@@ -3473,11 +5576,12 @@ def _dedup_queue_by_hypothesis(scratchpad: Path) -> int:
     return max(0, original_count - len(final))
 
 
-# v2.4.3: derived from unified _ID_* components. Callers run this on
-# report-index table cells (non-zero positions) so [CHMLI]-\d{1,3}
-# matches internal hypothesis IDs, not report IDs in column 0.
+# Context-free validator/report-index matcher. The producer-registry discovery
+# catch-all is intentionally absent because these consumers do not know an
+# owning artifact. Closed [CHMLI]-\d{1,3} hypothesis forms remain accepted in
+# non-zero report-index cells.
 _INTERNAL_ID_RE = re.compile(
-    _ASCII_ID_LEFT + r"(" + _ID_ALL_INTERNAL + r")" + _ASCII_ID_RIGHT,
+    _ASCII_ID_LEFT + r"(" + _ID_ALL_CONTEXT_FREE + r")" + _ASCII_ID_RIGHT,
     re.IGNORECASE | re.ASCII,
 )
 
@@ -3708,8 +5812,8 @@ def derive_tier_assignments_from_verify_queue(
     per-finding mappings). Derives assignments from structured artifacts
     the driver already trusts:
 
-      - `verification_queue.md` rows (one per finding-id + severity)
-      - `skeptic_judge_decisions.md` for severity downgrades, if present
+      - authenticated typed base-plus-post-verify candidate rows after cutover
+      - legacy `verification_queue.md` rows before typed cutover
 
     Output schema matches `parse_report_index_assignments`: list of
     `{report_id, finding_id, severity}` dicts. Report IDs are sequential
@@ -3721,23 +5825,17 @@ def derive_tier_assignments_from_verify_queue(
     queue or no rows). Caller should hard-fail rather than dispatch
     placeholder tier writers.
     """
-    rows = parse_verification_queue_rows(scratchpad)
+    from post_verify_candidate_delta import (
+        current_report_candidate_universe_legacy_rows,
+        report_candidate_universe_requires_typed_authority,
+    )
+
+    if report_candidate_universe_requires_typed_authority(Path(scratchpad)):
+        rows = current_report_candidate_universe_legacy_rows(scratchpad)
+    else:
+        rows = parse_verification_queue_rows(scratchpad)
     if not rows:
         return []
-
-    # Apply skeptic-judge severity downgrades, if any.
-    sj = scratchpad / "skeptic_judge_decisions.md"
-    downgrades: dict[str, str] = {}
-    if sj.exists():
-        try:
-            sj_text = _llm_norm(sj.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            sj_text = ""
-        for m in _SKEPTIC_DOWNGRADE_RE.finditer(sj_text):
-            fid = m.group(1)
-            new_sev = m.group(2).strip()[:1].upper()
-            if new_sev in "CHMLI":
-                downgrades[fid] = new_sev
 
     sev_order = "CHMLI"
     by_sev: dict[str, list[str]] = {s: [] for s in sev_order}
@@ -3745,18 +5843,11 @@ def derive_tier_assignments_from_verify_queue(
         fid = (row.get("finding id") or "").strip()
         if not fid:
             continue
-        vp = _verify_file_for_id(scratchpad, fid)
-        try:
-            vtxt = _llm_norm(vp.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            vtxt = ""
-        if not _is_reportable_verdict(_verifier_status_from_text(vtxt)):
-            continue
-        # Final severity: skeptic-judge override wins; else queue severity.
+        # Raw verifier negatives and skeptic prose are proposal-only.  This
+        # fallback has no typed non-body or severity-decision authority, so it
+        # must retain every candidate at its last admitted queue severity.
         queue_sev = (row.get("severity") or "").strip()
-        sev_letter = downgrades.get(fid)
-        if not sev_letter:
-            sev_letter = queue_sev[:1].upper() if queue_sev else "M"
+        sev_letter = queue_sev[:1].upper() if queue_sev else "M"
         if sev_letter not in by_sev:
             sev_letter = "M"
         by_sev[sev_letter].append(fid)
@@ -3806,22 +5897,29 @@ def get_tier_assignments(
     if not index_rows:
         return queue_rows, "verify-queue"
 
-    # If the Index Agent emitted explicit summary counts and its per-finding
-    # rows match those counts, the index is complete and authoritative. Do not
-    # append verify-queue rows: the queue is pre-report and may include refuted,
-    # excluded, downgraded, or consolidated items that the Index Agent
-    # deliberately removed from the reportable body. This exact false merge
-    # inflated a prior L1 run's C/H from 61 to 76 and triggered an unnecessary Opus
-    # retry after the tier writer had correctly completed all assignments.
-    summary_counts = _parse_report_index_summary_counts(scratchpad)
-    if summary_counts:
-        row_counts = {s: 0 for s in "CHMLI"}
-        for a in index_rows:
-            sev = (a.get("severity") or "")[:1].upper()
-            if sev in row_counts:
-                row_counts[sev] += 1
-        if all(row_counts[s] == summary_counts.get(s, 0) for s in "CHMLI"):
-            return index_rows, "index"
+    typed_candidate_universe = (
+        Path(scratchpad) / "verification_queue.work_items.json"
+    ).is_file()
+    if not typed_candidate_universe:
+        # Legacy compatibility boundary: before the typed candidate-universe
+        # cutover there is no authenticated post-verification denominator.
+        # A count-complete index is therefore still the least-lossy authority:
+        # the Markdown queue can contain deliberately excluded/refuted rows and
+        # merging those rows re-inflates the report.  Typed runs MUST continue
+        # to the identity-set comparison below because model-authored counts
+        # can agree perfectly while omitting a late delta candidate.
+        summary_counts = _parse_report_index_summary_counts(scratchpad)
+        if summary_counts:
+            row_counts = {s: 0 for s in "CHMLI"}
+            for assignment in index_rows:
+                severity = (assignment.get("severity") or "")[:1].upper()
+                if severity in row_counts:
+                    row_counts[severity] += 1
+            if all(
+                row_counts[severity] == summary_counts.get(severity, 0)
+                for severity in "CHMLI"
+            ):
+                return index_rows, "index"
 
     # If Index Agent rows have no finding-id mappings at all, merge cannot
     # dedupe across sources — adding queue rows would double-count. Fall back
@@ -4037,12 +6135,28 @@ _LLM_NORM_TABLE = {
 }
 
 
-_HTML_ENTITY_RE = re.compile(r"&(?:#x([0-9A-Fa-f]+)|#(\d+)|(amp|lt|gt|quot|apos|nbsp));")
+_HTML_ENTITY_RE = re.compile(
+    r"&(?:#x([0-9A-Fa-f]+)|#(\d+)|(amp|lt|gt|quot|apos|nbsp|NewLine));"
+)
 
 
 _HTML_ENTITY_MAP = {
     "amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'", "nbsp": " ",
+    # Named structural entities are lexical content. They must not mint a
+    # physical Markdown line that has no corresponding raw-byte boundary.
+    "NewLine": " ",
 }
+
+
+_STRUCTURAL_LINE_BREAK_CODEPOINTS = frozenset({
+    0x000A,  # LF
+    0x000B,  # vertical tab
+    0x000C,  # form feed
+    0x000D,  # CR
+    0x0085,  # next line
+    0x2028,  # line separator
+    0x2029,  # paragraph separator
+})
 
 
 def _llm_norm(text: str) -> str:
@@ -4068,6 +6182,12 @@ def _llm_norm(text: str) -> str:
             else:
                 cp = int(m.group(2))
             if 0 <= cp <= 0x10FFFF:
+                # Entity decoding is lexical normalization, not structural
+                # Markdown authority.  In particular, `&#10;`/`&#13;` must
+                # never mint physical lines that have no corresponding raw
+                # byte line and therefore cannot be source-span bound.
+                if cp in _STRUCTURAL_LINE_BREAK_CODEPOINTS:
+                    return " "
                 return chr(cp)
         except (ValueError, OverflowError):
             pass
@@ -4083,13 +6203,49 @@ def _llm_norm(text: str) -> str:
     return s
 
 
+FINDING_ARTIFACT_MAX_BYTES = 8 * 1024 * 1024
+
+
+class FindingArtifactLimitError(ValueError):
+    """A finding producer artifact cannot be parsed within the memory bound."""
+
+
+def _read_finding_artifact_bytes(path: Path) -> bytes:
+    """Read one stable regular finding artifact within the shared hard bound."""
+
+    try:
+        return read_bounded_regular_bytes(path, FINDING_ARTIFACT_MAX_BYTES)
+    except ValueError as exc:
+        raise FindingArtifactLimitError(str(exc)) from exc
+
+
+# One explicit-heading grammar is consumed by the general producer parser and
+# the niche identity-debt bridge. It accepts canonical bracket headings with
+# or without the word Finding, bare `Finding ID` headings, optional separators,
+# colonless titles, and case variants. Identity registration remains a
+# separate artifact-scoped decision.
+_EXPLICIT_FINDING_HEADING_RE = re.compile(
+    r"^\s*#{2,4}\s*(?:"
+    r"(?:Finding\s*)?\[\s*(?P<bracket_id>[^\]\r\n]{1,96}?)\s*\]"
+    r"|Finding\s+(?P<bare_id>[^\s:\r\n]{1,96})"
+    r")\s*(?:(?P<separator>[:\-])\s*)?(?P<title>.*?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _match_explicit_finding_heading(line: str) -> Optional[re.Match[str]]:
+    """Match one normalized Markdown heading with the shared explicit grammar."""
+
+    return _EXPLICIT_FINDING_HEADING_RE.match(_llm_norm(line or ""))
+
+
 def _field_from_markdown(text: str, labels: tuple[str, ...]) -> str:
-    """Extract a simple `Label: value` field from markdown."""
+    """Extract a case-insensitive Markdown field, including colonless form."""
     text = _llm_norm(text)
     for label in labels:
         m = re.search(
             rf"(?im)^\s*(?:[-*]\s*|#{{1,6}}\s+)?(?:\*\*)?{re.escape(label)}(?:\*\*)?"
-            rf"(?:\s*\([^)]*\))?\s*(?::|-|=)\s*(.+)$",
+            rf"(?:\s*\([^)]*\))?(?:(?:\s*(?::|-|=)\s*)|\s+)(.+)$",
             text,
         )
         if m:
@@ -4112,6 +6268,24 @@ _OPTIONAL_FINDING_METADATA_LABELS: dict[str, tuple[str, ...]] = {
     "branch_preconditions": ("Branch Preconditions", "Branch Precondition"),
     "terminal_mechanism": ("Terminal Mechanism", "Terminal Mechanisms"),
     "composition_candidates": ("Composition Candidates", "Composition Candidate"),
+    "action_kind": ("Action Kind", "Action"),
+    "target_id": (
+        "Target ID", "Target Finding", "Amends", "Re-opens", "Upgrades",
+    ),
+    "related_finding": ("Related Finding", "Related Finding ID"),
+    "evidence_scope": ("Evidence Scope",),
+    "proof_scope": ("Proof Scope",),
+    "harm_scope": ("Harm Scope",),
+    "effective_evidence_scope": ("Effective Evidence Scope",),
+    "effective_proof_scope": ("Effective Proof Scope",),
+    "effective_harm_scope": ("Effective Harm Scope",),
+    "harm_confidence": ("Harm Confidence",),
+    "source_action_id": ("Source Action ID",),
+    "source_artifact_hash": ("Source Artifact Hash",),
+    "source_identity": ("Source Identity",),
+    "proposal_id": ("Proposal ID",),
+    "source_obligation_id": ("Source Obligation ID",),
+    "source_work_item_id": ("Source Work Item ID",),
 }
 
 _OPTIONAL_FINDING_METADATA_FIELDS: tuple[str, ...] = tuple(
@@ -4145,10 +6319,19 @@ def _first_heading_title(text: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def _sanitize_client_title(title: str) -> str:
+def _sanitize_client_title(
+    title: str,
+    *,
+    known_internal_ids: Iterable[str] = (),
+) -> str:
     """Remove internal pipeline IDs from client-facing titles/headings."""
-    s = title or ""
-    internal = _INTERNAL_FINDING_ID_RE.pattern
+    s = redact_private_legacy_eip_ids(
+        title or "", known_internal_ids=known_internal_ids
+    )
+    # Titles are context-free client prose.  The artifact-scoped discovery
+    # catch-all would classify arbitrary standards/version tokens as internal;
+    # provenance-aware legacy EIP redaction already ran above.
+    internal = r"(?:(?:" + _ID_ALL_NONHYPO + r")|(?:" + _ID_HYPO_ALTS + r"))"
     # Drop parenthetical/bracketed notes whose only purpose is an internal
     # trace reference, e.g. "(Depth Validation of INV-002)".
     s = re.sub(
@@ -4177,10 +6360,14 @@ def _sanitize_client_title(title: str) -> str:
 _CLIENT_BODY_INTERNAL_ID_RE = re.compile(
     _ASCII_ID_LEFT
     + r"(?!(?:[CMLI]-\d{1,3}|H-\d{2})" + _ASCII_ID_RIGHT + r")"
-    + r"(" + _ID_ALL_INTERNAL + r")" + _ASCII_ID_RIGHT,
+    # Context-free client prose cannot safely use the manifest-selected
+    # discovery catch-all.  Use explicit internal namespaces plus the
+    # canonical hypothesis grammar; provenance-aware legacy EIP handling runs
+    # immediately above this matcher.
+    + r"((?:" + _ID_ALL_NONHYPO + r")|(?:" + _ID_HYPO_ALTS + r"))"
+    + _ASCII_ID_RIGHT,
     re.IGNORECASE | re.ASCII,
 )
-
 
 def _client_internal_id_replacement(match: re.Match[str]) -> str:
     """Sanitize internal IDs while retaining ambiguous public report IDs."""
@@ -4190,13 +6377,20 @@ def _client_internal_id_replacement(match: re.Match[str]) -> str:
     return "upstream finding"
 
 
-def _sanitize_client_body(text: str) -> str:
+def _sanitize_client_body(
+    text: str,
+    *,
+    known_internal_ids: Iterable[str] = (),
+) -> str:
     """Remove internal pipeline IDs from client-facing report prose."""
     clean = re.sub(
         r"\bverify_[A-Za-z0-9_\-\[\].]+\.md\b",
         "verifier artifact",
         text or "",
         flags=re.IGNORECASE,
+    )
+    clean = redact_private_legacy_eip_ids(
+        clean, known_internal_ids=known_internal_ids
     )
     clean = _CLIENT_BODY_INTERNAL_ID_RE.sub(_client_internal_id_replacement, clean)
     # Drop internal-status narration the body writer sometimes leaks into prose.
@@ -4969,6 +7163,57 @@ def _parse_source_findings_for_ids(path: Path) -> list[dict[str, str]]:
     return findings
 
 
+_INVENTORY_NEGATIVE_PREFIX_RE = re.compile(
+    r"^\s*(?:refuted\b|false[_\s-]*positive\b|infeasible\b|"
+    r"not\s+applicable\b|not\s+reportable\b|no\s+findings?\b|"
+    r"absorbed(?:\s+into)?\b|deduplicated\b|"
+    r"duplicates?\s+of\b|merged(?:\s+(?:in|into|with|to|under))?\b)",
+    re.IGNORECASE,
+)
+
+
+def _inventory_negative_proposal_kind(value: str) -> str:
+    """Classify only a field-leading negative as a non-authoritative proposal.
+
+    Parser tolerance is transport, not truth authority.  A negative word in
+    quoted history, a negated statement, or ordinary prose therefore cannot
+    change severity/verdict.  Ambiguous N/A is retained as visible unresolved
+    work rather than silently becoming Informational.
+    """
+
+    raw = _strip_md(value or "").strip()
+    if _ambiguous_na_marker(raw):
+        return "UNRESOLVED_PROPOSAL"
+    match = _INVENTORY_NEGATIVE_PREFIX_RE.match(raw)
+    if not match or not _non_reportable_marker(raw):
+        return ""
+    if re.match(r"^\s*not\s+applicable\b", raw, re.IGNORECASE):
+        return "NOT_APPLICABLE_PROPOSAL"
+    return "REFUTATION_PROPOSAL"
+
+
+def _record_inventory_negative_proposal(
+    entry: dict[str, object], *, field: str, raw: str
+) -> bool:
+    disposition = _inventory_negative_proposal_kind(raw)
+    if not disposition:
+        return False
+    proposals = entry.setdefault("negative_proposals", [])
+    assert isinstance(proposals, list)
+    record = {
+        "field": field,
+        "raw": _strip_md(raw).strip(),
+        "proposed_disposition": disposition,
+    }
+    if record not in proposals:
+        proposals.append(record)
+    kinds = {str(item.get("proposed_disposition", "")) for item in proposals}
+    conflict = len(kinds) > 1
+    entry["negative_proposal_conflict"] = conflict
+    entry["negative_proposal"] = "CONFLICT_DEBT" if conflict else disposition
+    return True
+
+
 def _parse_chunk_heading_inventory(text: str) -> list[dict[str, object]]:
     lines = text.splitlines()
     entries: list[dict[str, object]] = []
@@ -4994,6 +7239,9 @@ def _parse_chunk_heading_inventory(text: str) -> list[dict[str, object]]:
             "root_cause": "",
             "description": "",
             "impact": "",
+            "negative_proposal": "",
+            "negative_proposals": [],
+            "negative_proposal_conflict": False,
             **_optional_finding_metadata_defaults(),
         }
         m = re.match(r"^#{2,4}\s+Finding\s+\[([^\]]+)\]:?", heading)
@@ -5019,18 +7267,16 @@ def _parse_chunk_heading_inventory(text: str) -> list[dict[str, object]]:
                 entry["location"] = _norm_loc(val_raw)
             elif label_lc == "severity":
                 sev_val = _strip_md(val_raw)
-                if _non_reportable_marker(sev_val):
-                    entry["severity"] = "Informational"
-                    if not entry.get("verdict"):
-                        entry["verdict"] = "REFUTED"
-                elif _ambiguous_na_marker(sev_val):
-                    entry["severity"] = "Informational"
-                    if not entry.get("verdict"):
-                        entry["verdict"] = "UNRESOLVED"
-                else:
+                if not _record_inventory_negative_proposal(
+                    entry, field="severity", raw=sev_val
+                ):
                     entry["severity"] = sev_val.capitalize()
             elif label_lc == "verdict":
-                entry["verdict"] = _strip_md(val_raw)
+                verdict_val = _strip_md(val_raw)
+                if not _record_inventory_negative_proposal(
+                    entry, field="verdict", raw=verdict_val
+                ):
+                    entry["verdict"] = verdict_val
             elif label_lc in (
                 "evidence", "preferred tag", "preferred verification",
                 "evidence tag", "evidence tags",
@@ -5048,14 +7294,6 @@ def _parse_chunk_heading_inventory(text: str) -> list[dict[str, object]]:
                 opt_field = _optional_finding_metadata_field_for_label(label_lc)
                 if opt_field:
                     entry[opt_field] = _strip_md(val_raw)
-        if _non_reportable_marker(str(entry.get("severity", ""))) or _non_reportable_marker(str(entry.get("verdict", ""))):
-            entry["severity"] = "Informational"
-            if not entry.get("verdict"):
-                entry["verdict"] = "REFUTED"
-        elif _ambiguous_na_marker(str(entry.get("severity", ""))):
-            entry["severity"] = "Informational"
-            if not entry.get("verdict"):
-                entry["verdict"] = "UNRESOLVED"
         entries.append(entry)
     return entries
 
@@ -5075,6 +7313,9 @@ def _parse_chunk_table_inventory(text: str) -> list[dict[str, object]]:
                 "root_cause": "",
                 "description": "",
                 "impact": "",
+                "negative_proposal": "",
+                "negative_proposals": [],
+                "negative_proposal_conflict": False,
                 **_optional_finding_metadata_defaults(),
             }
             for idx, cell in enumerate(row):
@@ -5085,15 +7326,9 @@ def _parse_chunk_table_inventory(text: str) -> list[dict[str, object]]:
                 elif "title" in key:
                     entry["title"] = val
                 elif "severity" in key:
-                    if _non_reportable_marker(val):
-                        entry["severity"] = "Informational"
-                        if not entry.get("verdict"):
-                            entry["verdict"] = "REFUTED"
-                    elif _ambiguous_na_marker(val):
-                        entry["severity"] = "Informational"
-                        if not entry.get("verdict"):
-                            entry["verdict"] = "UNRESOLVED"
-                    else:
+                    if not _record_inventory_negative_proposal(
+                        entry, field="severity", raw=val
+                    ):
                         entry["severity"] = val.capitalize()
                 elif "location" in key:
                     entry["location"] = _norm_loc(val)
@@ -5102,7 +7337,10 @@ def _parse_chunk_table_inventory(text: str) -> list[dict[str, object]]:
                 elif "evidence" in key:
                     entry["preferred_tag"] = _extract_first_tag(val) or val
                 elif "verdict" in key:
-                    entry["verdict"] = val
+                    if not _record_inventory_negative_proposal(
+                        entry, field="verdict", raw=val
+                    ):
+                        entry["verdict"] = val
                 elif "root cause" in key:
                     entry["root_cause"] = val
                 elif "description" in key:
@@ -5115,14 +7353,6 @@ def _parse_chunk_table_inventory(text: str) -> list[dict[str, object]]:
                     opt_field = _optional_finding_metadata_field_for_label(key)
                     if opt_field:
                         entry[opt_field] = val
-            if _non_reportable_marker(str(entry.get("severity", ""))) or _non_reportable_marker(str(entry.get("verdict", ""))):
-                entry["severity"] = "Informational"
-                if not entry.get("verdict"):
-                    entry["verdict"] = "REFUTED"
-            elif _ambiguous_na_marker(str(entry.get("severity", ""))):
-                entry["severity"] = "Informational"
-                if not entry.get("verdict"):
-                    entry["verdict"] = "UNRESOLVED"
             if entry["title"] or entry["location"]:
                 entries.append(entry)
     return entries
@@ -5151,21 +7381,11 @@ def _parse_inventory_chunk(path: Path) -> list[dict[str, object]]:
             merged[key] = entry
             order.append(key)
             continue
-        cur = merged[key]
-        for field in (
-            "title", "severity", "location", "preferred_tag", "verdict",
-            "root_cause", "description", "impact", "local_id",
-            *_OPTIONAL_FINDING_METADATA_FIELDS,
-        ):
-            if not cur.get(field) and entry.get(field):
-                cur[field] = entry.get(field)
-            elif len(str(entry.get(field, ""))) > len(str(cur.get(field, ""))) and field in {"root_cause", "description", "impact", *_OPTIONAL_FINDING_METADATA_FIELDS}:
-                cur[field] = entry.get(field)
-        cur_ids = list(cur.get("source_ids", []) or [])
-        for sid in list(entry.get("source_ids", []) or []):
-            if sid not in cur_ids:
-                cur_ids.append(sid)
-        cur["source_ids"] = cur_ids
+        # A repeated local ID is the same chunk constituent rendered in two
+        # shapes (commonly a table row plus a detailed block).  Couple it with
+        # the same lossless, verdict-conflict-safe primitive used by the global
+        # merge; first-seen field order must not decide disposition.
+        _merge_inventory_records_shared_provenance(merged[key], entry)
     return [merged[k] for k in order]
 
 
@@ -5173,63 +7393,189 @@ def _severity_rank(sev: str) -> int:
     return _SEVERITY_ORDER.get((sev or "").strip().lower(), -1)
 
 
+def _inventory_provenance_keys(entry: dict[str, object]) -> set[str]:
+    """Return comparable, non-placeholder provenance IDs for one entry."""
+    out: set[str] = set()
+    for raw in entry.get("source_ids", []) or []:
+        value = (_normalize_finding_id(str(raw)) or _strip_md(str(raw))).upper()
+        if value and value not in {"SOURCE_UNVERIFIED", "UNKNOWN", "N/A", "NA"}:
+            out.add(value)
+    local = entry.get("local_id")
+    if local:
+        value = (_normalize_finding_id(str(local)) or _strip_md(str(local))).upper()
+        if value:
+            out.add(value)
+    return out
+
+
+def _inventory_identity_anchors(entry: dict[str, object]) -> set[str]:
+    """Return non-transitive anchors that can prove pre-verify identity.
+
+    Only concrete shared provenance proves identity before verification.
+    Exact title/location/root-cause similarity is a semantic-dedup routing
+    hint, not proof: sibling mechanisms can be rendered identically by two
+    independent producers and must both survive to the verifier.
+    """
+    return {f"PROV:{key}" for key in _inventory_provenance_keys(entry)}
+
+
+def _union_inventory_text(existing: object, incoming: object) -> str:
+    """Losslessly couple two corroborating prose/location values.
+
+    Exact-title/shared-provenance merging is deliberately stronger than the
+    legacy exact-location merge.  Keeping only the longer value would erase a
+    shorter producer's distinct evidence, so retain both unless one already
+    contains the other after whitespace/case normalization.
+    """
+    left = re.sub(r"\s+", " ", str(existing or "")).strip()
+    right = re.sub(r"\s+", " ", str(incoming or "")).strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    left_key = left.casefold()
+    right_key = right.casefold()
+    if left_key == right_key or right_key in left_key:
+        return left
+    if left_key in right_key:
+        return right
+    return f"{left} | Corroborating evidence: {right}"
+
+
+def _merge_inventory_records_shared_provenance(
+    survivor: dict[str, object], absorbed: dict[str, object]
+) -> None:
+    """Couple one proven duplicate into ``survivor`` without data loss."""
+    if _severity_rank(str(absorbed.get("severity", ""))) > _severity_rank(
+        str(survivor.get("severity", ""))
+    ):
+        survivor["severity"] = absorbed.get("severity", "")
+
+    survivor["location"] = _union_inventory_text(
+        survivor.get("location", ""), absorbed.get("location", "")
+    )
+    for field in (
+        "root_cause", "description", "impact",
+        *_OPTIONAL_FINDING_METADATA_FIELDS,
+    ):
+        survivor[field] = _union_inventory_text(
+            survivor.get(field, ""), absorbed.get(field, "")
+        )
+
+    # The titles normalize identically by the caller's contract. Keep the more
+    # informative rendering while preserving the stable title identity.
+    if len(str(absorbed.get("title", ""))) > len(str(survivor.get("title", ""))):
+        survivor["title"] = absorbed.get("title", "")
+
+    if not survivor.get("preferred_tag") and absorbed.get("preferred_tag"):
+        survivor["preferred_tag"] = absorbed.get("preferred_tag", "")
+
+    # Contradictory copies are evidence of uncertainty, not permission for
+    # whichever record happened to arrive first to dispose of the finding.
+    survivor["verdict"] = _merge_inventory_verdicts(
+        str(survivor.get("verdict", "")),
+        str(absorbed.get("verdict", "")),
+    )
+
+    source_ids = list(survivor.get("source_ids", []) or [])
+    for raw in absorbed.get("source_ids", []) or []:
+        if raw not in source_ids:
+            source_ids.append(raw)
+    local = absorbed.get("local_id")
+    if local and local not in source_ids:
+        source_ids.append(local)
+    survivor["source_ids"] = source_ids
+
+
+def _merge_inventory_verdicts(left: str, right: str) -> str:
+    """Order-independent, recall-safe verdict reconciliation."""
+    left = _strip_md(left or "").strip()
+    right = _strip_md(right or "").strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    left_status = _verifier_status_from_text(f"**Verdict**: {left}")
+    right_status = _verifier_status_from_text(f"**Verdict**: {right}")
+    if left_status == right_status:
+        return left_status
+    # This includes reportable-vs-negative, two different negative
+    # dispositions, and two incompatible positive/uncertain assertions.  All
+    # require the verifier to adjudicate; none may be settled by input order.
+    return "UNRESOLVED"
+
+
 def _merge_inventory_entries(entries: list[dict[str, object]]) -> list[dict[str, object]]:
-    merged: dict[tuple[str, str], dict[str, object]] = {}
-    order: list[tuple[str, str]] = []
+    # Every pre-verification merge requires exact title identity plus either a
+    # a shared concrete provenance anchor. Exact title/location/root-cause is
+    # tag-only evidence for the later semantic dedup/verifier, never permission
+    # to delete one of two independently sourced candidates.
+    prepared: list[dict[str, object]] = []
     for entry in entries:
-        loc = _norm_loc(str(entry.get("location", "")))
         title_key = _norm_key(str(entry.get("title", "")))
-        # Conservative merge: only coalesce exact title+location duplicates.
-        # A single location can contain multiple sibling bugs (loop early-exit,
-        # >= vs ==, missing field check). Root-cause-only merging overcut those
-        # into one row, hiding true positives before verification. Duplicates
-        # are cheaper than false drops; later consolidation can merge proven
-        # duplicates after verification.
-        key = (loc, title_key)
-        if not loc or not title_key:
+        loc = _norm_loc(str(entry.get("location", "")))
+        if not title_key or not loc:
             continue
-        if key not in merged:
-            source_ids = list(entry.get("source_ids", []))
-            local_id = entry.get("local_id")
-            if local_id and local_id not in source_ids:
-                source_ids.append(local_id)
-            merged[key] = {
-                "title": entry.get("title", ""),
-                "severity": entry.get("severity", ""),
-                "location": loc,
-                "source_ids": source_ids,
-                "preferred_tag": entry.get("preferred_tag", ""),
-                "verdict": entry.get("verdict", ""),
-                "root_cause": entry.get("root_cause", ""),
-                "description": entry.get("description", ""),
-                "impact": entry.get("impact", ""),
-                **{
-                    field: entry.get(field, "")
-                    for field in _OPTIONAL_FINDING_METADATA_FIELDS
-                },
-            }
-            order.append(key)
-            continue
-        cur = merged[key]
-        if _severity_rank(str(entry.get("severity", ""))) > _severity_rank(str(cur.get("severity", ""))):
-            cur["severity"] = entry.get("severity", "")
-        if not cur.get("preferred_tag") and entry.get("preferred_tag"):
-            cur["preferred_tag"] = entry.get("preferred_tag", "")
-        if not cur.get("verdict") and entry.get("verdict"):
-            cur["verdict"] = entry.get("verdict", "")
+        item = dict(entry)
+        item["location"] = loc
+        item["source_ids"] = list(entry.get("source_ids", []) or [])
+        local_id = item.get("local_id")
+        if local_id and local_id not in item["source_ids"]:
+            item["source_ids"].append(local_id)
         for field in (
-            "root_cause", "description", "impact", "title",
-            *_OPTIONAL_FINDING_METADATA_FIELDS,
+            "title", "severity", "preferred_tag", "verdict", "root_cause",
+            "description", "impact", *_OPTIONAL_FINDING_METADATA_FIELDS,
         ):
-            if len(str(entry.get(field, ""))) > len(str(cur.get(field, ""))):
-                cur[field] = entry.get(field, "")
-        local_id = entry.get("local_id")
-        if local_id and local_id not in cur["source_ids"]:
-            cur["source_ids"].append(local_id)
-        for fid in entry.get("source_ids", []):
-            if fid not in cur["source_ids"]:
-                cur["source_ids"].append(fid)
-    items = [merged[k] for k in order]
+            item.setdefault(field, "")
+        prepared.append(item)
+
+    # Stable order makes ambiguous bridge assignment deterministic.  A cluster
+    # retains the INTERSECTION of provenance shared by every constituent as its
+    # anchor.  Thus A{x}, B{x,y}, C{y} can produce AB+C (or AC+B under a stable
+    # alternate key) but can never collapse all three via provenance union.
+    prepared.sort(key=lambda item: (
+        _norm_key(str(item.get("title", ""))),
+        tuple(sorted(_inventory_provenance_keys(item))),
+        _norm_loc(str(item.get("location", ""))),
+        _norm_key(str(item.get("root_cause", ""))),
+        _norm_key(str(item.get("description", ""))),
+        _norm_key(str(item.get("impact", ""))),
+        str(item.get("verdict", "")).casefold(),
+    ))
+
+    coupled: list[dict[str, object]] = []
+    anchors: list[set[str]] = []
+    for item in prepared:
+        title_key = _norm_key(str(item.get("title", "")))
+        identity = _inventory_identity_anchors(item)
+        matches: list[tuple[int, set[str]]] = []
+        if identity:
+            for idx, prior in enumerate(coupled):
+                if title_key != _norm_key(str(prior.get("title", ""))):
+                    continue
+                shared = anchors[idx].intersection(identity)
+                if shared:
+                    matches.append((idx, shared))
+        if not matches:
+            coupled.append(item)
+            anchors.append(set(identity))
+            continue
+
+        # A bridge can touch multiple anchored clusters.  Attach it to exactly
+        # one deterministic cluster and never union clusters transitively.
+        idx, _shared = min(
+            matches,
+            key=lambda pair: (
+                -len(pair[1]),
+                tuple(sorted(pair[1])),
+                tuple(sorted(anchors[pair[0]])),
+                _norm_loc(str(coupled[pair[0]].get("location", ""))),
+            ),
+        )
+        _merge_inventory_records_shared_provenance(coupled[idx], item)
+        anchors[idx].intersection_update(identity)
+
+    items = coupled
     items.sort(key=lambda e: (-_severity_rank(str(e.get("severity", ""))), _norm_key(str(e.get("title", "")))))
     return items
 
@@ -5848,6 +8194,10 @@ def _compute_dedup_candidate_pairs(scratchpad: Path) -> int:
 # raise the 50-pair dedup cap. Cross-tier near-identical pairs over a ~90-finding
 # report index never approach this in practice; it is a safety ceiling only.
 _REPORT_DEDUP_CANDIDATE_CAP = 50
+_REPORT_DEDUP_CANDIDATE_LEDGER = "report_dedup_candidate_pairs.json"
+_REPORT_DEDUP_CANDIDATE_LEDGER_SCHEMA = (
+    "plamen.report_dedup_candidate_pairs.v1"
+)
 
 # Fix-4 location tolerance. The FIRST Location range of two findings must match
 # within this many lines on BOTH endpoints (near-identical range) to be a
@@ -5860,6 +8210,157 @@ _REPORT_DEDUP_LINE_TOLERANCE = 3
 # (`_compute_dedup_candidate_pairs` Signal 2) for consistency — same-tier
 # pairs below this score fall through to the shared-identifier signal instead.
 _REPORT_DEDUP_TITLE_SCORE = 0.50
+
+
+def _report_dedup_pair_key(report_id_a: str, report_id_b: str) -> str:
+    """Return the canonical identity of an unordered report-finding pair."""
+    a = str(report_id_a or "").strip().upper()
+    b = str(report_id_b or "").strip().upper()
+    if not re.fullmatch(r"[CHMLI]-\d{1,3}", a):
+        raise ValueError(f"invalid report ID for pair key: {report_id_a!r}")
+    if not re.fullmatch(r"[CHMLI]-\d{1,3}", b):
+        raise ValueError(f"invalid report ID for pair key: {report_id_b!r}")
+    if a == b:
+        raise ValueError(f"self-pair is invalid: {a}")
+    return "~".join(sorted((a, b)))
+
+
+def _report_dedup_denominator_digest(pair_keys: list[str]) -> str:
+    body = "" if not pair_keys else "\n".join(sorted(pair_keys)) + "\n"
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _write_report_dedup_candidate_ledger(
+    scratchpad: Path,
+    pairs: list[dict[str, Any]],
+    *,
+    source_sha256: str,
+    status: str = "COMPLETE",
+) -> dict[str, Any]:
+    """Persist the complete report-dedup denominator as deterministic JSON.
+
+    The bounded Markdown file remains a prompt projection.  This ledger keeps
+    every mechanically enumerated pair so coverage and retry logic never treat
+    a prompt cap as the semantic denominator.
+    """
+    typed_pairs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rank, pair in enumerate(pairs, start=1):
+        first = str(pair["a"]["report_id"]).upper()
+        second = str(pair["b"]["report_id"]).upper()
+        pair_key = _report_dedup_pair_key(first, second)
+        if pair_key in seen:
+            raise RuntimeError(f"duplicate report-dedup pair key: {pair_key}")
+        seen.add(pair_key)
+        typed_pairs.append({
+            "pair_key": pair_key,
+            "report_ids": sorted((first, second)),
+            "suggested_survivor": first,
+            "tier_relation": (
+                "same-tier" if bool(pair.get("same_tier")) else "cross-tier"
+            ),
+            "file": str(pair.get("file") or ""),
+            "location_a": list(pair.get("loc_a") or ()),
+            "location_b": list(pair.get("loc_b") or ()),
+            "signal": str(pair.get("signal") or ""),
+            "signal_detail": str(pair.get("detail") or ""),
+            "projection_rank": (
+                rank if rank <= _REPORT_DEDUP_CANDIDATE_CAP else None
+            ),
+        })
+    pair_keys = [row["pair_key"] for row in typed_pairs]
+    projected = min(len(typed_pairs), _REPORT_DEDUP_CANDIDATE_CAP)
+    payload: dict[str, Any] = {
+        "schema_version": _REPORT_DEDUP_CANDIDATE_LEDGER_SCHEMA,
+        "status": status,
+        "source": "report_index.md",
+        "source_sha256": str(source_sha256 or ""),
+        "denominator_digest": _report_dedup_denominator_digest(pair_keys),
+        "total_pairs": len(typed_pairs),
+        "projected_pairs": projected,
+        "tail_pairs": len(typed_pairs) - projected,
+        "projection_cap": _REPORT_DEDUP_CANDIDATE_CAP,
+        "pairs": typed_pairs,
+    }
+    target = Path(scratchpad) / _REPORT_DEDUP_CANDIDATE_LEDGER
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(target)
+    return payload
+
+
+def _load_report_dedup_candidate_ledger(scratchpad: Path) -> dict[str, Any]:
+    """Load and strictly validate the all-pairs report-dedup denominator."""
+    path = Path(scratchpad) / _REPORT_DEDUP_CANDIDATE_LEDGER
+    if not path.exists():
+        raise RuntimeError(
+            f"authoritative typed candidate ledger missing: {path.name}"
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        raise RuntimeError(f"typed candidate ledger unreadable: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("typed candidate ledger root must be an object")
+    if payload.get("schema_version") != _REPORT_DEDUP_CANDIDATE_LEDGER_SCHEMA:
+        raise RuntimeError("typed candidate ledger schema_version mismatch")
+    if payload.get("status") != "COMPLETE":
+        raise RuntimeError(
+            "typed candidate ledger status is not COMPLETE: "
+            f"{payload.get('status')!r}"
+        )
+    pairs = payload.get("pairs")
+    if not isinstance(pairs, list):
+        raise RuntimeError("typed candidate ledger pairs must be a list")
+    total = payload.get("total_pairs")
+    if not isinstance(total, int) or total < 0 or total != len(pairs):
+        raise RuntimeError(
+            "typed candidate ledger total_pairs does not match pairs length"
+        )
+    if payload.get("projection_cap") != _REPORT_DEDUP_CANDIDATE_CAP:
+        raise RuntimeError("typed candidate ledger projection_cap mismatch")
+    expected_projected = min(total, _REPORT_DEDUP_CANDIDATE_CAP)
+    if payload.get("projected_pairs") != expected_projected:
+        raise RuntimeError("typed candidate ledger projected_pairs mismatch")
+    if payload.get("tail_pairs") != total - expected_projected:
+        raise RuntimeError("typed candidate ledger tail_pairs mismatch")
+    keys: list[str] = []
+    for index, row in enumerate(pairs):
+        if not isinstance(row, dict):
+            raise RuntimeError(f"typed candidate ledger pair {index} is not an object")
+        ids = row.get("report_ids")
+        if not isinstance(ids, list) or len(ids) != 2:
+            raise RuntimeError(
+                f"typed candidate ledger pair {index} report_ids must have 2 IDs"
+            )
+        try:
+            key = _report_dedup_pair_key(str(ids[0]), str(ids[1]))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"typed candidate ledger pair {index} invalid: {exc}"
+            ) from exc
+        if ids != sorted(ids):
+            raise RuntimeError(
+                f"typed candidate ledger pair {index} report_ids are not canonical"
+            )
+        if row.get("pair_key") != key:
+            raise RuntimeError(
+                f"typed candidate ledger pair {index} pair_key mismatch"
+            )
+        expected_rank = index + 1 if index < expected_projected else None
+        if row.get("projection_rank") != expected_rank:
+            raise RuntimeError(
+                f"typed candidate ledger pair {index} projection_rank mismatch"
+            )
+        keys.append(key)
+    if len(set(keys)) != len(keys):
+        raise RuntimeError("typed candidate ledger contains duplicate pair keys")
+    if payload.get("denominator_digest") != _report_dedup_denominator_digest(keys):
+        raise RuntimeError("typed candidate ledger denominator_digest mismatch")
+    return payload
 
 
 def _report_index_first_location(cell: str) -> tuple[str, tuple[int, int] | None]:
@@ -5986,10 +8487,18 @@ def _compute_report_dedup_candidate_pairs(scratchpad: Path) -> int:
     """
     idx_path = scratchpad / "report_index.md"
     if not idx_path.exists():
+        _write_report_dedup_candidate_ledger(
+            scratchpad, [], source_sha256="", status="SOURCE_MISSING"
+        )
         return 0
     try:
-        text = _llm_norm(idx_path.read_text(encoding="utf-8", errors="replace"))
+        raw = idx_path.read_bytes()
+        text = _llm_norm(raw.decode("utf-8", errors="replace"))
+        source_sha256 = hashlib.sha256(raw).hexdigest()
     except Exception:
+        _write_report_dedup_candidate_ledger(
+            scratchpad, [], source_sha256="", status="SOURCE_UNREADABLE"
+        )
         return 0
 
     rows = _parse_report_index_master_rows(text)
@@ -6073,6 +8582,13 @@ def _compute_report_dedup_candidate_pairs(scratchpad: Path) -> int:
         p["dstart"] + p["dend"],
         p["a"]["report_id"], p["b"]["report_id"],
     ))
+
+    # P0-AC: the semantic denominator is all mechanically enumerated pairs,
+    # not the prompt-size projection below. Persist it before truncation so a
+    # retry, resume, or coverage gate can reconcile exact unordered pair keys.
+    _write_report_dedup_candidate_ledger(
+        scratchpad, pairs, source_sha256=source_sha256
+    )
 
     n_total = len(pairs)
     truncated = n_total > _REPORT_DEDUP_CANDIDATE_CAP
@@ -6479,7 +8995,7 @@ def _write_block_focus_inventory(
     path.write_text("\n".join(focus_lines).rstrip() + "\n", encoding="utf-8")
 
 
-_DEPTH_PROMOTION_FILES = (
+_LEGACY_DEPTH_PROMOTION_FILES = (
     "depth_consensus_invariant_findings.md",
     "depth_state_trace_findings.md",
     "depth_edge_case_findings.md",
@@ -6490,6 +9006,10 @@ _DEPTH_PROMOTION_FILES = (
     # promotion bridge and silently dropped. Added for SC parity.
     "depth_token_flow_findings.md",
     "depth_network_surface_findings.md",
+    # Targeted methodology-application repairs happen after inventory. This
+    # typed feeder must enter the same pre-verify promotion bridge as ordinary
+    # depth findings rather than waiting for report-time orphan recovery.
+    "depth_methodology_repair_findings.md",
     "depth_iter2_*_findings.md",
     "depth_iter3_*_findings.md",
     "depth_da_*_findings.md",
@@ -6513,12 +9033,12 @@ _DEPTH_PROMOTION_FILES = (
 )
 
 
-_PROMOTABLE_FEEDER_ID_PATTERN = (
+_LEGACY_PROMOTABLE_FEEDER_ID_PATTERN = (
     r"(?:"
     # L1/depth/feeders
     r"DCI-\d+|DEC-\d+|DST-\d+|DX-\d+|DN-\d+|"
     r"DNS-\d+|DA-[A-Z0-9_-]+-\d+|DA\d+-[A-Z0-9_-]+-\d+|"
-    r"PERT-\d+|ATT-\d+|"
+    r"PERT-\d+|ATT-\d+|MAD-\d+|"
     # SC depth/scanner channels that actually emit DS-/DE-/DT-/BLIND- ids
     # (v2.8.9: these prefixes were ABSENT, so the depth-promotion bridge and its
     # receipt gate parsed 0 findings from depth_state_trace / depth_edge_case /
@@ -6532,12 +9052,127 @@ _PROMOTABLE_FEEDER_ID_PATTERN = (
     # IDs C/H/M/L/I-N so client-facing report IDs are not treated as internal
     # feeder IDs by leak/promotion gates.
     r"(?:AA|AB|AC|AL|AR|AV|BLS|BS|CBS|CCT|CFG|CI|CM|CMI|CPI|CR|CS|CT|CU|"
-    r"DEP|DEX|ED|EDA|EIP|EN|EP|EPA|EVT|EX|FA|FC|FL|GO|GOV|HF|IHR|II|LC|"
+    r"DEP|DEX|ED|EDA|EIPF|EN|EP|EPA|EVT|EX|FA|FC|FL|GO|GOV|HF|IHR|II|LC|"
     r"LEND|MG|MP|MSS|NFT|NS|OD|OF|OO|OR|P2P|PDA|PSC|PTB|PV|RE|REENT|REF|"
     r"RPC|RS|SA|SAF|SCOUT|SE|SGI|SHIFT|SIG|SL|SLS|SR|SS|SSC|ST|STATIC|STR|"
     r"T22|TF|TPS|TS|TXI|VA|VL|VS|WED|XE|XFER|ZS)-\d+"
     r")"
 )
+
+# Runtime projections are registry-derived.  The legacy declarations above
+# remain temporarily as migration documentation and are deliberately not read
+# by consumers; projection-completeness tests prevent them from becoming a
+# second authority again.
+_DEPTH_PROMOTION_FILES = _registered_producer_patterns("pre_dedup_promotion")
+_PROMOTABLE_FEEDER_ID_PATTERN = _registered_producer_id_pattern(
+    "pre_dedup_promotion"
+)
+_PROMOTABLE_CONTEXT_FREE_FEEDER_ID_PATTERN = _registered_producer_id_pattern(
+    "pre_dedup_promotion",
+    producers=_CONTEXT_FREE_REGISTERED_PRODUCERS,
+)
+
+_UNADORNED_FINDING_HEADING_RE = re.compile(
+    r"^\s*#{2,4}\s+(?P<context_current>"
+    + _PROMOTABLE_CONTEXT_FREE_FEEDER_ID_PATTERN
+    + r")(?:\s*[:\-]\s*|\s+)?(?P<title>.*?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _canonical_finding_blocks(
+    text: str,
+    *,
+    structural_text: str | None = None,
+) -> list[dict[str, object]]:
+    """Enumerate the normalized finding grammar with canonical boundaries.
+
+    This is the one block denominator shared by general producer parsing and
+    niche lifecycle accounting.  Line indexes refer to the normalized text;
+    normalization preserves line count, allowing callers that retained the
+    original bytes to bind each block to its exact byte range.
+    """
+
+    normalized = _llm_norm(text or "")
+    # Split only on the newline form produced by ``_llm_norm``.  Python's
+    # ``splitlines`` recognizes additional Unicode separators that cannot be
+    # mapped back to the original UTF-8 byte offsets by the lifecycle bridge.
+    lines = normalized.split("\n")
+    structural_lines = _llm_norm(
+        normalized if structural_text is None else structural_text
+    ).split("\n")
+    if len(structural_lines) != len(lines):
+        raise ValueError("operational finding view changed physical line count")
+    headings: list[tuple[int, re.Match[str]]] = []
+    review_starts: list[int] = []
+    for line_index, line in enumerate(structural_lines):
+        match = (
+            _EXPLICIT_FINDING_HEADING_RE.match(line)
+            or _UNADORNED_FINDING_HEADING_RE.match(line)
+        )
+        if match is not None:
+            headings.append((line_index, match))
+        if re.search(
+            r"^\s*#{2,4}\s+Review\s+Disposition\s+\[",
+            line,
+            re.IGNORECASE,
+        ):
+            review_starts.append(line_index)
+
+    blocks: list[dict[str, object]] = []
+    action_starts = [line_index for line_index, _match in headings]
+    for index, (start_line, match) in enumerate(headings):
+        later_boundaries = [
+            boundary
+            for boundary in (*action_starts[index + 1 :], *review_starts)
+            if boundary > start_line
+        ]
+        end_line = min(later_boundaries) if later_boundaries else len(lines)
+        groups = match.groupdict()
+        raw_id = str(
+            groups.get("bracket_id")
+            or groups.get("bare_id")
+            or groups.get("context_current")
+            or ""
+        ).strip()
+        blocks.append(
+            {
+                "raw_id": raw_id,
+                "title": str(groups.get("title") or "").strip(),
+                "explicit_heading": bool(
+                    groups.get("bracket_id") or groups.get("bare_id")
+                ),
+                "start_line": start_line,
+                "end_line": end_line,
+                "block": "\n".join(lines[start_line:end_line]).strip(),
+            }
+        )
+    return blocks
+
+
+def _raw_physical_line_starts(raw: bytes) -> list[int]:
+    """Return byte starts for lines split only by physical CR/LF sequences."""
+
+    starts = [0]
+    starts.extend(match.end() for match in re.finditer(br"\r\n|\r|\n", raw))
+    return starts
+
+
+def _raw_line_range(
+    raw: bytes,
+    line_starts: list[int],
+    start_line: int,
+    end_line: int,
+) -> tuple[int, int, bytes]:
+    """Map a normalized physical-line interval back to exact raw bytes."""
+
+    if start_line < 0 or end_line <= start_line or start_line >= len(line_starts):
+        raise ValueError("finding action has an invalid physical line range")
+    start = line_starts[start_line]
+    end = len(raw) if end_line >= len(line_starts) else line_starts[end_line]
+    if not 0 <= start < end <= len(raw):
+        raise ValueError("finding action has an empty or out-of-bounds raw range")
+    return start, end, raw[start:end]
 
 
 def _parse_depth_confidence_scores(scratchpad: Path) -> dict[str, float]:
@@ -6604,33 +9239,204 @@ def _parse_depth_confidence_scores(scratchpad: Path) -> dict[str, float]:
     return scores
 
 
-def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
-    try:
-        text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return []
-    lines = text.splitlines()
-    starts = []
-    heading_re = re.compile(
-        r"^\s*#{2,4}\s+(?:Finding\s*)?\[?"
-        r"(" + _PROMOTABLE_FEEDER_ID_PATTERN + r")\]?",
-        re.IGNORECASE,
-    )
-    for i, line in enumerate(lines):
-        if heading_re.search(line):
-            starts.append(i)
-    out: list[dict[str, str]] = []
-    for idx, start in enumerate(starts):
-        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
-        block = "\n".join(lines[start:end]).strip()
-        m = heading_re.search(lines[start])
-        if not m:
+def _producer_block_substantive_prose(block: str) -> str:
+    """Recover unlabeled mechanism prose without mistaking metadata for harm."""
+    prose: list[str] = []
+    for line in (block or "").splitlines()[1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("|", "#", "<!--", "```")):
             continue
-        fid = m.group(1).upper()
-        title = re.sub(r"^\s*#{2,4}\s+", "", lines[start]).strip()
-        title = re.sub(r"^(?:Finding\s*)?\[?" + re.escape(fid) + r"\]?\s*:?\s*", "", title, flags=re.I).strip()
+        if re.match(
+            r"^(?:[-*]\s*)?(?:\*\*)?[A-Za-z][A-Za-z /_-]{1,40}"
+            r"(?:\*\*)?\s*[:=]",
+            stripped,
+        ):
+            continue
+        prose.append(_strip_md(stripped))
+    return re.sub(r"\s+", " ", " ".join(prose)).strip()
+
+
+_FUZZ_AUTHORITY_ARTIFACTS = frozenset({
+    "invariant_fuzz_results.md",
+    "medusa_fuzz_findings.md",
+    "trident_fuzz_findings.md",
+    "cargo_fuzz_findings.md",
+})
+
+
+def _strict_bounded_json_object(path: Path, *, limit: int = 16 * 1024 * 1024) -> dict:
+    raw = path.read_bytes()
+    if len(raw) > limit:
+        raise ValueError(f"JSON artifact exceeds {limit} bytes")
+
+    def _pairs(values: list[tuple[str, object]]) -> dict[str, object]:
+        out: dict[str, object] = {}
+        for key, value in values:
+            if key in out:
+                raise ValueError(f"duplicate JSON key: {key}")
+            out[key] = value
+        return out
+
+    def _constant(value: str) -> object:
+        raise ValueError(f"non-finite JSON constant: {value}")
+
+    payload = json.loads(
+        raw.decode("utf-8", errors="strict"),
+        object_pairs_hook=_pairs,
+        parse_constant=_constant,
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("JSON artifact is not an object")
+    return payload
+
+
+def _fuzz_execution_authority_for_artifact(path: Path) -> dict[str, str] | None:
+    """Resolve mechanical fuzz evidence without suppressing the candidate."""
+
+    if path.name not in _FUZZ_AUTHORITY_ARTIFACTS:
+        return None
+    index_path = path.parent / _fuzz_workspace_authority.RESULT_INDEX_FILE
+    if not index_path.is_file():
+        return {
+            "status": "UNSCORED",
+            "proof_authority": "NONE",
+            "reason": "FUZZ_RESULT_INDEX_MISSING",
+        }
+    validation = _fuzz_workspace_authority.validate_fuzz_workspace_result_index(
+        index_path
+    )
+    if validation:
+        return {
+            "status": "UNSCORED",
+            "proof_authority": "NONE",
+            "reason": "FUZZ_RESULT_INDEX_INVALID:" + ";".join(validation[:8]),
+        }
+    try:
+        payload = _strict_bounded_json_object(index_path)
+        rows = payload.get("rows")
+        if not isinstance(rows, list) or len(rows) > 128:
+            raise ValueError("fuzz result index rows are invalid")
+        matches = [
+            row for row in rows
+            if isinstance(row, Mapping) and str(row.get("output") or "") == path.name
+        ]
+        if len(matches) != 1:
+            raise ValueError("fuzz result index output mapping is not exact")
+        row = matches[0]
+        observed = hashlib.sha256(path.read_bytes()).hexdigest()
+        if str(row.get("output_sha256") or "") != observed:
+            raise ValueError("fuzz result index output digest drift")
+        return {
+            "status": str(row.get("status") or "UNSCORED").upper(),
+            "proof_authority": str(row.get("proof_authority") or "NONE").upper(),
+            "reason": ";".join(
+                str(value) for value in (row.get("issue_codes") or [])[:8]
+            ),
+        }
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "status": "UNSCORED",
+            "proof_authority": "NONE",
+            "reason": f"FUZZ_RESULT_INDEX_UNREADABLE:{type(exc).__name__}:{exc}",
+        }
+
+
+def _parse_depth_finding_blocks(
+    path: Path,
+    *,
+    _captured_bytes: bytes | None = None,
+) -> list[dict[str, object]]:
+    """Parse one finding artifact, optionally from an already-pinned capture.
+
+    ``_captured_bytes`` is the authority-safe niche lifecycle path: the caller
+    owns namespace and file-handle retention, and this parser must not reopen
+    the producer pathname after that one-pass capture.  Ordinary callers keep
+    the existing bounded-path behavior.
+    """
+    captured_supplied = _captured_bytes is not None
+    try:
+        if _captured_bytes is None:
+            raw_artifact = _read_finding_artifact_bytes(path)
+        else:
+            if not isinstance(_captured_bytes, bytes):
+                raise TypeError("captured finding artifact must be exact bytes")
+            if len(_captured_bytes) > FINDING_ARTIFACT_MAX_BYTES:
+                raise FindingArtifactLimitError(
+                    f"artifact exceeds {FINDING_ARTIFACT_MAX_BYTES} bytes: "
+                    f"{Path(path).name}"
+                )
+            raw_artifact = _captured_bytes
+        text = _llm_norm(raw_artifact.decode("utf-8", errors="replace"))
+        structural_text = (
+            operational_markdown_view(text) if captured_supplied else text
+        )
+    except FindingArtifactLimitError:
+        raise
+    except Exception:
+        if captured_supplied:
+            raise
+        return []
+    # `_llm_norm` preserves physical line count: it canonicalizes actual CRLF
+    # and CR delimiters but never turns an HTML entity into a delimiter.
+    lines = text.split("\n")
+    raw_line_starts = _raw_physical_line_starts(raw_artifact)
+    registered_producer = _registered_producer_for_artifact(
+        path.name, consumer="pre_dedup_promotion"
+    )
+    # A colliding legacy alias is readable only after this artifact-specific
+    # producer authority has been resolved.  Global promotion/report grammars
+    # intentionally contain current collision-free IDs only.
+    source_artifact_hash = "sha256:" + hashlib.sha256(raw_artifact).hexdigest()
+    canonical_blocks = _canonical_finding_blocks(
+        text,
+        structural_text=structural_text,
+    )
+    structural_lines = structural_text.split("\n")
+    out: list[dict[str, object]] = []
+    fuzz_execution_authority = _fuzz_execution_authority_for_artifact(path)
+    for canonical_block in canonical_blocks:
+        block = str(canonical_block["block"])
+        start_line = int(canonical_block["start_line"])
+        end_line = int(canonical_block["end_line"])
+        source_byte_start, source_byte_end, raw_block_bytes = _raw_line_range(
+            raw_artifact,
+            raw_line_starts,
+            start_line,
+            end_line,
+        )
+        raw_fid = str(canonical_block["raw_id"])
+        explicit_heading = bool(canonical_block["explicit_heading"])
+        identity_classification = _classify_producer_id(
+            raw_fid,
+            producer=registered_producer,
+        )
+        fid = identity_classification.normalized_id or raw_fid.upper()
+        if not fid:
+            continue
+        if registered_producer is not None:
+            local_id_valid = _registered_producer_accepts_local_id(
+                registered_producer, fid
+            )
+        else:
+            local_id_valid = bool(
+                not explicit_heading
+                or identity_classification.status == "REGISTERED"
+            )
+        identity_status = identity_classification.status
+        identity_debt = identity_classification.identity_debt
+        if not explicit_heading:
+            identity_status = "REGISTERED"
+            identity_debt = ""
+        elif registered_producer is not None and local_id_valid:
+            identity_status = "REGISTERED"
+            identity_debt = ""
+        elif not local_id_valid and not identity_debt:
+            identity_status = "PRODUCER_LOCAL_ID_MISMATCH"
+            identity_debt = "PRODUCER_LOCAL_ID_MISMATCH"
+        title = str(canonical_block.get("title") or "").strip()
         title = title or fid
-        sev = _field_from_markdown(block, ("Severity", "Final Severity")) or "Medium"
+        raw_sev = _field_from_markdown(block, ("Severity", "Final Severity"))
+        sev = raw_sev or "Medium"
         loc = _field_from_markdown(block, ("Location", "Locations"))
         if not loc:
             lm = re.search(
@@ -6641,7 +9447,23 @@ def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
         tag = _field_from_markdown(
             block, ("Preferred Tag", "Evidence Tag", "Evidence Tags", "Evidence")
         )
-        verdict = _field_from_markdown(block, ("Verdict", "Final Verdict", "Status"))
+        parsed_tag = _extract_first_tag(tag) or _strip_md(tag) or "CODE-TRACE"
+        original_fuzz_tag = ""
+        if (
+            fuzz_execution_authority is not None
+            and fuzz_execution_authority.get("status") != "MEASURED"
+        ):
+            original_fuzz_tag = str(parsed_tag).strip().strip("[]")
+            parsed_tag = "CODE-TRACE"
+        verdict = _field_from_markdown(block, ("Final Verdict", "Verdict"))
+        if not verdict:
+            generic_status = _field_from_markdown(block, ("Status",))
+            if generic_status:
+                # Preserve label semantics before storing the normalized value;
+                # downstream item consumers otherwise only see a bare string.
+                verdict = _verifier_status_from_text(
+                    f"**Status**: {generic_status}"
+                )
         sev_clean = _strip_md(sev)
         verdict_clean = _strip_md(verdict)
         if _non_reportable_marker(sev_clean) or _non_reportable_marker(verdict_clean):
@@ -6652,7 +9474,21 @@ def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
             sev_clean = "Informational"
             if not verdict_clean:
                 verdict_clean = "UNRESOLVED"
-        desc = _field_from_markdown(block, ("Description", "Root Cause", "Impact"))
+        raw_desc = _field_from_markdown(
+            block, ("Description", "Root Cause", "Impact")
+        )
+        raw_impact = _field_from_markdown(block, ("Impact",))
+        missing_required_fields = [
+            field_name
+            for field_name, field_value in (
+                ("Severity", raw_sev),
+                ("Location", loc if loc != "unknown" else ""),
+                ("Description", raw_desc),
+            )
+            if not str(field_value).strip()
+        ]
+        unlabeled_prose = _producer_block_substantive_prose(block)
+        desc = raw_desc or unlabeled_prose
         if not desc:
             body_lines = [
                 x.strip() for x in block.splitlines()[1:]
@@ -6667,18 +9503,224 @@ def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
             re.findall(r"\b" + _PROMOTABLE_FEEDER_ID_PATTERN + r"\b", block)
         )
         _ref_ids.discard(fid)
+        metadata = _extract_optional_finding_metadata(block)
+        action_kind = str(metadata.get("action_kind") or "").strip().upper()
+        action_kind = action_kind.replace("_", "-").replace("REOPEN", "RE-OPEN")
+        if action_kind not in {"NEW", "UPGRADE", "RE-OPEN"}:
+            action_match = re.search(
+                r"(?i)\b(NEW|UPGRADE|RE[- ]?OPEN)\b", block
+            )
+            action_kind = (
+                action_match.group(1).upper().replace(" ", "-")
+                if action_match else ""
+            )
+        if registered_producer and registered_producer.action_contract == "NEW_UPGRADE_REOPEN":
+            action_kind = action_kind or "NEW"
+        target_raw = str(metadata.get("target_id") or "").strip()
+        if not target_raw and action_kind in {"UPGRADE", "RE-OPEN"}:
+            target_match = re.search(
+                r"(?i)\b(?:upgrade(?:s|d)?|re[- ]?open(?:s|ed)?|amends?)\b"
+                r"[^\n]{0,80}?\b(" + _ID_ALL_CONTEXT_FREE + r")\b",
+                block,
+            )
+            if target_match:
+                target_raw = target_match.group(1)
+        target_id = _normalize_finding_id(target_raw) or _strip_md(target_raw)
+        evidence_scope = str(metadata.get("evidence_scope") or "").strip().upper()
+        proof_scope = str(metadata.get("proof_scope") or "").strip().upper()
+        if registered_producer and not proof_scope:
+            proof_scope = registered_producer.proof_scope_default
+        harm_scope = str(metadata.get("harm_scope") or "").strip().upper()
+        effective_scopes = _resolve_effective_scopes(
+            producer=registered_producer,
+            evidence_scope=evidence_scope,
+            proof_scope=proof_scope,
+            harm_scope=harm_scope,
+        )
+        if evidence_scope == "MECHANISM_ONLY" and not metadata.get("harm_confidence"):
+            metadata["harm_confidence"] = "LOW"
+        metadata.update({
+            "action_kind": action_kind,
+            "target_id": target_id,
+            "source_action_id": fid,
+            "source_artifact_hash": source_artifact_hash,
+            "evidence_scope": evidence_scope,
+            "proof_scope": proof_scope,
+            "harm_scope": harm_scope,
+            "effective_evidence_scope": str(
+                effective_scopes["effective_evidence_scope"]
+            ),
+            "effective_proof_scope": str(
+                effective_scopes["effective_proof_scope"]
+            ),
+            "effective_harm_scope": str(
+                effective_scopes["effective_harm_scope"]
+            ),
+            **(
+                {
+                    "fuzz_execution_status": str(
+                        fuzz_execution_authority.get("status") or "UNSCORED"
+                    ),
+                    "fuzz_proof_authority": str(
+                        fuzz_execution_authority.get("proof_authority") or "NONE"
+                    ),
+                    "fuzz_authority_reason": str(
+                        fuzz_execution_authority.get("reason") or ""
+                    ),
+                    "fuzz_original_tag": original_fuzz_tag,
+                }
+                if fuzz_execution_authority is not None
+                else {}
+            ),
+        })
         out.append({
             "id": fid,
             "title": _strip_md(title),
             "severity": sev_clean.capitalize(),
             "location": _norm_loc(loc),
-            "preferred_tag": _extract_first_tag(tag) or _strip_md(tag) or "CODE-TRACE",
+            "preferred_tag": parsed_tag,
             "verdict": verdict_clean,
             "description": _strip_md(desc),
             "source_file": path.name,
             "_referenced_ids": sorted(_ref_ids),
-            **_extract_optional_finding_metadata(block),
+            "_content_bearing": "false" if identity_debt or not local_id_valid or re.search(
+                r"(?i)CONTENT[-_ ]LESS|APPENDIX_ONLY|CONTENT_LESS_HUMAN_REVIEW",
+                block,
+            ) else (
+                "true" if bool(raw_desc.strip()) or len(unlabeled_prose) >= 30
+                else "false"
+            ),
+            "_producer_key": registered_producer.key if registered_producer else "",
+            "_local_id_valid": "true" if local_id_valid else "false",
+            "_identity_status": identity_status,
+            "_identity_debt": identity_debt,
+            "_identity_authority": "false",
+            "_identity_quarantine": "true" if identity_debt else "false",
+            "_scope_debt": "; ".join(effective_scopes["scope_debt"]),
+            "_raw_id": raw_fid,
+            "_explicit_heading": "true" if explicit_heading else "false",
+            "_source_byte_start": source_byte_start,
+            "_source_byte_end": source_byte_end,
+            "_source_block_size_bytes": len(raw_block_bytes),
+            "_source_block_sha256": hashlib.sha256(raw_block_bytes).hexdigest(),
+            "_source_size_bytes": len(raw_artifact),
+            "_source_sha256": hashlib.sha256(raw_artifact).hexdigest(),
+            "_normalized_source_block": block,
+            "_missing_required_fields": missing_required_fields,
+            "_impact": _strip_md(raw_impact),
+            "_action_shape": "HEADING",
+            **metadata,
         })
+
+    # Exploration producers observed in the legacy backend occasionally emit a
+    # substantive issue under an arbitrary H2/H3 rather than `Finding [ID]`.
+    # Recover only blocks carrying an explicit issue field; coverage/summary
+    # headings and table rows can never qualify.  The content fingerprint is a
+    # stable source action identity, not a fabricated sequential finding ID.
+    if (
+        registered_producer
+        and registered_producer.action_contract == "NEW_UPGRADE_REOPEN"
+    ):
+        heading_any = list(re.finditer(r"(?m)^#{2,3}\s+(.+?)\s*$", text))
+        meta_heading = re.compile(
+            r"(?i)^(?:coverage(?:\s+record)?|summary|findings?|method|"
+            r"completeness|rules?\s+applied|no\s+findings?)$"
+        )
+        for idx_h, heading in enumerate(heading_any):
+            heading_text = _strip_md(heading.group(1)).strip()
+            if re.match(
+                r"(?i)^(?:Finding\s*)?\[?"
+                + _PROMOTABLE_FEEDER_ID_PATTERN
+                + r"\]?\s*[:\-]?",
+                heading_text,
+            ):
+                continue
+            if meta_heading.match(heading_text):
+                continue
+            end = (
+                heading_any[idx_h + 1].start()
+                if idx_h + 1 < len(heading_any)
+                else len(text)
+            )
+            block = text[heading.start():end].strip()
+            start_line = text.count("\n", 0, heading.start())
+            end_line = (
+                text.count("\n", 0, end)
+                if end < len(text)
+                else len(lines)
+            )
+            source_byte_start, source_byte_end, raw_block_bytes = _raw_line_range(
+                raw_artifact,
+                raw_line_starts,
+                start_line,
+                end_line,
+            )
+            raw_desc = _field_from_markdown(
+                block, ("Description", "Root Cause", "Impact")
+            )
+            raw_impact = _field_from_markdown(block, ("Impact",))
+            legacy_prose = _producer_block_substantive_prose(block)
+            if len(_strip_md(raw_desc or legacy_prose)) < 20:
+                continue
+            location = _field_from_markdown(block, ("Location", "Locations"))
+            severity = _field_from_markdown(
+                block, ("Severity", "Final Severity")
+            ) or "Medium"
+            digest = hashlib.sha256(
+                (heading_text + "\n" + block).encode("utf-8")
+            ).hexdigest()[:12].upper()
+            fid = f"SKEP-LEGACY-{digest}"
+            if any(row.get("id") == fid for row in out):
+                continue
+            metadata = _extract_optional_finding_metadata(block)
+            action_kind = str(metadata.get("action_kind") or "NEW").upper()
+            action_kind = action_kind.replace("_", "-").replace("REOPEN", "RE-OPEN")
+            if action_kind not in {"NEW", "UPGRADE", "RE-OPEN"}:
+                action_kind = "NEW"
+            target_raw = str(metadata.get("target_id") or "").strip()
+            target_id = _normalize_finding_id(target_raw) or _strip_md(target_raw)
+            metadata.update({
+                "action_kind": action_kind,
+                "target_id": target_id,
+                "source_action_id": fid,
+                "source_artifact_hash": source_artifact_hash,
+                "proof_scope": str(metadata.get("proof_scope") or registered_producer.proof_scope_default),
+            })
+            out.append({
+                "id": fid,
+                "title": heading_text or fid,
+                "severity": _strip_md(severity).capitalize(),
+                "location": _norm_loc(location or "unknown"),
+                "preferred_tag": "CODE-TRACE",
+                "verdict": "CONTESTED",
+                "description": _strip_md(raw_desc or legacy_prose),
+                "source_file": path.name,
+                "_referenced_ids": [],
+                "_content_bearing": "true",
+                "_legacy_heading": "true",
+                "_producer_key": registered_producer.key,
+                "_raw_id": fid,
+                "_explicit_heading": "false",
+                "_source_byte_start": source_byte_start,
+                "_source_byte_end": source_byte_end,
+                "_source_block_size_bytes": len(raw_block_bytes),
+                "_source_block_sha256": hashlib.sha256(raw_block_bytes).hexdigest(),
+                "_source_size_bytes": len(raw_artifact),
+                "_source_sha256": hashlib.sha256(raw_artifact).hexdigest(),
+                "_normalized_source_block": block,
+                "_missing_required_fields": [
+                    field_name
+                    for field_name, field_value in (
+                        ("Severity", severity),
+                        ("Location", location),
+                        ("Description", raw_desc),
+                    )
+                    if not str(field_value).strip()
+                ],
+                "_impact": _strip_md(raw_impact),
+                "_action_shape": "LEGACY_HEADING",
+                **metadata,
+            })
 
     # ------------------------------------------------------------------
     # F2 (v2.8.x): strictly-additive Chain-Summary table-row fallback.
@@ -6710,12 +9752,11 @@ def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
     def _sep_row(cells: list[str]) -> bool:
         return bool(cells) and all(c and set(c) <= {"-", ":"} for c in cells)
 
-    seen_row_ids: set[str] = set()
     n = len(lines)
     i = 0
     while i < n - 1:
-        header_line = lines[i].strip()
-        sep_line = lines[i + 1].strip()
+        header_line = structural_lines[i].strip()
+        sep_line = structural_lines[i + 1].strip()
         if not (header_line.startswith("|") and sep_line.startswith("|")):
             i += 1
             continue
@@ -6723,7 +9764,7 @@ def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
         if not _sep_row(sep_cells):
             i += 1
             continue
-        headers = [c.strip() for c in header_line.strip("|").split("|")]
+        headers = [c.strip() for c in lines[i].strip().strip("|").split("|")]
         norm = [_norm_header(h) for h in headers]
 
         def _find(*keys: str) -> int | None:
@@ -6732,6 +9773,14 @@ def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
                     return idx_h
             return None
 
+        id_idx = next(
+            (
+                idx_h
+                for idx_h, header in enumerate(norm)
+                if header in {"id", "findingid", "candidateid"}
+            ),
+            None,
+        )
         loc_idx = _find("location", "file")
         sev_idx = _find("severity")
         # "status" is accepted for VALUE mapping (some catalogs use it as a
@@ -6744,25 +9793,47 @@ def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
             "mechanism", "description", "desc", "rootcause", "summary",
             "issue", "impact", "title",
         )
-        # Only a Chain-Summary-style finding catalog qualifies.
-        if loc_idx is None and sev_idx is None and qual_verd_idx is None:
+        # An explicit ID/finding-ID/candidate-ID header is mandatory. Generic
+        # ``ID`` is safe here only because each value must also satisfy the
+        # producer ID grammar and the table must expose a bounded semantic
+        # column; execution ledgers with literal/incidental IDs stay excluded.
+        semantic_idx = next(
+            (
+                idx_h
+                for idx_h, header in enumerate(norm)
+                if any(
+                    key in header
+                    for key in {
+                        "location", "file", "severity", "verdict", "status",
+                        "mechanism", "description", "desc", "rootcause",
+                        "summary", "issue", "impact", "title",
+                    }
+                )
+            ),
+            None,
+        )
+        if id_idx is None or semantic_idx is None:
             i += 1
             continue
 
         j = i + 2
         while j < n:
-            row = lines[j].strip()
-            if not row.startswith("|"):
+            structural_row = structural_lines[j].strip()
+            if not structural_row.startswith("|"):
                 break
+            row = lines[j].strip()
             cells = [c.strip() for c in row.strip("|").split("|")]
             if _sep_row(cells) or not any(cells):
                 j += 1
                 continue
-            m_id = row_id_re.match(cells[0]) if cells else None
+            m_id = (
+                row_id_re.match(cells[id_idx])
+                if id_idx is not None and 0 <= id_idx < len(cells)
+                else None
+            )
             if m_id:
                 rid = m_id.group(1).upper()
-                if rid not in heading_ids and rid not in seen_row_ids:
-                    seen_row_ids.add(rid)
+                if rid not in heading_ids:
 
                     def _cell(idx: int | None) -> str:
                         if idx is not None and 0 <= idx < len(cells):
@@ -6794,6 +9865,33 @@ def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
                         re.findall(r"\b" + _PROMOTABLE_FEEDER_ID_PATTERN + r"\b", row)
                     )
                     r_ref_ids.discard(rid)
+                    source_byte_start, source_byte_end, raw_block_bytes = (
+                        _raw_line_range(
+                            raw_artifact,
+                            raw_line_starts,
+                            j,
+                            j + 1,
+                        )
+                    )
+                    row_identity = _classify_producer_id(
+                        rid,
+                        producer=registered_producer,
+                    )
+                    row_identity_status = row_identity.status
+                    row_identity_debt = row_identity.identity_debt
+                    row_local_id_valid = bool(
+                        registered_producer is not None
+                        and _registered_producer_accepts_local_id(
+                            registered_producer,
+                            rid,
+                        )
+                    )
+                    if registered_producer is not None and row_local_id_valid:
+                        row_identity_status = "REGISTERED"
+                        row_identity_debt = ""
+                    elif not row_local_id_valid and not row_identity_debt:
+                        row_identity_status = "PRODUCER_LOCAL_ID_MISMATCH"
+                        row_identity_debt = "PRODUCER_LOCAL_ID_MISMATCH"
                     out.append({
                         "id": rid,
                         "title": r_title[:200] or rid,
@@ -6807,6 +9905,47 @@ def _parse_depth_finding_blocks(path: Path) -> list[dict[str, str]]:
                         "source_file": path.name,
                         "_referenced_ids": sorted(r_ref_ids),
                         "_low_confidence_rowonly": "true",
+                        "_content_bearing": "true",
+                        "_producer_key": registered_producer.key if registered_producer else "",
+                        "_local_id_valid": "true" if row_local_id_valid else "false",
+                        "_identity_status": row_identity_status,
+                        "_identity_debt": row_identity_debt,
+                        "_identity_authority": "false",
+                        "_identity_quarantine": "true" if row_identity_debt else "false",
+                        "source_action_id": rid,
+                        "source_artifact_hash": source_artifact_hash,
+                        "proof_scope": (
+                            registered_producer.proof_scope_default
+                            if registered_producer else "ANALYTICAL_CANDIDATE"
+                        ),
+                        "evidence_scope": "MECHANISM_ONLY" if (
+                            registered_producer
+                            and "fuzz" in registered_producer.key
+                        ) else "",
+                        "harm_confidence": "LOW" if (
+                            registered_producer
+                            and "fuzz" in registered_producer.key
+                        ) else "",
+                        "_raw_id": m_id.group(1),
+                        "_explicit_heading": "false",
+                        "_source_byte_start": source_byte_start,
+                        "_source_byte_end": source_byte_end,
+                        "_source_block_size_bytes": len(raw_block_bytes),
+                        "_source_block_sha256": hashlib.sha256(raw_block_bytes).hexdigest(),
+                        "_source_size_bytes": len(raw_artifact),
+                        "_source_sha256": hashlib.sha256(raw_artifact).hexdigest(),
+                        "_normalized_source_block": row,
+                        "_missing_required_fields": [
+                            field_name
+                            for field_name, field_value in (
+                                ("Severity", _cell(sev_idx)),
+                                ("Location", _cell(loc_idx)),
+                                ("Description", _cell(desc_idx)),
+                            )
+                            if not str(field_value).strip()
+                        ],
+                        "_impact": "",
+                        "_action_shape": "ROW_ONLY",
                     })
             j += 1
         i = j if j > i + 1 else i + 1
@@ -7311,7 +10450,8 @@ _VERIFY_CONFIRMED_VERDICT_RE = re.compile(
 )
 
 
-# v2.4.3: derived from unified _ID_ALL_INTERNAL (single source of truth).
+# Canonical alias for context-free internal-ID matching. Producer-owned
+# artifact parsing continues to use the artifact-scoped registry grammar.
 _INTERNAL_FINDING_ID_RE = _INTERNAL_ID_RE
 
 
@@ -7358,39 +10498,52 @@ def _verifier_status_from_text_impl(text: str) -> str:
     text = _llm_norm(text)
     if not (text and text.strip()):
         return "UNRESOLVED"
-    field = _field_from_markdown(text, ("Verdict", "Final Verdict", "Status"))
-    if field:
-        raw = field.strip().strip("`*_").upper()
-        status_re = re.compile(
-            r"(?<![A-Z])("
-            r"APPENDIX[_\s-]*ONLY|DROP[_\s-]*(?:FALSE[_\s-]*POSITIVE|NON[_\s-]*SECURITY|DESIGN[_\s-]*CONFIRMATION|UNACTIONABLE[_\s-]*SPECULATION)|"
-            r"SCHEMA[_\s-]*INVALID|LOCATION[_\s-]*INVALID|"
-            r"FALSE[_\s-]*POSITIVE|REFUTED|INFEASIBLE|"
-            r"CONTESTED|PARTIAL|UNRESOLVED|DUPLICATE|CONSOLIDATED|"
-            r"TRUE[_\s-]*POSITIVE|CONFIRMED|VALID"
-            r")(?![A-Z])",
-            re.IGNORECASE,
-        )
-        m_field = status_re.search(raw)
-        if m_field:
-            tok = m_field.group(1).upper().replace(" ", "_").replace("-", "_")
-            tok = re.sub(r"_+", "_", tok)
-            if tok in ("TRUE_POSITIVE", "VALID"):
-                return "CONFIRMED"
-            if tok == "CONSOLIDATED":
-                return "DUPLICATE"
-            if tok == "PARTIAL":
-                return "UNRESOLVED"
-            return tok
-        return raw.replace(" ", "_").replace("-", "_")
-    m = re.search(
-        r"(?i)\b(APPENDIX[_\s-]*ONLY|DROP[_\s-]*(?:FALSE[_\s-]*POSITIVE|NON[_\s-]*SECURITY|DESIGN[_\s-]*CONFIRMATION|UNACTIONABLE[_\s-]*SPECULATION)|"
-        r"SCHEMA_INVALID|LOCATION_INVALID|FALSE\s*POSITIVE|FALSE_POSITIVE|REFUTED|INFEASIBLE|"
-        r"CONTESTED|PARTIAL|UNRESOLVED|DUPLICATE|CONSOLIDATED|"
-        r"TRUE\s*POSITIVE|TRUE_POSITIVE|CONFIRMED|VALID)\b",
-        text or "",
+    # A verdict is a machine contract when the field value is exactly one
+    # supported enum.  Consume that before looking at prose so quoted history,
+    # rationale, and headings cannot override the authoritative field.
+    # A verifier sometimes emits both an interim `Verdict` and a later `Final
+    # Verdict`.  Selecting whichever label/line happens to be parsed first is
+    # order-dependent and can turn an internally contradictory artifact into a
+    # negative disposition.  Harvest EVERY exact Verdict-labelled field and
+    # require one semantic answer. Identical duplicates are harmless; any
+    # malformed, negated, or conflicting duplicate is UNRESOLVED. Generic
+    # `Status` remains a fallback only when no Verdict-labelled field exists.
+    verdict_fields = _all_verdict_field_values(
+        text, ("Final Verdict", "Verdict")
     )
-    if not m:
+    fields = verdict_fields or _all_verdict_field_values(text, ("Status",))
+    if fields:
+        resolved: set[str] = set()
+        for field_label, field in fields:
+            exact = _canonical_verifier_status_enum(field)
+            if exact:
+                if exact == "CLEAR":
+                    status = (
+                        "REFUTED"
+                        if field_label.casefold() != "status"
+                        else "UNRESOLVED"
+                    )
+                else:
+                    status = _verifier_status_semantic_alias(exact)
+                resolved.add(status)
+                continue
+
+            statuses, saw_negated = _legacy_verifier_statuses(
+                field,
+                allow_clear=(field_label.casefold() != "status"),
+            )
+            if saw_negated or len(statuses) != 1:
+                return "UNRESOLVED"
+            resolved.add(next(iter(statuses)))
+        # Distinct exact enums are permitted only when they normalize to the
+        # same disposition (e.g. TRUE_POSITIVE + CONFIRMED). Positive vs
+        # negative, confirmed vs duplicate, etc. is structurally ambiguous.
+        if len(resolved) != 1:
+            return "UNRESOLVED"
+        return next(iter(resolved))
+
+    statuses, saw_negated = _legacy_verifier_statuses(text, allow_clear=False)
+    if saw_negated or len(statuses) != 1:
         # Closes BS.header-only / BS.no-verdict-tokens: a verify file with
         # content but NO verdict token (e.g., a markdown header alone, or
         # only Evidence Tag / Severity fields) used to default to CONFIRMED.
@@ -7398,14 +10551,165 @@ def _verifier_status_from_text_impl(text: str) -> str:
         # body bug. Treat absence-of-verdict as UNRESOLVED so downstream
         # demotes the finding and flags it for human review.
         return "UNRESOLVED"
-    tok = m.group(1).upper().replace(" ", "_")
-    if tok in ("TRUE_POSITIVE", "VALID"):
+    return next(iter(statuses))
+
+
+def _all_verdict_field_values(
+    text: str, labels: tuple[str, ...]
+) -> list[tuple[str, str]]:
+    """Return every inline/table-cell verifier field in document order.
+
+    This intentionally parses only explicit field shapes. A heading or prose
+    sentence that merely contains a verdict word is not a machine field. The
+    generic prose fallback in `_verifier_status_from_text_impl` remains the
+    compatibility path when this returns no rows.
+    """
+    s = _llm_norm(text or "")
+    if not s:
+        return []
+    label_by_key = {_norm_key(label): label for label in labels}
+    ordered = sorted(labels, key=len, reverse=True)
+    label_alt = "|".join(re.escape(label) for label in ordered)
+    rows: list[tuple[int, str, str]] = []
+
+    inline_re = re.compile(
+        rf"(?im)^\s*(?:[-*]\s*|#{{1,6}}\s+)?"
+        rf"(?:\*\*|`|_)?\s*(?P<label>{label_alt})\s*(?:\*\*|`|_)?"
+        rf"(?:\s*\([^)]*\))?\s*(?::|-|=)\s*"
+        rf"(?:\*\*|`|_)?\s*(?P<value>.+?)\s*(?:\*\*|`|_)?\s*$"
+    )
+    for match in inline_re.finditer(s):
+        value = match.group("value").strip().strip("`*_ ")
+        if value:
+            rows.append((match.start(), match.group("label"), value))
+
+    # Table-cell fields use `| Verdict | CONFIRMED |`. Header/data tables are
+    # deliberately not interpreted here because they may describe several
+    # findings rather than the one verifier disposition.
+    offset = 0
+    for line in s.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if len(cells) >= 2:
+                key = _norm_key(_strip_md(cells[0]))
+                label = label_by_key.get(key)
+                value = _strip_md(cells[1]).strip()
+                if label and value and not _is_separator_row(stripped):
+                    rows.append((offset, label, value))
+        offset += len(line)
+
+    # The same field line cannot match both shapes, but preserve a defensive
+    # exact tuple dedup so format-tolerance additions stay order-independent.
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[int, str, str]] = set()
+    for position, label, value in sorted(rows, key=lambda row: row[0]):
+        key = (position, label.casefold(), value)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((label, value))
+    return out
+
+
+_VERIFIER_STATUS_ENUMS = frozenset({
+    "APPENDIX_ONLY",
+    "DROP_FALSE_POSITIVE",
+    "DROP_NON_SECURITY",
+    "DROP_DESIGN_CONFIRMATION",
+    "DROP_UNACTIONABLE_SPECULATION",
+    "SCHEMA_INVALID",
+    "LOCATION_INVALID",
+    "FALSE_POSITIVE",
+    "REFUTED",
+    "INFEASIBLE",
+    "CLEAR",
+    "CONTESTED",
+    "PARTIAL",
+    "UNRESOLVED",
+    "DUPLICATE",
+    "CONSOLIDATED",
+    "TRUE_POSITIVE",
+    "CONFIRMED",
+    "VALID",
+    "NEEDS_VERIFICATION",
+    "LOW_CONFIDENCE",
+    "UNVERIFIED",
+    "UNCONFIRMED",
+})
+
+
+def _status_enum_key(value: str) -> str:
+    value = _strip_md(value or "").strip().strip("`*_")
+    return re.sub(r"_+", "_", re.sub(r"[\s-]+", "_", value.upper())).strip("_")
+
+
+def _canonical_verifier_status_enum(value: str) -> str:
+    """Return an enum only when the complete field value is machine-shaped."""
+    key = _status_enum_key(value)
+    if key in _VERIFIER_STATUS_ENUMS:
+        return key
+    # Explicit legacy negative finding disposition.  This is accepted only by
+    # the Verdict-labelled caller; a heading or generic Status remains
+    # UNRESOLVED.
+    if re.fullmatch(
+        r"(?i)CLEAR\s*\(\s*(?:NO|NOT\s+A)\s+FINDING\s*\)",
+        _strip_md(value or "").strip(),
+    ):
+        return "CLEAR"
+    return ""
+
+
+def _verifier_status_semantic_alias(status: str) -> str:
+    if status in {"TRUE_POSITIVE", "VALID"}:
         return "CONFIRMED"
-    if tok == "CONSOLIDATED":
+    if status == "CONSOLIDATED":
         return "DUPLICATE"
-    if tok == "PARTIAL":
+    if status == "PARTIAL":
         return "UNRESOLVED"
-    return tok
+    return status
+
+
+_LEGACY_VERIFIER_STATUS_RE = re.compile(
+    r"(?<![A-Z])(APPENDIX[_\s-]*ONLY|"
+    r"DROP[_\s-]*(?:FALSE[_\s-]*POSITIVE|NON[_\s-]*SECURITY|DESIGN[_\s-]*CONFIRMATION|UNACTIONABLE[_\s-]*SPECULATION)|"
+    r"SCHEMA[_\s-]*INVALID|LOCATION[_\s-]*INVALID|"
+    r"FALSE[_\s-]*POSITIVE|REFUTED|INFEASIBLE|CLEAR|"
+    r"CONTESTED|PARTIAL|UNRESOLVED|DUPLICATE|CONSOLIDATED|"
+    r"TRUE[_\s-]*POSITIVE|CONFIRMED|VALID|"
+    r"NEEDS[_\s-]*VERIFICATION|LOW[_\s-]*CONFIDENCE|UNVERIFIED|UNCONFIRMED"
+    r")(?![A-Z])",
+    re.IGNORECASE,
+)
+
+
+def _legacy_verifier_statuses(
+    text: str, *, allow_clear: bool
+) -> tuple[set[str], bool]:
+    """Resolve unstructured status tokens without first-token bias.
+
+    Any negated status is an ambiguity signal even when another positive token
+    appears later.  Multiple distinct semantic dispositions are likewise
+    unresolved.  The caller decides that policy from the returned set.
+    """
+    statuses: set[str] = set()
+    saw_negated = False
+    for match in _LEGACY_VERIFIER_STATUS_RE.finditer(text or ""):
+        raw = match.group(1)
+        key = _status_enum_key(raw)
+        if key == "CLEAR" and not allow_clear:
+            continue
+        clause = _clause_around(text, match.start(1), match.end(1))
+        local = clause.find(raw)
+        if local >= 0:
+            masked = clause[:local] + (" " * len(raw)) + clause[local + len(raw):]
+        else:
+            masked = clause
+        if _NEGATION_GUARD_RE.search(masked):
+            saw_negated = True
+            continue
+        statuses.add(_verifier_status_semantic_alias(key))
+    return statuses, saw_negated
 
 
 def _severity_name_from_text(text: str, queue_row: dict[str, str]) -> str:
@@ -7649,6 +10953,31 @@ _MATRIX_TRUST_FULLY_RE = re.compile(
 )
 
 
+# P0-H: this broad matcher is proposal telemetry only.  It deliberately sees
+# lexical claims that the narrower structured marker does not, but no match on
+# either expression has severity authority.  `_enforce_severity_matrix` binds
+# the exact finding/scope to the independent trust-evidence ledger before it
+# lets `_apply_severity_modifiers` observe `fully_trusted=True`.
+_TRUST_PROPOSAL_RE = re.compile(
+    r"\bfully[-\s_]trusted\b|\btrusted[-\s_]actor\b|\[TRUSTED-ACTOR\]",
+    re.IGNORECASE,
+)
+
+
+def _extract_trust_scope(text: str) -> dict[str, str]:
+    """Extract proposal selectors; these fields grant no authority."""
+    fields = {
+        "actor": ("Trust Actor",),
+        "capability": ("Trust Capability",),
+        "action_scope": ("Trust Action Scope",),
+        "asset_scope": ("Trust Asset Scope",),
+    }
+    return {
+        key: (_field_from_markdown(text or "", labels) or "").strip()
+        for key, labels in fields.items()
+    }
+
+
 _MATRIX_VIEW_FN_RE = re.compile(
     r"view[-\s]?function[-\s]?only|view[-\s]?function\s+impact",
     re.IGNORECASE,
@@ -7714,12 +11043,22 @@ def _extract_severity_inputs(verify_text: str) -> dict:
     likelihood = _matrix_axis(
         text, ("Likelihood",), _MATRIX_LIKELIHOOD_ENUM_RE, _MATRIX_LIKELIHOOD_ENUM
     )
+    trust_proposal = bool(_TRUST_PROPOSAL_RE.search(text))
     modifiers = {
         "onchain_only": bool(_MATRIX_ONCHAIN_RE.search(text)),
         "view_function": bool(_MATRIX_VIEW_FN_RE.search(text)),
+        # Compatibility/telemetry field only.  The enforcement consumer
+        # replaces this with an independently authorized result before applying
+        # modifiers, so a structured-looking Markdown claim cannot demote.
         "fully_trusted": bool(_MATRIX_TRUST_FULLY_RE.search(text)),
     }
-    return {"impact": impact, "likelihood": likelihood, "modifiers": modifiers}
+    return {
+        "impact": impact,
+        "likelihood": likelihood,
+        "modifiers": modifiers,
+        "trust_proposal": trust_proposal,
+        "trust_scope": _extract_trust_scope(text) if trust_proposal else {},
+    }
 
 
 _SEVERITY_ADJUSTMENT_PATTERNS = (
@@ -7777,17 +11116,23 @@ def _extract_verifier_severity_with_adjustment(raw: str) -> str:
     return text
 
 
-def _enforce_severity_matrix(verify_text: str, queue_row: dict[str, str]) -> str:
+def _enforce_severity_matrix(
+    verify_text: str,
+    queue_row: dict[str, str],
+    *,
+    scratchpad: str | Path | None = None,
+    source_artifact: str | Path | None = None,
+    run_id: str | None = None,
+) -> str:
     """Compute expected severity from verify text and queue row.
 
     Priority (refinement from a prior run, asymmetric and intentional):
 
     1. Matrix (Impact × Likelihood + modifiers) when both axes are present.
     2. Verifier's explicit `**Severity**:` field when LOWER than the matrix
-       computation — the verifier has context (atomic revert, design
-       intent) the mechanical matrix cannot capture, AND a verifier
-       under-rating is a deliberate authored downgrade that needs no
-       Trust Adj. token.
+       computation, except when a trust claim is present. Trust-labeled
+       reductions require exact P0-H authority and are limited to the
+       documented one-tier modifier; the free field cannot alias that action.
     3. Verifier's inline-adjustment notation (e.g. `Severity: High
        (adjusted to Medium — reason)`) is honored as the verifier's
        intent — the post-adjustment value wins.
@@ -7821,8 +11166,45 @@ def _enforce_severity_matrix(verify_text: str, queue_row: dict[str, str]) -> str
     verifier_sev = (
         normalize_severity(verifier_sev_resolved) if verifier_sev_resolved else ""
     )
+    trust_authorized = False
+    if inputs.get("trust_proposal"):
+        fid = str(
+            queue_row.get("finding id") or queue_row.get("finding_id") or ""
+        ).strip()
+        scope = dict(inputs.get("trust_scope") or {})
+        source = source_artifact
+        if scratchpad is not None and source is None and fid:
+            candidate = _verify_file_for_id(Path(scratchpad), fid)
+            if candidate.exists():
+                source = candidate
+        if scratchpad is not None and source is not None and fid:
+            resolution = resolve_trust_evidence(
+                scratchpad,
+                finding_id=fid,
+                source_artifact=source,
+                actor=scope.get("actor", ""),
+                capability=scope.get("capability", ""),
+                action_scope=scope.get("action_scope", ""),
+                asset_scope=scope.get("asset_scope", ""),
+                run_id=run_id,
+                require_provider=True,
+            )
+            trust_authorized = resolution.authorized
+            record_trust_review_debt(
+                scratchpad,
+                resolution=resolution,
+                consumer="severity_modifier",
+                retained_severity=(
+                    base or queue_row.get("severity", "") or verifier_sev
+                ),
+            )
     if base is not None:
         mods = dict(inputs.get("modifiers", {}))
+        # P0-H authority boundary.  Raw prose and structured-looking Markdown
+        # are proposal-only; remove their boolean before the generic modifier
+        # helper sees it.  Only one current-run, finding-bound, exact-scope,
+        # independently adjudicated and hash-current record may restore it.
+        mods["fully_trusted"] = trust_authorized
         # CALIBRATION (recover the good-coverage-class Critical): the on-chain-only
         # -1 modifier applies ONLY when impact is CONFINED to on-chain state
         # (report-template.md). Impact:High is defined as "direct fund loss /
@@ -7841,10 +11223,32 @@ def _enforce_severity_matrix(verify_text: str, queue_row: dict[str, str]) -> str
             # Verifier wins ONLY when LOWER than the matrix. Higher-than-
             # matrix verifier severity is interpreted as LLM over-rating
             # and the matrix corrects it.
-            if v_rank < m_rank and v_rank >= 0:
+            # A trust-labeled verifier must not encode the same unadjudicated
+            # discount through its free `Severity:` field.  When trust is in
+            # play, the exact matrix plus the independently authorized one-tier
+            # modifier is the complete authority; any further proposed drop is
+            # retained as review work, not applied here.
+            if (
+                v_rank < m_rank
+                and v_rank >= 0
+                and not inputs.get("trust_proposal")
+            ):
                 return verifier_sev
         return matrix_final
     # No matrix axes — fall back to explicit verifier field or queue row.
+    # A trust proposal cannot alias a demotion through the free Severity field
+    # when matrix axes are absent. Preserve the upstream queue tier. A valid
+    # exact authority may apply precisely one trust tier to that upstream tier.
+    if inputs.get("trust_proposal"):
+        upstream = normalize_severity(
+            (queue_row.get("severity", "") or verifier_sev or "Medium").strip()
+        )
+        if trust_authorized:
+            return _apply_severity_modifiers(
+                upstream,
+                {"fully_trusted": True},
+            )
+        return upstream
     recovered = normalize_severity(
         (verifier_sev or queue_row.get("severity", "") or "Medium").strip()
     )
@@ -8406,7 +11810,12 @@ def _detect_dedup_clusters(scratchpad: Path, threshold: int = 3) -> list[dict]:
         status = _verifier_status_from_text(vtxt)
         if not _is_reportable_verdict(status):
             continue
-        severity = _enforce_severity_matrix(vtxt, row)
+        severity = _enforce_severity_matrix(
+            vtxt,
+            row,
+            scratchpad=scratchpad,
+            source_artifact=vp,
+        )
         unresolved = any(tok in status for tok in ("UNRESOLVED", "PARTIAL"))
         if unresolved:
             severity = _demote_severity_once(severity)
@@ -8466,6 +11875,57 @@ def _normalize_report_id(raw: str) -> str:
     if not m:
         return raw.strip().upper()
     return f"{m.group(1).upper()}-{int(m.group(2)):02d}"
+
+
+def _dedup_source_ids_by_report_id(scratchpad: Path) -> dict[str, set[str]]:
+    """Back-join each report ID to its internal/source-ID set.
+
+    This is parsing/identity projection, shared by report dedup and validators;
+    it must not live in the mechanical mutation layer because that would make
+    validators depend on their downstream consumer.
+    """
+    out: dict[str, set[str]] = {}
+    try:
+        rows = parse_report_index_assignments(scratchpad)
+    except Exception:
+        rows = []
+    fmap: dict[str, set[str]] = {}
+    fm_path = scratchpad / "finding_mapping.md"
+    if fm_path.exists():
+        try:
+            fm_text = fm_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            fm_text = ""
+        for mapping_row in parse_finding_mapping_rows(fm_text):
+            source_ids = {
+                str(source_id).upper()
+                for source_id in mapping_row.get("source_ids", ())
+            }
+            for hypothesis_id in mapping_row.get("hypothesis_ids", ()):
+                alias = str(hypothesis_id).upper()
+                fmap.setdefault(alias, set()).update(
+                    source_id
+                    for source_id in source_ids
+                    if source_id != alias
+                )
+    for row in rows:
+        rid = _normalize_report_id(str(row.get("report_id", "") or ""))
+        if not rid:
+            continue
+        internal = str(
+            row.get("finding_id", "") or row.get("internal", "") or ""
+        )
+        source_ids: set[str] = set()
+        for token in _INTERNAL_FINDING_ID_RE.findall(internal):
+            token = token.upper()
+            constituents = fmap.get(token)
+            if constituents:
+                source_ids.update(constituents)
+            else:
+                source_ids.add(token)
+        if source_ids:
+            out.setdefault(rid, set()).update(source_ids)
+    return out
 
 
 def _extract_report_ids_from_body(body: str) -> list[str]:
@@ -8540,18 +12000,24 @@ def _section_for_report_id(body: str, report_id: str) -> str:
 
 
 _FINDING_BLOCK_RE = re.compile(
-    r"^\s*(?:##|###)\s+(?:Finding\s+)?\[?([A-Z][A-Z0-9]{0,6}-\d+)\]?",
+    rf"^\s*(?:##|###)\s+(?=Finding\b|\[)"
+    rf"(?:Finding\s+)?\[?({_GLOBAL_FINDING_ID_PATTERN})\]?"
+    rf"(?=\s|:|$)",
     re.MULTILINE,
 )
 
 
-_BRACKETED_ID_RE = re.compile(r"\[([A-Z][A-Z0-9]{0,6}-\d+)\]")
+_BRACKETED_ID_RE = re.compile(rf"\[({_GLOBAL_FINDING_ID_PATTERN})\]")
 
 
-_TABLE_FINDING_ID_RE = re.compile(r"(?im)^\|\s*([A-Z][A-Z0-9]{0,6}-\d+)\s*\|")
+_TABLE_FINDING_ID_RE = re.compile(
+    rf"(?m)^\|\s*({_GLOBAL_FINDING_ID_PATTERN})\s*\|"
+)
 
 
-_TABLE_SOURCE_ID_RE = re.compile(r"(?im)\b([A-Z][A-Z0-9]{0,6}-\d+)\b")
+_TABLE_SOURCE_ID_RE = re.compile(
+    rf"(?<![A-Za-z0-9_-])({_GLOBAL_FINDING_ID_PATTERN})(?![A-Za-z0-9_-])"
+)
 
 
 _TABLE_LOCATION_RE = re.compile(r"([A-Za-z0-9_./\\-]+\.(?:sol|rs|go|move):L?\d+)")
@@ -8922,25 +12388,25 @@ def _extract_finding_signals(text: str) -> tuple[set[str], int]:
     """
     ids: set[str] = set()
     for m in _BRACKETED_ID_RE.finditer(text):
-        ids.add(m.group(1))
+        ids.add(m.group(1).upper())
     for m in _FINDING_BLOCK_RE.finditer(text):
-        ids.add(m.group(1))
+        ids.add(m.group(1).upper())
     for line in text.splitlines():
         m = _SOURCE_IDS_LINE_RE.match(line)
         if m:
-            for tok in re.findall(r"\b[A-Z][A-Z0-9]{0,6}-\d+\b", m.group(1)):
-                ids.add(tok)
+            ids.update(_extract_finding_ids_from_text(m.group(1)))
         s = line.strip()
         if not s.startswith("|"):
             continue
         cells = [c.strip() for c in s.strip("|").split("|")]
         if not cells:
             continue
-        if re.fullmatch(r"[A-Z][A-Z0-9]{0,6}-\d+", cells[0]):
-            ids.add(cells[0])
+        first_ids = _extract_finding_ids_from_text(cells[0])
+        if len(first_ids) == 1 and next(iter(first_ids)) == cells[0].upper():
+            ids.update(first_ids)
         for cell in cells[1:]:
             for m in _TABLE_SOURCE_ID_RE.finditer(cell):
-                ids.add(m.group(1))
+                ids.add(m.group(1).upper())
     blocks = len(_HEADING_FINDING_RE.findall(text)) + len(_TABLE_FINDING_ID_RE.findall(text))
     return ids, blocks
 
@@ -8999,6 +12465,14 @@ _FID_RANGE_RE = re.compile(
 _FID_BARE_RE = re.compile(r"\b([A-Z][A-Z0-9_]*)-(\d+)\b", re.IGNORECASE)
 
 
+def _is_context_free_core_prefix(prefix: str) -> bool:
+    """Return whether a numeric ``PREFIX-N`` is safe in ownerless prose."""
+
+    return prefix in _FID_ALLOWED_PREFIXES or bool(
+        re.fullmatch(r"B\d{1,4}", prefix, re.IGNORECASE)
+    )
+
+
 def _extract_finding_ids_from_text(text: str, range_cap: int = 10000) -> set[str]:
     """Extract canonical finding IDs from free-form text.
 
@@ -9014,6 +12488,12 @@ def _extract_finding_ids_from_text(text: str, range_cap: int = 10000) -> set[str
     # regex on pass 2 doesn't double-count the endpoints.
     for m in _FID_RANGE_RE.finditer(text):
         prefix = m.group(1).upper()
+        start_token = f"{prefix}-{m.group(2)}"
+        if (
+            not _is_context_free_core_prefix(prefix)
+            and _REGISTERED_FINDING_ID_FULL_RE.fullmatch(start_token) is None
+        ):
+            continue
         start = int(m.group(2))
         end = int(m.group(3))
         if end < start:
@@ -9028,7 +12508,13 @@ def _extract_finding_ids_from_text(text: str, range_cap: int = 10000) -> set[str
             ids.add(f"{prefix}-{i:0{width}d}")
         consumed_spans.append(m.span())
 
-    # Pass 2: bare IDs (skipping consumed range spans).
+    # Pass 2: every current producer-local or lineage identity comes from the
+    # typed registry grammar.  This captures structured non-numeric forms such
+    # as content-addressed lifecycle IDs as well as ordinary producer IDs.
+    for match in _REGISTERED_FINDING_ID_RE.finditer(text):
+        ids.add(match.group(1).upper())
+
+    # Pass 3: canonical/core bare IDs (skipping consumed range spans).
     for m in _FID_BARE_RE.finditer(text):
         s, e = m.span()
         if any(cs <= s and e <= ce for cs, ce in consumed_spans):
@@ -9039,7 +12525,7 @@ def _extract_finding_ids_from_text(text: str, range_cap: int = 10000) -> set[str
         # the prefix to be a typical finding-ID prefix or already seen
         # from a range. Conservative allow-list keeps us close to
         # existing behavior.
-        prefix_ok = prefix in _FID_ALLOWED_PREFIXES
+        prefix_ok = _is_context_free_core_prefix(prefix)
         if not prefix_ok:
             continue
         if prefix == "EIP" and len(m.group(2)) > 3:
@@ -9111,7 +12597,13 @@ def _path_in_subsystem_scope(rel_path: str, scope_prefix: str) -> bool:
     return rel == pfx or rel.startswith(pfx + "/")
 
 
-def _load_scope_file_paths(scope_file: str | None) -> set[str]:
+def _load_scope_file_paths(
+    scope_file: str | None,
+    *,
+    match_mode: str = "legacy",
+    pipeline: str = "sc",
+    language: str = "",
+) -> set[str]:
     """Parse the wizard's scope file into a set of file identifiers.
 
     Accepts any of the wizard's documented formats (mirrors the parser in
@@ -9133,15 +12625,42 @@ def _load_scope_file_paths(scope_file: str | None) -> set[str]:
     a 200-contract repo with a 5-file scope list still false-trips the
     gate for every uncited bucket.
     """
+    mode = normalize_scope_match_mode(match_mode)
     if not scope_file:
+        if mode == "exact":
+            raise ValueError("exact scope matching requires a scope_file")
         return set()
     try:
         if not os.path.isfile(scope_file):
+            if mode == "exact":
+                raise ValueError(
+                    f"exact scope_file is missing or not a file: {scope_file}"
+                )
             return set()
     except (OSError, TypeError):
+        if mode == "exact":
+            raise ValueError(f"exact scope_file is unreadable: {scope_file}")
         return set()
 
     names: set[str] = set()
+    if mode == "exact":
+        try:
+            text = Path(scope_file).read_text(
+                encoding="utf-8-sig",
+                errors="strict",
+            )
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(
+                f"exact scope_file is unreadable UTF-8: {scope_file}"
+            ) from exc
+        return set(
+            parse_exact_scope_text(
+                text,
+                pipeline=pipeline,
+                ecosystem=language,
+            )
+        )
+
     try:
         with open(scope_file, "r", encoding="utf-8", errors="ignore") as sf:
             for line in sf:
@@ -9162,11 +12681,34 @@ def _load_scope_file_paths(scope_file: str | None) -> set[str]:
     return names
 
 
-def _path_in_scope_file(rel_path: str, scope_names: set[str]) -> bool:
+def _path_in_scope_file(
+    rel_path: str,
+    scope_names: set[str],
+    *,
+    match_mode: str = "legacy",
+) -> bool:
     """Return True when `rel_path` (POSIX, repo-relative) matches a scope
     file entry. Empty `scope_names` means no scope file → match everything."""
+    mode = normalize_scope_match_mode(match_mode)
     if not scope_names:
         return True
+    if mode == "exact":
+        raw = str(rel_path)
+        if (
+            not raw
+            or "\\" in raw
+            or raw.startswith(("/", "./", "../", "~"))
+            or re.match(r"^[A-Za-z]:", raw)
+        ):
+            return False
+        parts = PurePosixPath(raw).parts
+        if (
+            not parts
+            or any(part in {"", ".", ".."} for part in parts)
+            or PurePosixPath(raw).as_posix() != raw
+        ):
+            return False
+        return raw in scope_names
     rel = rel_path.replace("\\", "/").lstrip("./").lower()
     if rel in scope_names:
         return True

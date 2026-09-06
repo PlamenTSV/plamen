@@ -18,6 +18,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -149,9 +151,10 @@ def test_derive_exec_mode_precedence(monkeypatch):
     assert _derive_claude_exec_mode({"claude_exec_mode": "pty"}) == "pty"
     # env used when config absent
     assert _derive_claude_exec_mode({}) == "headless"
-    # unknown value falls back to pty
+    # malformed explicit authority is never silently downgraded
     monkeypatch.setenv("PLAMEN_CLAUDE_EXEC_MODE", "nonsense")
-    assert _derive_claude_exec_mode({}) == "pty"
+    with pytest.raises(ValueError, match="invalid claude_exec_mode"):
+        _derive_claude_exec_mode({})
 
 
 # ---------------------------------------------------------------------------

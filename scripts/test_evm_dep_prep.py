@@ -88,6 +88,7 @@ def test_npm_ci_when_lockfile_and_node_modules_absent(tmp_path, monkeypatch):
 
 def test_pnpm_preferred_when_pnpm_lock(tmp_path, monkeypatch):
     rp = _rp()
+    monkeypatch.setattr(rp, "gate_supply_chain", lambda _root: None)
     root = tmp_path / "proj"
     _mk(root / "foundry.toml", "[profile.default]\n")
     _mk(root / "package.json", "{}")
@@ -120,6 +121,77 @@ def test_prepare_never_raises(tmp_path):
     rp = _rp()
     # non-existent root must not raise
     assert isinstance(rp._prepare_evm_build(tmp_path / "nope"), str)
+
+
+def test_snapshot_preparation_materializes_declared_deps_before_binding(
+    tmp_path, monkeypatch,
+):
+    rp = _rp()
+    root = tmp_path / "proj"
+    _mk(root / "foundry.toml", "[profile.default]\nsrc='src'\n")
+    _mk(root / "src" / "Vault.sol", "pragma solidity 0.8.21; contract Vault {}\n")
+    calls = []
+    monkeypatch.setattr(
+        rp,
+        "_prepare_evm_build",
+        lambda build_root: (calls.append(Path(build_root)) or "deps ready"),
+    )
+
+    receipt = rp.prepare_snapshot_bound_inputs(
+        {"project_root": str(root), "pipeline": "sc", "language": "evm"}
+    )
+
+    assert calls == [root.resolve()]
+    assert receipt["status"] == "PREPARED"
+    assert "deps ready" in receipt["reason"]
+
+
+def test_snapshot_preparation_does_not_swallow_supply_chain_abort(
+    tmp_path, monkeypatch,
+):
+    rp = _rp()
+    root = tmp_path / "proj"
+    _mk(root / "foundry.toml", "[profile.default]\n")
+    _mk(root / "src" / "Vault.sol", "pragma solidity 0.8.21; contract Vault {}\n")
+    monkeypatch.setattr(
+        rp,
+        "_prepare_evm_build",
+        lambda _root: (_ for _ in ()).throw(rp.SupplyChainAbortError("blocked")),
+    )
+
+    import pytest
+    with pytest.raises(rp.SupplyChainAbortError, match="blocked"):
+        rp.prepare_snapshot_bound_inputs(
+            {"project_root": str(root), "pipeline": "sc", "language": "evm"}
+        )
+
+
+def test_snapshot_build_root_resolution_is_read_only_for_parent_scope(tmp_path):
+    rp = _rp()
+    root = tmp_path / "repo"
+    scope = root / "contracts"
+    _mk(root / "foundry.toml", "[profile.default]\n")
+    _mk(scope / "Vault.sol", "pragma solidity 0.8.21; contract Vault {}\n")
+    config = {"project_root": str(scope), "pipeline": "sc", "language": "evm"}
+    before = sorted(path.relative_to(root) for path in root.rglob("*"))
+
+    resolved = rp.resolve_snapshot_build_root(config)
+
+    assert resolved == root.resolve()
+    assert config["_resolved_build_root"] == str(root.resolve())
+    assert sorted(path.relative_to(root) for path in root.rglob("*")) == before
+
+
+def test_snapshot_build_root_resolution_covers_l1_go_parent(tmp_path):
+    rp = _rp()
+    root = tmp_path / "node"
+    scope = root / "consensus"
+    _mk(root / "go.mod", "module example.invalid/node\n")
+    _mk(scope / "engine.go", "package consensus\n")
+    config = {"project_root": str(scope), "pipeline": "l1", "language": "go"}
+
+    assert rp.resolve_snapshot_build_root(config) == root.resolve()
+    assert config["_resolved_build_root"] == str(root.resolve())
 
 
 if __name__ == "__main__":

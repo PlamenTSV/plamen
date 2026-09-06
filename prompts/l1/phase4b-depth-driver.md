@@ -157,6 +157,13 @@ Use standard finding format from ~/.claude/rules/finding-output-format.md.
 Include Depth Evidence tags on every finding:
   [BOUNDARY:X=val], [VARIATION:param A->B], [TRACE:path->outcome], [LSP-TRACE]
 
+If `{SCRATCHPAD}/security_obligations.md` exists, emit the listed exact-alias
+receipt for every obligation you evaluate. For each `STATUS:R`, copy the
+complete generated `PLAMEN_SECURITY_OBLIGATION_EVIDENCE` marker into the
+referenced finding section, preserving the alias/relation/subject/object/symbol
+tuple in its original case. Normalized prose cannot bind an alias; an absent or
+changed marker leaves that exact row queueable.
+
 ## Chain Summary (MANDATORY at end of file)
 
 After all findings, write a Chain Summary table:

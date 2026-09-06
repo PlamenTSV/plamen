@@ -18,15 +18,22 @@ skill execution gaps, invariant fuzz results, Medusa fuzz findings, and the
 depth lifecycle markers. Record any extra context inside a depth-owned
 output and stop.
 
-If `{SCRATCHPAD}/security_obligations.md` exists, treat it as a compact
-driver-generated security-obligation checklist (generic vulnerability-class
+If `{SCRATCHPAD}/security_obligations.md` exists, treat it as the compact
+Markdown projection of the driver-owned typed security-obligation authority
+(generic vulnerability-class
 questions, e.g. "are asset-in/out/recipient/amount bound to trusted context
 before value moves?"). It is NOT an expected-finding list. For each obligation
 relevant to your assigned role, either produce a normal finding with file:line
 evidence where the obligation is violated, or record why the obligation is
 satisfied, unreachable, or irrelevant in this codebase. Answer the obligation
 question as asked — do not treat a nearby unrelated issue as coverage of a
-different obligation.
+different obligation. The `Exact Trigger Aliases` table is an enumerate-all
+denominator: every alias is separate application work even when aliases share
+one SO-ID. For `STATUS:R`, copy the complete generated marker
+`PLAMEN_SECURITY_OBLIGATION_EVIDENCE` for that alias into the referenced
+finding section. The marker binds the exact subject, object, relation, and
+symbol; normalized prose or identifier overlap is not application evidence.
+If the marker cannot be emitted exactly, the alias remains queueable.
 
 ## Light Mode Override
 
@@ -140,18 +147,74 @@ not emit it as a live finding block. Put that decision in a separate
 with the canonical severity cell set to `Informational` if a severity cell is
 required. The Python verifier treats disposition-as-severity as contract drift.
 
-### Committed-Invariant Emission (MANDATORY — value-bearing CLEAR/REFUTED)
+### Pre-Return Self-Exclusion Check (COPY INTO EVERY DEPTH WORKER PROMPT)
 
-Whenever you reach a `CLEAR`/REFUTED verdict for a value-bearing path (value
+Paste this block verbatim into every standard depth-agent prompt and every
+iteration-2/3 depth-worker prompt that may emit or exclude candidates. This is
+a pre-return recall check, not negative lifecycle authority.
+
+```
+## MANDATORY PRE-RETURN SELF-EXCLUSION CHECK
+
+Immediately before returning, re-open your assigned output file and examine
+EVERY candidate that you omitted from live findings or classified under
+`Non-Reportable`, `Absorbed`, `Duplicate`, `Already Known`, `Self-Excluded`, or
+equivalent wording. Compare each such candidate against the provided upstream
+exclusion source: the concrete finding IDs and `file:Lnnn` locations present in
+the supplied `findings_inventory.md`, `analysis_*.md`, or
+`analysis_rescan_*.md` inputs. Your belief that another worker probably covered
+the issue is not an exclusion source.
+
+For each candidate, apply all of these rules before submitting:
+
+1. Exclude or absorb it as already covered only when the entry cites a concrete
+   referent that actually appears in that provided exclusion source.
+2. A proposed in-scope refutation must cite the exact project-source
+   `file:Lnnn` guard or path that refutes the mechanism. An unverified external
+   assumption such as "atomic", "out of scope", "assume", "guaranteed by", or
+   "reverts on" is not a valid refutation or exclusion referent.
+3. If no valid provided referent or concrete in-scope refutation exists,
+   restore the candidate as a normal live finding for downstream verification;
+   never silently drop it as already known.
+4. If the exclusion is valid, keep it out of the live finding blocks and record
+   it under `## Non-Reportable / Absorbed Candidates` with the excluded
+   candidate's own location, mechanism, one-line harm, and the cited provided
+   referent inline. This preserves enough content to check the classification.
+
+The driver's post-return self-exclusion recovery remains defense in depth. Do
+not rely on that recovery to repair your output, and do not use this check to
+invent terminal `SAFE`/`REFUTED` authority.
+```
+
+### Negative-Proposal Boundary and Committed-Invariant Emission (MANDATORY)
+
+Depth workers are generators, not terminal negative authorities. Whenever you
+reach a proposed `CLEAR`/`REFUTED` conclusion, emit it as
+`REFUTATION_PROPOSAL` or `CONTESTED`, never as a terminal closure. The proposal
+must name its exact premise, guard locus, paths/variants checked, and evidence
+tags; an independent discriminator must bind premise to evidence before any
+terminal negative disposition.
+
+For every value-bearing negative proposal (value
 movement, supply/shares, accounting, authorization, or a funds/liveness-gating
 boundary), you MUST additionally emit a `committed-invariant [CI-n]` block naming
 the local guard that makes the path safe — this is the Code-Augur "commit the
 invariant behind every safe judgment" locus. Depth is the richest reservoir of
-concluded-safe verdicts, so it is now the PRIMARY CI emitter (the skeptic phases
-remain secondary). Emit the block as exactly ONE of the six generic SHAPES —
+code-derived negative proposals, so it is the PRIMARY CI emitter (the skeptic
+phases remain secondary). Emit the block as exactly ONE of the six generic SHAPES —
 `CONSERVATION`, `REQUESTED_EQ_DELIVERED`, `APPROVE_EQ_SPEND`,
 `NO_REVERT_AT_BOUNDARY`, `ROUNDTRIP`, `FRESHNESS` — with symbols resolved at the
 locus but no protocol constant baked as "the answer":
+
+Immediately inside the same negative-proposal section, bind the disposition to
+that block with exactly `Invariant Commitment: CI:<CI-id>`. The CI block's
+`Provenance` MUST repeat the exact candidate/finding ID. A non-value-bearing
+proposal may instead use the following exact one-line form (with a real reason):
+
+`Invariant Commitment: NOT_REQUIRED_NON_VALUE_BEARING: <specific reason>`
+Missing, duplicated, malformed, or cross-bound CI identities make the negative
+proposal fail closed and re-open as a candidate. One CI can never close
+multiple negative proposals.
 
 ```
 committed-invariant [CI-n]
@@ -159,12 +222,12 @@ Locus: <file>:L<nn>  (fn: <enclosing function>)
 Shape: <one of the six shapes>
 Assertion: <the falsifiable relation, symbols resolved>
 Falsify Class: <property | boundary | roundtrip | conservation>
-Provenance: depth CLEAR @ <candidate>
+Provenance: depth REFUTATION_PROPOSAL @ <candidate>
 ```
 
-This is MANDATORY for every value-bearing CLEAR/REFUTED verdict and strictly
+This is MANDATORY for every value-bearing negative proposal and strictly
 additive — it changes no verdict, severity, or prior finding. A non-value-bearing
-CLEAR (pure view, no funds/liveness/accounting/authorization stake) does not
+proposal (pure view, no funds/liveness/accounting/authorization stake) does not
 require a block. Emitted blocks are mechanically harvested downstream into
 falsifiable candidates for the fuzz/PoC gates. The six shapes are generic
 relational forms; NEVER encode a specific protocol/token/function as "the answer"
@@ -353,10 +416,17 @@ external):
 
 > **MANDATORY — Generic Security Obligations.** If
 > `{SCRATCHPAD}/security_obligations.md` exists, read it before finalizing your
-> output. It is a generic feature-derived obligation ledger, not a list of
+> output. It is a typed graph/recon feature-derived obligation projection, not a list of
 > expected findings. Address obligations relevant to your role and emit a
 > receipt for each one you directly evaluated:
-> `[OBLIG:security_obligations.md:<SO-ID>] STATUS:R|D|C KEY:<one-line> -> <finding_id|reason|phase>`.
+> `[OBLIG:security_obligations.md:<SO-ID>] ALIAS:<SOT-ID> STATUS:R|D|C KEY:<one-line> -> <finding_id|reason|phase>`.
+> Emit one receipt per evaluated alias when multiple aliases are listed; omit
+> `ALIAS:` only when the obligation has exactly one alias.
+> For every `STATUS:R` receipt, copy the complete generated marker
+> `PLAMEN_SECURITY_OBLIGATION_EVIDENCE` from that alias row into the
+> referenced finding section. Do not reconstruct it from memory or substitute
+> normalized prose. A missing, partial, or changed marker leaves the alias
+> unbound and it remains queueable for repair.
 > Use `R` only when you reported a finding, `D` only with concrete code
 > evidence for safety/refutation, and `C` only when a named later phase owns
 > the remaining work.
@@ -497,37 +567,33 @@ exact findings SHA-256.
 
 ---
 
-## Scoring (MANDATORY for Core/Thorough)
+## Transient Routing Proposal (MANDATORY for Core/Thorough)
 
-After iteration 1 agents return, the orchestrator MUST spawn the scoring agent and await `confidence_scores.md` before deciding whether to proceed to iteration 2. Skipping scoring to "move on" is a VIOLATION.
+After iteration-1 workers return, ask the lightweight helper defined in
+`~/.claude/prompts/shared/v2/phase4b-scoring.md` to return a compact routing
+table to this coordinator. The helper has no scratchpad write authority. The
+table is transient routing advice, not a verdict, proof, demotion, or clean
+conclusion.
 
-This is **initial Phase 4b confidence scoring** and is in scope for the depth
-phase. It is distinct from the later `final_scoring` phase. Do not run RAG or
-`final_scoring` here, but do produce `confidence_scores.md` before returning
-in Core/Thorough mode.
+MUST NOT create, update, or modify
+`{SCRATCHPAD}/confidence_scores.md`,
+`{SCRATCHPAD}/confidence_consensus_authority.json`, or
+`{SCRATCHPAD}/consensus_map.md`. The deterministic driver independently
+publishes those canonical artifacts after this depth wave returns. If the
+helper fails or its proposal is incomplete, treat every unresolved Medium+
+candidate as UNCERTAIN and allocate targeted depth rather than skipping it.
 
-Use the standalone scoring prompt:
-
-`~/.claude/prompts/shared/v2/phase4b-scoring.md`
-
-When writing `confidence_scores.md`, preserve original depth/scanner/niche
-finding IDs such as `DCI-3`, `DST-4`, `DX-2`, `DN-1`, `PERT-1`, `SLITHER-1`,
-`VS-1`, and `BLIND-1`. Do NOT collapse those rows into only mapped `INV-*`
-inventory IDs; downstream promotion and retry gates parse the original feeder
-IDs and the `Composite` column from this file.
-
-If no scoreable findings are present, still write `confidence_scores.md` with
-the header row and a short note: `No scoreable findings found after depth
-iteration 1.` An empty or missing scoring file fails the depth gate.
+Preserve original depth/scanner/niche IDs such as `DCI-3`, `DST-4`, `DX-2`,
+`DN-1`, `PERT-1`, `SLITHER-1`, `VS-1`, and `BLIND-1` in the transient table.
 
 ### Core Mode: 2-Axis Scoring
 ```
 composite = Evidence x 0.5 + Analysis_Quality x 0.5
 ```
 
-### Thorough Mode: 4-Axis Scoring
+### Thorough Mode: 3 Code-Evidence Axes
 ```
-composite = Evidence x 0.25 + Consensus x 0.25 + Analysis_Quality x 0.3 + RAG_Match x 0.2
+composite = Evidence x 0.25 + Consensus x 0.25 + Analysis_Quality x 0.3
 ```
 
 ### Classification Thresholds
@@ -536,7 +602,7 @@ composite = Evidence x 0.25 + Consensus x 0.25 + Analysis_Quality x 0.3 + RAG_Ma
 |----------------|---------------|--------|
 | >= 0.7 | **CONFIDENT** | No more depth needed for this finding |
 | 0.4-0.7 | **UNCERTAIN** | Spawn targeted depth agent for this finding's domain during the depth loop |
-| < 0.4 | **LOW CONFIDENCE** | Spawn a depth agent for more code evidence during the depth loop; record `RAG_NEEDED` and `VERIFICATION_NEEDED` notes inside depth-owned outputs only |
+| < 0.4 | **LOW CONFIDENCE** | Spawn a depth agent for more code evidence during the depth loop; record `VERIFICATION_NEEDED` inside depth-owned outputs only |
 
 ---
 
@@ -579,7 +645,8 @@ Classify score changes as:
 Only if still uncertain findings exist AND progress was made in iteration 2.
 
 After iteration 3:
-- Force remaining < 0.4 to CONTESTED verdict
+- Retain every unresolved candidate and route it to mandatory verification or
+  visible human-review debt; confidence telemetry cannot change its verdict
 - Write `adaptive_loop_log.md` with iteration count, spawns used, exit condition triggered
 
 ---
@@ -592,8 +659,8 @@ After iteration 3:
 | Dynamic spawn cap | `min(max(depth_floor, ceil(findings/5)+7), hard_cap)` |
 | Progress check | If NO finding's confidence improved in an iteration -> exit early |
 | Zero uncertain | If 0 findings score < 0.7 after any iteration -> exit loop |
-| Forced CONTESTED | After all iterations, any finding still < 0.4 -> forced CONTESTED |
-| Oscillation detection | >50% reversals -> force CONTESTED, exit |
+| Unresolved after cap | Retain candidate; mandatory verification or visible review debt |
+| Oscillation detection | >50% reversals -> retain unresolved candidates, record routing debt, exit |
 | Iteration 2 skip policy | May ONLY skip if all UNCERTAIN findings are Low/Info. Medium+ UNCERTAIN = MANDATORY iter 2. |
 
 ---

@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_public_generation.v1.schema.json",
+  "title": "Program Facts public generation manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "run_generation",
+    "generation_id",
+    "transaction_id",
+    "composition_authority_digest",
+    "logical_outputs",
+    "manifest_body_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_public_generation.v1"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "generation_id": {
+      "$ref": "#/$defs/generationId"
+    },
+    "transaction_id": {
+      "$ref": "#/$defs/transactionId"
+    },
+    "composition_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "logical_outputs": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/payloadOutput"
+        },
+        {
+          "$ref": "#/$defs/receiptOutput"
+        },
+        {
+          "$ref": "#/$defs/debtOutput"
+        }
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "manifest_body_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "generationId": {
+      "type": "string",
+      "pattern": "^pfg-[0-9a-f]{32}$"
+    },
+    "transactionId": {
+      "type": "string",
+      "pattern": "^pftx-[0-9a-f]{32}$"
+    },
+    "outputBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_identity",
+        "physical_relative_path",
+        "size",
+        "full_file_sha256"
+      ],
+      "properties": {
+        "logical_identity": {
+          "type": "string"
+        },
+        "physical_relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1073741824
+        },
+        "full_file_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "payloadOutput": {
+      "$ref": "#/$defs/outputBase",
+      "properties": {
+        "logical_identity": {
+          "const": "mechanical_program_facts.v2.json"
+        }
+      }
+    },
+    "receiptOutput": {
+      "$ref": "#/$defs/outputBase",
+      "properties": {
+        "logical_identity": {
+          "const": "mechanical_program_facts_receipt.v2.json"
+        }
+      }
+    },
+    "debtOutput": {
+      "$ref": "#/$defs/outputBase",
+      "properties": {
+        "logical_identity": {
+          "const": "mechanical_program_facts_debt.v2.json"
+        }
+      }
+    }
+  }
+}

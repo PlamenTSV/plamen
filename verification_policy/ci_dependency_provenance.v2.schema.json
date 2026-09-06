@@ -1,0 +1,362 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.dev/schemas/ci_dependency_provenance.v2.schema.json",
+  "title": "Plamen CI dependency provenance receipt v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "authority",
+    "checked_at",
+    "resolver",
+    "lock_authority",
+    "github_actions",
+    "matrix",
+    "release_metadata",
+    "advisory_review",
+    "clean_claim",
+    "locked_projects",
+    "universal_wheels",
+    "wheel_coverage"
+  ],
+  "properties": {
+    "schema": {
+      "const": "plamen.ci-dependency-provenance.v2"
+    },
+    "authority": {
+      "const": "generated-reviewed-point-in-time"
+    },
+    "checked_at": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "resolver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "python_implementation",
+        "python_version",
+        "index_url",
+        "command"
+      ],
+      "properties": {
+        "name": {
+          "const": "pip-tools"
+        },
+        "version": {
+          "const": "7.5.2"
+        },
+        "python_implementation": {
+          "const": "CPython"
+        },
+        "python_version": {
+          "const": "3.12"
+        },
+        "index_url": {
+          "const": "https://pypi.org/simple"
+        },
+        "command": {
+          "type": "array",
+          "minItems": 14,
+          "maxItems": 14,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "lock_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_sha256",
+        "output_path",
+        "output_sha256"
+      ],
+      "properties": {
+        "input_sha256": {
+          "type": "object",
+          "minProperties": 5,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256"
+          }
+        },
+        "output_path": {
+          "const": "requirements-ci.lock"
+        },
+        "output_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "github_actions": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "python",
+        "platform"
+      ],
+      "properties": {
+        "python": {
+          "const": [
+            "3.11",
+            "3.12"
+          ]
+        },
+        "platform": {
+          "const": [
+            "linux-x86_64",
+            "macos-arm64",
+            "macos-x86_64",
+            "windows-x86_64"
+          ]
+        }
+      }
+    },
+    "release_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "observed_at",
+        "evidence_path",
+        "evidence_sha256",
+        "response_set_sha256"
+      ],
+      "properties": {
+        "source": {
+          "const": "https://pypi.org/pypi/{name}/{version}/json"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "evidence_path": {
+          "const": "verification_policy/ci_release_metadata_evidence.v1.json"
+        },
+        "evidence_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "response_set_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "advisory_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "observed_at",
+        "evidence_path",
+        "evidence_sha256",
+        "response_sha256",
+        "query_count",
+        "result"
+      ],
+      "properties": {
+        "source": {
+          "const": "https://api.osv.dev/v1/querybatch"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "evidence_path": {
+          "const": "verification_policy/ci_advisory_evidence.v1.json"
+        },
+        "evidence_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "response_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "query_count": {
+          "const": 27
+        },
+        "result": {
+          "enum": [
+            "none-observed-at-check",
+            "advisories-observed"
+          ]
+        }
+      }
+    },
+    "clean_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "valid_after_checked_at",
+        "online_recheck_required",
+        "offline_ci_claim",
+        "offline_install_behavior"
+      ],
+      "properties": {
+        "valid_after_checked_at": {
+          "const": false
+        },
+        "online_recheck_required": {
+          "const": true
+        },
+        "offline_ci_claim": {
+          "const": "hash-identity-compatibility-only"
+        },
+        "offline_install_behavior": {
+          "const": "fail-loud-no-network-fallback"
+        }
+      }
+    },
+    "locked_projects": {
+      "type": "array",
+      "minItems": 27,
+      "maxItems": 27,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "$ref": "#/$defs/project"
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "universal_wheels": {
+      "type": "array",
+      "minItems": 23,
+      "maxItems": 23,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "wheel_coverage": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/target"
+      }
+    }
+  },
+  "$defs": {
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project",
+        "filename",
+        "sha256"
+      ],
+      "properties": {
+        "project": {
+          "$ref": "#/$defs/project"
+        },
+        "filename": {
+          "type": "string",
+          "pattern": "^[^/\\\\]+\\.whl$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "python",
+        "platform",
+        "artifacts"
+      ],
+      "properties": {
+        "python": {
+          "enum": [
+            "3.11",
+            "3.12"
+          ]
+        },
+        "platform": {
+          "enum": [
+            "linux-x86_64",
+            "macos-arm64",
+            "macos-x86_64",
+            "windows-x86_64"
+          ]
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/artifact"
+          }
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "commit_sha",
+        "source",
+        "observed_at"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "actions/checkout",
+            "actions/setup-python",
+            "actions/dependency-review-action"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^https://github\\.com/actions/[A-Za-z0-9_.-]+/releases/tag/v\\d+\\.\\d+\\.\\d+$"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/utcTimestamp"
+        }
+      }
+    }
+  }
+}

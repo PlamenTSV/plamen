@@ -32,6 +32,7 @@ from plamen_mechanical import (
     apply_llm_dedup_decisions,
     _stamp_dedup_group_note,
 )
+import semantic_dedup_authority as dedup_authority
 
 
 # ─── helpers ──────────────────────────────────────────────────────
@@ -138,6 +139,14 @@ def test_group_keeps_both_and_stamps_note(tmp_path=None):
     # representative is NOT stamped
     rep_block = out.split("### Finding [INV-5]")[1].split("### Finding")[0]
     assert "Dedup Group" not in rep_block
+    # GROUP annotations are part of the primary postimage.  They must be
+    # complete before the immutable receipt hashes that output.
+    assert dedup_authority.load_applied_aliases(
+        sp,
+        canonical_text=(
+            sp / "findings_inventory_deduped.md"
+        ).read_bytes().decode("utf-8", errors="strict"),
+    ) == {}
 
 
 def test_group_note_idempotent(tmp_path=None):
@@ -166,10 +175,12 @@ def test_keep_separate_noop_leaves_passthrough(tmp_path=None):
     )
     n = apply_llm_dedup_decisions(sp, "sc_semantic_dedup")
     assert n == 0
-    # No deduped artifact is built (the driver's pre-run passthrough remains).
-    # When the function is a no-op it must NOT create a partial file.
+    # P0-S writes an exact passthrough so the immutable no-delta receipt can
+    # bind the output identity set; it must never create a partial rewrite.
     deduped = sp / "findings_inventory_deduped.md"
-    assert not deduped.exists(), "no-op must not clobber/seed the deduped artifact"
+    assert deduped.read_text(encoding="utf-8") == (
+        sp / "findings_inventory.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_passthrough_status_noop(tmp_path=None):
@@ -180,7 +191,9 @@ def test_passthrough_status_noop(tmp_path=None):
     )
     n = apply_llm_dedup_decisions(sp, "sc_semantic_dedup")
     assert n == 0
-    assert not (sp / "findings_inventory_deduped.md").exists()
+    assert (sp / "findings_inventory_deduped.md").read_text(encoding="utf-8") == (
+        sp / "findings_inventory.md"
+    ).read_text(encoding="utf-8")
 
 
 # ─── Large inventory: no full read required ───────────────────────

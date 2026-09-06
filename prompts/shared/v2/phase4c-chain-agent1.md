@@ -29,6 +29,7 @@ Read:
 - `{SCRATCHPAD}/confidence_scores.md` (for prioritization)
 - `{SCRATCHPAD}/attack_surface.md` (for enabler enumeration)
 - `{SCRATCHPAD}/depth_*_findings.md` (for STEP 0-pre: scan for `[CROSS-DOMAIN-DEP]` tags)
+- `{SCRATCHPAD}/chain_enabler_baseline.md` (driver-owned, read-only STEP 0a baseline; never overwrite)
 - `{SCRATCHPAD}/dedup_absorbed_map.md` (OPTIONAL — driver-written record of semantic-dedup merges: each row is an `Absorbed ID -> Survivor ID` pair with the absorbed finding's distinct content. If present, every absorbed ID MUST be recorded as a Constituent Finding of the survivor's hypothesis row in `finding_mapping.md` and `hypotheses.md`, and the absorbed finding's distinct attack path / route / call-site / impact MUST be preserved in the survivor hypothesis description so the tier-writer Rule 10 path can couple both. Do NOT re-create the absorbed finding as its own standalone hypothesis — it is consolidated into the survivor with zero content loss.)
 
 For specific findings referenced in enabler enumeration, read the relevant source files directly.
@@ -48,17 +49,17 @@ overwrite them as you improve the analysis. Do not merely return a summary
 saying the files were written. Only return `DONE` after all three files exist
 on disk and contain the final content for this phase.
 
-> **Note**: `enabler_results.md` may already carry a richer
+> **Note**: `chain_enabler_baseline.md` may already carry a richer
 > `MECHANICAL_BASELINE_STEP0A` table (pre-extracted dangerous states) — see
-> BOUNDED MODE under PHASE 0. Preserve and build on that table; do not
-> discard it for an empty rewrite.
+> BOUNDED MODE under PHASE 0. Read and preserve that table when writing
+> `enabler_results.md`; never overwrite the baseline itself.
 
 ---
 
 ## PHASE 0: ENABLER ENUMERATION (Rule 12)
 
 > **BOUNDED MODE — read this first.** The driver pre-computes a mechanical
-> STEP 0a baseline in `{SCRATCHPAD}/enabler_results.md` (look for
+> STEP 0a baseline in `{SCRATCHPAD}/chain_enabler_baseline.md` (look for
 > `**Status**: MECHANICAL_BASELINE_STEP0A`). When that baseline is present:
 > - **STEP 0a is already done.** Take its dangerous-state table as the
 >   complete, finite set. Do NOT re-scan the inventory to extract dangerous
@@ -67,7 +68,7 @@ on disk and contain the final content for this phase.
 > - Your PHASE 0 job is **STEP 0b + STEP 0c only**, over that fixed list.
 > - You MAY add a dangerous state the mechanical pass genuinely missed, but
 >   do not regenerate the table from scratch.
-> If `enabler_results.md` is absent or contains only the older
+> If `chain_enabler_baseline.md` is absent or contains only the older
 > `MECHANICAL_BASELINE` stub (no STEP 0a table), fall back to generating
 > STEP 0a yourself per the step below.
 

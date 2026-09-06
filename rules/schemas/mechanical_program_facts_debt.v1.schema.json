@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/mechanical_program_facts_debt.v1.schema.json",
+  "title": "Plamen mechanical Program Facts debt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "snapshot_digest",
+    "source_manifest_digest",
+    "authority",
+    "debts",
+    "summary",
+    "debt_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "plamen.mechanical_program_facts_debt.v1"},
+    "snapshot_digest": {"$ref": "#/$defs/hex64"},
+    "source_manifest_digest": {"$ref": "#/$defs/hex64"},
+    "authority": {"const": "MANDATORY_REVIEW_NO_NEGATIVE_INFERENCE"},
+    "debts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/debt"}
+    },
+    "summary": {"$ref": "#/$defs/summary"},
+    "debt_sha256": {"$ref": "#/$defs/hex64"}
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sha256_ref": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "pfs_id": {"type": "string", "pattern": "^PFS-[0-9a-f]{24}$"},
+    "pfb_id": {"type": "string", "pattern": "^PFB-[0-9a-f]{24}$"},
+    "pfd_id": {"type": "string", "pattern": "^PFD-[0-9a-f]{24}$"},
+    "capability_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+    },
+    "reason": {
+      "enum": [
+        "PROVIDER_UNAVAILABLE",
+        "PROVIDER_UNSUPPORTED_ECOSYSTEM",
+        "PROVIDER_IDENTITY_UNBOUND",
+        "PROVIDER_VERSION_DRIFT",
+        "EXECUTABLE_DIGEST_DRIFT",
+        "PARSER_DIGEST_DRIFT",
+        "BUILD_CONFIGURATION_UNRESOLVED",
+        "BUILD_FAILED",
+        "BUILD_PARTIAL",
+        "DEPENDENCY_CLOSURE_UNRESOLVED",
+        "GENERATED_SOURCE_UNBOUND",
+        "SOURCE_EXCLUDED",
+        "SOURCE_CHANGED_DURING_RUN",
+        "SOURCE_CASE_COLLISION",
+        "SOURCE_ESCAPE_REJECTED",
+        "UNSUPPORTED_CONSTRUCT",
+        "UNRESOLVED_DYNAMIC_CALL",
+        "UNRESOLVED_PROXY_DISPATCH",
+        "UNRESOLVED_ASSEMBLY",
+        "ANALYSIS_TIMEOUT",
+        "OUTPUT_TRUNCATED",
+        "RESOURCE_LIMIT",
+        "RAW_OUTPUT_MALFORMED",
+        "DANGLING_REFERENCE",
+        "DUPLICATE_ID_CONFLICT",
+        "PROVIDER_DISAGREEMENT",
+        "CAPABILITY_PARTIAL",
+        "OS_PROCESS_SCOPE_UNPROVEN",
+        "WORKER_TRANSACTION_INCOMPLETE",
+        "PHASE_IO_INCORPORATION_FAILED",
+        "STALE_SNAPSHOT",
+        "UNSUPPORTED_HOST_SEMANTICS",
+        "LICENSE_OR_DISTRIBUTION_RESTRICTED"
+      ]
+    },
+    "debt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "debt_id",
+        "reason",
+        "scope_ids",
+        "provider_id",
+        "capability_id",
+        "build_variant_id",
+        "explanation",
+        "evidence_refs",
+        "retryable",
+        "blocks_reuse",
+        "terminal_negative_authority"
+      ],
+      "properties": {
+        "debt_id": {"$ref": "#/$defs/pfd_id"},
+        "reason": {"$ref": "#/$defs/reason"},
+        "scope_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "provider_id": {
+          "oneOf": [{"const": ""}, {"$ref": "#/$defs/capability_id"}]
+        },
+        "capability_id": {
+          "oneOf": [{"const": ""}, {"$ref": "#/$defs/capability_id"}]
+        },
+        "build_variant_id": {
+          "oneOf": [{"const": ""}, {"$ref": "#/$defs/pfb_id"}]
+        },
+        "explanation": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/sha256_ref"},
+          "uniqueItems": true
+        },
+        "retryable": {"type": "boolean"},
+        "blocks_reuse": {"type": "boolean"},
+        "terminal_negative_authority": {"const": false}
+      }
+    },
+    "reason_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "PROVIDER_UNAVAILABLE": {"type": "integer", "minimum": 0},
+        "PROVIDER_UNSUPPORTED_ECOSYSTEM": {"type": "integer", "minimum": 0},
+        "PROVIDER_IDENTITY_UNBOUND": {"type": "integer", "minimum": 0},
+        "PROVIDER_VERSION_DRIFT": {"type": "integer", "minimum": 0},
+        "EXECUTABLE_DIGEST_DRIFT": {"type": "integer", "minimum": 0},
+        "PARSER_DIGEST_DRIFT": {"type": "integer", "minimum": 0},
+        "BUILD_CONFIGURATION_UNRESOLVED": {"type": "integer", "minimum": 0},
+        "BUILD_FAILED": {"type": "integer", "minimum": 0},
+        "BUILD_PARTIAL": {"type": "integer", "minimum": 0},
+        "DEPENDENCY_CLOSURE_UNRESOLVED": {"type": "integer", "minimum": 0},
+        "GENERATED_SOURCE_UNBOUND": {"type": "integer", "minimum": 0},
+        "SOURCE_EXCLUDED": {"type": "integer", "minimum": 0},
+        "SOURCE_CHANGED_DURING_RUN": {"type": "integer", "minimum": 0},
+        "SOURCE_CASE_COLLISION": {"type": "integer", "minimum": 0},
+        "SOURCE_ESCAPE_REJECTED": {"type": "integer", "minimum": 0},
+        "UNSUPPORTED_CONSTRUCT": {"type": "integer", "minimum": 0},
+        "UNRESOLVED_DYNAMIC_CALL": {"type": "integer", "minimum": 0},
+        "UNRESOLVED_PROXY_DISPATCH": {"type": "integer", "minimum": 0},
+        "UNRESOLVED_ASSEMBLY": {"type": "integer", "minimum": 0},
+        "ANALYSIS_TIMEOUT": {"type": "integer", "minimum": 0},
+        "OUTPUT_TRUNCATED": {"type": "integer", "minimum": 0},
+        "RESOURCE_LIMIT": {"type": "integer", "minimum": 0},
+        "RAW_OUTPUT_MALFORMED": {"type": "integer", "minimum": 0},
+        "DANGLING_REFERENCE": {"type": "integer", "minimum": 0},
+        "DUPLICATE_ID_CONFLICT": {"type": "integer", "minimum": 0},
+        "PROVIDER_DISAGREEMENT": {"type": "integer", "minimum": 0},
+        "CAPABILITY_PARTIAL": {"type": "integer", "minimum": 0},
+        "OS_PROCESS_SCOPE_UNPROVEN": {"type": "integer", "minimum": 0},
+        "WORKER_TRANSACTION_INCOMPLETE": {"type": "integer", "minimum": 0},
+        "PHASE_IO_INCORPORATION_FAILED": {"type": "integer", "minimum": 0},
+        "STALE_SNAPSHOT": {"type": "integer", "minimum": 0},
+        "UNSUPPORTED_HOST_SEMANTICS": {"type": "integer", "minimum": 0},
+        "LICENSE_OR_DISTRIBUTION_RESTRICTED": {"type": "integer", "minimum": 0}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by_reason",
+        "affected_capabilities",
+        "affected_source_file_ids",
+        "has_blocking_reuse_debt"
+      ],
+      "properties": {
+        "by_reason": {"$ref": "#/$defs/reason_counts"},
+        "affected_capabilities": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/capability_id"},
+          "uniqueItems": true
+        },
+        "affected_source_file_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pfs_id"},
+          "uniqueItems": true
+        },
+        "has_blocking_reuse_debt": {"type": "boolean"}
+      }
+    }
+  }
+}

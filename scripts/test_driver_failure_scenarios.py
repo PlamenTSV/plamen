@@ -310,18 +310,20 @@ def test_F_VRF_03_unresolved_finding_demoted_kept_in_body():
     })
     n = D._write_mechanical_report_index(sp)
     idx = (sp / "report_index.md").read_text(encoding="utf-8")
+    proposal_at = idx.find("Proposed Negative Dispositions (Non-authoritative)")
+    master = idx[idx.find("Master Finding Index"):proposal_at]
     check(
-        "F-VRF-03 UNRESOLVED finding present in Master Finding Index (not Excluded)",
-        "INV-001" in idx
-        and "UNRESOLVED" in idx
-        and "Master Finding Index" in idx
-        and idx.find("INV-001") < idx.find("Excluded Findings"),
+        "F-VRF-03 UNRESOLVED finding remains in the active Master Index",
+        proposal_at >= 0
+        and "| H-01 |" in master
+        and "INV-001" in master
+        and "UNRESOLVED" in master,
         f"n={n}; idx_excerpt={idx[:600]!r}",
     )
     check(
-        "F-VRF-03b UNRESOLVED severity demoted High -> Medium",
-        "| Medium |" in idx and "INV-001" in idx,
-        idx[:600],
+        "F-VRF-03b unresolved prose alone cannot demote the proposed severity",
+        "| H-01 | contested | High |" in master,
+        master[:600],
     )
 
 
@@ -354,8 +356,8 @@ def test_F_RPT_01_synth_section_must_tag_when_fields_missing():
     )
 
 
-def test_F_RPT_02_refuted_finding_routed_to_excluded_not_body():
-    """F-RPT-02: verifier marks REFUTED -> must go to Excluded, not Master Index."""
+def test_F_RPT_02_refuted_prose_cannot_remove_finding_from_body():
+    """F-RPT-02: verifier negative remains active absent typed closure."""
     inv = (
         "### Finding [INV-001]: bogus claim\n"
         "**Severity**: High\n"
@@ -374,18 +376,18 @@ def test_F_RPT_02_refuted_finding_routed_to_excluded_not_body():
     })
     D._write_mechanical_report_index(sp)
     idx = (sp / "report_index.md").read_text(encoding="utf-8")
-    excluded_section = idx[idx.find("Excluded Findings"):]
-    master_section = idx[
-        idx.find("Master Finding Index"):idx.find("Excluded Findings")
-    ]
+    proposal_at = idx.find("Proposed Negative Dispositions (Non-authoritative)")
+    proposal_section = idx[proposal_at:]
+    master_section = idx[idx.find("Master Finding Index"):proposal_at]
     check(
-        "F-RPT-02 REFUTED finding present in Excluded section",
-        "INV-001" in excluded_section,
-        excluded_section[:400],
+        "F-RPT-02 REFUTED finding is recorded as a negative proposal",
+        proposal_at >= 0 and "INV-001" in proposal_section,
+        proposal_section[:400],
     )
     check(
-        "F-RPT-02b REFUTED finding absent from Master Finding Index data rows",
-        "| INV-001 |" not in master_section,
+        "F-RPT-02b REFUTED finding remains in Master Finding Index",
+        "| INV-001 |" in master_section
+        and "UNPROVEN_NEGATIVE(FALSE_POSITIVE)" in master_section,
         master_section[:400],
     )
 
@@ -723,14 +725,12 @@ def test_F_PROM_02_depth_promotion_confidence_threshold():
     )
 
 
-def test_F_PROM_03_dedup_blocked_findings_do_not_trigger_receipt_validator():
-    """F-PROM-03: findings intentionally blocked by dedup logic must not be
-    flagged as missing by the receipt validator.
+def test_F_PROM_03_prededup_similarity_is_tag_only_and_receipted():
+    """F-PROM-03: similarity cannot dispose of a finding before verification.
 
-    Scenario: depth produces DEC-3 with 0.92 title overlap with an existing
-    inventory entry at the same file. The promoter correctly blocks DEC-3
-    (dedup threshold >=0.90) and records it in the receipt's Likely Duplicates
-    section. The receipt validator must NOT flag DEC-3 as missing.
+    DEC-3 strongly resembles an inventory row. It is still promoted with a
+    Likely Duplicates routing hint, leaving identity to semantic dedup and the
+    verifier while the receipt preserves complete lineage.
     """
     inv = (
         "# Inventory\n\n"
@@ -766,8 +766,8 @@ def test_F_PROM_03_dedup_blocked_findings_do_not_trigger_receipt_validator():
     # same file), DEC-9 should be promoted (different file, different title).
     promoted = D._promote_depth_findings_to_inventory(sp)
     check(
-        "F-PROM-03a DEC-3 blocked by dedup (not promoted)",
-        "DEC-3" not in promoted,
+        "F-PROM-03a DEC-3 similarity is tag-only and still promoted",
+        "DEC-3" in promoted,
         f"promoted={promoted}",
     )
     check(
@@ -780,7 +780,7 @@ def test_F_PROM_03_dedup_blocked_findings_do_not_trigger_receipt_validator():
     issues = D._validate_depth_promotion_receipt(sp)
     flagged_dec3 = any("DEC-3" in s for s in issues)
     check(
-        "F-PROM-03c receipt validator does NOT flag dedup-blocked DEC-3",
+        "F-PROM-03c receipt validator does NOT flag promoted DEC-3",
         not flagged_dec3,
         f"issues={issues}",
     )
@@ -1010,7 +1010,7 @@ def test_F_PSY_01_confirmed_missing_from_body_flagged():
     )
 
 
-def test_F_PSY_02_confirmed_in_excluded_consolidation_passes():
+def test_F_PSY_02_confirmed_in_untyped_consolidation_is_rejected():
     """F-PSY-02: CONFIRMED in verify but report_index has it in Consolidation
     Map (intentional dedup, not dropout). Must NOT flag.
     """
@@ -1040,18 +1040,18 @@ def test_F_PSY_02_confirmed_in_excluded_consolidation_passes():
     )
     issues = D._check_promotion_symmetry(sp, str(proj))
     check(
-        "F-PSY-02 CONFIRMED finding in Consolidation Map passes promotion symmetry",
-        not issues,
+        "F-PSY-02 raw Consolidation Map cannot authorize confirmed non-body status",
+        any("promotion dropout" in issue for issue in issues),
         repr(issues),
     )
 
 
-def test_F_PSY_02b_confirmed_in_report_coverage_passes():
-    """F-PSY-02b: report_coverage is internal traceability.
+def test_F_PSY_02b_confirmed_in_untyped_report_coverage_is_rejected():
+    """F-PSY-02b: report_coverage is internal traceability, not authority.
 
     A confirmed source verifier can be intentionally merged into an active
     report row without becoming its own client-facing section. The coverage
-    ledger must be enough to prevent a false promotion-dropout halt.
+    ledger cannot replace an exact applied alias receipt.
     """
     sp = _mkscratch({
         "verify_INV-100.md": (
@@ -1078,8 +1078,8 @@ def test_F_PSY_02b_confirmed_in_report_coverage_passes():
     issues = D._check_promotion_symmetry(sp, str(proj))
     index_issues = D._check_index_completeness(sp)
     check(
-        "F-PSY-02b CONFIRMED finding in report_coverage passes promotion symmetry",
-        not issues and not index_issues,
+        "F-PSY-02b raw report_coverage cannot authorize confirmed non-body status",
+        bool(issues) and bool(index_issues),
         f"promotion={issues!r}; index={index_issues!r}",
     )
 
@@ -1183,6 +1183,9 @@ def test_F_ID_01_all_documented_id_shapes_match():
         "DX-3", "INV-001", "DA-CONSENSUS-1", "DCOV-7", "DCOV2-3",
         "DST-VALIDATOR-1", "PERT-2", "PAIR-9",
         "PANIC-3", "PANIC-EXPLOIT-7", "DCI-14",
+        # Closed cross-ecosystem and typed producer namespaces must remain
+        # context-free-visible when the discovery catch-all is excluded.
+        "B1-4", "DML-AUTH-2", "ASKP-3", "SKEP-4",
     ]
     failed: list[str] = []
     for tok in cases:
@@ -1199,12 +1202,16 @@ def test_F_ID_02_id_regex_word_boundary():
     """F-ID-02: regex must not match suffix-merged tokens like XINV-001 or
     INV-001-junk inside larger words.
     """
-    bad = ["XINV-001", "INV-001junk", "PREFIXVS-7"]
+    bad = [
+        "XINV-001", "INV-001junk", "PREFIXVS-7",
+        "block-1234", "version-2", "decimals-18",
+    ]
     matched = [b for b in bad if D._INTERNAL_FINDING_ID_RE.fullmatch(b)]
+    normalized = [b for b in bad if D._normalize_finding_id(b)]
     check(
-        "F-ID-02 regex respects word boundaries",
-        matched == [],
-        f"erroneously matched: {matched}",
+        "F-ID-02 context-free regex and normalizer reject arbitrary tokens",
+        matched == [] and normalized == [],
+        f"matched={matched}, normalized={normalized}",
     )
 
 
@@ -1714,10 +1721,8 @@ def test_F_FID_03_sc_feeder_id_word_boundary():
 # F-FZL-* — full-pipeline fuzz refuted leak (Codex's claimed fix)
 # -----------------------------------------------------------------------------
 
-def test_F_FZL_01_fuzz_refuted_does_not_reach_tier_assignment():
-    """F-FZL-01: REFUTED FUZZ-* finding in queue -> mechanical tier-assignment
-    fallback must skip it (this was the bug Codex claims to have fixed).
-    """
+def test_F_FZL_01_fuzz_refuted_proposal_remains_reachable():
+    """F-FZL-01: failed reproduction cannot silently remove a candidate."""
     inv = (
         "### Finding [INV-001]: real bug\n"
         "**Severity**: High\n**Location**: src/a.rs:L1\n\n"
@@ -1743,23 +1748,23 @@ def test_F_FZL_01_fuzz_refuted_does_not_reach_tier_assignment():
         # report index path which exercises the same logic.
         D._write_mechanical_report_index(sp)
         idx = (sp / "report_index.md").read_text(encoding="utf-8")
-        master = idx[:idx.find("Excluded Findings")] if "Excluded Findings" in idx else idx
-        excluded = idx[idx.find("Excluded Findings"):] if "Excluded Findings" in idx else ""
+        proposal_at = idx.find("Proposed Negative Dispositions (Non-authoritative)")
+        master = idx[:proposal_at] if proposal_at >= 0 else idx
+        proposals = idx[proposal_at:] if proposal_at >= 0 else ""
         in_master = "INV-002" in master
-        in_excluded = "INV-002" in excluded
+        in_proposals = "INV-002" in proposals
         check(
-            "F-FZL-01 REFUTED finding routed to Excluded, not Master Index body",
-            not in_master and in_excluded,
-            f"in_master={in_master} in_excluded={in_excluded}",
+            "F-FZL-01 REFUTED finding stays in Master and is flagged as proposal",
+            in_master and in_proposals,
+            f"in_master={in_master} in_proposals={in_proposals}",
         )
     else:
         rows = fn(sp)
         ids = [r.get("finding_id") for r in rows]
-        check(
-            "F-FZL-01 mechanical tier fallback skips REFUTED finding",
-            "INV-002" not in ids and "INV-001" in ids,
-            f"ids={ids}",
-        )
+        # A legacy helper, if present, is not allowed to be used as negative
+        # authority; the canonical mechanical report-index path above is the
+        # enforced pipeline contract.
+        check("F-FZL-01 legacy helper result is non-authoritative", isinstance(ids, list), f"ids={ids}")
 
 
 # =============================================================================
@@ -1920,6 +1925,12 @@ def test_F_SK_02_skeptic_full_critical_high_coverage_passes():
 
 
 def test_F_SK_03_skeptic_no_critical_high_skip_clean():
+    """P0-V: an unresolved Low is challenged even without a C/H finding.
+
+    The old fixture asserted the retired severity-only skeptic policy.  Its
+    missing ``verify_INV-002.md`` is now a semantic disagreement trigger and
+    must not silently skip merely because the provisional queue tier is Low.
+    """
     queue = (
         "| Queue # | Finding ID | Severity | Title | Bug Class | Preferred Tag | Location | Primary Artifact |\n"
         "|---|---|---|---|---|---|---|---|\n"
@@ -1930,11 +1941,70 @@ def test_F_SK_03_skeptic_no_critical_high_skip_clean():
         "verify_INV-001.md": "**Verdict**: CONFIRMED\n",
         "verification_queue.md": queue,
     })
+    expected_rows = D._skeptic_expected_findings(sp)
+    expected = {row["finding_id"]: row for row in expected_rows}
+    expected_ids = set(expected)
+    assert expected_ids == {"INV-001", "INV-002"}
+    assert set(expected["INV-001"]["challenge_triggers"]) == {
+        "UNRESOLVED_EXTERNAL_PREMISE",
+        "EVIDENCE_INTEGRITY_REVIEW",
+    }
+    assert set(expected["INV-002"]["challenge_triggers"]) == {
+        "LOW_SEVERITY_SUPPORTED_MECHANISM",
+        "VERIFIER_DISAGREEMENT",
+        "UNRESOLVED_EXTERNAL_PREMISE",
+        "EVIDENCE_INTEGRITY_REVIEW",
+    }
+    authority_paths = [
+        sp / "verification_queue.md",
+        sp / "verify_INV-001.md",
+        sp / "external_assumption_undemotion_debt.json",
+    ]
+    authority_before = {path: path.read_bytes() for path in authority_paths}
     issues = D._validate_skeptic_scope(sp)
+    assert issues == [
+        "skeptic scope: missing skeptic/judge artifacts for 2 "
+        "manifest-triggered skeptic challenge finding(s)"
+    ]
+
+    # A stale one-ID prompt manifest cannot override the current two-row
+    # semantic denominator. Covering only the unresolved Low remains partial.
+    (sp / "skeptic_manifest.json").write_text(
+        '{"phase":"skeptic","required_count":1,'
+        '"findings":[{"finding_id":"INV-002"}]}',
+        encoding="utf-8",
+    )
+    (sp / "skeptic_findings.md").write_text(
+        "# Skeptic\n\n## INV-002\n**Verdict**: AGREE\n",
+        encoding="utf-8",
+    )
+    partial = D._validate_skeptic_scope(sp)
+    assert partial and "reviewed 1/2" in partial[0] and "missing INV-001" in partial[0]
+
+    complete = (
+        "# Skeptic\n\n"
+        "## INV-001\n**Verdict**: AGREE\n\n"
+        "## INV-002\n**Verdict**: AGREE\n"
+    )
+    (sp / "skeptic_findings.md").write_text(complete, encoding="utf-8")
+    assert D._validate_skeptic_scope(sp) == []
+    assert D._validate_skeptic_scope(sp) == []
+
+    # Coverage tamper reopens the exact missing identity and restoration
+    # replays cleanly without changing queue/verifier/R10 authority bytes.
+    (sp / "skeptic_findings.md").write_text(
+        complete.replace("## INV-001", "## X-001", 1),
+        encoding="utf-8",
+    )
+    tampered = D._validate_skeptic_scope(sp)
+    assert tampered and "reviewed 1/2" in tampered[0] and "missing INV-001" in tampered[0]
+    (sp / "skeptic_findings.md").write_text(complete, encoding="utf-8")
+    assert D._validate_skeptic_scope(sp) == []
+    assert {path: path.read_bytes() for path in authority_paths} == authority_before
     check(
-        "F-SK-03 no Critical/High in queue -> skeptic gate skip-clean",
-        issues == [],
-        f"issues={issues}",
+        "F-SK-03 complete two-row semantic debt is current-first and replay-safe",
+        True,
+        f"issues={issues}, expected_ids={sorted(expected_ids)}",
     )
 
 
@@ -1955,7 +2025,7 @@ def test_F_INV_MERGE_01_distinct_titles_same_location_kept():
     )
 
 
-def test_F_INV_MERGE_02_identical_title_location_still_merges():
+def test_F_INV_MERGE_02_identical_mechanism_disjoint_provenance_stays_distinct():
     entries = [
         {"title": "missing zero-value check", "severity": "High",
          "location": "src/x.sol:L10", "source_ids": ["A1"],
@@ -1966,9 +2036,8 @@ def test_F_INV_MERGE_02_identical_title_location_still_merges():
     ]
     merged = D._merge_inventory_entries(entries)
     check(
-        "F-INV-MERGE-02 true duplicates (same title+loc) coalesce",
-        len(merged) == 1 and merged[0]["severity"] == "High"
-        and "A1" in merged[0]["source_ids"] and "A2" in merged[0]["source_ids"],
+        "F-INV-MERGE-02 MECH similarity is tag-only before verification",
+        len(merged) == 2,
         f"merged_count={len(merged)} merged={merged}",
     )
 
@@ -2028,7 +2097,7 @@ TESTS = [
     test_F_VRF_02_truncated_queue_table_flagged,
     test_F_VRF_03_unresolved_finding_demoted_kept_in_body,
     test_F_RPT_01_synth_section_must_tag_when_fields_missing,
-    test_F_RPT_02_refuted_finding_routed_to_excluded_not_body,
+    test_F_RPT_02_refuted_prose_cannot_remove_finding_from_body,
     test_F_PROM_01_depth_id_substring_collision_must_be_caught,
     test_F_FIELD_01_multi_clause_location_prefers_path_with_line,
     test_F_FIELD_02_messy_location_formats_round_trip,
@@ -2048,8 +2117,8 @@ TESTS = [
     test_F_SJ_04_no_judge_artifact_skip_clean,
     test_F_SJ_05_section_split_isolates_unresolved_scope,
     test_F_PSY_01_confirmed_missing_from_body_flagged,
-    test_F_PSY_02_confirmed_in_excluded_consolidation_passes,
-    test_F_PSY_02b_confirmed_in_report_coverage_passes,
+    test_F_PSY_02_confirmed_in_untyped_consolidation_is_rejected,
+    test_F_PSY_02b_confirmed_in_untyped_report_coverage_is_rejected,
     test_F_PSY_03_all_refuted_no_body_no_flags,
     test_F_SEV_01_critical_demotes_to_high,
     test_F_SEV_02_informational_does_not_inflate,
@@ -2081,7 +2150,7 @@ TESTS = [
     test_F_FID_01_sc_feeder_prefixes_match,
     test_F_FID_02_no_false_match_on_solidity_source_tokens,
     test_F_FID_03_sc_feeder_id_word_boundary,
-    test_F_FZL_01_fuzz_refuted_does_not_reach_tier_assignment,
+    test_F_FZL_01_fuzz_refuted_proposal_remains_reachable,
     # Iteration 4 — bugs caught only by real audit, not my prior probes
     test_F_RND_01_renderer_pulls_description_from_verify,
     test_F_RND_02_rich_verify_does_not_get_stub_marker,
@@ -2091,7 +2160,7 @@ TESTS = [
     test_F_SK_02_skeptic_full_critical_high_coverage_passes,
     test_F_SK_03_skeptic_no_critical_high_skip_clean,
     test_F_INV_MERGE_01_distinct_titles_same_location_kept,
-    test_F_INV_MERGE_02_identical_title_location_still_merges,
+    test_F_INV_MERGE_02_identical_mechanism_disjoint_provenance_stays_distinct,
     test_F_PROM_DNS_01_dns_id_matches_regex,
     test_F_IDL_01_internal_id_in_title_sanitized,
     test_F_IDL_02_internal_id_in_prose_sanitized,

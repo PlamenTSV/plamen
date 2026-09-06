@@ -17,6 +17,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -204,6 +206,127 @@ def test_rescan_worker_pool_declines_invalid_manifest_shape(tmp_path):
     assert D._should_use_rescan_worker_pool({"cli_backend": "claude"}, sp) is False
 
 
+def test_rescan_retry_prompt_binds_retry_work_unit_identity(tmp_path):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    job = {
+        "agent_id": "R1",
+        "focus_area": "generic fixture scope",
+        "output": "analysis_rescan_1.md",
+        "methodology_steps": ["STEP-1"],
+    }
+    prompt = D._build_rescan_worker_prompt(
+        job=job,
+        scratchpad=sp,
+        project_root=str(tmp_path),
+        config={
+            "pipeline": "sc",
+            "mode": "thorough",
+            "language": "evm",
+            "cli_backend": "codex",
+        },
+        attempt=2,
+    )
+
+    assert "/rescan/worker.r1.attempt-0002" in prompt
+    assert "/rescan/worker.r1\"" not in prompt
+    assert "MUST use `[RS1-<N>]`" in prompt
+
+
+def test_per_contract_worker_uses_registered_pc_identity_namespace(tmp_path):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    (sp / "rescan_manifest.md").write_text(
+        "# Rescan Manifest\n\n## Per-Contract Agents\n\n"
+        "| Output |\n|---|\n| analysis_percontract_Vault.md |\n",
+        encoding="utf-8",
+    )
+    job = {
+        "agent_id": "PC4",
+        "focus_area": "generic contract fixture",
+        "output": "analysis_percontract_Vault.md",
+        "category": "per_contract",
+        "methodology_steps": ["RS-PC"],
+    }
+    prompt = D._build_rescan_worker_prompt(
+        job=job,
+        scratchpad=sp,
+        project_root=str(tmp_path),
+        config={
+            "pipeline": "sc",
+            "mode": "thorough",
+            "language": "evm",
+            "cli_backend": "codex",
+        },
+        attempt=1,
+    )
+
+    assert "MUST use `[PC4-<N>]`" in prompt
+
+
+@pytest.mark.parametrize(
+    ("backend", "worker_name"),
+    (
+        ("codex", "_run_one_codex_exec"),
+        ("claude-headless", "_run_one_claude_headless_breadth_worker"),
+    ),
+)
+def test_headless_rescan_fanout_executes_every_manifest_row_transactionally(
+    tmp_path,
+    monkeypatch,
+    backend,
+    worker_name,
+):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    declared = [
+        "analysis_rescan_1.md",
+        "analysis_percontract_core.md",
+    ]
+    _manifest(sp, declared)
+    calls = []
+
+    monkeypatch.setattr(
+        D, "_prepare_typed_model_worker_launch", lambda **_kwargs: []
+    )
+    monkeypatch.setattr(
+        D, "_record_typed_model_worker_artifact", lambda **_kwargs: []
+    )
+
+    def worker(**kwargs):
+        output = (
+            kwargs["expected_outputs"][0]
+            if worker_name == "_run_one_codex_exec"
+            else kwargs["job"]["output"]
+        )
+        calls.append(output)
+        (sp / output).write_text(FRESH_SUB, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(D, worker_name, worker)
+    rc = D._run_rescan_backend_fanout(
+        backend=backend,
+        phase=RESCAN,
+        config={
+            "pipeline": "sc",
+            "mode": "thorough",
+            "language": "evm",
+            "cli_backend": (
+                "codex" if backend == "codex" else "claude"
+            ),
+            "project_root": str(tmp_path),
+            "_run_id": "fixture-run",
+        },
+        scratchpad=sp,
+        attempt=1,
+        timeout=30,
+        effective_model="fixture-model",
+    )
+
+    assert rc == 0
+    assert calls == declared
+
+
 def test_rescan_worker_pool_repairs_only_manifest_open_rows(tmp_path, monkeypatch):
     sp = tmp_path / ".scratchpad"; sp.mkdir()
     (sp / "_audit_started_with_markers.json").write_text("{}", encoding="utf-8")
@@ -257,7 +380,9 @@ def test_rescan_worker_prompt_is_one_artifact_allowlist(tmp_path):
     assert "PLAMEN_PHASE: rescan" in prompt
     assert "phase3b-rescan.md" in prompt
     assert "do not spawn" in prompt.lower()
-    assert "Write exactly this file" in prompt
+    assert "The sole logical output is `analysis_rescan_1.md`" in prompt
+    assert "Do not write the canonical scratchpad" in prompt
+    assert "final\n`Runtime output routing" in prompt
     assert "Do not proceed outside this assigned worker contract" in prompt
 
 

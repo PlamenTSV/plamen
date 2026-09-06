@@ -1,10 +1,7 @@
-"""Inventory chunk gate: mechanically default a missing `Preferred Tag` instead
-of burning a whole-chunk retry.
+"""Inventory chunk validation observes defects without mutating MODEL bytes.
 
-A not-yet-verified inventory finding is `[CODE-TRACE]` by definition, so a chunk
-that omitted only that field should be auto-filled in place. Content fields
-(Source IDs / Severity / Location / Description / Impact) have no safe default
-and must still trigger the pervasive-drift retry.
+Canonical aggregate materialization may derive a ``[CODE-TRACE]`` default, but
+the validator cannot write it into a MODEL-owned chunk before PhaseIO commits.
 """
 from __future__ import annotations
 
@@ -30,13 +27,20 @@ _FIELDS_NO_TAG = (
 )
 
 
-def _chunk(n_blocks: int, *, with_tag: bool = False, drop_location: bool = False) -> str:
+def _chunk(
+    n_blocks: int,
+    *,
+    with_tag: bool = False,
+    drop_location: bool = False,
+) -> str:
     out = ["# Inventory Chunk\n\n## Per-Finding Detail\n"]
     for i in range(1, n_blocks + 1):
         fields = _FIELDS_NO_TAG.format(n=i)
         if drop_location:
             fields = "\n".join(
-                ln for ln in fields.splitlines() if not ln.startswith("**Location**")
+                line
+                for line in fields.splitlines()
+                if not line.startswith("**Location**")
             ) + "\n"
         if with_tag:
             fields += "**Preferred Tag**: [POC-PASS]\n"
@@ -44,56 +48,85 @@ def _chunk(n_blocks: int, *, with_tag: bool = False, drop_location: bool = False
     return "".join(out)
 
 
-def _write(tmp_path: Path, text: str, phase: str = "inventory_chunk_b") -> Path:
-    p = tmp_path / f"findings_{phase}.md"
-    p.write_text(text, encoding="utf-8")
-    return p
+def _write(
+    tmp_path: Path,
+    text: str,
+    phase: str = "inventory_chunk_b",
+) -> Path:
+    path = tmp_path / f"findings_{phase}.md"
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
-def test_missing_preferred_tag_is_defaulted_not_retried(tmp_path):
-    v = _val()
-    f = _write(tmp_path, _chunk(6))  # all 6 missing Preferred Tag
-    issues = v._validate_inventory_chunk_structure(tmp_path, "inventory_chunk_b")
-    # No pervasive retry for Preferred Tag — it was filled in place.
-    assert not any("Preferred Tag (" in i for i in issues), issues
-    body = f.read_text(encoding="utf-8")
-    assert body.count("**Preferred Tag**: [CODE-TRACE]") == 6, body
+def test_missing_preferred_tag_is_observed_without_mutation(tmp_path):
+    validator = _val()
+    chunk = _write(tmp_path, _chunk(6))
+    before = chunk.read_bytes()
+
+    issues = validator._validate_inventory_chunk_structure(
+        tmp_path, "inventory_chunk_b"
+    )
+
+    assert any("Preferred Tag (" in issue for issue in issues), issues
+    assert chunk.read_bytes() == before
 
 
 def test_non_defaultable_field_still_retries(tmp_path):
-    v = _val()
+    validator = _val()
     _write(tmp_path, _chunk(6, drop_location=True))
-    issues = v._validate_inventory_chunk_structure(tmp_path, "inventory_chunk_b")
-    assert any("Location (" in i for i in issues), issues
+
+    issues = validator._validate_inventory_chunk_structure(
+        tmp_path, "inventory_chunk_b"
+    )
+
+    assert any("Location (" in issue for issue in issues), issues
 
 
-def test_idempotent_no_double_insert(tmp_path):
-    v = _val()
-    f = _write(tmp_path, _chunk(6))
-    v._validate_inventory_chunk_structure(tmp_path, "inventory_chunk_b")
-    issues2 = v._validate_inventory_chunk_structure(tmp_path, "inventory_chunk_b")
-    assert not any("Preferred Tag (" in i for i in issues2), issues2
-    assert f.read_text(encoding="utf-8").count("**Preferred Tag**: [CODE-TRACE]") == 6
+def test_repeated_validation_is_pure_and_idempotent(tmp_path):
+    validator = _val()
+    chunk = _write(tmp_path, _chunk(6))
+    before = chunk.read_bytes()
+
+    issues1 = validator._validate_inventory_chunk_structure(
+        tmp_path, "inventory_chunk_b"
+    )
+    issues2 = validator._validate_inventory_chunk_structure(
+        tmp_path, "inventory_chunk_b"
+    )
+
+    assert any("Preferred Tag (" in issue for issue in issues1), issues1
+    assert issues2 == issues1
+    assert chunk.read_bytes() == before
 
 
 def test_existing_tag_untouched(tmp_path):
-    v = _val()
-    f = _write(tmp_path, _chunk(6, with_tag=True))
-    issues = v._validate_inventory_chunk_structure(tmp_path, "inventory_chunk_b")
-    assert not any("Preferred Tag (" in i for i in issues), issues
-    body = f.read_text(encoding="utf-8")
-    assert body.count("[CODE-TRACE]") == 0       # nothing defaulted
-    assert body.count("**Preferred Tag**: [POC-PASS]") == 6
+    validator = _val()
+    chunk = _write(tmp_path, _chunk(6, with_tag=True))
+    before = chunk.read_bytes()
+
+    issues = validator._validate_inventory_chunk_structure(
+        tmp_path, "inventory_chunk_b"
+    )
+
+    assert not any("Preferred Tag (" in issue for issue in issues), issues
+    assert chunk.read_bytes() == before
 
 
-def test_mixed_tag_defaulted_location_retries(tmp_path):
-    v = _val()
-    _write(tmp_path, _chunk(6, drop_location=True))  # missing tag AND location
-    issues = v._validate_inventory_chunk_structure(tmp_path, "inventory_chunk_b")
-    assert not any("Preferred Tag (" in i for i in issues), issues   # tag filled
-    assert any("Location (" in i for i in issues), issues  # location retries
+def test_mixed_missing_tag_and_location_are_both_observed(tmp_path):
+    validator = _val()
+    chunk = _write(tmp_path, _chunk(6, drop_location=True))
+    before = chunk.read_bytes()
+
+    issues = validator._validate_inventory_chunk_structure(
+        tmp_path, "inventory_chunk_b"
+    )
+
+    assert any("Preferred Tag (" in issue for issue in issues), issues
+    assert any("Location (" in issue for issue in issues), issues
+    assert chunk.read_bytes() == before
 
 
 if __name__ == "__main__":
     import pytest
+
     raise SystemExit(pytest.main([__file__, "-q"]))

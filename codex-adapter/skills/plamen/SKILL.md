@@ -42,7 +42,7 @@ Read only the relevant file:
 ## Invocation Syntax
 
 ```text
-$plamen [l1] [light|core|thorough] [path] [docs:<path-or-url>] [scope:<path>] [notes:<text>] [--fresh]
+$plamen [l1] [light|core|thorough] [path] [docs:<path-or-url>] [scope:<path>] [notes:<text>]
 $plamen resume [path-or-config]
 ```
 
@@ -61,11 +61,16 @@ running inside the model/backend they chose.
 Codex route:
 
 ```
-python C:\\Users\\plmnt\\.codex\\plamen\\scripts\plamen_driver.py "{CONFIG_PATH}"
+plamen resume "{CONFIG_PATH}"
 ```
 
-Fresh restart:
+New run (only with a new config pointing at a distinct clean destination;
+never reuse or modify an existing run root):
 
 ```
-python C:\\Users\\plmnt\\.codex\\plamen\\scripts\plamen_driver.py --fresh "{CONFIG_PATH}"
+plamen start-config "{NEW_CONFIG_PATH}"
 ```
+
+These public commands are mandatory: the installer-generated `plamen`
+launcher supplies the locked Python/tool runtime. Never invoke the installed
+driver with ambient `python`.

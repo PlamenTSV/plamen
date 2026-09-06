@@ -277,9 +277,8 @@ def test_automap_partial_grouping_append(tmp_path: Path) -> None:
     assert pv._validate_chain_baseline_not_regrouped(tmp_path, "thorough") == []
 
 
-def test_automap_refuted_skipped_residual(tmp_path: Path) -> None:
-    """A REFUTED unmapped depth finding is NOT auto-mapped. With verdict
-    filtering in CHECK 2, a REFUTED-only depth finding does not fire the gate."""
+def test_automap_producer_refuted_finding_is_still_retained(tmp_path: Path) -> None:
+    """Producer REFUTED prose has no central negative-closure authority."""
     pv = _pv()
     _write_inventory(tmp_path, ["INV-1", "INV-2"])
     _write_grouped(
@@ -289,17 +288,17 @@ def test_automap_refuted_skipped_residual(tmp_path: Path) -> None:
     )
     _write_depth_verdict(tmp_path, "x", [("DA-9", "REFUTED", "Medium")])
 
-    # Verdict-filtered CHECK 2 does not flag a REFUTED-only depth finding.
-    assert pv._validate_chain_baseline_not_regrouped(tmp_path, "thorough") == []
+    assert pv._validate_chain_baseline_not_regrouped(tmp_path, "thorough")
 
     mapped = pv._auto_map_unmapped_depth_findings(tmp_path)
-    assert mapped == []
+    assert mapped == ["DA-9"]
     fm = (tmp_path / "finding_mapping.md").read_text(encoding="utf-8")
-    assert "DA-9" not in fm
+    assert "DA-9" in fm
+    assert pv._validate_chain_baseline_not_regrouped(tmp_path, "thorough") == []
 
 
 def test_automap_mixed_verdicts(tmp_path: Path) -> None:
-    """Mixed bag: CONFIRMED + PARTIAL + CONTESTED auto-mapped; REFUTED skipped."""
+    """All producer verdicts are retained pending central disposition."""
     pv = _pv()
     _write_inventory(tmp_path, ["INV-1"])
     _write_grouped(tmp_path, [("INV-1", "GRP-1")], stamped=False)
@@ -314,10 +313,10 @@ def test_automap_mixed_verdicts(tmp_path: Path) -> None:
         ],
     )
     mapped = set(pv._auto_map_unmapped_depth_findings(tmp_path))
-    assert mapped == {"DA-1", "DA-2", "DA-3"}
+    assert mapped == {"DA-1", "DA-2", "DA-3", "DA-4"}
     fm = (tmp_path / "finding_mapping.md").read_text(encoding="utf-8")
-    assert "DA-4" not in fm
-    # Gate clean after repair (REFUTED DA-4 never required).
+    assert "DA-4" in fm
+    # Gate clean only after every producer verdict is preserved.
     assert pv._validate_chain_baseline_not_regrouped(tmp_path, "thorough") == []
 
 

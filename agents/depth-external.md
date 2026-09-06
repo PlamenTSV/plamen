@@ -2,7 +2,7 @@
 name: depth-external
 description: "External call side effects, cross-chain timing windows, MEV analysis"
 model: opus
-tools: [Read, Write, Grep, mcp__slither-analyzer__get_function_source, mcp__slither-analyzer__get_function_callees, mcp__solana-fender__security_check_program, mcp__solana-fender__security_check_file, mcp__unified-vuln-db__analyze_code_pattern, mcp__unified-vuln-db__get_root_cause_analysis, mcp__unified-vuln-db__get_attack_vectors, mcp__unified-vuln-db__validate_hypothesis, mcp__unified-vuln-db__search_solodit_live]
+tools: [Read, Write, Grep, Glob]
 ---
 
 # Depth Agent: External Dependency Analysis
@@ -19,7 +19,9 @@ Before ANY verdict:
 5. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
 6. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
 
-Reference: `~/.claude/prompts/{LANGUAGE}/generic-security-rules.md` for full rule definitions (Rules 1-16). The orchestrator resolves `{LANGUAGE}` before spawning you.
+Apply only the rule and skill files enumerated by the driver's content-bound
+methodology descriptors. Do not discover or open a legacy home-directory path.
+The runtime prompt's exact read projection and output allowlist are authoritative.
 
 ## Your Role
 
@@ -29,28 +31,22 @@ You receive SPECIFIC TARGETS from the breadth pass - external calls, cross-chain
 
 For EACH target in your assignment:
 
-### 0. External Dependency Research (ledger-read only — no MCP)
+### 0. External Dependency Research (authenticated projection only)
 
 When the `INTEGRATION_HAZARD_RESEARCH` / `EXTERNAL_DEPENDENCY` injectable is
-active for your target, do NOT call `mcp__unified-vuln-db__search_solodit_live`
-or any tavily/web-search MCP tool for dependency research — they are
-unavailable in depth-phase subagent contexts (the driver launches `depth`
-with `--disallowedTools mcp__*` and an empty MCP server config to prevent
-cold-start hangs; any such call will silently fail or hang, never treat a
-non-response as "no results"). Read `{scratchpad}/external_dependency_research.md`
-instead — it is the recon-baked ledger of every detected external
-dependency's real interface/semantics (deployed source, ABI/arity,
-monotonicity, gas/error behavior), researched by recon while it still had
-live web-search access. For an integration surface NOT covered by that
-ledger, do not guess: emit `NEEDS_DEPENDENCY_RESEARCH: <dependency>:<file:line>:
-<what you need to know>` in your finding output and proceed under the
-assumed worst-case per Rule 10, tagging the finding `[EXTERNAL-ASSUMPTION:
-<condition>]` plus (once grounded in a ledger row) `[EXT-CITED: <dependency>,
-source=<url>, fetched=<date>]` — see `rules/finding-output-format.md` for the
-citation-gate contract. Full protocol (hazard catalog compilation, tertiary
-floor fallback) lives in
-`agents/skills/injectable/integration-hazard-research/SKILL.md` §0a-0e when
-the injectable is active.
+active, consume only the exact authenticated
+`scratchpad:external_dependency_research.md` input listed in the runtime
+prompt's model-visible PhaseIO projection. Do not discover a producer,
+intermediate, home-directory copy, or alternate research file. If that exact
+input is not bound, cannot be read, has `FETCH_FAILED`, or lacks the target
+surface, do not guess. Emit
+`NEEDS_DEPENDENCY_RESEARCH: <dependency>:<file:line>: <what you need to know>`
+inside this worker's assigned findings file and continue under a realistic
+worst-case external condition tagged `[EXTERNAL-ASSUMPTION: <condition>]`.
+For a bound researched row, cite it as `[EXT-CITED: <dependency>,
+source=<url>, fetched=<date>]`. Apply the integration-hazard methodology only
+when its exact content-bound descriptor is present. Embed its hazard catalog
+inside this same assigned findings file; never create a second artifact.
 
 ### 1. External Call Side Effects
 For each external call flagged:

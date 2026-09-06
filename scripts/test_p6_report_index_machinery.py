@@ -44,7 +44,7 @@ def _seed_minimal_scratchpad(tmp_path: Path) -> None:
 """
     (tmp_path / "verification_queue.md").write_text(queue_md, encoding="utf-8")
 
-    # Judge: HH-02 is UNRESOLVED (demoted by 1 tier)
+    # Skeptic proposal: HH-02 is UNRESOLVED (visible, no tier authority).
     judge_decisions = {
         "schema_version": "plamen.judge_decisions.v1",
         "source_markdown": "skeptic_judge_decisions.md",
@@ -101,23 +101,36 @@ def test_p61_candidates_payload_round_trip(tmp_path):
     assert len(rows) == 3
 
 
-def test_p61_candidates_apply_judge_unresolved_downgrade(tmp_path):
-    """HH-02 was High but judge UNRESOLVED → effective severity Medium."""
+def test_p61_candidates_preserve_tier_for_unresolved_proposal(tmp_path):
+    """HH-02 remains High until separate typed adjudication authorizes change."""
     _seed_minimal_scratchpad(tmp_path)
     build_report_index_candidates_json(tmp_path)
     rows = {r["canonical_id"]: r for r in read_report_index_candidates_json(tmp_path)}
     assert rows["HH-02"]["upstream_severity"] == "High"
-    assert rows["HH-02"]["effective_severity_after_judge"] == "Medium"
+    assert rows["HH-02"]["effective_severity_after_judge"] == "High"
     assert rows["HH-02"]["judge_decision"] == "UNRESOLVED"
 
 
-def test_p61_candidates_preserve_inflation_state(tmp_path):
-    """HH-02 verdict integrity_state INFLATED_PROSE flows into the candidate."""
+def test_p61_unbound_manifest_cannot_assert_inflation_state(tmp_path):
+    """Malformed/unbound mechanics degrade visibly without trusted diagnosis."""
     _seed_minimal_scratchpad(tmp_path)
     build_report_index_candidates_json(tmp_path)
     rows = {r["canonical_id"]: r for r in read_report_index_candidates_json(tmp_path)}
-    assert rows["HH-02"]["integrity_state"] == "INFLATED_PROSE"
-    assert "[INTEGRITY-DOWNGRADE]" in rows["HH-02"]["effective_tag"]
+    assert rows["HH-02"]["integrity_state"] == "MECHANICAL_UNAVAILABLE"
+    assert rows["HH-02"]["mechanical_authority_state"] == "UNBOUND"
+    assert "[MECHANICAL-UNAVAILABLE]" in rows["HH-02"]["effective_tag"]
+
+
+def test_p61_bound_successor_preserves_genuine_pass_state(tmp_path):
+    from test_mechanical_successor_consumer_p0_ag1 import _bound_fixture
+
+    _bound_fixture(tmp_path, mechanical_status="PASS")
+    payload = build_report_index_candidates_json(tmp_path)
+    row = payload["candidates"][0]
+
+    assert row["mechanical_authority_state"] == "BOUND"
+    assert row["integrity_state"] == "CONSISTENT"
+    assert row["effective_tag"] == "[POC-PASS]"
 
 
 def test_p61_candidates_deterministic_report_id_assignment(tmp_path):
@@ -125,14 +138,11 @@ def test_p61_candidates_deterministic_report_id_assignment(tmp_path):
     _seed_minimal_scratchpad(tmp_path)
     build_report_index_candidates_json(tmp_path)
     rows = read_report_index_candidates_json(tmp_path)
-    # HH-01 is High → H-01. HH-02 demoted to Medium → M-?. HM-01 Medium → M-?.
-    # Order: tier rank, then alphabetic canonical_id.
-    # Highs first: HH-01 → H-01. Then Mediums: HH-02 (lexically before HM-01)
-    # → M-01; HM-01 → M-02.
+    # Both High rows retain their tier; the Medium row starts M numbering.
     by_canonical = {r["canonical_id"]: r["default_report_id"] for r in rows}
     assert by_canonical["HH-01"] == "H-01"
-    assert by_canonical["HH-02"] == "M-01"
-    assert by_canonical["HM-01"] == "M-02"
+    assert by_canonical["HH-02"] == "H-02"
+    assert by_canonical["HM-01"] == "M-01"
 
 
 def test_p61_candidates_allowed_actions_are_full_set(tmp_path):
@@ -248,9 +258,11 @@ def test_p63_driver_renders_report_index_md(tmp_path):
     md = (tmp_path / "report_index.md").read_text(encoding="utf-8")
     assert "Master Finding Index" in md
     assert "H-01" in md   # HH-01 → H-01
-    assert "M-02" in md   # HM-01 → M-02
+    assert "M-01" in md   # HM-01 remains the first Medium
     # HH-02 was APPENDIX_ONLY → in Excluded, not in body
-    assert "Excluded Findings" in md
+    master = md.split("## Proposed Non-Body Actions", 1)[0]
+    assert "HH-02" in master
+    assert "Proposed Non-Body Actions (Non-authoritative)" in md
     cov = (tmp_path / "report_coverage.md").read_text(encoding="utf-8")
     assert "Report Coverage" in cov
     # All 3 candidates appear in coverage
@@ -294,9 +306,11 @@ def test_p63_driver_handles_merge_into(tmp_path):
     ])
     render_report_index_markdown(tmp_path)
     md = (tmp_path / "report_index.md").read_text(encoding="utf-8")
-    assert "Consolidation Map" in md
+    assert "Proposed Consolidation Map (Non-authoritative)" in md
     assert "HH-02" in md
     assert "HH-01" in md
+    master = md.split("## Proposed Consolidation Map", 1)[0]
+    assert "HH-02" in master
 
 
 # ---------------------------------------------------------------------------

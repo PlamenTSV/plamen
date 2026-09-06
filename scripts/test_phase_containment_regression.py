@@ -328,7 +328,7 @@ def test_PROMPT_sc_depth_enforces_language_template_and_graph_contract(tmp_path:
     prompt = D.build_phase_prompt(v1, phase, config)
 
     required = [
-        "~/.claude/prompts/evm/phase4b-depth-templates.md",
+        f"{D.plamen_home().as_posix()}/prompts/evm/phase4b-depth-templates.md",
         "Language-Specific Depth Template Binding",
         "graph-artifact section verbatim",
         "caller_map.md",
@@ -343,9 +343,9 @@ def test_PROMPT_sc_depth_enforces_language_template_and_graph_contract(tmp_path:
         "validation_sweep_findings.md",
         "confidence_scores.md",
         "phase4b-scoring.md",
-        "initial Phase 4b confidence scoring",
-        "distinct from the later `final_scoring` phase",
-        "No scoreable findings found after depth",
+        "Transient Routing Proposal (MANDATORY for Core/Thorough)",
+        "helper has no scratchpad write authority",
+        "deterministic driver independently",
         "adaptive_loop_log.md",
         "design_stress_findings.md",
         "perturbation_findings.md",
@@ -864,24 +864,17 @@ def test_CONTRACT_dynamic_report_shards_are_owned(tmp_path: Path):
 
 
 def test_CONTRACT_semantic_dedup_noop_writes_expected_outputs(tmp_path: Path):
-    cases = [
-        (
-            "l1",
-            D.L1_PHASES,
-            "semantic_dedup",
-            "verification_queue.md",
-            "verification_queue_deduped.md",
-        ),
-        (
-            "sc",
-            D.SC_PHASES,
-            "sc_semantic_dedup",
-            "findings_inventory.md",
-            "findings_inventory_deduped.md",
-        ),
-    ]
     failures = []
-    for pipeline, phases, phase_name, source_name, target_name in cases:
+
+    # SC retains the compatibility passthrough projection.  The L1 model unit
+    # owns only dedup_decisions.md: the canonical inventory/queue successor is
+    # published later by the typed semantic_dedup/prequeue_apply DRIVER
+    # transaction, so a noop scaffold must not manufacture that postimage.
+    cases = [
+        ("l1", D.L1_PHASES, "semantic_dedup", "verification_queue.md"),
+        ("sc", D.SC_PHASES, "sc_semantic_dedup", "findings_inventory.md"),
+    ]
+    for pipeline, phases, phase_name, source_name in cases:
         project = tmp_path / pipeline
         scratchpad = project / ".scratchpad"
         scratchpad.mkdir(parents=True)
@@ -894,10 +887,19 @@ def test_CONTRACT_semantic_dedup_noop_writes_expected_outputs(tmp_path: Path):
 
         if not passed:
             failures.append((pipeline, "gate", missing))
-        if "dedup_decisions.md" not in written or target_name not in written:
-            failures.append((pipeline, "written", written))
-        if source_body != (scratchpad / target_name).read_text(encoding="utf-8"):
-            failures.append((pipeline, "source_not_preserved", target_name))
+        if pipeline == "l1":
+            if written != ["dedup_decisions.md"]:
+                failures.append((pipeline, "unowned_prequeue_output", written))
+            if (scratchpad / "verification_queue_deduped.md").exists():
+                failures.append((pipeline, "manufactured_prequeue_postimage"))
+            if source_body != (scratchpad / source_name).read_text(encoding="utf-8"):
+                failures.append((pipeline, "source_mutated", source_name))
+        else:
+            target_name = "findings_inventory_deduped.md"
+            if set(written) != {"dedup_decisions.md", target_name}:
+                failures.append((pipeline, "written", written))
+            if source_body != (scratchpad / target_name).read_text(encoding="utf-8"):
+                failures.append((pipeline, "source_not_preserved", target_name))
     check("CONTRACT.semantic_dedup_noop_writes_expected_outputs", not failures, repr(failures))
     assert not failures
 
@@ -973,6 +975,45 @@ def test_POLICY_validator_rejects_foreign_phase_writes_even_when_own_gate_passes
         )
     check("POLICY.containment_failure_blocks_phase_completion", True, detail)
 
+    # Audited source is a distinct, non-recoverable boundary: surface an
+    # explicit driver signal and leave the changed bytes visible.  The main
+    # loop consumes this signal by recording debt and exiting before retry, so
+    # a later attempt cannot silently adopt the mutated source as its baseline.
+    source_project = tmp_path / "source_project"
+    source_scratchpad = source_project / ".scratchpad"
+    source = source_project / "src" / "lib.rs"
+    source_scratchpad.mkdir(parents=True)
+    source.parent.mkdir(parents=True)
+    source.write_text("pub fn value() -> u64 { 1 }\n", encoding="utf-8")
+    source_before = D._snapshot_file_state(
+        source_scratchpad, str(source_project)
+    )
+    (source_scratchpad / "inventory_shard_plan.md").write_text(
+        _substantial("Inventory Shard Plan"), encoding="utf-8"
+    )
+    source.write_text("pub fn value() -> u64 { 2 }\n", encoding="utf-8")
+    source_config = _config(source_project, source_scratchpad)
+    source_passed, source_missing = D._run_phase_validators(
+        phase,
+        source_config,
+        source_scratchpad,
+        D.L1_PHASES,
+        0,
+        source_before,
+    )
+    assert not source_passed
+    assert source_config.get("_project_source_containment_breach") == [
+        "src/lib.rs"
+    ]
+    assert any(
+        "modified audited project source: src/lib.rs" in str(item)
+        for item in source_missing
+    )
+    assert source.read_text(encoding="utf-8") == "pub fn value() -> u64 { 2 }\n"
+    assert not (
+        source_scratchpad / "_overflow" / phase.name / "src" / "lib.rs"
+    ).exists()
+
 
 def test_BOUNDARY_fake_claude_foreign_write_is_hard_failure_signal(tmp_path: Path):
     project = tmp_path / "project"
@@ -981,6 +1022,7 @@ def test_BOUNDARY_fake_claude_foreign_write_is_hard_failure_signal(tmp_path: Pat
     scratchpad.mkdir()
 
     fake_py = tmp_path / "fake_claude.py"
+    invoked_marker = tmp_path / "fake_claude.invoked"
     fake_py.write_text(
         """
 from pathlib import Path
@@ -989,6 +1031,7 @@ import os
 import re
 import sys
 
+Path({INVOKED_MARKER}).write_text("spawned", encoding="utf-8")
 prompt = sys.stdin.read()
 match = re.search(r"running the \\*\\*(.*?)\\*\\* phase", prompt)
 phase = match.group(1) if match else "unknown"
@@ -998,7 +1041,7 @@ if phase == "inventory_prepare":
     (scratch / "inventory_shard_plan.md").write_text(body, encoding="utf-8")
     (scratch / "semantic_invariants.md").write_text(body, encoding="utf-8")
 print(json.dumps({"result": "x" * 700, "usage": {"input_tokens": 1, "output_tokens": 1}}))
-""".lstrip(),
+""".replace("{INVOKED_MARKER}", repr(str(invoked_marker))).lstrip(),
         encoding="utf-8",
     )
     # On Windows we hand the driver a `.cmd` shim (D.CLAUDE_BIN is invoked
@@ -1024,31 +1067,46 @@ print(json.dumps({"result": "x" * 700, "usage": {"input_tokens": 1, "output_toke
     config = _config(project, scratchpad)
     before = D._snapshot_file_state(scratchpad, str(project))
     old_bin = D.CLAUDE_BIN
+    old_selection = D._DIRECT_CLAUDE_MCP_SELECTION
     D.CLAUDE_BIN = str(fake_cmd)
+    D._DIRECT_CLAUDE_MCP_SELECTION = None
+    rejected = None
     try:
-        rc = D.run_phase(phase, config, attempt=1)
+        try:
+            rc = D.run_phase(phase, config, attempt=1)
+        except D.HeadlessWorkerRuntimeError as exc:
+            rejected = exc
+            rc = D.EXIT_ERROR
     finally:
         D.CLAUDE_BIN = old_bin
+        D._DIRECT_CLAUDE_MCP_SELECTION = old_selection
 
     passed, missing = D._run_phase_validators(
         phase, config, scratchpad, D.L1_PHASES, rc, before
     )
     ok = (
-        rc in (0, -4)
+        rc == D.EXIT_ERROR
+        and rejected is not None
+        and rejected.reason_code == "CLAUDE_BACKEND_SELECTION_UNAVAILABLE"
         and not passed
-        and any("phase containment:" in str(item) for item in missing)
-        and (scratchpad / "_overflow" / "inventory_prepare" / "semantic_invariants.md").exists()
+        and "inventory_shard_plan.md" in missing
+        and not invoked_marker.exists()
+        and not (scratchpad / "inventory_shard_plan.md").exists()
+        and not (scratchpad / "semantic_invariants.md").exists()
+        and not (scratchpad / "_overflow" / "inventory_prepare" / "semantic_invariants.md").exists()
     )
-    detail = f"rc={rc} passed={passed} missing={missing}"
+    detail = (
+        f"rc={rc} reason={getattr(rejected, 'reason_code', None)} "
+        f"passed={passed} missing={missing}"
+    )
     if not ok:
         print(
             "  FAIL  BOUNDARY.fake_claude_containment_hard_failure"
             f" :: {detail}"
         )
         raise AssertionError(
-            "Expected implementation change: the real subprocess boundary must "
-            "surface foreign later-phase writes as a failed phase validation, "
-            "not as a clean pass with quarantine-only side effects."
+            "The Python-only inventory_prepare phase must reject an untyped "
+            "Claude monolith before spawn, leaving no owned or foreign output."
         )
     check("BOUNDARY.fake_claude_containment_hard_failure", True, detail)
 
@@ -1098,6 +1156,62 @@ def test_CONTAINMENT_rogue_report_artifacts_detected_and_quarantined(tmp_path: P
         and not (scratchpad / "report_index.md").exists()
         and (scratchpad / "_overflow" / "verify_low_c" / "report_index.md").exists(),
         f"moved={moved}",
+    )
+
+
+    # Project-source containment is independent of later-phase patterns.  A
+    # terminal phase must still detect mutation, deletion, and creation, while
+    # verifier-created test sources remain outside the production denominator.
+    source = project / "src" / "Vault.sol"
+    source.parent.mkdir(parents=True)
+    source.write_text("contract Vault { uint256 value; }\n", encoding="utf-8")
+    source_before = D._snapshot_file_state(scratchpad, str(project))
+    source.write_text("contract Vault { uint256 changed; }\n", encoding="utf-8")
+    terminal = D.SC_PHASES[-1]
+    source_offenders = D._detect_foreign_phase_writes(
+        scratchpad,
+        str(project),
+        D.SC_PHASES,
+        terminal.name,
+        "sc",
+        source_before,
+    )
+    assert source_offenders == ["../PROJECT_SOURCE/src/Vault.sol"]
+
+    source.write_text("contract Vault { uint256 changed; }\n", encoding="utf-8")
+    source_before = D._snapshot_file_state(scratchpad, str(project))
+    source.unlink()
+    created = source.parent / "Created.sol"
+    created.write_text(
+        "contract Created {}\n", encoding="utf-8"
+    )
+    source_offenders = D._detect_foreign_phase_writes(
+        scratchpad,
+        str(project),
+        D.SC_PHASES,
+        terminal.name,
+        "sc",
+        source_before,
+    )
+    assert source_offenders == [
+        "../PROJECT_SOURCE/src/Created.sol",
+        "../PROJECT_SOURCE/src/Vault.sol",
+    ]
+
+    source_before = D._snapshot_file_state(scratchpad, str(project))
+    test_source = project / "test" / "VaultPoC.t.sol"
+    test_source.parent.mkdir(parents=True)
+    test_source.write_text("contract VaultPoC {}\n", encoding="utf-8")
+    source_offenders = D._detect_foreign_phase_writes(
+        scratchpad,
+        str(project),
+        D.SC_PHASES,
+        terminal.name,
+        "sc",
+        source_before,
+    )
+    assert not any(
+        name.startswith("../PROJECT_SOURCE/") for name in source_offenders
     )
 
 
@@ -1340,8 +1454,27 @@ def test_SKEPTIC_manifest_enumerates_all_ch_ids_and_prompt_references_it(tmp_pat
         _write_verify(scratchpad, fid, sev)
     rows = D._write_skeptic_manifest(scratchpad)
     got = {r["finding_id"] for r in rows}
-    expected = {"INV-095", "INV-103", "INV-104", "INV-105"}
-    check("SKEPTIC.manifest_exact_ch_ids", got == expected, f"got={got}")
+    expected = {fid for fid, _severity in ids}
+    triggers = {
+        row["finding_id"]: set(row["challenge_triggers"])
+        for row in rows
+    }
+    medium_triggers = triggers.get("INV-200", set())
+    exact_semantic_denominator = (
+        got == expected
+        and medium_triggers
+        == {"UNRESOLVED_EXTERNAL_PREMISE", "EVIDENCE_INTEGRITY_REVIEW"}
+        and "HIGH_RISK_ADVERSARIAL_REVIEW" not in medium_triggers
+        and all(
+            "HIGH_RISK_ADVERSARIAL_REVIEW" in triggers.get(fid, set())
+            for fid in expected - {"INV-200"}
+        )
+    )
+    check(
+        "SKEPTIC.manifest_exact_semantic_trigger_ids",
+        exact_semantic_denominator,
+        f"got={got} triggers={triggers}",
+    )
     v1 = tmp_path / "plamen-l1.md"
     v1.write_text(
         "# L1\n\n## Step 5.5: Skeptic-Judge\n\n"
@@ -1498,16 +1631,34 @@ def test_PROMPT_later_aggregation_templates_allow_readonly_upstream_inputs(tmp_p
         "phase4c-chain-iter2.md",
     ]
     failures = []
+
+    def has_readonly_scope(text: str) -> bool:
+        normalized = " ".join(text.lower().split())
+        read_authority = any(
+            token in normalized
+            for token in ("may read", "read only", "read-only", "as read-only inputs")
+        )
+        mutation_denial = any(
+            token in normalized
+            for token in (
+                "must not modify",
+                "must not create, update, or modify",
+                "do not write scratchpad files",
+                "no scratchpad write authority",
+            )
+        )
+        return read_authority and mutation_denial
+
     for name in aggregate_templates:
         text = (prompt_dir / name).read_text(encoding="utf-8")
         if "Do NOT read or write other agents' output files" in text:
             failures.append(f"{name}: generic no-read scope")
-        if "MAY read" not in text or "MUST NOT modify" not in text:
+        if not has_readonly_scope(text):
             failures.append(f"{name}: missing read-only upstream scope")
     for label, prompt in [("chain", chain1), ("chain_agent2", chain2)]:
         if "Do NOT read or write other agents' output files" in prompt:
             failures.append(f"{label}: generated prompt has generic no-read scope")
-        if "MAY read" not in prompt or "MUST NOT modify" not in prompt:
+        if not has_readonly_scope(prompt):
             failures.append(f"{label}: generated prompt missing read-only scope")
     check(
         "PROMPT.later_aggregators_have_readonly_scope",
@@ -1585,10 +1736,17 @@ def test_PROMPT_confidence_scores_preserve_depth_feeder_ids(tmp_path: Path):
         encoding="utf-8",
     )
     scores = D._parse_depth_confidence_scores(scratchpad)
+    scoring_semantics = " ".join(scoring_prompt.split())
     ok = (
-        "preserve original depth/scanner/niche" in prompt.lower()
-        and "do not collapse those rows into only mapped `inv-*`" in prompt.lower()
-        and "Preserve depth/scanner/niche IDs" in scoring_prompt
+        "Preserve original depth/scanner/niche IDs" in prompt
+        and "helper has no scratchpad write authority" in prompt
+        and "deterministic driver independently" in prompt
+        and "visible human-review debt" in prompt
+        and "Capability ID: sc_depth_standard" in prompt
+        and "Authority Class: GENERATOR" in prompt
+        and "Lifecycle owner: candidate_negative_skeptic" in prompt
+        and "Preserve each source finding ID" in scoring_semantics
+        and "no canonical artifact authority" in scoring_semantics
         and scores.get("DCI-3") == 0.71
     )
     check("PROMPT.confidence_scores_preserve_feeder_ids", ok, f"prompt={prompt[-800:]} scores={scores}")

@@ -1,161 +1,183 @@
 # Contributing to Plamen
 
-Thank you for your interest in contributing to Plamen! This guide will help you get started.
+Thank you for contributing to Plamen. This guide covers source development;
+production installation is a separate authenticated publication process.
 
-## How Plamen Works
+## How Plamen works
 
-Plamen is a multi-agent security auditing pipeline that runs on Claude Code or OpenAI Codex CLI. It consists of:
+Plamen is a multi-agent security-audit pipeline for Claude Code and OpenAI
+Codex CLI. Its main source areas are:
 
-- **Orchestration rules** (`rules/`) - Phase definitions, scoring models, report templates
-- **Language prompts** (`prompts/{evm,solana,aptos,sui,soroban,daml}/` + `prompts/l1/`) - Per-chain agent prompts and templates
-- **Skills** (`agents/skills/`) - Methodology files that agents read at audit time
-- **Agent definitions** (`agents/depth-*.md`) - Depth agent role definitions
-- **MCP servers** (`custom-mcp/`) - Tool servers (RAG database, static analyzers)
-- **V2 driver scripts** (`scripts/`) - Python phase runner, parsers, validators, types
-- **L1 skills** (`agents/skills/injectable/l1/`) - L1 infrastructure audit methodology
-- **CLI wrapper** (`plamen.py`) - Terminal UI that launches audits
+- `rules/`: phase definitions, scoring models, and report templates;
+- `prompts/{evm,solana,aptos,sui,soroban,daml}/` and `prompts/l1/`:
+  ecosystem-specific prompts and templates;
+- `agents/skills/`: methodology files read by agents at audit time;
+- `agents/depth-*.md`: depth-agent role definitions;
+- `custom-mcp/`: RAG and static-analysis tool servers;
+- `scripts/`: the V2 driver, parsers, validators, and deterministic gates;
+- `agents/skills/injectable/l1/`: L1 infrastructure methodology;
+- `codex-adapter/`: Codex-specific commands and adaptations; and
+- `plamen.py`: the terminal front and production installer.
 
-## Ways to Contribute
+## Ways to contribute
 
-### 1. New Skills (Most Wanted)
+### Skills
 
-Skills are methodology files that teach agents HOW to analyze specific vulnerability classes. They live in `agents/skills/`.
+Skills teach agents how to analyze a vulnerability class. Regular skills live
+under `agents/skills/{language}/{skill-name}/`; injectable skills live under
+`agents/skills/injectable/`; niche skills live under `agents/skills/niche/`.
 
-**Types:**
-- **Regular skills** (`agents/skills/{language}/{skill-name}/`) - Flag-triggered, loaded when code patterns are detected
-- **Injectable skills** (`agents/skills/injectable/{skill-name}/`) - Protocol-type-triggered, loaded for specific protocol categories
-- **Niche agents** (`agents/skills/niche/{skill-name}/`) - Standalone agents for focused analysis
+A skill should:
 
-**Skill quality bar:**
-- Teaches methodology (HOW to look), not patterns (WHAT to find)
-- Has clear trigger conditions (when should it activate?)
-- Includes a step execution checklist
-- Includes common false positives section
-- Under 300 lines (hard cap - context budget)
-- Has been tested on at least one real codebase
+- teach methodology (how to look), not a list of expected answers;
+- state precise activation conditions;
+- include an execution checklist and common false positives;
+- remain under the applicable file-size cap; and
+- be tested on at least one relevant codebase on a supported audit host.
 
-**Format:** Each skill lives in a named folder: `agents/skills/{language}/{skill-name}/SKILL.md`. For skills over 500 lines, split into `SKILL.md` (core workflow) + reference files (`templates.md`, `advanced.md`) that `SKILL.md` points to. See any existing skill in `agents/skills/evm/` for the template.
+### Scanner checks
 
-### 2. Scanner Checks
+Scanner templates live at
+`prompts/{language}/phase4b-scanner-templates.md`. Checks should be broadly
+applicable, concise, and have a low false-positive rate.
 
-Scanner templates (`prompts/{language}/phase4b-scanner-templates.md`) contain checklist-style checks. New checks should be:
-- Universal (applies to ALL contracts, not protocol-specific)
-- Under 5 lines
-- Low false positive rate
+### Bugs and infrastructure
 
-### 3. Bug Reports
+Bug reports should include the mode, ecosystem, observed failure, and
+sanitized scratchpad evidence when possible. Contributions are also welcome
+for the CLI, deterministic driver, verification gates, Codex adaptation, MCP
+servers, and L1 methodology.
 
-Found a bug in the pipeline? File an issue with:
-- Audit mode used (Core/Thorough)
-- Language/chain
-- What went wrong (missed finding, false positive, crash, etc.)
-- Relevant scratchpad artifacts if possible
+Never attach provider credentials, API keys, OAuth material, private target
+source, or an unreviewed scratchpad.
 
-### 4. UI/Wrapper Improvements
-
-The CLI wrapper (`plamen.py`) and launch scripts are always open for UX improvements.
-
-### 5. MCP Server Improvements
-
-The unified-vuln-db MCP server (`custom-mcp/unified-vuln-db/`) powers RAG search. Contributions welcome for:
-- New vulnerability data sources
-- Better search/ranking algorithms
-- Performance improvements
-
-### 6. L1 Skills
-
-L1 infrastructure skills live in `agents/skills/injectable/l1/`. They cover blockchain node-client concerns: consensus safety, p2p networking, mempool analysis, RPC surfaces, validator lifecycle, state sync, and execution engines. L1 skills follow the same quality bar as SC skills but target Go and Rust codebases.
-
-### 7. Codex Backend
-
-Codex-specific commands (`codex-adapter/commands/`) and skill overrides (`codex-adapter/skills/`) adapt the pipeline for the OpenAI Codex CLI sandbox. Contributions welcome for Codex-specific UX and tool translation improvements.
-
-## Development Setup
+## Development setup
 
 ### Prerequisites
 
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) or [Codex CLI](https://github.com/openai/codex) installed
-- Python 3.11-3.12 (for CLI wrapper and MCP servers)
-- Node.js 18+ (for MCP servers)
+- CPython 3.12 exactly;
+- Git with submodule support; and
+- a source checkout outside `~/.plamen`, `~/.codex/plamen`, and `~/.claude`.
 
-### Local Setup
+The governed production package owns its reviewed Node, npm, Claude, and Codex
+payloads. Do not install global copies merely to develop Plamen. Provider-backed
+integration tests may require separately authenticated provider tooling, but
+source-level development and the default checks do not.
+
+### macOS source development
+
+Native macOS production installation and E2E auditing are not yet supported.
+The Darwin package transaction and worker-containment paths fail closed. Both
+arm64 and x86_64 Macs can use the isolated source-development bootstrap:
 
 ```bash
-# Clone the repo
-git clone https://github.com/PlamenTSV/plamen.git ~/.plamen
-
-# Install into ~/.claude/ (Claude Code backend)
-cd ~/.plamen && python3 plamen.py install  # or 'python' on Windows
-
-# Install into ~/.codex/plamen/ (Codex backend, optional)
-plamen install --codex
-
-# Install CLI wrapper dependencies
-pip install rich InquirerPy
-
-# Install MCP server dependencies (Claude Code only — Codex uses tool translation)
-cd ~/.plamen/custom-mcp/unified-vuln-db
-pip install -e .
-
-# Run the CLI
-plamen.bat  # Windows
-./plamen.sh # Linux/macOS
+git clone --branch Plamen-v3 --recurse-submodules \
+  https://github.com/PlamenTSV/plamen.git "$HOME/src/plamen"
+cd "$HOME/src/plamen"
+sh scripts/bootstrap_macos_dev.sh --python "$(command -v python3.12)"
+. .venv-dev/bin/activate
 ```
 
-> **After `git pull`**: Always run `plamen install` to refresh injected config files (`CLAUDE.md`, `settings.json`, `mcp.json` for Claude Code; `AGENTS.md`, `config.toml` for Codex). These are merged copies, not symlinks, and go stale without re-install. If using both backends, run `plamen install && plamen install --codex`. See [docs/updating.md](docs/updating.md).
+This creates a development environment, not an installed audit runtime. Read
+the [macOS development guide](docs/development/macos.md), the
+[machine-migration guide](docs/development/machine-migration.md), and the
+[Plamen-v3 continuation goal](docs/continuation/GOAL.md) before changing the
+Darwin support boundary.
 
-### Testing Your Changes
+### Windows and Linux source development
 
-**Skills:** Run a Core audit on a relevant test project and check the scratchpad for your skill's output.
+Clone with submodules into an ordinary development directory, create a
+CPython 3.12 virtual environment, and install the reviewed CI closure.
 
-**Scanner checks:** Run a Core audit and grep the blind_spot scanner output for your check ID.
+Linux:
 
-**Wrapper:** Run `python plamen.py` and walk through the interactive flow.
-
-## Pull Request Process
-
-1. **Fork** the repository
-2. **Create a branch** from `main` (`git checkout -b feature/my-skill`)
-3. **Make your changes** following the guidelines above
-4. **Test** on at least one real codebase
-5. **Open a PR** using the PR template
-
-### PR Requirements
-
-- [ ] Changes are under the appropriate file size caps (see `rules/post-audit-improvement-protocol.md` Appendix A)
-- [ ] New skills include a step execution checklist and false positives section
-- [ ] No secrets, API keys, or credentials in the diff
-- [ ] Changes don't break existing skill triggers or agent definitions
-- [ ] Description explains WHY this change improves audit quality
-
-### Review Process
-
-1. Maintainer reviews for methodology quality and pipeline fit
-2. If skill/check: tested on a real codebase to verify detection rate and false positive rate
-3. Merged after approval
-
-## DCO (Developer Certificate of Origin)
-
-By contributing to this project, you certify that your contribution is your own work and you have the right to submit it under the MIT license. Sign off your commits:
-
-```
-git commit -s -m "Add new vault accounting skill"
+```bash
+git clone --branch Plamen-v3 --recurse-submodules \
+  https://github.com/PlamenTSV/plamen.git "$HOME/src/plamen"
+cd "$HOME/src/plamen"
+python3.12 -m venv .venv-dev
+. .venv-dev/bin/activate
+python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.lock
+python -I scripts/ci_dependency_authority.py static --root .
 ```
 
-This adds a `Signed-off-by: Your Name <your@email.com>` line to your commit message.
+Windows PowerShell:
 
-## File Size Caps
+```powershell
+git clone --branch Plamen-v3 --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\src\plamen"
+Set-Location "$HOME\src\plamen"
+py -3.12 -m venv .venv-dev
+.\.venv-dev\Scripts\Activate.ps1
+python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.lock
+python -I scripts/ci_dependency_authority.py static --root .
+```
 
-To prevent context bloat, these caps are enforced:
+Do not use `plamen.py install` to create a development environment. A
+production install is an authenticated publication from reviewed source, not
+an editable checkout; see [docs/setup.md](docs/setup.md). The current governed
+source closure contains 764 rows and publishes Claude and Codex together.
 
-| File Category | Cap |
-|---------------|-----|
+## Testing changes
+
+Begin with the dependency authority, relevant focused tests, and repository
+hygiene:
+
+```bash
+python -I scripts/ci_dependency_authority.py static --root .
+python -m pytest -q -p no:cacheprovider scripts/test_bootstrap_macos_dev.py
+git diff --check
+git submodule status --recursive
+```
+
+- Skills: on a supported audit host, run a Core audit on a relevant fixture
+  and inspect the assigned scratchpad artifact.
+- Scanner checks: on a supported audit host, run a Core audit and inspect the
+  blind-spot scanner artifact for the new check ID.
+- Driver and wrapper changes: run the directly relevant unit/integration lanes
+  plus provider-free `plan` validation where available.
+- macOS changes: run the bootstrap and portability tests on both intended
+  architectures. Do not represent bootstrap success, a skip, or source-only
+  validation as a completed E2E audit.
+
+Do not weaken a fail-closed platform or supply-chain gate merely to make a test
+green. Update support claims only with the implementation and release evidence
+required by the continuation goal.
+
+## Pull requests
+
+1. Fork the repository.
+2. Create a focused branch from the intended base.
+3. Make and test the change.
+4. Review the full diff for generated files, absolute paths, and secrets.
+5. Open a pull request explaining why the change improves audit quality or
+   reliability and what evidence validates it.
+
+Every pull request must confirm:
+
+- new methodology follows the applicable size caps and format;
+- no credentials, private source, or generated audit artifacts are included;
+- changed triggers, roles, and artifact contracts remain coherent;
+- relevant deterministic and E2E tests were run, with unsupported/skipped
+  lanes stated honestly; and
+- documentation matches the real backend and platform boundary.
+
+## DCO
+
+By contributing, you certify that the contribution is your own work and that
+you may submit it under the MIT license. Sign off commits:
+
+```bash
+git commit -s -m "Describe the change"
+```
+
+## File-size caps
+
+| File category | Cap |
+|---|---:|
 | Individual skills | 300 lines |
 | Scanner templates | 600 lines |
 | Depth templates | 250 lines |
 | Generic security rules | 1000 lines |
 | Recon prompt | 1100 lines |
 
-## Questions?
-
-Open a Discussion on GitHub or file an issue tagged `question`.
+Questions are welcome in GitHub Discussions or an issue tagged `question`.

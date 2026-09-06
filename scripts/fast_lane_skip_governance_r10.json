@@ -1,0 +1,1787 @@
+{
+  "schema": "plamen.fast-lane-skip-governance.v1",
+  "version": 1,
+  "authority": {
+    "r9_independent_review_sha256": "dea03df328e190e2110ae95d0746ffb5a3ff316082b3b5b270dc337df69af660",
+    "full_audit_sha256": "e6064596f5e525580e3abecb0f38ac1c4621b9398b3147703aeeda768052ceb0",
+    "source_count_amendment_sha256": "bfaed995b50424fe251d182225d3c6696c059ff56b930e4edfdb592cb9ddb65a"
+  },
+  "counts": {
+    "expanded_pytest_skip_sites": 132,
+    "expanded_skipif_sites": 106,
+    "guaranteed_current_nodes": 17,
+    "quarantine_nodes": 168,
+    "source_files": 92,
+    "unresolved_runtime_nodes": 151
+  },
+  "platform_policy": {
+    "logical_integration_selector": "integration",
+    "posix_integration_selector": "integration",
+    "production_selector": "not integration and not fast_quarantine",
+    "supported_os_names": [
+      "nt",
+      "posix"
+    ],
+    "unknown_os_name": "abort_collection",
+    "windows_integration_selector": "integration and not posix_only"
+  },
+  "marker_policy": {
+    "fast_quarantine": "exact manifest-bound exclusion from the no-skip production numerator",
+    "windows_only": "requires the supported Windows platform family",
+    "posix_only": "requires the supported POSIX platform family",
+    "provider_live": "requires explicit authenticated live-provider authority",
+    "installed_runtime": "requires authenticated installed or staged runtime bytes",
+    "symlink": "requires authenticated symlink creation capability",
+    "hardlink": "requires authenticated hardlink creation capability",
+    "reparse_or_junction": "requires authenticated Windows reparse-point or junction capability",
+    "ntfs_ads_sparse": "requires authenticated NTFS alternate-stream or sparse-file capability",
+    "path_envelope": "requires an authenticated filesystem path-length and mutation envelope"
+  },
+  "hashes": {
+    "r9_default_nodes_sha256": "22bbcf73f724b188768fb532fc832e5e6a85aa9fba1196fa4c0dde7e4db2de1d",
+    "governed_production_nodes_sha256": "76364b33eaea680c8a282f93d87a8406b046a039fb682bcd673dc9947c748ef5",
+    "guaranteed_nodes_sha256": "1d15ca6442a2c751d36275be053a7673facf3b51ea63f36fbaf4b96b4c50126b",
+    "unresolved_nodes_sha256": "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874",
+    "quarantine_nodes_sha256": "29bdd0de57165822ae1472f57de64d272a30617a14c5fb654ac5ffae2158e98b",
+    "source_path_roster_sha256": "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4",
+    "source_roster_sha256": "75270fb763a3e49fa4093f5d60d29a4b95992e07339c8967f1435e95f188ec92",
+    "quarantine_source_path_roster_sha256": "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b",
+    "quarantine_source_roster_sha256": "3f38f164396f56149ca47ac5608dc4e6de25c60684be2beac80ab1e9defa8b80",
+    "entry_roster_sha256": "ed7627a4d5705dac3529b91359eb964795bee193b24f5d416c442c05ae214fe1"
+  },
+  "sources": [
+    {
+      "path": "scripts/bounty/test_bb_staged_runtime_contract_20260727.py",
+      "sha256": "2f89e82967dbe0dc86befb17459bcc2207a06a2aa14a302d66c64d28fc89f6dc"
+    },
+    {
+      "path": "scripts/test_application_skeptic_driver_p0_bcd.py",
+      "sha256": "2c41c79c9569f1e0d76ad1f0b116bee48b6ce9e6c8de5a2c3a506de335a14afb"
+    },
+    {
+      "path": "scripts/test_artifact_ledger_windows_finddata_lifecycle.py",
+      "sha256": "f1e4276f841dd8164dd48c2df471f2b1084c80ba5d871f548f7a9795c0cea9bb"
+    },
+    {
+      "path": "scripts/test_audit_snapshot_r0_8cd.py",
+      "sha256": "3ad0ef181eef54200169df14ba63b4453517c2a9c30613dddc4f750b1638ee9a"
+    },
+    {
+      "path": "scripts/test_bb_path_authority_longpath_20260729.py",
+      "sha256": "1af760e320c78f5ad9c36ac7456ed23385818775d761423593e58aef2b6a9059"
+    },
+    {
+      "path": "scripts/test_candidate_negative_driver_p1_f.py",
+      "sha256": "841e72c75f768906612dda5317ac5c823976951d5d9810a3669fbe7925635826"
+    },
+    {
+      "path": "scripts/test_ci_toolchain_independent_r3_blockers.py",
+      "sha256": "8fda9935653b68a9fd66852dfa6b961a804e35a070c1c545a82131690177f47f"
+    },
+    {
+      "path": "scripts/test_claude_attempt_profile_p0_am.py",
+      "sha256": "8bd0f328b87f1c0dd3bcedc3f46771e4e5359b9d7ca06f9cc406c1cefea05447"
+    },
+    {
+      "path": "scripts/test_claude_provider_authority_sealing_red_p0_am.py",
+      "sha256": "cd47abc1bdc5f56e1c18596ebaeea28e1a86606406ad80f68e879c4038c09af1"
+    },
+    {
+      "path": "scripts/test_claude_stored_subscription_source_p0_am.py",
+      "sha256": "d23fcd91c23a8255a6a5eca028f57699ef8653ed4e62ac3a9b058d5e930cbedc"
+    },
+    {
+      "path": "scripts/test_isolated_execution_host.py",
+      "sha256": "249ff3f444b322b21df3a431db820103b0d72cf94c1857ecf7cfe5a1ae60c1e6"
+    },
+    {
+      "path": "scripts/test_mechanical_gate_registry_schema.py",
+      "sha256": "3d8c034230731c417b560825712aae8cadafba7792ddd8b3a4fc46a95be4f69d"
+    },
+    {
+      "path": "scripts/test_mechanical_successor_adversarial_review.py",
+      "sha256": "c9689413036ee69f783c7805e3348dfcdbdd37a1212a6124295b14f9784e5fb4"
+    },
+    {
+      "path": "scripts/test_methodology_citation_p1_i.py",
+      "sha256": "5c8f13bf1a27550a58eefcbbbc690305902f94641c3adc9a1f131e316f43c709"
+    },
+    {
+      "path": "scripts/test_owned_directory_guard_p0_am.py",
+      "sha256": "4c270ec64eb3459e70250676c0d8622fe1000ff668cc6e4a5a19b33b12205adf"
+    },
+    {
+      "path": "scripts/test_owned_process_runner.py",
+      "sha256": "5cc58dd6200a7f7dab937f873c74571b82d5acdc7b6f420cf835db11f72b6107"
+    },
+    {
+      "path": "scripts/test_owned_process_scope_launch_state_p0_am.py",
+      "sha256": "601e86155075055bce16b64ab3dcb5fa3f6fdc980cb0f340190a3150c5a91d3a"
+    },
+    {
+      "path": "scripts/test_owned_process_scope_linux_p0_am.py",
+      "sha256": "73028fcf806f227cb9f2340d22cfd56640363f4162ce6c1344cff6b28f613a09"
+    },
+    {
+      "path": "scripts/test_phase_io_commit_authority_p0_ae.py",
+      "sha256": "a8bf2d72b2c6f78e8377fe237f45f22361f522fc0deb0dd43820399a90288033"
+    },
+    {
+      "path": "scripts/test_phaseio_p0_report_cutover_red_20260730.py",
+      "sha256": "b281b69ff3fcb2e301ba6df8f575073daaf2a633032fd9167bc34e064e7b1ec8"
+    },
+    {
+      "path": "scripts/test_program_facts_source_manifest.py",
+      "sha256": "8cb93b99e7e4434f766f5541d1d75d0966b0ee47b5de9e30e8fa77d330ea1176"
+    },
+    {
+      "path": "scripts/test_pty_worker_provider_p0_am.py",
+      "sha256": "73aea9f8a229f7693c9742905ff736d1a5bcf520131c7cbe3b24affb8f6cddfe"
+    },
+    {
+      "path": "scripts/test_rooted_path_io.py",
+      "sha256": "0f25e10c0c6c414fc54bf22f4ec2f53e2fe91487a358a73a7aaf852e7ced946b"
+    },
+    {
+      "path": "scripts/test_runbundle_real_harvest_export.py",
+      "sha256": "6e84c137432ef5d7ce25383bd0c7fdd1b8b5716dce257163c1d2537436843223"
+    },
+    {
+      "path": "scripts/test_runbundle_v2_privacy.py",
+      "sha256": "a77fcdd699cf71ee1d22b708003cf3f13ba246f77cc71232d0dd4d028be56719"
+    },
+    {
+      "path": "scripts/test_semantic_dedup_transaction_core.py",
+      "sha256": "751597bf80b007702ba2d8ff5b62cf4211de2be9431b287f20de7a547b348fac"
+    },
+    {
+      "path": "scripts/test_semantic_runtime_dependency_r6_author_adversarial.py",
+      "sha256": "11218b4f560ff0ee27480c00ca58978625f64fe8680d7883a530227e43c19d22"
+    },
+    {
+      "path": "scripts/test_semantic_wer_disposable_executor.py",
+      "sha256": "b851ce5b5b2b5d3e60f4d958c19b47a83ac1ffa9f8c36cbaa187ae20112e9a89"
+    },
+    {
+      "path": "scripts/test_severity_adjudication_work_adversarial_review_p0_ag3.py",
+      "sha256": "73629cf39fc8e8840121c20c6c68502e62088363d00b0c24b931fe075b13e981"
+    },
+    {
+      "path": "scripts/test_skeptic_execution_work_provider_v2.py",
+      "sha256": "b905b25dbd378c509d69250ab5faace3a76fde31638cacc54b2565a52afb0956"
+    },
+    {
+      "path": "scripts/test_toolchain_crossos_adversarial_reds.py",
+      "sha256": "35395253b522c6ea75f89f902c7e15f571b5e81567ba2e274d2f6ddfbff54a30"
+    },
+    {
+      "path": "scripts/test_toolchain_round51_blockers.py",
+      "sha256": "dfbac3264f1fcd91c8d58ea9339b8471b0a9722a85ea83ce4662fc3e116b9b99"
+    },
+    {
+      "path": "scripts/test_v2_post_release_fixes.py",
+      "sha256": "dd275953fc96aa2d4c92e0e4fd2eca2e3922cf88afa38fd4ff71341c176985e6"
+    },
+    {
+      "path": "scripts/test_verify_queue_durable_write_once_p0.py",
+      "sha256": "96eb682962b2454ac291234dbbc427c930ee1a84c2675df0c5fed93eb961f990"
+    },
+    {
+      "path": "scripts/test_wer_observer_independent_review_reds.py",
+      "sha256": "47675f59210694de272288361d0bb02224e2eddcff754352aae53c34ee45519c"
+    },
+    {
+      "path": "scripts/test_worker_provisional_completion_p0_am.py",
+      "sha256": "b807218831cfae6a840d8fdcc6223cf5b68d3c05adc6a28a7ba1aa798e17d384"
+    },
+    {
+      "path": "scripts/bounty/test_bb0_independent_review_blockers_20260728.py",
+      "sha256": "87f4f67dd061d1427b96b09a3a9efe285bef008d2202e74d34a618cee8a40a8e"
+    },
+    {
+      "path": "scripts/bounty/test_bb0_provider_receipt_hardening_20260728.py",
+      "sha256": "9702669714da67fa9806e0ea7deaf2e661c3fbe8c1c2bbd506d2678011832fb1"
+    },
+    {
+      "path": "scripts/bounty/test_bb0_round3_publication_repairs_20260728.py",
+      "sha256": "3faec06721225cd63e6528e32eb5ca5e224bf66a1a7277966e730b8cdec49fce"
+    },
+    {
+      "path": "scripts/bounty/test_bb_deployment_quantifier_20260727.py",
+      "sha256": "dc359a57bd8d49b19c482708cd6329beb593c23d08db7b693f1aa0ab42b4c4cf"
+    },
+    {
+      "path": "scripts/bounty/test_bb_git_executable_authority_20260728.py",
+      "sha256": "fffa901bc0e5c27530a37064f92e1126b15f72ca21377450a357e571819433ed"
+    },
+    {
+      "path": "scripts/bounty/test_bb_network_sandbox_20260727.py",
+      "sha256": "38e485db73cccbf9e48e888f9bda65564eeb135f03ff2ecddfb3ad928b01b104"
+    },
+    {
+      "path": "scripts/bounty/test_bb_repo_acquisition_20260727.py",
+      "sha256": "2d0b816bec46e4348c9ba2d1d6761614e3dd952fbef52d0f74f4d92252098aa2"
+    },
+    {
+      "path": "scripts/bounty/test_bb_toolchain_trust_root_20260727.py",
+      "sha256": "95ae6996917a62e9e185dd7a117c8a89647b31dc3ee48c25fc0dbf5076dcd6b8"
+    },
+    {
+      "path": "scripts/bounty/test_bb_wrapper_closure_20260727.py",
+      "sha256": "4cd709f8cf0940d98e1e5808cce490f62bc10db1f11187febbfc1c60a581d207"
+    },
+    {
+      "path": "scripts/bounty/test_lease_admin_20260727.py",
+      "sha256": "3e204e416d932cb63a28f6c4906a90e9d050b78ba7b199cde5ddc40d90510fb9"
+    },
+    {
+      "path": "scripts/bounty/test_runtime_closure_20260727.py",
+      "sha256": "edfb365d2022fa69d3a975eb684946892302d28d12e4c4b0a5075781e1051c30"
+    },
+    {
+      "path": "scripts/test_artifact_ledger_windows_long_path_p0_an.py",
+      "sha256": "b74495c7ea90904e2732e5b973dd374ce5e510897d105cc77fe315392d82336a"
+    },
+    {
+      "path": "scripts/test_audit_snapshot_hash_cache_adversarial_review.py",
+      "sha256": "04dcd158f8d96cd3ddf80e3da28006fbd74900b5e354f68bcaacc2c6a1520571"
+    },
+    {
+      "path": "scripts/test_auxiliary_writable_root_lease_p0_am.py",
+      "sha256": "728a4926efe0f2f77611d525de884b33c2dae339a2341279adb76016dd8661c4"
+    },
+    {
+      "path": "scripts/test_auxiliary_writable_root_recovery_p0_am.py",
+      "sha256": "31131df556f70ee74b12d0586d3812c9a691e0acc02fac525087354d21b8db03"
+    },
+    {
+      "path": "scripts/test_auxiliary_writable_root_startup_p0_am.py",
+      "sha256": "e7563a563fd3b30f6000c8c6f595848b06406d2dbd0070c79484f0023f81427c"
+    },
+    {
+      "path": "scripts/test_axis_canonical_prior_snapshot_p0_i.py",
+      "sha256": "ebabdf480eff6a94a57e4c459329bad9f032d8f2b942568e9103e1d110fdd279"
+    },
+    {
+      "path": "scripts/test_bb_verification_policy_ingress.py",
+      "sha256": "3be3c776ac69b0a799585f32c2a71723d0e6f76dad222430beeaa4a7f5e314d5"
+    },
+    {
+      "path": "scripts/test_bb_wrapper_provider_adapter_20260728.py",
+      "sha256": "602d23b4e51c9723ed4a71f910da52ebb44ab93cc153a68828e097bb23948b41"
+    },
+    {
+      "path": "scripts/test_claude_executable_observation_p0_am.py",
+      "sha256": "4e39f51317cb1ba9afcf3c08c2c7812e8c2707f08c13ce808aadca07407e000d"
+    },
+    {
+      "path": "scripts/test_claude_md_version_check.py",
+      "sha256": "d05ea5c28be2ed1e0b3669e1652e5215766a9ef492d927a87cd7531f57f631ac"
+    },
+    {
+      "path": "scripts/test_compact_retry_prompt.py",
+      "sha256": "862810b13035a8b12efa57fd761fe0dc611c3fd04ec48029359e1dd1b2ccf5c3"
+    },
+    {
+      "path": "scripts/test_contract_hardening_regression.py",
+      "sha256": "54200715440aab69e4df84f5c0fa47ee643545b94513a1dcb3c41f3ec6359e2d"
+    },
+    {
+      "path": "scripts/test_exact_scope_authority_bb.py",
+      "sha256": "79c1965ef7bd7b399ad5686a037fb506b510314ac7cf21834e4f8896e8102f83"
+    },
+    {
+      "path": "scripts/test_l1_composition_live_queue_p1_l.py",
+      "sha256": "219560275692050f5e6d4235a248cd39bb81a43e2cf84c09e6412c499835fe4f"
+    },
+    {
+      "path": "scripts/test_l1_skill_injection.py",
+      "sha256": "85b4735aecf6b02a0e31027e9e75502d7f0e864c16f48df4ec70dad19c0305e8"
+    },
+    {
+      "path": "scripts/test_live_verify_queue_main_boundary_a0.py",
+      "sha256": "a93e15c0e69139c570d51aeec1676d6b8fea131cfbeb1948f8d6029013d8746e"
+    },
+    {
+      "path": "scripts/test_live_verify_queue_prearm_presence_authority_adversarial.py",
+      "sha256": "eae40764bab14309eb98874da38d4003932b6f92764e9ff664d0c58c2a81f5e2"
+    },
+    {
+      "path": "scripts/test_mandatory_reverification_nc5.py",
+      "sha256": "93b518ddec5246887f01d285fcc6b4c82aa6d56fa7a4101acd66ef37ec4da2d6"
+    },
+    {
+      "path": "scripts/test_mechanical_gate_execution_receipts.py",
+      "sha256": "fde32286e50a78af5529001b26f7dd37fe1df2b6169e841b2c01bc8dcef64cff"
+    },
+    {
+      "path": "scripts/test_negative_closure_cutover_independent_review.py",
+      "sha256": "b0d9b331eb49fc6e8b8a935f32e45bfd77d970ce7c021880b754b5ac7063ba99"
+    },
+    {
+      "path": "scripts/test_niche_lifecycle_r5_repair.py",
+      "sha256": "dc04b3678e21049a1b7ecffc32772f53229bca5e97a735cb5314b4176d0eaf16"
+    },
+    {
+      "path": "scripts/test_niche_lifecycle_r6_authority_red.py",
+      "sha256": "a510e56f9943396b4366cb440d30c393a76b934fec62b917a3dccd9130f6659f"
+    },
+    {
+      "path": "scripts/test_p0af_v2_queue_adapter_p1_m.py",
+      "sha256": "005f4f8db75f7f4107794e1694e83ab77cd0870377ce1810ab334d41de779aeb"
+    },
+    {
+      "path": "scripts/test_persisted_scalar_type_ledger_v5_p0.py",
+      "sha256": "bc1ff76090dbda6d5a12a03edab9d6b7ba325d17ae3724a33ca21058e083474d"
+    },
+    {
+      "path": "scripts/test_phaseio_p0_inventory_successors_red_20260730.py",
+      "sha256": "25e4d81052ea5d66a993004f6212e2ba958e6a90f163ada63a0994179c434a54"
+    },
+    {
+      "path": "scripts/test_posix_path_persistence.py",
+      "sha256": "6583de2119a90876fb0e5716c8e17c19aac6aecc59136e86986e549c7105ef1a"
+    },
+    {
+      "path": "scripts/test_program_facts_phase_io_authority_regression.py",
+      "sha256": "e7a802433ee9c07cf633800ef31a75483869f5e19c60816994e3d70849093c19"
+    },
+    {
+      "path": "scripts/test_program_facts_r21_shared_seams_r7.py",
+      "sha256": "a80db772800e6e1096fbaa6aeed62bb6220f4ec21c814f852243aa785db659f2"
+    },
+    {
+      "path": "scripts/test_program_facts_r21_shared_seams_r7_r2.py",
+      "sha256": "d2604beeb08c2829eaf7c6a6619ad171b6df0c04385b3538ba366b508939c094"
+    },
+    {
+      "path": "scripts/test_program_facts_source_manifest_authority_repair.py",
+      "sha256": "313737ecd16274db58c3a9130f1fd1d7febee978b110bc09d51c244d6b96b149"
+    },
+    {
+      "path": "scripts/test_runtime_debt_consumption_authority.py",
+      "sha256": "f27615bfd82c669ce114c7e440dafac1dd48aa8c1fe9b5e78fa16088f4800fa6"
+    },
+    {
+      "path": "scripts/test_snapshot_workspace_and_prep_hardening.py",
+      "sha256": "4ee48b0c25d4a62e75a1521649f84fed8fe4311f6c5f81825ad79a9b214572be"
+    },
+    {
+      "path": "scripts/test_terminal_audit_launch_readiness.py",
+      "sha256": "96da8713a5f7b38bde91dee92db84f2eb6b1b77c88c07519371a968468aa51a8"
+    },
+    {
+      "path": "scripts/test_toolchain_round3_blockers.py",
+      "sha256": "ee6fbcca19cb8ded87fe01db42ba2a3afe8f3de8733721b71ff82007d31970d1"
+    },
+    {
+      "path": "scripts/test_toolchain_round4_blockers.py",
+      "sha256": "e9d6e0133457782f0e048acc24b5c8cf642072c2d1735dc62784e881d0868320"
+    },
+    {
+      "path": "scripts/test_typed_docs_inputs_bb.py",
+      "sha256": "6ff6f40a3cc16926a7c4c08e432fc3181bd2a7da432fcd07bea7aa13464dffce"
+    },
+    {
+      "path": "scripts/test_v2_4_2_fixes.py",
+      "sha256": "3329b7be52dd5d468b1c5ba8998269c2c0ef5fe84835c1d3bdf65242e2edeb14"
+    },
+    {
+      "path": "scripts/test_v2_4_3_fixes.py",
+      "sha256": "ef6febba9d3097a1bf20db413921538d8f10637a5b2cc6d9cb6c36c40b57ded7"
+    },
+    {
+      "path": "scripts/test_wer_claude_command_and_runtime_fingerprint_p0_am.py",
+      "sha256": "db4eb633b30eb3700fd37345da4dcdf2b2685e59f78ee18d276543f54a479fd2"
+    },
+    {
+      "path": "scripts/test_wer_claude_runtime_lifecycle_p0_am.py",
+      "sha256": "88f188efa3dc6daac92173bdb1caa3e3985f834135a3aeea2feb83ca7b939c1f"
+    },
+    {
+      "path": "scripts/test_windows_low_integrity_lease_p0_am.py",
+      "sha256": "caf38b86e58b4fad3f8d955a9f7f7dfcb940d57d0fc088a00a31a1c56d7cb91e"
+    },
+    {
+      "path": "scripts/test_worker_transaction_stage0_red_p0_am.py",
+      "sha256": "e894b89f724c94070feab1f0c09ed398c65aa13fe254f353dc6d68563332e425"
+    },
+    {
+      "path": "scripts/bounty/test_bb_human_gate_containment_20260727.py",
+      "sha256": "ecc023cf83476d99976e4f17011a492fe189d90bed28d9bdb26e4f68b7e17555"
+    },
+    {
+      "path": "scripts/test_semantic_dedup_repair_fault_matrix.py",
+      "sha256": "fe06980e00d5717381e73d1814299cc44cd62cab241e48806afb876c640295f5"
+    },
+    {
+      "path": "scripts/test_wer_windows_long_path_p0_am.py",
+      "sha256": "4a2a7c97701566faa81d6186d490c824727f88a7a1b11ee4ba8fdaf26d2caf00"
+    }
+  ],
+  "entries": [
+    {
+      "nodeid": "scripts/bounty/test_bb0_independent_review_blockers_20260728.py::test_provider_request_parent_symlink_cannot_escape_scratchpad",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb0_independent_review_blockers_20260728.py::test_rooted_exact_replay_rejects_hardlink_alias",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb0_independent_review_blockers_20260728.py::test_resume_rejects_uuid_run_directory_symlink_escape",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb0_provider_receipt_hardening_20260728.py::test_provider_preflight_rejects_hardlinked_adapter",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb0_round3_publication_repairs_20260728.py::test_review_projection_rejects_symlinked_output_directory",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb0_round3_publication_repairs_20260728.py::test_review_packet_rejects_symlinked_output_directory",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_deployment_quantifier_20260727.py::test_worker_created_expected_test_symlink_is_blocked_before_replay",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_git_executable_authority_20260728.py::test_git_authority_rejects_link_selected_from_path",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_human_gate_containment_20260727.py::test_in_root_file_alias_is_rejected_before_resolution",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_human_gate_containment_20260727.py::test_in_root_parent_directory_alias_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_network_sandbox_20260727.py::test_sandbox_authority_rejects_link_in_root_ancestry",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_repo_acquisition_20260727.py::test_blob_scope_missing_wrong_suffix_or_link_fails_closed",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_staged_runtime_contract_20260727.py::test_private_launcher_resume_preserves_real_staged_attention_authority",
+      "state": "guaranteed_current",
+      "markers": [
+        "installed_runtime"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_staged_runtime_contract_20260727.py::test_repo_proof_resolver_uses_exact_staged_execution_scope_loader",
+      "state": "guaranteed_current",
+      "markers": [
+        "installed_runtime"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_staged_runtime_contract_20260727.py::test_staged_exact_scope_fails_when_authorized_path_is_not_in_project",
+      "state": "guaranteed_current",
+      "markers": [
+        "installed_runtime"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_staged_runtime_contract_20260727.py::test_staged_typed_docs_materializes_multiple_local_and_mixed_inputs",
+      "state": "guaranteed_current",
+      "markers": [
+        "installed_runtime"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_toolchain_trust_root_20260727.py::test_external_toolchain_binding_rejects_link_ancestor",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_bb_wrapper_closure_20260727.py::test_link_directory_or_file_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_lease_admin_20260727.py::test_wrong_run_or_link_like_lease_cannot_clear",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/bounty/test_runtime_closure_20260727.py::test_link_backed_runtime_member_is_rejected_when_host_allows_links",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_application_skeptic_driver_p0_bcd.py::test_live_claude_driver_uses_provider_owned_strict_stdout",
+      "state": "guaranteed_current",
+      "markers": [
+        "provider_live"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_artifact_ledger_windows_finddata_lifecycle.py::test_windows_lexical_replay_preserves_path_semantics",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_artifact_ledger_windows_long_path_p0_an.py::test_long_path_lock_rejects_reparse_root",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_audit_snapshot_hash_cache_adversarial_review.py::test_symlink_retarget_changes_digest_even_when_target_bytes_match",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_audit_snapshot_hash_cache_adversarial_review.py::test_symlink_target_same_size_restored_mtime_edit_is_not_stale",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_audit_snapshot_hash_cache_adversarial_review.py::test_tree_walk_rejects_nested_directory_symlink_instead_of_hiding_it",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_audit_snapshot_r0_8cd.py::test_external_build_root_file_symlink_is_content_bound",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_audit_snapshot_r0_8cd.py::test_external_build_root_directory_symlink_fails_closed_loudly",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_audit_snapshot_r0_8cd.py::test_archive_rejects_escape_and_symlink_scratchpad",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_auxiliary_writable_root_lease_p0_am.py::test_no_follow_cleanup_removes_alias_not_target_and_receipt_is_idempotent",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_auxiliary_writable_root_lease_p0_am.py::test_alias_escape_target_survives_even_when_root_is_replaced",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_auxiliary_writable_root_lease_p0_am.py::test_namespace_alias_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_auxiliary_writable_root_lease_p0_am.py::test_namespace_ancestor_alias_is_rejected_before_child_creation",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_auxiliary_writable_root_recovery_p0_am.py::test_journal_rejects_duplicate_keys_and_alias_files",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_auxiliary_writable_root_recovery_p0_am.py::test_archived_terminal_replay_rejects_archive_directory_alias",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_auxiliary_writable_root_recovery_p0_am.py::test_hardlinked_journal_never_authorizes_orphan_cleanup",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_auxiliary_writable_root_startup_p0_am.py::test_receipt_hardlink_and_scratchpad_alias_are_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_axis_canonical_prior_snapshot_p0_i.py::test_symlinked_authority_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_bb_path_authority_longpath_20260729.py::test_public_rooted_read_rejects_hardlink_source_alias",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_bb_verification_policy_ingress.py::test_local_materialization_is_canonical_idempotent_and_link_safe",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_bb_wrapper_provider_adapter_20260728.py::test_public_adapter_rooted_publication_rejects_parent_symlink",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_candidate_negative_driver_p1_f.py::test_live_claude_candidate_negative_uses_shared_provider_stdout",
+      "state": "guaranteed_current",
+      "markers": [
+        "provider_live"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_ci_toolchain_independent_r3_blockers.py::test_typed_runtime_asset_rejects_ancestor_link_escape",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_ci_toolchain_independent_r3_blockers.py::test_typed_runtime_assets_reject_native_identity_alias",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_ci_toolchain_independent_r3_blockers.py::test_runtime_path_index_rejects_concurrent_ancestor_link_swap",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_attempt_profile_p0_am.py::test_postprocess_replay_rejects_credential_symlink",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_attempt_profile_p0_am.py::test_postprocess_replay_rejects_credential_hardlink_alias",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_attempt_profile_p0_am.py::test_postprocess_state_rejects_aliases[symlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_attempt_profile_p0_am.py::test_postprocess_state_rejects_aliases[hardlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_attempt_profile_p0_am.py::test_revoke_unlinks_worker_created_aliases_without_following_them",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_attempt_profile_p0_am.py::test_quarantine_cleanup_descendant_swap_never_crosses_boundary",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_executable_observation_p0_am.py::test_relative_dotdot_symlink_and_hardlink_aliases_reject",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_provider_authority_sealing_red_p0_am.py::test_one_shot_runtime_authority_cannot_be_inherited_across_fork",
+      "state": "guaranteed_current",
+      "markers": [
+        "posix_only"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_stored_subscription_source_p0_am.py::test_symlink_or_reparse_alias_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_stored_subscription_source_p0_am.py::test_hardlink_alias_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_stored_subscription_source_p0_am.py::test_private_target_authority_rejects_group_or_other_access[416]",
+      "state": "guaranteed_current",
+      "markers": [
+        "posix_only"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_claude_stored_subscription_source_p0_am.py::test_private_target_authority_rejects_group_or_other_access[388]",
+      "state": "guaranteed_current",
+      "markers": [
+        "posix_only"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_compact_retry_prompt.py::TestAccumulatePhasesUnchanged::test_rescan_retry_uses_compact_repair_not_prepend",
+      "state": "unresolved_runtime",
+      "markers": [
+        "installed_runtime"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_contract_hardening_regression.py::test_phase6_report_prompt_stays_below_context_warning_limit",
+      "state": "guaranteed_current",
+      "markers": [
+        "installed_runtime"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_exact_scope_authority_bb.py::test_exact_authority_rejects_symlink_or_reparse_path",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_l1_composition_live_queue_p1_l.py::test_symlink_stage_component_is_rejected_without_queue_mutation",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_live_verify_queue_prearm_presence_authority_adversarial.py::test_symlink_or_reparse_roster_member_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_mandatory_reverification_nc5.py::test_report_reopen_rejects_symlink_source_before_adoption",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_mechanical_gate_execution_receipts.py::test_ledger_rejects_symlink_or_reparse_ancestor",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_mechanical_gate_registry_schema.py::test_loader_and_manifest_reject_windows_alternate_data_streams",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "ntfs_ads_sparse"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_negative_closure_cutover_independent_review.py::test_bundle_directory_symlink_is_never_followed",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_niche_lifecycle_r5_repair.py::test_niche_source_hardlink_alias_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_niche_lifecycle_r5_repair.py::test_niche_source_symlink_alias_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_niche_lifecycle_r6_authority_red.py::test_projection_hardlink_is_never_authority",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_niche_lifecycle_r6_authority_red.py::test_inventory_hardlink_is_rejected_before_promotion_write",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_niche_lifecycle_r6_authority_red.py::test_lifecycle_cas_hardlink_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_owned_directory_guard_p0_am.py::test_guard_unlinks_reparse_or_symlink_without_following_target",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_owned_process_scope_linux_p0_am.py::test_trusted_helper_waits_for_parent_ack_before_exec",
+      "state": "guaranteed_current",
+      "markers": [
+        "posix_only"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_owned_process_scope_linux_p0_am.py::test_trusted_helper_parent_gate_eof_exits_without_exec",
+      "state": "guaranteed_current",
+      "markers": [
+        "posix_only"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_p0af_v2_queue_adapter_p1_m.py::test_missing_or_symlinked_authority_is_visible_debt",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_persisted_scalar_type_ledger_v5_p0.py::test_v5_private_generation_directory_alias_rejects",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_persisted_scalar_type_ledger_v5_p0.py::test_v5_private_transaction_receipt_hardlink_alias_rejects",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_phase_io_commit_authority_p0_ae.py::test_hardlink_alias_cannot_gain_second_active_owner",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_phase_io_commit_authority_p0_ae.py::test_symlink_escape_degrades_without_reading_outside_root",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_phaseio_p0_inventory_successors_red_20260730.py::test_dangling_canonical_control_path_fails_closed[_artifact_state.json]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_phaseio_p0_inventory_successors_red_20260730.py::test_dangling_canonical_control_path_fails_closed[inventory_aggregate_derivation.json]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_phaseio_p0_report_cutover_red_20260730.py::test_capture_never_accepts_transient_same_size_symlink_read",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_phaseio_p0_report_cutover_red_20260730.py::test_capture_replay_never_uses_path_following_read_bytes",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_phaseio_p0_report_cutover_red_20260730.py::test_capture_rejects_absent_path_below_symlinked_ancestor",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_phaseio_p0_report_cutover_red_20260730.py::test_capture_rejects_lexical_root_swap_before_resolution",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_phaseio_p0_report_cutover_red_20260730.py::test_capture_rejects_in_root_hardlink_to_outside_file",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_posix_path_persistence.py::test_update_path_env_routes_posix_not_windows",
+      "state": "guaranteed_current",
+      "markers": [
+        "posix_only"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_phase_io_authority_regression.py::test_post_arm_in_root_output_file_symlink_never_becomes_active",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_phase_io_authority_regression.py::test_post_arm_output_directory_reparse_never_becomes_active[directory_symlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_phase_io_authority_regression.py::test_post_arm_output_directory_reparse_never_becomes_active[junction]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_r21_shared_seams_r7.py::test_shared_ledger_hardlinked_evidence_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_r21_shared_seams_r7.py::test_shared_ledger_symlink_or_reparse_evidence_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_r21_shared_seams_r7_r2.py::test_shared_r2_parent_directory_reparse_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_source_manifest.py::test_hardlink_duplicate_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_source_manifest.py::test_tree_replay_rejects_excluded_physical_replacement_and_cross_alias",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_source_manifest.py::test_symlink_source_is_rejected_when_platform_can_create_it",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_source_manifest.py::test_project_root_rejects_symlink_in_full_ancestor_chain",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_source_manifest.py::test_tree_replay_rejects_config_root_ancestor_alias",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_source_manifest.py::test_project_root_rejects_case_alias_in_full_ancestor_chain",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_program_facts_source_manifest_authority_repair.py::test_generated_exclusion_hardlink_to_eligible_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_rooted_path_io.py::test_portable_descendant_rejects_symlink_or_reparse",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_post_promotion_live_closure_rejects_exact_late_drift_matrix[scratch-added]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_post_promotion_live_closure_rejects_exact_late_drift_matrix[scratch-removed]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_post_promotion_live_closure_rejects_exact_late_drift_matrix[scratch-renamed]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_post_promotion_live_closure_rejects_exact_late_drift_matrix[scratch-replaced-identical]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_post_promotion_live_closure_rejects_exact_late_drift_matrix[report-replaced-identical]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_post_promotion_live_closure_rejects_exact_late_drift_matrix[report-content-restored-mtime]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_post_promotion_live_closure_rejects_exact_late_drift_matrix[scratch-hardlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_post_promotion_live_closure_rejects_exact_late_drift_matrix[scratch-symlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_post_promotion_live_closure_rejects_exact_late_drift_matrix[scratch-reparse]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_final_live_closure_rejects_membership_identity_and_alias_drift[scratch-added]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_final_live_closure_rejects_membership_identity_and_alias_drift[scratch-removed]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_final_live_closure_rejects_membership_identity_and_alias_drift[scratch-renamed]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_final_live_closure_rejects_membership_identity_and_alias_drift[scratch-replaced-identical]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_final_live_closure_rejects_membership_identity_and_alias_drift[report-replaced-identical]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_final_live_closure_rejects_membership_identity_and_alias_drift[report-content-restored-mtime]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_final_live_closure_rejects_membership_identity_and_alias_drift[scratch-hardlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_final_live_closure_rejects_membership_identity_and_alias_drift[scratch-symlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_real_harvest_export.py::test_final_live_closure_rejects_membership_identity_and_alias_drift[scratch-reparse]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_v2_privacy.py::test_tree_inventory_rejects_symlinks_reparse_and_hardlinks",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_v2_privacy.py::test_physical_ntfs_alternate_data_stream_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "ntfs_ads_sparse"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_v2_privacy.py::test_physical_ntfs_directory_alternate_data_stream_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "ntfs_ads_sparse"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_v2_privacy.py::test_physical_windows_junction_is_rejected",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runbundle_v2_privacy.py::test_physical_sparse_file_is_rejected_when_supported",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "ntfs_ads_sparse"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_runtime_debt_consumption_authority.py::test_runtime_debt_json_symlink_is_not_consumed",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_semantic_dedup_repair_fault_matrix.py::test_public_output_symlink_is_never_followed_or_replaced[findings_inventory.md]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_semantic_dedup_repair_fault_matrix.py::test_public_output_symlink_is_never_followed_or_replaced[finding_records.json]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_semantic_dedup_repair_fault_matrix.py::test_public_output_symlink_is_never_followed_or_replaced[semantic_dedup_applied_receipt.json]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_semantic_dedup_repair_fault_matrix.py::test_public_output_symlink_is_never_followed_or_replaced[dedup_absorbed_map.md]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_semantic_dedup_repair_fault_matrix.py::test_public_output_symlink_is_never_followed_or_replaced[findings_inventory_deduped.md]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_semantic_dedup_repair_fault_matrix.py::test_repair_pending_symlink_is_rejected_without_public_mutation",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_semantic_dedup_repair_fault_matrix.py::test_repair_receipt_symlink_is_rejected_without_new_repair",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_semantic_dedup_transaction_core.py::test_symlink_source_and_private_root_are_rejected",
+      "state": "guaranteed_current",
+      "markers": [
+        "posix_only"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_semantic_wer_disposable_executor.py::test_semantic_executor_is_fail_closed_when_parent_death_is_unavailable",
+      "state": "guaranteed_current",
+      "markers": [
+        "posix_only"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_skeptic_execution_work_provider_v2.py::test_live_claude_2_1_214_no_tool_stdout_transport",
+      "state": "guaranteed_current",
+      "markers": [
+        "provider_live"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_snapshot_workspace_and_prep_hardening.py::test_preexisting_runtime_candidate_symlink_fails_closed",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_terminal_audit_launch_readiness.py::test_prior_report_hardlink_alias_is_omitted_from_isolated_input",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_terminal_audit_launch_readiness.py::test_forbidden_external_hardlink_alias_is_rejected_before_content_hashing",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_terminal_audit_launch_readiness.py::test_source_symlink_that_escapes_project_fails_before_seal_or_copy",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_terminal_audit_launch_readiness.py::test_source_symlink_into_excluded_prior_tree_fails_closed",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_terminal_audit_launch_readiness.py::test_relative_in_tree_file_symlink_is_preserved_after_exact_validation",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_terminal_audit_launch_readiness.py::test_seal_records_but_never_follows_link_inside_excluded_prior_tree",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_terminal_audit_launch_readiness.py::test_receipt_parent_link_is_rejected_without_writing_through_it",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_toolchain_round3_blockers.py::test_project_hardlink_alias_cannot_authorize_executable",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_toolchain_round3_blockers.py::test_project_hardlink_alias_rejects_control_pair",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_toolchain_round4_blockers.py::test_control_pair_rejects_symlinked_ancestor",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_typed_docs_inputs_bb.py::test_typed_docs_rejects_root_symlink_or_reparse_input",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_verify_queue_durable_write_once_p0.py::test_write_once_publish_requests_parent_directory_durability",
+      "state": "guaranteed_current",
+      "markers": [
+        "posix_only"
+      ],
+      "reason": "predicate is guaranteed true on the authenticated R10 host and cannot enter the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_claude_runtime_lifecycle_p0_am.py::test_durable_arm_and_completion_mutations_fail_replay[arm]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_claude_runtime_lifecycle_p0_am.py::test_durable_arm_and_completion_mutations_fail_replay[completion]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_wer_persists_replays_and_reuses_boundary_blobs[259]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_wer_persists_replays_and_reuses_boundary_blobs[260]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_wer_persists_replays_and_reuses_boundary_blobs[261]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_wtx_executes_with_long_attempt_scoped_semantic_inputs",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_wer_replays_from_a_long_nested_evidence_root[238]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_wer_replays_from_a_long_nested_evidence_root[270]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_wtx_reconcile_enumerates_long_existing_phase_tree[238]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_wtx_reconcile_enumerates_long_existing_phase_tree[270]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_incorporation_crosses_wer_wtx_and_artifact_ledger[150]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_incorporation_crosses_wer_wtx_and_artifact_ledger[151]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_incorporation_crosses_wer_wtx_and_artifact_ledger[155]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_wer_windows_long_path_p0_am.py::test_public_incorporation_crosses_wer_wtx_and_artifact_ledger[160]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "windows_only",
+        "path_envelope"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_windows_low_integrity_lease_p0_am.py::test_symlink_root_and_symlink_member_are_never_followed",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_worker_transaction_stage0_red_p0_am.py::test_staged_aliases_are_rejected_as_typed_debt[symlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_worker_transaction_stage0_red_p0_am.py::test_staged_aliases_are_rejected_as_typed_debt[hardlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_worker_transaction_stage0_red_p0_am.py::test_staged_aliases_are_rejected_as_typed_debt[reparse]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "reparse_or_junction"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_worker_transaction_stage0_red_p0_am.py::test_staged_reader_rejects_aliases_created_outside_the_worker[symlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "symlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    },
+    {
+      "nodeid": "scripts/test_worker_transaction_stage0_red_p0_am.py::test_staged_reader_rejects_aliases_created_outside_the_worker[hardlink]",
+      "state": "unresolved_runtime",
+      "markers": [
+        "hardlink"
+      ],
+      "reason": "runtime capability can reach pytest.skip and is unproven for the production numerator"
+    }
+  ]
+}

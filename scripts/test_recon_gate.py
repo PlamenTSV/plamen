@@ -227,6 +227,67 @@ def test_RECON_scope_leftover_real_uncovered_still_flagged():
         )
 
 
+def test_RECON_whole_module_heading_ack_exempts_coverage():
+    """Whole-module heading plus explicit status is valid scope authority."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "project"
+        sp = Path(td) / "scratch"
+        module = root / "lib" / "forge-std" / "src"
+        module.mkdir(parents=True)
+        sp.mkdir()
+        for idx in range(17):
+            (module / f"Helper{idx}.sol").write_text(
+                "pragma solidity ^0.8.0; contract Helper {}\n",
+                encoding="utf-8",
+            )
+        (sp / "recon_summary.md").write_text(
+            "# Recon\n\nCovered contracts/Protocol.sol\n",
+            encoding="utf-8",
+        )
+        (sp / "scope_leftover.md").write_text(
+            "# Scope Leftover\n\n"
+            "## `lib/forge-std` (vendored Foundry test tooling)\n\n"
+            "**Status**: ACKNOWLEDGED -- OUT_OF_SCOPE\n\n"
+            "Not imported by production contracts.\n",
+            encoding="utf-8",
+        )
+        issues = D._validate_recon_coverage(
+            sp, str(root), "evm", None, pipeline="sc"
+        )
+        check(
+            "RECON.whole-module-heading-ack",
+            not any("lib/forge-std" in issue for issue in issues),
+            repr(issues),
+        )
+
+
+def test_RECON_whitelisted_forge_std_is_not_a_production_coverage_module():
+    """Vendored Foundry test tooling is dependency research, not source scope."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "project"
+        sp = Path(td) / "scratch"
+        module = root / "lib" / "forge-std" / "src"
+        module.mkdir(parents=True)
+        sp.mkdir()
+        for idx in range(17):
+            (module / f"Helper{idx}.sol").write_text(
+                "pragma solidity ^0.8.0; contract Helper {}\n",
+                encoding="utf-8",
+            )
+        (sp / "recon_summary.md").write_text(
+            "# Recon\n\nCovered contracts/Protocol.sol\n",
+            encoding="utf-8",
+        )
+        issues = D._validate_recon_coverage(
+            sp, str(root), "evm", None, pipeline="sc"
+        )
+        check(
+            "RECON.whitelisted-forge-std-not-production-denominator",
+            not any("lib/forge-std" in issue for issue in issues),
+            repr(issues),
+        )
+
+
 def test_PREPASS_writes_sc_recon_stubs():
     """v2.8.6: pre-pass writes stubs for all 4 supplementary SC artifacts."""
     import recon_prepass as RP
@@ -247,6 +308,9 @@ def test_PREPASS_writes_sc_recon_stubs():
             "scratchpad": str(scratch),
             "language": "evm",
             "pipeline": "sc",
+            "mode": "core",
+            "cli_backend": "claude",
+            "_run_id": "test-recon-gate-stubs",
         }
         RP.run_recon_prepass(cfg)
         for name in ("attack_surface.md", "detected_patterns.md",
@@ -264,8 +328,8 @@ def test_PREPASS_writes_sc_recon_stubs():
                 check(f"PREPASS.marker-{name}", has_marker, "missing prepass marker")
 
 
-def test_PREPASS_does_not_clobber_llm_content():
-    """v2.8.6: pre-pass stubs don't overwrite LLM-enriched artifacts."""
+def test_PREPASS_rejects_and_preserves_unowned_llm_content():
+    """Prepass fails closed instead of overwriting an unowned artifact."""
     import recon_prepass as RP
 
     with tempfile.TemporaryDirectory() as td:
@@ -284,13 +348,20 @@ def test_PREPASS_does_not_clobber_llm_content():
             "scratchpad": str(scratch),
             "language": "evm",
             "pipeline": "sc",
+            "mode": "core",
+            "cli_backend": "claude",
+            "_run_id": "test-recon-gate-preserve",
         }
-        RP.run_recon_prepass(cfg)
+        try:
+            RP.run_recon_prepass(cfg)
+            rejected = False
+        except RP.ReconPrepassAuthorityError:
+            rejected = True
         preserved = (scratch / "attack_surface.md").read_text(encoding="utf-8")
         check(
-            "PREPASS.no-clobber-llm",
-            preserved == llm_content,
-            f"LLM content was overwritten: {preserved[:100]}",
+            "PREPASS.reject-preserve-unowned-llm",
+            rejected and preserved == llm_content,
+            f"rejected={rejected}; content={preserved[:100]}",
         )
 
 
@@ -473,9 +544,10 @@ TESTS = [
     test_RECON_placeholder_ignores_source_code_todos,
     test_RECON_scope_leftover_coverage_description_ack,
     test_RECON_scope_leftover_real_uncovered_still_flagged,
+    test_RECON_whole_module_heading_ack_exempts_coverage,
     # v2.8.6: Codex recon resilience
     test_PREPASS_writes_sc_recon_stubs,
-    test_PREPASS_does_not_clobber_llm_content,
+    test_PREPASS_rejects_and_preserves_unowned_llm_content,
     test_RETRY_HINT_stub_only_class,
     test_RETRY_HINT_mixed_stub_and_coverage,
     test_SUPPLEMENTARY_softening_passes_gate,

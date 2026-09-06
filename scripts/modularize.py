@@ -40,6 +40,7 @@ ASSIGNMENT = {
     "EXIT_RATE_LIMITED": "types",
     "EXIT_DEGRADED": "types",
     "EXIT_CONFIG_MISSING": "types",
+    "EXIT_STARTUP_DECISION": "types",
     "EXIT_HIBERNATING": "types",
     "log": "types",
     "_NEVER_CUT_SKIP_REASONS": "types",

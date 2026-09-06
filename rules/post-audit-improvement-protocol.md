@@ -244,6 +244,24 @@ an agent prompt to explain a NEW concept the agent must apply, the change is
 not `mechanical-gate` — reclassify under the normal tree (most likely
 `new-rule`) or back it out to RC-AGENT/no-fix.
 
+#### Mechanical-Gate Decision Classes
+
+Every registry record declares exactly one authority class and provides
+**class-specific admission evidence**. M1-M4 is not a universal admission
+contract:
+
+| Decision class | Admission evidence | Authority boundary |
+|---|---|---|
+| `RC_AGENT_MECHANIZABLE` | M1 recurring in at least three independent audits; M2 deterministic; M3 generic and Part-0 clean; M4 verify-filtered | Narrow post-audit escape hatch. M4 remains mandatory for `RC_AGENT_MECHANIZABLE`. |
+| `RECALL_GENERATOR` | M1-M3; exact or visible lower-bound denominator; independent downstream verification and delivery; measured cost/noise; no terminal finding authority | May add or reopen only. M4 is structurally inapplicable to `RECALL_GENERATOR` because generation precedes verification. |
+| `PIPELINE_INTEGRITY` | Deterministic correctness/safety proof; typed inputs and outputs; fault and resume evidence; fail-closed or recall-open behavior; Part-0 pass | Protects execution, retention, transaction, proof, or ship integrity. Recurrence and verify filtering are not admission predicates. |
+| `PRECISION_DISCRIMINATOR` | M2-M3; typed decision evidence; independent review; recall-safe fallback; neutral held-out precision and recall evidence before new destructive authority | May cap, route, consolidate, or reduce authority only from typed evidence. Missing or invalid authority preserves the upstream state. |
+| `TELEMETRY_ONLY` | M2-M3; exact denominator semantics or visible lower-bound debt; typed delivery; Part-0 pass | Cannot change a finding, obligation, severity, proof state, execution decision, or ship state. |
+
+All classes independently pass Part 0. Moving a gate to a class with broader
+authority is a new proposal, not a metadata edit. The Step 2.5 and Part 3a
+M1-M4 requirements remain unchanged for `RC_AGENT_MECHANIZABLE`.
+
 #### Mandatory Mechanical-Gate Lifecycle Registry and Review Contract
 
 Every proposed or shipped mechanical gate MUST have exactly one authoritative
@@ -266,10 +284,9 @@ Each registry record MUST define:
    reconciles, caps, floors, flags, or routes, and the monotonicity claim.
 3. **Input/output contract** — authoritative artifacts and schema versions,
    identifier/join rules, emitted artifacts/receipts, and downstream consumers.
-4. **M1–M4 evidence** — recurrence evidence, proof the predicate is
-   deterministic without model judgment, Part-0 genericity result, and the
-   verify-filter boundary. Passing M1–M4 admits design review; it does not prove
-   the implementation safe.
+4. **Class-specific admission evidence** — the exact evidence required by the
+   declared decision class above. Admission describes the authority type; it
+   does not prove the implementation safe.
 5. **Failure/degrade contract** — behavior for absent, malformed, stale, split,
    duplicate, or contradictory inputs; haltless behavior must surface UNKNOWN or
    human review and must not masquerade as CLEAR.
@@ -304,8 +321,16 @@ Each registry record MUST define:
     The record MUST cite a gate-inventory artifact and digest for the baseline
     and list stable `baseline_gate_ids`, `addition_gate_ids`, and
     `release_gate_ids`. Counts MUST equal the cardinality of those sets; all
-    counts are non-negative integers; the sets are pairwise disjoint;
-    `release_gate_ids` MUST be a subset of the cited baseline inventory; and
+    counts are non-negative integers; and these exact set equations apply:
+
+    ```text
+    addition_gate_ids ∩ baseline_gate_ids = empty
+    addition_gate_ids ∩ release_gate_ids = empty
+    release_gate_ids ⊆ baseline_gate_ids
+    post_change_gate_ids =
+        (baseline_gate_ids - release_gate_ids) ∪ addition_gate_ids
+    ```
+
     `approved_slot_releases <= active_gate_count`. The canonical registry's
     `migration_status` blocks every new `SHADOW/REPLAY` or `ACTIVE` transition
     until a complete baseline has been independently inventoried and approved;
@@ -325,7 +350,7 @@ Each registry record MUST define:
     an explicit recall tradeoff. Anti-bloat never silently spends recall.
 
     An over-ceiling exception MUST record `exception_approver`,
-    `temporary_ceiling_delta`, `exception_rationale`, `review_by`, and a
+    `temporary_ceiling_delta`, `exception_rationale_code`, `review_by`, and a
     distinct `expires_on`, backed by held-out evidence other than the motivating
     audit, and MUST satisfy `post_change_gate_count <= gate_budget_ceiling +
     temporary_ceiling_delta`. At expiry the exceptional gate automatically returns to a non-runtime
@@ -333,11 +358,19 @@ Each registry record MUST define:
     must return to its ordinary ceiling. Renewal cannot rely only on the
     original motivating evidence.
 
-Lifecycle states are `PROPOSED → FIXTURED → SHADOW/REPLAY → ACTIVE →
-CONSOLIDATED|SUNSET`. Promotion to `ACTIVE` requires independent review of the
-record and diff. The motivating audit is regression evidence only; it cannot be
-the sole held-out validation. Any schema/cutover change reopens review at
-`PROPOSED`, even when the predicate itself is unchanged.
+Lifecycle progression is `PROPOSED → FIXTURED → SHADOW/REPLAY → ACTIVE`.
+Terminal or blocked states are `CONSOLIDATED`, `SUNSET`, and
+`EXPIRED_BLOCKED`; an expired record may re-enter only as
+`EXPIRED_BLOCKED → PROPOSED` under a fresh reviewed proposal. Existing
+production predicates enter the first v2
+baseline only as `LEGACY_ACTIVE_UNGOVERNED` with admission
+`LEGACY_UNASSESSED`. Until literal wrappers and PhaseIO contracts are migrated,
+their activation is `LEGACY_NOT_MIGRATED`: source-bound inventory debt that
+does not grant runtime authority. While this allowance exists, new runtime
+transitions remain blocked. Promotion to `ACTIVE` requires independent review
+of the record and diff. The motivating audit is regression evidence only; it
+cannot be the sole held-out validation. Any schema/cutover change reopens
+review at `PROPOSED`, even when the predicate itself is unchanged.
 
 ### Change Type Risk Tiers
 
@@ -481,7 +514,7 @@ Each proposed change goes through this template before implementation:
 ## Mechanical-Gate Registry Record
 <!-- Required when Type = mechanical-gate; approved generic values are persisted
      to rules/mechanical-gate-registry.json, the authoritative record. -->
-- **Gate ID / lifecycle state**: {stable ID} / {PROPOSED | FIXTURED | SHADOW/REPLAY | ACTIVE | CONSOLIDATED | SUNSET}
+- **Gate ID / lifecycle state**: {stable ID} / {PROPOSED | FIXTURED | SHADOW/REPLAY | ACTIVE | CONSOLIDATED | SUNSET | EXPIRED_BLOCKED}
 - **Owning seam**: {STARTUP_RESUME | PRE_DISCOVERY | POST_DISCOVERY | PRE_VERIFY | POST_VERIFY | REPORT_ASSEMBLY}
 - **Gate-inventory baseline artifact / SHA-256 / committed revision**: {path} / {digest} / {revision}
 - **System-owner ceiling approval revision / approver**: {revision predating this proposal} / {owner}
@@ -496,7 +529,7 @@ Each proposed change goes through this template before implementation:
 - **Slot-release recall evidence**: {held-out parity, subsumption proof, unique-TP analysis, independent reviewer; or N/A}
 - **Approved recall tradeoff**: {system-owner decision and measured loss; or N/A}
 - **Exception approver / temporary ceiling delta**: {owner} / {integer; or N/A}
-- **Exception rationale / held-out evidence**: {reason and evidence not limited to motivating audit; or N/A}
+- **exception_rationale_code / held-out evidence**: {closed reason code and evidence not limited to motivating audit; or N/A}
 - **review_by / expires_on**: {date} / {distinct hard-expiry date; or N/A}
 - **Expiry action**: {return gate to non-runtime state and ordinary seam ceiling; or N/A}
 

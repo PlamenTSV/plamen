@@ -7,7 +7,7 @@ description: "Type Reference document (prevents method signature hallucination) 
 
 > **Type**: Reference document (prevents method signature hallucination)
 > **Trigger**: `trident_available: true` in `build_status.md`
-> **Loaded by**: Invariant fuzz generator (Phase 4b), security-verifier Template 6 (Phase 5)
+> **Inject Into**: Invariant fuzz generator (Phase 4b), security-verifier Template 6 (Phase 5)
 > **Version**: Trident v0.12.0 (Ackee Blockchain Security)
 > **Important**: Check `trident --version` before using. If version differs, warn and proceed with caution.
 

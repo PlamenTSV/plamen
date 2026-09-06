@@ -12,15 +12,31 @@ Status: WRITTEN | STUB | FAILED | SKIPPED
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import os
 import re
+import shlex
 import shutil
-import signal
-import subprocess
+import stat
 import sys
 import tempfile
+import tomllib
+from contextlib import contextmanager
+from subprocess import TimeoutExpired
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 try:
     # Canonical checkout root, backend-agnostic (PLAMEN_HOME env -> script-relative).
@@ -39,12 +55,58 @@ except Exception:  # pragma: no cover - standalone/fallback
 # `supply_chain_gate.DEFAULT_IOC_DENYLIST` / `_call_offline_scanner` through
 # this module's namespace for monkeypatching.
 import supply_chain_gate
+import audit_snapshot as _audit_snapshot_authority
+import rooted_path_io as _rooted_io
 from supply_chain_gate import SupplyChainAbortError, gate_supply_chain
 from production_source_scope import (
     PRODUCTION_SOURCE_SKIP_NAME_RE,
     PRODUCTION_SOURCE_SKIP_PARTS,
     is_production_source_path,
 )
+from tool_coverage_ledger import (
+    PRECISE_GRAPH_ARTIFACTS,
+    ToolOutcome,
+    ToolOutcomeState,
+    ToolCoverageLedgerError,
+    bind_succeeded_tool_outcome,
+    build_context_bound_tool_outcome_envelope,
+    build_tool_execution_context,
+    load_toolchain_governance,
+    record_tool_outcome,
+)
+from owned_process_runner import (
+    OwnedProcessRunnerError,
+    run_owned_process as _run_owned_process_direct,
+    run_owned_process_isolated as _run_owned_process_isolated,
+)
+# The disposable host is currently Windows-only.  On Windows it keeps the
+# low-integrity lease and provider Job out of the long-lived audit driver, so a
+# containment quarantine dies with the executor.  Other supported platforms
+# retain the native direct runner until they have an equally strong host.
+run_owned_process = (
+    _run_owned_process_isolated
+    if os.name == "nt"
+    else _run_owned_process_direct
+)
+from audit_snapshot import (
+    build_production_source_path_authority as _build_source_path_authority,
+    capture_command_provider_authority as _capture_command_provider_authority,
+    capture_python_provider_authority as _capture_python_provider_authority,
+    provider_authority_replays as _provider_authority_replays,
+)
+from artifact_ledger import (
+    ArtifactLedgerError,
+    ArtifactLedgerCASMismatch,
+    artifact_ledger_digest,
+    compare_and_swap_artifact_ledger,
+    read_artifact_ledger,
+    record_work_unit_artifacts,
+    record_work_unit_inputs,
+    validate_work_unit_artifacts,
+    validate_work_unit_inputs,
+    write_artifact_ledger,
+)
+from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
 
 # Module logger. `_scip_to_graph_artifacts` emits a log.warning on the
 # large-index (>callee-node-cap) PARTIAL path; without this module-level logger
@@ -56,15 +118,36 @@ log = logging.getLogger("plamen.recon_prepass")
 SKIP_DIR_NAMES = {
     "node_modules", ".git", "target", "build", "out", "artifacts", "cache",
     "dist", ".venv", "venv", "__pycache__", ".next", ".idea", ".vscode",
-    "lib", "forge-cache", ".foundry", ".anchor", ".aptos", ".sui",
+    "forge-cache", ".foundry", ".anchor", ".aptos", ".sui",
 }
+
+
+def _prune_walk_dirs(
+    walk_root: Path,
+    dirpath: str | Path,
+    dirnames: List[str],
+    *,
+    skip_dir_names=SKIP_DIR_NAMES,
+    dependency_roots: Iterable[Path] = (),
+) -> List[str]:
+    frozen_dependency_roots = {
+        Path(path).resolve() for path in dependency_roots
+    }
+    return [
+        name
+        for name in dirnames
+        if name not in skip_dir_names
+        and not name.startswith(".")
+        and (Path(dirpath) / name).resolve() not in frozen_dependency_roots
+    ]
 
 # Dirs that never hold source a WHOLE-PROJECT compiler will build (build
 # output / VCS / tooling caches). Deliberately does NOT skip dependency dirs
 # (`lib/`, `node_modules/`): a whole-project `forge build` / `hardhat compile`
 # compiles imported library sources, so they MUST be counted when sizing a
 # build-timeout ceiling. Sizing off `_production_source_files` (which skips
-# `lib/` via SKIP_DIR_NAMES) undercounts the compiler's real load by ~10x on
+# the configured Foundry dependency roots) can undercount the compiler's real
+# load by roughly 10x on
 # dependency-heavy repos and caused cold-cache builds to time out (a 652s
 # budget sized from 13 in-scope files for a real 188-file compile). Over-
 # counting is safe: the hardened runner returns as soon as the build finishes,
@@ -75,11 +158,96 @@ COMPILE_UNIT_SKIP_DIR_NAMES = {
     ".foundry", ".anchor", ".aptos", ".sui",
 }
 
-def _iter_files(root: Path, suffixes: Tuple[str, ...]) -> List[Path]:
+def _read_toml(path: Path) -> dict:
+    try:
+        with path.open("rb") as stream:
+            value = tomllib.load(stream)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _read_toml_strict(path: Path, label: str) -> dict:
+    """Read a build-authority TOML file without hiding parse failures."""
+    try:
+        with path.open("rb") as stream:
+            value = tomllib.load(stream)
+    except Exception as exc:
+        raise BuildContextResolutionError(
+            f"{label} is unreadable: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(value, dict):
+        raise BuildContextResolutionError(f"{label} is unreadable: root is not a table")
+    return value
+
+
+def _nearest_upward_file(start: Path, name: str, max_ancestors: int = 12) -> Optional[Path]:
+    cur = start.resolve()
+    for _ in range(max_ancestors + 1):
+        candidate = cur / name
+        if candidate.is_file():
+            return candidate
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    return None
+
+
+def _foundry_dependency_roots(scope: Path) -> Tuple[Path, ...]:
+    """Return configured Foundry library roots, relative to the manifest owner.
+
+    A directory named ``lib`` only denotes dependencies when the effective
+    Foundry configuration says so.  This keeps ``repo/contracts/lib`` in scope
+    when ``repo/foundry.toml`` owns ``repo/lib``, and it respects projects that
+    deliberately configure a different ``libs`` directory.
+    """
+    manifest = _nearest_upward_file(scope, "foundry.toml")
+    if manifest is None:
+        # Bare-source EVM scopes are scaffolded with Foundry's conventional
+        # `libs = ["lib"]` before binding.  Mirror that deterministic future
+        # configuration during pre-scaffold enumeration.
+        return ((scope.resolve() / "lib").resolve(),)
+    data = _read_toml(manifest)
+    configured: list[str] = []
+    profile = data.get("profile")
+    if isinstance(profile, dict):
+        # Any selectable profile may be used by recon/verification.  Binding
+        # the union is conservative; excluding only one profile's libs is not.
+        for value in profile.values():
+            if not isinstance(value, dict):
+                continue
+            libs = value.get("libs")
+            if isinstance(libs, str):
+                configured.append(libs)
+            elif isinstance(libs, list):
+                configured.extend(str(item) for item in libs if isinstance(item, str))
+    top_level = data.get("libs")
+    if isinstance(top_level, str):
+        configured.append(top_level)
+    elif isinstance(top_level, list):
+        configured.extend(str(item) for item in top_level if isinstance(item, str))
+    if not configured:
+        configured = ["lib"]
+    roots = []
+    for value in configured:
+        candidate = (manifest.parent / value).resolve()
+        roots.append(candidate)
+    return tuple(sorted(set(roots), key=lambda path: str(path).casefold()))
+
+
+def _iter_files(
+    root: Path,
+    suffixes: Tuple[str, ...],
+    *,
+    dependency_roots: Iterable[Path] = (),
+) -> List[Path]:
     out: List[Path] = []
     root = root.resolve()
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES and not d.startswith(".")]
+        dirnames[:] = _prune_walk_dirs(
+            root, dirpath, dirnames, dependency_roots=dependency_roots
+        )
         for name in filenames:
             if name.endswith(suffixes):
                 out.append(Path(dirpath) / name)
@@ -90,8 +258,11 @@ def _is_production_source_path(path: Path, root: Path) -> bool:
     return is_production_source_path(path, root)
 
 def _production_source_files(root: Path, suffixes: Tuple[str, ...]) -> List[Path]:
+    dependency_roots: Tuple[Path, ...] = ()
+    if any(suffix.lower() in {".sol", ".vy"} for suffix in suffixes):
+        dependency_roots = _foundry_dependency_roots(root)
     return [
-        p for p in _iter_files(root, suffixes)
+        p for p in _iter_files(root, suffixes, dependency_roots=dependency_roots)
         if _is_production_source_path(p, root)
     ]
 
@@ -781,11 +952,12 @@ def _graph_implies_compiles(graph_status: Optional[str], lang: str) -> bool:
 
 def _select_build(proj: Path, lang: str) -> Optional[str]:
     if lang == "evm":
-        # foundry.toml AT or ABOVE the scope dir (audit scope is often `src/`
-        # while the Foundry root is one or more levels up).
-        if shutil.which("forge") and _resolve_evm_build_root(proj) is not None:
+        # Use one canonical resolver for snapshot, build, and Slither.  Audit
+        # scopes are often a source dir or umbrella above the actual project.
+        root = _resolve_evm_build_root(proj)
+        if root is not None and (root / "foundry.toml").is_file() and shutil.which("forge"):
             return "evm_forge"
-        if list(proj.glob("hardhat.config.*")) and shutil.which("npx"):
+        if root is not None and list(root.glob("hardhat.config.*")) and shutil.which("npx"):
             return "evm_hardhat"
         return None
     if lang in ("solana", "soroban") and shutil.which("cargo"):
@@ -838,8 +1010,7 @@ def _find_build_root_downward(
             d = Path(dirpath)
             if len(d.parts) - base_depth >= max_depth:
                 dirnames[:] = []
-            dirnames[:] = [x for x in dirnames
-                           if x not in SKIP_DIR_NAMES and not x.startswith(".")]
+            dirnames[:] = _prune_walk_dirs(proj, dirpath, dirnames)
             if any(m in filenames for m in manifest_names):
                 candidates.append(d)
         if not candidates:
@@ -884,7 +1055,7 @@ def _resolve_build_root(proj: Path, lang: str, max_ancestors: int = 4) -> Option
 
 
 def _resolve_evm_build_root(proj: Path, max_ancestors: int = 4) -> Optional[Path]:
-    """Resolve the Foundry root for an EVM audit scope.
+    """Resolve the canonical Foundry or Hardhat root for an EVM audit scope.
 
     Walk UP first: the scope is frequently a SOURCE subdir (e.g.
     `.../smart-contracts/src`) while `foundry.toml` + `remappings.txt` + `lib/`
@@ -897,7 +1068,7 @@ def _resolve_evm_build_root(proj: Path, max_ancestors: int = 4) -> Optional[Path
     cur = proj.resolve()
     for _ in range(max_ancestors + 1):
         try:
-            if (cur / "foundry.toml").exists():
+            if (cur / "foundry.toml").exists() or list(cur.glob("hardhat.config.*")):
                 return cur
         except Exception:
             pass
@@ -906,7 +1077,970 @@ def _resolve_evm_build_root(proj: Path, max_ancestors: int = 4) -> Optional[Path
             break
         cur = parent
     # Walk-up failed → monorepo: search downward for the Foundry sub-project.
-    return _find_build_root_downward(proj, ("foundry.toml",), (".sol",))
+    return _find_build_root_downward(
+        proj,
+        (
+            "foundry.toml", "hardhat.config.ts", "hardhat.config.js",
+            "hardhat.config.cjs", "hardhat.config.mjs",
+        ),
+        (".sol", ".vy"),
+    )
+
+
+_SNAPSHOT_BUILD_ROOT_SPECS = {
+    ("sc", "evm"): (
+        (
+            "foundry.toml",
+            "hardhat.config.ts",
+            "hardhat.config.js",
+            "hardhat.config.cjs",
+            "hardhat.config.mjs",
+        ),
+        (".sol", ".vy"),
+    ),
+    ("sc", "solana"): (("Anchor.toml", "Cargo.toml"), (".rs",)),
+    ("sc", "soroban"): (("Cargo.toml",), (".rs",)),
+    ("sc", "aptos"): (("Move.toml",), (".move",)),
+    ("sc", "sui"): (("Move.toml",), (".move",)),
+    ("sc", "daml"): (("daml.yaml", "Daml.toml"), (".daml",)),
+    ("l1", "go"): (("go.work", "go.mod"), (".go", ".proto")),
+    ("l1", "rust"): (("Cargo.toml",), (".rs", ".proto")),
+}
+
+
+class BuildContextResolutionError(RuntimeError):
+    """A declared build input cannot be placed inside the frozen closure."""
+
+
+_MAX_BUILD_CONTEXT_MANIFESTS = 5000
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _select_js_lock_authority(root: Path) -> tuple[Optional[str], Optional[str]]:
+    """Resolve one immutable JavaScript installer without guessing.
+
+    Multiple package-manager locks are common in stale repositories.  Their
+    dependency graphs need not agree, so filename priority is not an
+    authority.  A valid ``packageManager`` field selects the matching lock;
+    otherwise exactly one lock family must be present.
+    """
+    families: List[str] = []
+    if (root / "pnpm-lock.yaml").is_file():
+        families.append("pnpm")
+    if (root / "yarn.lock").is_file():
+        families.append("yarn")
+    if (
+        (root / "package-lock.json").is_file()
+        or (root / "npm-shrinkwrap.json").is_file()
+    ):
+        families.append("npm")
+
+    declared = ""
+    try:
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        raw = package.get("packageManager") if isinstance(package, dict) else ""
+        if isinstance(raw, str):
+            declared = raw.split("@", 1)[0].strip().lower()
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        declared = ""
+
+    if declared:
+        if declared not in {"npm", "pnpm", "yarn"}:
+            return None, (
+                "UNSUPPORTED_JS_PACKAGE_MANAGER: packageManager declares "
+                f"{declared!r}; no deterministic installer is configured"
+            )
+        if declared not in families:
+            return None, (
+                "JS_PACKAGE_MANAGER_LOCK_MISMATCH: packageManager declares "
+                f"{declared!r} but its immutable lock is absent"
+            )
+        return declared, None
+    if len(families) == 1:
+        return families[0], None
+    if not families:
+        return None, (
+            "NO_IMMUTABLE_JS_LOCK: package.json is present without an "
+            "immutable lock"
+        )
+    return None, (
+        "AMBIGUOUS_JS_LOCKS: multiple package-manager lock families are "
+        f"present ({', '.join(families)}) without a packageManager authority"
+    )
+
+
+def _ancestor_dirs(start: Path, max_ancestors: int = 16) -> List[Path]:
+    out: List[Path] = []
+    cur = start.resolve()
+    for _ in range(max_ancestors + 1):
+        out.append(cur)
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    return out
+
+
+def _cargo_path_dependencies(data: dict) -> List[str]:
+    paths: List[str] = []
+
+    def visit(value, key: str = "", dependency_context: bool = False) -> None:
+        if not isinstance(value, dict):
+            return
+        dependency_context = dependency_context or key in {
+            "dependencies", "dev-dependencies", "build-dependencies",
+            "patch", "replace",
+        }
+        if key in {"dependencies", "dev-dependencies", "build-dependencies"}:
+            for dependency in value.values():
+                if isinstance(dependency, dict) and isinstance(dependency.get("path"), str):
+                    paths.append(dependency["path"])
+        elif dependency_context and isinstance(value.get("path"), str):
+            paths.append(value["path"])
+        for child_key, child in value.items():
+            if isinstance(child, dict):
+                visit(child, str(child_key), dependency_context)
+
+    visit(data)
+    return sorted(set(paths))
+
+
+def _cargo_workspace_root(proj: Path) -> tuple[Optional[Path], Optional[Path]]:
+    """Return ``(workspace_root, nearest_package_manifest)`` for *proj*."""
+    nearest = _nearest_upward_file(proj, "Cargo.toml")
+    if nearest is None:
+        return None, None
+    nearest_data = _read_toml(nearest)
+    package = nearest_data.get("package")
+    explicit = package.get("workspace") if isinstance(package, dict) else None
+    if isinstance(explicit, str) and explicit.strip():
+        root = (nearest.parent / explicit).resolve()
+        manifest = root / "Cargo.toml"
+        if not manifest.is_file() or not isinstance(_read_toml(manifest).get("workspace"), dict):
+            raise BuildContextResolutionError(
+                f"Cargo package.workspace does not resolve to a workspace manifest: {explicit}"
+            )
+        return root, nearest
+
+    # Cargo selects the nearest enclosing workspace.  Looking past the nearest
+    # package manifest is essential for `workspace/crates/app` audit scopes.
+    for directory in _ancestor_dirs(nearest.parent):
+        manifest = directory / "Cargo.toml"
+        data = _read_toml(manifest) if manifest.is_file() else {}
+        workspace = data.get("workspace")
+        if isinstance(workspace, dict):
+            try:
+                relative = nearest.parent.relative_to(directory).as_posix()
+            except ValueError:
+                continue
+            excluded = False
+            for pattern in workspace.get("exclude", []) or []:
+                if not isinstance(pattern, str):
+                    continue
+                normalized = pattern.replace("\\", "/").rstrip("/")
+                if relative == normalized or Path(relative).match(normalized):
+                    excluded = True
+                    break
+            if excluded:
+                # Cargo's explicit exclude is an authority boundary: the crate
+                # builds as an independent package rather than inheriting the
+                # ancestor workspace lock/configuration.
+                return nearest.parent.resolve(), nearest
+            return directory.resolve(), nearest
+    return nearest.parent.resolve(), nearest
+
+
+def _cargo_workspace_path_excluded(
+    workspace_root: Path, candidate: Path, patterns: object
+) -> bool:
+    """Apply Cargo workspace ``exclude`` patterns before following members.
+
+    A wildcard member such as ``crates/*`` may also match an explicitly
+    excluded crate.  Following that crate's path dependencies would freeze and
+    later analyze inputs Cargo itself does not compile, while an invalid
+    excluded manifest could halt startup.  Keep this parser conservative and
+    path-relative; ``cargo metadata`` remains the higher-fidelity authority
+    when it is available.
+    """
+    try:
+        relative = candidate.resolve().relative_to(workspace_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return False
+    if not isinstance(patterns, list):
+        return False
+    relative_path = Path(relative)
+    for raw_pattern in patterns:
+        if not isinstance(raw_pattern, str) or not raw_pattern.strip():
+            continue
+        normalized = raw_pattern.replace("\\", "/").strip().rstrip("/")
+        if relative == normalized or relative_path.match(normalized):
+            return True
+    return False
+
+
+def _cargo_context(
+    proj: Path, *, anchor: bool
+) -> tuple[Path, List[Path], List[Path], List[str]]:
+    anchor_manifest = _nearest_upward_file(proj, "Anchor.toml") if anchor else None
+    cargo_root, nearest_manifest = _cargo_workspace_root(proj)
+    if anchor_manifest is not None:
+        anchor_root = anchor_manifest.parent.resolve()
+        # An Anchor root is a build authority even when it has no root
+        # Cargo.toml.  If Cargo found a workspace above/at it, that broader
+        # manifest owner remains the effective compiler root.
+        if cargo_root is None or not _is_within(anchor_root, cargo_root):
+            build_root = anchor_root
+        else:
+            build_root = cargo_root
+    elif cargo_root is not None:
+        build_root = cargo_root
+    else:
+        build_root = proj.resolve()
+
+    manifests: set[Path] = set()
+    limitations: List[str] = []
+    if nearest_manifest is not None:
+        manifests.add(nearest_manifest.resolve())
+    if (build_root / "Cargo.toml").is_file():
+        manifests.add((build_root / "Cargo.toml").resolve())
+    root_manifest = build_root / "Cargo.toml"
+    if root_manifest.is_file():
+        root_data = _read_toml_strict(root_manifest, "Cargo manifest")
+        workspace = root_data.get("workspace")
+        if isinstance(workspace, dict):
+            excluded_patterns = workspace.get("exclude", []) or []
+            for raw_member in workspace.get("members", []) or []:
+                if not isinstance(raw_member, str) or not raw_member.strip():
+                    continue
+                matches = sorted(build_root.glob(raw_member))
+                if not matches:
+                    raise BuildContextResolutionError(
+                        f"Cargo workspace member cannot be bound: {raw_member}"
+                    )
+                for member in matches:
+                    member_root = member if member.is_dir() else member.parent
+                    if _cargo_workspace_path_excluded(
+                        build_root, member_root, excluded_patterns
+                    ):
+                        continue
+                    manifest = member / "Cargo.toml" if member.is_dir() else member
+                    if not manifest.is_file():
+                        raise BuildContextResolutionError(
+                            f"Cargo workspace member lacks Cargo.toml: {raw_member}"
+                        )
+                    manifests.add(manifest.resolve())
+
+            if (build_root / "Cargo.lock").is_file() and shutil.which("cargo"):
+                rc, output = _run_hardened(
+                    [
+                        "cargo", "metadata", "--locked", "--offline",
+                        "--format-version", "1", "--no-deps",
+                    ],
+                    build_root,
+                    30,
+                )
+                if rc == 0:
+                    try:
+                        metadata = json.loads(output)
+                        for package in metadata.get("packages", []):
+                            raw_manifest = package.get("manifest_path")
+                            if isinstance(raw_manifest, str):
+                                candidate = Path(raw_manifest).resolve()
+                                if candidate.is_file():
+                                    manifests.add(candidate)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        limitations.append(
+                            "CARGO_METADATA_UNUSABLE: locked/offline metadata was "
+                            "malformed; workspace membership is approximated"
+                        )
+                else:
+                    limitations.append(
+                        "CARGO_METADATA_UNAVAILABLE: locked/offline cargo metadata "
+                        "failed; workspace membership is approximated"
+                    )
+            else:
+                limitations.append(
+                    "CARGO_METADATA_UNAVAILABLE: no Cargo.lock/cargo authority; "
+                    "workspace membership is approximated"
+                )
+
+    if anchor_manifest is not None:
+        anchor_workspace = _read_toml(anchor_manifest).get("workspace")
+        if isinstance(anchor_workspace, dict):
+            for raw_member in anchor_workspace.get("members", []) or []:
+                if not isinstance(raw_member, str) or not raw_member.strip():
+                    continue
+                matches = sorted(anchor_manifest.parent.glob(raw_member))
+                if not matches:
+                    raise BuildContextResolutionError(
+                        f"Anchor workspace member cannot be bound: {raw_member}"
+                    )
+                for member in matches:
+                    manifest = member / "Cargo.toml" if member.is_dir() else member
+                    if not manifest.is_file():
+                        raise BuildContextResolutionError(
+                            f"Anchor workspace member lacks Cargo.toml: {raw_member}"
+                        )
+                    manifests.add(manifest.resolve())
+
+    context_roots: set[Path] = {build_root.resolve()}
+    compiled_roots: set[Path] = set()
+    for cargo_config in (
+        build_root / ".cargo" / "config.toml",
+        build_root / ".cargo" / "config",
+    ):
+        if not cargo_config.is_file():
+            continue
+        config_data = _read_toml_strict(cargo_config, "Cargo configuration")
+        sources = config_data.get("source")
+        if not isinstance(sources, dict):
+            continue
+        for source in sources.values():
+            if not isinstance(source, dict) or not isinstance(source.get("directory"), str):
+                continue
+            source_root = _local_build_path(build_root, source["directory"])
+            if not source_root.is_dir():
+                raise BuildContextResolutionError(
+                    f"Cargo vendored source directory cannot be bound: {source['directory']}"
+                )
+            context_roots.add(source_root)
+            compiled_roots.add(source_root)
+    queue = list(sorted(manifests, key=lambda path: str(path).casefold()))
+    visited: set[Path] = set()
+    while queue:
+        manifest = queue.pop(0).resolve()
+        if manifest in visited:
+            continue
+        visited.add(manifest)
+        if len(visited) > _MAX_BUILD_CONTEXT_MANIFESTS:
+            raise BuildContextResolutionError(
+                "Cargo local-dependency closure exceeds the bounded manifest limit"
+            )
+        data = _read_toml_strict(manifest, "Cargo manifest")
+        if not _is_within(manifest.parent, build_root):
+            context_roots.add(manifest.parent.resolve())
+        for raw_path in _cargo_path_dependencies(data):
+            dependency_root = _local_build_path(manifest.parent, raw_path)
+            dependency_manifest = dependency_root / "Cargo.toml"
+            if not dependency_root.is_dir() or not dependency_manifest.is_file():
+                raise BuildContextResolutionError(
+                    "local Cargo dependency cannot be bound: "
+                    f"{manifest.name} path={raw_path}"
+                )
+            context_roots.add(dependency_root)
+            compiled_roots.add(dependency_root)
+            queue.append(dependency_manifest)
+    return (
+        build_root.resolve(),
+        sorted(context_roots, key=lambda path: str(path).casefold()),
+        sorted(compiled_roots, key=lambda path: str(path).casefold()),
+        limitations,
+    )
+
+
+_GO_LOCAL_PATH_RE = re.compile(
+    r"^(?:\.{1,2}[\\/]|[A-Za-z]:[\\/]|/{1,2}|\\\\)"
+)
+
+
+def _local_build_path(base: Path, raw_path: str) -> Path:
+    """Resolve manifest-local paths without corrupting Windows separators."""
+    value = str(raw_path or "").strip().strip('"').strip("'")
+    value = value.replace("\\", os.sep).replace("/", os.sep)
+    candidate = Path(value).expanduser()
+    return (candidate if candidate.is_absolute() else base / candidate).resolve()
+
+
+def _go_block_values(text: str, directive: str) -> List[str]:
+    values: List[str] = []
+    in_block = False
+    for raw_line in text.splitlines():
+        line = raw_line.split("//", 1)[0].strip()
+        if not line:
+            continue
+        if in_block:
+            if line == ")":
+                in_block = False
+                continue
+            # Preserve quoting until the directive-specific parser tokenizes
+            # the value.  Stripping only the outer line's trailing quote turns
+            # Windows and UNC paths into malformed, unterminated tokens.
+            values.append(line.strip())
+            continue
+        if line == f"{directive} (":
+            in_block = True
+            continue
+        if line.startswith(directive + " "):
+            values.append(line[len(directive):].strip())
+    return values
+
+
+def _go_local_replacements(text: str) -> List[str]:
+    targets: List[str] = []
+    for value in _go_block_values(text, "replace"):
+        if "=>" not in value:
+            continue
+        try:
+            tokens = shlex.split(value.split("=>", 1)[1].strip(), posix=False)
+        except ValueError:
+            tokens = []
+        target = (tokens[0] if tokens else "").strip('"').strip("'")
+        if _GO_LOCAL_PATH_RE.match(target):
+            targets.append(target)
+    # A non-block `replace old => ./new` is already returned by
+    # `_go_block_values`; keep the parser intentionally syntax-scoped.
+    return targets
+
+
+def _go_context(proj: Path) -> tuple[Path, List[Path], List[Path], List[str]]:
+    configured_work = str(os.environ.get("GOWORK") or "").strip()
+    if configured_work.lower() == "off":
+        go_work = None
+    elif configured_work and configured_work.lower() != "auto":
+        candidate = Path(configured_work).expanduser()
+        if not candidate.is_absolute():
+            candidate = (proj / candidate).resolve()
+        go_work = candidate.resolve()
+        if not go_work.is_file():
+            raise BuildContextResolutionError(
+                f"configured GOWORK file cannot be bound: {configured_work}"
+            )
+    else:
+        go_work = _nearest_upward_file(proj, "go.work")
+    go_mod = _nearest_upward_file(proj, "go.mod")
+    if go_work is not None:
+        build_root = go_work.parent.resolve()
+        work_text = _read_text(go_work)
+        module_roots = []
+        for raw_path in _go_block_values(work_text, "use"):
+            try:
+                tokens = shlex.split(raw_path, posix=True)
+            except ValueError:
+                tokens = []
+            token = tokens[0] if tokens else ""
+            module = _local_build_path(build_root, token)
+            if not module.is_dir() or not (module / "go.mod").is_file():
+                raise BuildContextResolutionError(
+                    f"go.work use target cannot be bound: {raw_path}"
+                )
+            module_roots.append(module)
+        replacement_base = build_root
+        initial_replacements = _go_local_replacements(work_text)
+    elif go_mod is not None:
+        build_root = go_mod.parent.resolve()
+        module_roots = [build_root]
+        replacement_base = build_root
+        initial_replacements = []
+    else:
+        return proj.resolve(), [proj.resolve()]
+
+    context_roots: set[Path] = {build_root}
+    queue: List[Path] = list(module_roots)
+    for raw_path in initial_replacements:
+        queue.append(_local_build_path(replacement_base, raw_path))
+    visited: set[Path] = set()
+    compiled_roots: set[Path] = set(module_roots)
+    while queue:
+        module = queue.pop(0).resolve()
+        if module in visited:
+            continue
+        visited.add(module)
+        if len(visited) > _MAX_BUILD_CONTEXT_MANIFESTS:
+            raise BuildContextResolutionError(
+                "Go workspace/local-replace closure exceeds the bounded manifest limit"
+            )
+        manifest = module / "go.mod"
+        if not module.is_dir() or not manifest.is_file():
+            raise BuildContextResolutionError(
+                f"local Go module cannot be bound: {module.name or module}"
+            )
+        context_roots.add(module)
+        if module != build_root:
+            compiled_roots.add(module)
+        for raw_path in _go_local_replacements(_read_text(manifest)):
+            dependency = _local_build_path(module, raw_path)
+            compiled_roots.add(dependency)
+            queue.append(dependency)
+    vendor = build_root / "vendor"
+    if vendor.is_dir():
+        context_roots.add(vendor.resolve())
+        compiled_roots.add(vendor.resolve())
+    return (
+        build_root,
+        sorted(context_roots, key=lambda path: str(path).casefold()),
+        sorted(compiled_roots, key=lambda path: str(path).casefold()),
+        [],
+    )
+
+
+def _move_context(proj: Path) -> tuple[Path, List[Path], List[Path], List[str]]:
+    manifest = _nearest_upward_file(proj, "Move.toml")
+    if manifest is None:
+        return proj.resolve(), [proj.resolve()], [], []
+    build_root = manifest.parent.resolve()
+    roots: set[Path] = {build_root}
+    queue = [manifest.resolve()]
+    visited: set[Path] = set()
+    compiled_roots: set[Path] = set()
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        if len(visited) > _MAX_BUILD_CONTEXT_MANIFESTS:
+            raise BuildContextResolutionError(
+                "Move local-dependency closure exceeds the bounded manifest limit"
+            )
+        data = _read_toml_strict(current, "Move manifest")
+        for section_name in ("dependencies", "dev-dependencies"):
+            section = data.get(section_name)
+            if not isinstance(section, dict):
+                continue
+            for dependency in section.values():
+                if not isinstance(dependency, dict):
+                    continue
+                raw_path = dependency.get("local") or dependency.get("path")
+                if not isinstance(raw_path, str):
+                    continue
+                dependency_root = _local_build_path(current.parent, raw_path)
+                dependency_manifest = dependency_root / "Move.toml"
+                if not dependency_root.is_dir() or not dependency_manifest.is_file():
+                    raise BuildContextResolutionError(
+                        f"local Move dependency cannot be bound: {raw_path}"
+                    )
+                roots.add(dependency_root)
+                compiled_roots.add(dependency_root)
+                queue.append(dependency_manifest)
+    return (
+        build_root,
+        sorted(roots, key=lambda path: str(path).casefold()),
+        sorted(compiled_roots, key=lambda path: str(path).casefold()),
+        [],
+    )
+
+
+def _package_json(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BuildContextResolutionError(
+            f"package.json is unreadable: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(value, dict):
+        raise BuildContextResolutionError("package.json is unreadable: root is not an object")
+    return value
+
+
+def _javascript_context(
+    root: Path,
+) -> tuple[set[Path], set[Path], set[Path], List[str]]:
+    """Enumerate local/workspace JS inputs plus the installed dependency tree."""
+    contexts: set[Path] = set()
+    compiled: set[Path] = set()
+    files: set[Path] = set()
+    limitations: List[str] = []
+    package_manifest = root / "package.json"
+    if not package_manifest.is_file():
+        return contexts, compiled, files, limitations
+
+    queue: List[Path] = [root.resolve()]
+    visited: set[Path] = set()
+    while queue:
+        package_root = queue.pop(0).resolve()
+        if package_root in visited:
+            continue
+        visited.add(package_root)
+        if len(visited) > _MAX_BUILD_CONTEXT_MANIFESTS:
+            raise BuildContextResolutionError(
+                "JavaScript workspace/local-dependency closure exceeds the bounded limit"
+            )
+        manifest = package_root / "package.json"
+        if not manifest.is_file():
+            raise BuildContextResolutionError(
+                f"local JavaScript dependency lacks package.json: {package_root.name}"
+            )
+        package = _package_json(manifest)
+
+        raw_workspaces = package.get("workspaces")
+        if isinstance(raw_workspaces, dict):
+            raw_workspaces = raw_workspaces.get("packages")
+        if isinstance(raw_workspaces, str):
+            raw_workspaces = [raw_workspaces]
+        if isinstance(raw_workspaces, list):
+            for pattern in raw_workspaces:
+                if not isinstance(pattern, str) or not pattern.strip():
+                    continue
+                matches = sorted(package_root.glob(pattern))
+                if not matches:
+                    limitations.append(
+                        f"JS_WORKSPACE_PATTERN_UNMATCHED: {pattern}"
+                    )
+                for workspace in matches:
+                    if workspace.is_dir() and (workspace / "package.json").is_file():
+                        contexts.add(workspace.resolve())
+                        compiled.add(workspace.resolve())
+                        queue.append(workspace.resolve())
+
+        for section_name in (
+            "dependencies", "devDependencies", "optionalDependencies",
+            "peerDependencies",
+        ):
+            section = package.get(section_name)
+            if not isinstance(section, dict):
+                continue
+            for declaration in section.values():
+                if not isinstance(declaration, str):
+                    continue
+                lowered = declaration.lower()
+                if not lowered.startswith(("file:", "link:")):
+                    continue
+                raw_path = declaration.split(":", 1)[1]
+                target = _local_build_path(package_root, raw_path)
+                if not target.exists():
+                    raise BuildContextResolutionError(
+                        f"local JavaScript dependency cannot be bound: {raw_path}"
+                    )
+                if target.is_dir():
+                    contexts.add(target)
+                    compiled.add(target)
+                    queue.append(target)
+                elif target.is_file():
+                    files.add(target)
+                else:
+                    raise BuildContextResolutionError(
+                        f"local JavaScript dependency is not regular input: {raw_path}"
+                    )
+
+    installed = root / "node_modules"
+    if installed.is_dir() and not _dir_empty(installed):
+        contexts.add(installed.resolve())
+        compiled.add(installed.resolve())
+    return contexts, compiled, files, limitations
+
+
+def _foundry_declared_context(
+    root: Path,
+) -> tuple[set[Path], set[Path], set[Path], List[str]]:
+    contexts: set[Path] = set()
+    compiled: set[Path] = set()
+    files: set[Path] = set()
+    limitations: List[str] = []
+    manifest = root / "foundry.toml"
+    remapping_values: List[str] = []
+    lib_values: List[str] = []
+    explicit_libs = False
+    if manifest.is_file():
+        data = _read_toml_strict(manifest, "foundry.toml")
+        tables: List[dict] = [data]
+        profiles = data.get("profile")
+        if isinstance(profiles, dict):
+            tables.extend(value for value in profiles.values() if isinstance(value, dict))
+        for table in tables:
+            libs = table.get("libs")
+            if isinstance(libs, str):
+                explicit_libs = True
+                lib_values.append(libs)
+            elif isinstance(libs, list):
+                explicit_libs = True
+                lib_values.extend(item for item in libs if isinstance(item, str))
+            remappings = table.get("remappings")
+            if isinstance(remappings, str):
+                remapping_values.append(remappings)
+            elif isinstance(remappings, list):
+                remapping_values.extend(item for item in remappings if isinstance(item, str))
+        remappings_file = root / "remappings.txt"
+        if remappings_file.is_file():
+            for raw_line in _read_text(remappings_file).splitlines():
+                line = raw_line.split("#", 1)[0].strip()
+                if line:
+                    remapping_values.append(line)
+        if not explicit_libs:
+            lib_values.append("lib")
+
+    candidates: List[tuple[str, str]] = [("Foundry library", item) for item in lib_values]
+    for item in remapping_values:
+        if "=" not in item:
+            limitations.append(f"FOUNDRY_REMAPPING_UNPARSED: {item[:120]}")
+            continue
+        candidates.append(("Foundry remapping", item.split("=", 1)[1].strip()))
+    for label, raw_path in candidates:
+        if not raw_path or "${" in raw_path:
+            limitations.append(f"{label.upper().replace(' ', '_')}_UNRESOLVED: {raw_path[:120]}")
+            continue
+        target = _local_build_path(root, raw_path)
+        if target.is_dir():
+            contexts.add(target)
+            compiled.add(target)
+        elif target.is_file():
+            files.add(target)
+        elif explicit_libs or label == "Foundry remapping":
+            limitations.append(f"{label.upper().replace(' ', '_')}_MISSING: {raw_path[:120]}")
+    return contexts, compiled, files, limitations
+
+
+def _evm_context(
+    proj: Path,
+) -> tuple[Path, List[Path], List[Path], List[Path], List[Path], List[str]]:
+    root = (_resolve_evm_build_root(proj) or proj).resolve()
+    contexts: set[Path] = {root}
+    compiled: set[Path] = set()
+    files: set[Path] = set()
+    limitations: List[str] = []
+    for resolver in (_foundry_declared_context, _javascript_context):
+        extra_contexts, extra_compiled, extra_files, extra_limits = resolver(root)
+        contexts.update(extra_contexts)
+        compiled.update(extra_compiled)
+        files.update(extra_files)
+        limitations.extend(extra_limits)
+    return (
+        root,
+        sorted(contexts, key=lambda path: str(path).casefold()),
+        sorted(compiled, key=lambda path: str(path).casefold()),
+        sorted(files, key=lambda path: str(path).casefold()),
+        [],
+        limitations,
+    )
+
+
+def _daml_yaml_values(text: str, key: str) -> List[str]:
+    """Extract scalar/list local path values from the small daml.yaml surface."""
+    values: List[str] = []
+    lines = text.splitlines()
+    key_indent: Optional[int] = None
+    for raw_line in lines:
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        if key_indent is not None:
+            if indent <= key_indent and not stripped.startswith("-"):
+                key_indent = None
+            elif stripped.startswith("-"):
+                value = stripped[1:].strip().strip('"').strip("'")
+                if value:
+                    values.append(value)
+                continue
+        match = re.match(rf"{re.escape(key)}\s*:\s*(.*)$", stripped)
+        if match:
+            value = match.group(1).strip().strip('"').strip("'")
+            if value:
+                values.append(value)
+            else:
+                key_indent = indent
+    return values
+
+
+def _daml_context(
+    proj: Path,
+) -> tuple[Path, List[Path], List[Path], List[Path], List[Path], List[str]]:
+    manifest = _nearest_upward_file(proj, "daml.yaml")
+    if manifest is None:
+        return proj.resolve(), [proj.resolve()], [], [], [], [
+            "DAML_BUILD_MANIFEST_MISSING: build closure is source-only"
+        ]
+    root = manifest.parent.resolve()
+    text = _read_text(manifest)
+    if not text.strip():
+        raise BuildContextResolutionError("daml.yaml is unreadable or empty")
+    contexts: set[Path] = {root}
+    compiled: set[Path] = set()
+    files: set[Path] = set()
+    source_files: set[Path] = set()
+    limitations: List[str] = []
+    source_values = _daml_yaml_values(text, "source") or ["daml"]
+    for raw_path in source_values:
+        source_root = _local_build_path(root, raw_path)
+        if not source_root.is_dir():
+            raise BuildContextResolutionError(
+                f"DAML source directory cannot be bound: {raw_path}"
+            )
+        contexts.add(source_root)
+        compiled.add(source_root)
+        source_files.update(source_root.rglob("*.daml"))
+    for key in ("dependencies", "data-dependencies"):
+        for raw_path in _daml_yaml_values(text, key):
+            # SDK package identifiers are authorities, but not local files.
+            if not (raw_path.lower().endswith(".dar") or raw_path.startswith((".", "/", "\\"))):
+                continue
+            target = _local_build_path(root, raw_path)
+            if not target.is_file():
+                raise BuildContextResolutionError(
+                    f"DAML local DAR cannot be bound: {raw_path}"
+                )
+            files.add(target)
+    limitations.append(
+        "DAML_BUILD_CLOSURE_APPROXIMATED: daml.yaml local source/DAR inputs are "
+        "bound, but dynamic package resolution is not hermetically proven"
+    )
+    return (
+        root,
+        sorted(contexts, key=lambda path: str(path).casefold()),
+        sorted(compiled, key=lambda path: str(path).casefold()),
+        sorted(files, key=lambda path: str(path).casefold()),
+        sorted(source_files, key=lambda path: str(path).casefold()),
+        limitations,
+    )
+
+
+def _resolve_manifest_build_root(
+    proj: Path,
+    manifest_names: Tuple[str, ...],
+    suffixes: Tuple[str, ...],
+    max_ancestors: int = 5,
+) -> Optional[Path]:
+    """Resolve a manifest owner without modifying the target tree."""
+    cur = proj.resolve()
+    for _ in range(max_ancestors + 1):
+        try:
+            if any((cur / name).exists() for name in manifest_names):
+                return cur
+        except OSError:
+            pass
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    return _find_build_root_downward(proj, manifest_names, suffixes)
+
+
+def resolve_snapshot_build_root(config: dict) -> Path:
+    """Derive and persist the build context that snapshotting must freeze.
+
+    This resolver is deliberately read-only and is called on every startup,
+    including resume.  Dependency materialization remains a separate operation
+    restricted to fresh/pre-recon runs, so resolving private derived state can
+    never hide user drift by mutating inputs before comparison.
+    """
+    proj = Path(config["project_root"]).resolve()
+    pipeline = str(config.get("pipeline") or "sc").strip().lower()
+    language = str(config.get("language") or "evm").strip().lower()
+    compiled_roots: List[Path] = []
+    context_files: List[Path] = []
+    build_source_files: List[Path] = []
+    limitations: List[str] = []
+    if (pipeline, language) in {("sc", "solana"), ("sc", "soroban"), ("l1", "rust")}:
+        root, contexts, compiled_roots, ecosystem_limits = _cargo_context(
+            proj, anchor=(pipeline == "sc" and language == "solana")
+        )
+        limitations.extend(ecosystem_limits)
+    elif (pipeline, language) == ("l1", "go"):
+        root, contexts, compiled_roots, ecosystem_limits = _go_context(proj)
+        limitations.extend(ecosystem_limits)
+    elif pipeline == "sc" and language in {"aptos", "sui"}:
+        root, contexts, compiled_roots, ecosystem_limits = _move_context(proj)
+        limitations.extend(ecosystem_limits)
+    elif (pipeline, language) == ("sc", "evm"):
+        (
+            root, contexts, compiled_roots, context_files,
+            build_source_files, ecosystem_limits,
+        ) = _evm_context(proj)
+        limitations.extend(ecosystem_limits)
+    elif (pipeline, language) == ("sc", "daml"):
+        (
+            root, contexts, compiled_roots, context_files,
+            build_source_files, ecosystem_limits,
+        ) = _daml_context(proj)
+        limitations.extend(ecosystem_limits)
+    else:
+        spec = _SNAPSHOT_BUILD_ROOT_SPECS.get((pipeline, language))
+        resolved = (
+            _resolve_manifest_build_root(proj, spec[0], spec[1])
+            if spec is not None
+            else None
+        )
+        root = (resolved or proj).resolve()
+        contexts = [root]
+
+    # A downward resolver necessarily chooses one build authority.  If several
+    # source-bearing roots exist, keep running but make the approximation loud.
+    spec = _SNAPSHOT_BUILD_ROOT_SPECS.get((pipeline, language))
+    if spec is not None and root != proj and _is_within(root, proj):
+        candidates: set[Path] = set()
+        try:
+            for manifest_name in spec[0]:
+                for manifest in proj.rglob(manifest_name):
+                    if any(part in SKIP_DIR_NAMES for part in manifest.relative_to(proj).parts):
+                        continue
+                    candidate = manifest.parent.resolve()
+                    if _production_source_files(candidate, spec[1]):
+                        candidates.add(candidate)
+        except OSError:
+            candidates = {root}
+        if len(candidates) > 1:
+            limitations.append(
+                "MULTI_BUILD_ROOT_SELECTION_APPROXIMATED: multiple source-bearing "
+                f"build roots exist ({len(candidates)}); one canonical root was selected"
+            )
+
+    limitations.append(
+        "MECHANICALLY_APPROXIMATED_BUILD_CLOSURE: declared local dependencies, "
+        "workspace members, configured libraries, and installed trees are bound, "
+        "but compiler file-open closure is not hermetically proven"
+    )
+    config["_resolved_build_root"] = str(root)
+    config["_resolved_build_context_roots"] = [
+        str(path.resolve()) for path in contexts
+    ]
+    config["_resolved_compiled_dependency_roots"] = [
+        str(path.resolve()) for path in compiled_roots
+    ]
+    config["_resolved_build_context_files"] = [
+        str(path.resolve()) for path in context_files
+    ]
+    config["_resolved_build_source_files"] = [
+        str(path.resolve()) for path in build_source_files
+    ]
+    if pipeline == "sc" and language == "evm" and (root / "package.json").is_file():
+        tool, lock_issue = _select_js_lock_authority(root)
+        if lock_issue:
+            limitations.append(
+                f"{lock_issue}; mutable dependency resolution is disabled and "
+                "any pre-existing node_modules tree is not proof-grade"
+            )
+        elif tool and _dir_empty(root / "node_modules"):
+            limitations.append(
+                "JS_LOCK_DEPENDENCIES_UNMATERIALIZED: immutable lock dependencies "
+                "are absent; compiler/AST/PoC completeness is degraded"
+            )
+            if not shutil.which(tool):
+                limitations.append(
+                    "JS_LOCK_TOOL_MISSING: a JavaScript lock is present but its "
+                    f"immutable {tool} installer is unavailable"
+                )
+        elif tool:
+            limitations.append(
+                "JS_DEPENDENCY_TREE_COMPLETENESS_UNPROVEN: node_modules is "
+                "content-bound, but lock-to-tree completeness is not hermetically proven"
+            )
+    if pipeline == "sc" and language == "evm":
+        if (root / ".gitmodules").is_file() and _dir_empty(root / "lib"):
+            limitations.append(
+                "DECLARED_GIT_DEPENDENCIES_UNMATERIALIZED: .gitmodules exists "
+                "but the Foundry lib tree is absent"
+            )
+        try:
+            foundry_text = (root / "foundry.toml").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            foundry_text = ""
+        if (
+            ("[dependencies]" in foundry_text or (root / "soldeer.lock").is_file())
+            and _dir_empty(root / "dependencies")
+        ):
+            limitations.append(
+                "SOLDEER_DEPENDENCIES_UNMATERIALIZED: declared dependency tree is absent"
+            )
+    config["_snapshot_build_input_limitations"] = list(dict.fromkeys(limitations))
+    return root
 
 
 def _dir_empty(d: Path) -> bool:
@@ -945,136 +2079,63 @@ def _dir_empty(d: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 _HARDENED_GRACE_S = 10  # bounded post-kill reap window after a timeout
+# Outside both Windows DWORD process exits and POSIX signal returncodes.  This
+# remains an internal tuple sentinel; build_status renders no fabricated tool
+# exit code when it is present.
+_TOOL_EXECUTION_AUTHORITY_DEBT_RC = -(1 << 63)
 
 
-def _hardened_tree_kill(proc: "subprocess.Popen") -> None:
-    """Kill the subprocess AND all its descendants. Never raises.
+def _run_hardened(
+    cmd: List[str],
+    cwd: Optional[Path] = None,
+    timeout: int = 120,
+    env: Optional[dict] = None,
+    *,
+    writable_roots: Sequence[Path] = (),
+) -> Tuple[int, str]:
+    """Run a bounded command inside the shared exhaustive process scope.
 
-    POSIX: SIGKILL the child's process-group (it was started in a new session).
-    Windows: `taskkill /F /T /PID` walks and force-kills the whole tree. Both
-    reap grandchildren (solc/cc/...) that a bare proc.kill() would orphan and
-    that keep holding inherited handles."""
+    Recon build/tool commands operate only on the disposable or explicitly
+    selected build root. Unsupported OS authority, transport failures, and
+    timeouts degrade to the legacy numeric statuses; they never mint a clean
+    tool outcome.
+    """
+
+    argv = [str(value) for value in cmd]
+    if not argv:
+        return 1, "hardened: empty command"
+    # The working directory is an input location, not implicit write
+    # authority.  Treating cwd as writable caused Windows MIC setup to relabel
+    # entire audited repositories (including dependency junctions) before a
+    # tool had even launched.  Callers that genuinely need output must pass a
+    # dedicated disposable root and route the tool's outputs there.
+    writable = tuple(Path(item).resolve(strict=True) for item in writable_roots)
     try:
-        if os.name == "nt":
-            try:
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=15,
-                )
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        else:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-
-def _run_hardened(cmd: List[str], cwd: Optional[Path] = None,
-                  timeout: int = 120, env: Optional[dict] = None) -> Tuple[int, str]:
-    """Hang-proof, cross-platform subprocess runner. Returns (rc, combined_output).
-
-    Drains stdout+stderr to a TEMP FILE (never an OS pipe) so a grandchild that
-    inherits the output handle can never deadlock the parent, and tree-kills the
-    whole process group on timeout. Never raises; never blocks past
-    timeout + _HARDENED_GRACE_S. On timeout returns (124, output + notice) so
-    callers degrade. stdin is /dev/null so an interactive prompt cannot block."""
-    argv = [str(c) for c in cmd]
-    cwd_s = str(cwd) if cwd is not None else None
-
-    tf = None
-    tf_name = ""
-    try:
-        tf = tempfile.NamedTemporaryFile(
-            mode="w+", suffix=".plamen_run", prefix="plamen_hardened_",
-            delete=False, encoding="utf-8", errors="replace")
-        tf_name = tf.name
-    except Exception as e:  # pragma: no cover - temp dir unavailable
-        return 1, f"hardened: temp file create failed: {e}"
-
-    popen_kwargs: Dict = {}
-    if os.name == "nt":
-        # New process group so a grandchild does not share the parent's group
-        # and the whole tree is addressable by taskkill /T.
-        popen_kwargs["creationflags"] = getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    else:
-        # New session → own process-group → killpg reaps the whole tree.
-        popen_kwargs["start_new_session"] = True
-
-    proc = None
-    try:
-        try:
-            proc = subprocess.Popen(
-                argv, cwd=cwd_s, env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=tf, stderr=subprocess.STDOUT,
-                **popen_kwargs,
-            )
-        except FileNotFoundError:
-            return 127, f"binary not found: {argv[0] if argv else '?'}"
-        except Exception as e:
-            return 1, f"hardened: spawn failed: {e}"
-
-        timed_out = False
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _hardened_tree_kill(proc)
-            try:
-                proc.wait(timeout=_HARDENED_GRACE_S)
-            except Exception:
-                # Even if the bounded reap window elapses we do NOT block past
-                # it — the tree was already SIGKILL'd/taskkilled; return anyway.
-                pass
-
-        # Read the drained output from the temp file (close parent handle first
-        # so all buffered writes are flushed to disk).
-        try:
-            tf.close()
-        except Exception:
-            pass
-        output = ""
-        try:
-            with open(tf_name, "r", encoding="utf-8", errors="replace") as fh:
-                output = fh.read()
-        except Exception:
-            output = ""
-
-        if timed_out:
-            return 124, (output +
-                         f"\n[hardened: timed out after {timeout}s, tree-killed]")
-        rc = proc.returncode
-        return (rc if rc is not None else 1), output
-    except Exception as e:  # pragma: no cover - defensive top-level guard
-        if proc is not None:
-            _hardened_tree_kill(proc)
-        return 1, f"hardened: exception: {e}"
-    finally:
-        try:
-            if tf is not None and not tf.closed:
-                tf.close()
-        except Exception:
-            pass
-        try:
-            if tf_name:
-                os.unlink(tf_name)
-        except Exception:
-            pass
+        result = run_owned_process(
+            argv,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            writable_roots=writable,
+        )
+        return result.returncode, result.stdout + result.stderr
+    except FileNotFoundError:
+        return 127, f"binary not found: {argv[0]}"
+    except TimeoutExpired as exc:
+        output = str(getattr(exc, "output", "") or "")
+        stderr = str(getattr(exc, "stderr", "") or "")
+        return 124, (
+            output
+            + stderr
+            + f"\n[hardened: timed out after {timeout}s, scope terminated]"
+        )
+    except OwnedProcessRunnerError as exc:
+        return (
+            _TOOL_EXECUTION_AUTHORITY_DEBT_RC,
+            "hardened: TOOL_EXECUTION_AUTHORITY_DEBT: " + str(exc),
+        )
+    except Exception as exc:  # pragma: no cover - public never-raise contract
+        return 1, f"hardened: exception: {type(exc).__name__}: {exc}"
 
 
 def _run_cmd(cmd: List[str], cwd: Path, timeout: int) -> int:
@@ -1120,9 +2181,9 @@ def _prepare_evm_build(root: Path) -> str:
           but `lib/` is absent/empty;
       (2) `forge soldeer install` when the repo uses Soldeer (`[dependencies]`
           in foundry.toml or a `soldeer.lock`) but `dependencies/` is empty;
-      (3) `npm/yarn/pnpm install` when `package.json` is present but
-          `node_modules/` is empty (Hardhat, or Foundry remapping into
-          node_modules — e.g. `@openzeppelin/contracts`);
+      (3) immutable `npm ci` / frozen yarn/pnpm install when `package.json`
+          and a matching lock are present but `node_modules/` is empty;
+          a manifest without a lock degrades without mutable resolution;
       (4) pre-install the pragma-detected solc via `svm` so an offline/stale
           version list does not break the build.
     Bounded, idempotent, never raises for its OWN dependency-prep steps —
@@ -1138,7 +2199,10 @@ def _prepare_evm_build(root: Path) -> str:
         # (1) git-submodule (forge) deps
         if (root / ".gitmodules").exists() and _dir_empty(root / "lib") and shutil.which("git"):
             rc, _out = _run_forge(["install"], root, 300)
-            notes.append("forge install " + ("ok" if rc == 0 else f"rc={rc}"))
+            notes.append(
+                "forge install ok" if rc == 0 else
+                f"[DEGRADED:GIT_DEPENDENCY_INSTALL_FAILED] forge install rc={rc}"
+            )
         # (2) Soldeer deps
         try:
             ftoml = (root / "foundry.toml").read_text(encoding="utf-8", errors="replace")
@@ -1147,19 +2211,42 @@ def _prepare_evm_build(root: Path) -> str:
         uses_soldeer = "[dependencies]" in ftoml or (root / "soldeer.lock").exists()
         if uses_soldeer and _dir_empty(root / "dependencies") and shutil.which("forge"):
             rc, _out = _run_forge(["soldeer", "install"], root, 300)
-            notes.append("soldeer install " + ("ok" if rc == 0 else f"rc={rc}"))
+            notes.append(
+                "soldeer install ok" if rc == 0 else
+                f"[DEGRADED:SOLDEER_INSTALL_FAILED] soldeer install rc={rc}"
+            )
         # (3) npm/yarn/pnpm deps (Hardhat, or Foundry remapping into node_modules)
         if (root / "package.json").exists() and _dir_empty(root / "node_modules"):
-            if (root / "pnpm-lock.yaml").exists() and shutil.which("pnpm"):
-                rc = _run_cmd(["pnpm", "install", "--frozen-lockfile"], root, 420)
-                notes.append("pnpm install " + ("ok" if rc == 0 else f"rc={rc}"))
-            elif (root / "yarn.lock").exists() and shutil.which("yarn"):
-                rc = _run_cmd(["yarn", "install", "--frozen-lockfile"], root, 420)
-                notes.append("yarn install " + ("ok" if rc == 0 else f"rc={rc}"))
-            elif shutil.which("npm"):
-                sub = "ci" if (root / "package-lock.json").exists() else "install"
-                rc = _run_cmd(["npm", sub], root, 420)
-                notes.append(f"npm {sub} " + ("ok" if rc == 0 else f"rc={rc}"))
+            js_tool, js_issue = _select_js_lock_authority(root)
+            if js_issue:
+                notes.append(f"[DEGRADED:{js_issue}]")
+            elif js_tool == "pnpm":
+                if shutil.which("pnpm"):
+                    rc = _run_cmd(["pnpm", "install", "--frozen-lockfile"], root, 420)
+                    notes.append(
+                        "pnpm install ok" if rc == 0 else
+                        f"[DEGRADED:JS_LOCK_INSTALL_FAILED] pnpm install rc={rc}"
+                    )
+                else:
+                    notes.append("[DEGRADED:JS_LOCK_TOOL_MISSING] pnpm lock present but pnpm unavailable")
+            elif js_tool == "yarn":
+                if shutil.which("yarn"):
+                    rc = _run_cmd(["yarn", "install", "--frozen-lockfile"], root, 420)
+                    notes.append(
+                        "yarn install ok" if rc == 0 else
+                        f"[DEGRADED:JS_LOCK_INSTALL_FAILED] yarn install rc={rc}"
+                    )
+                else:
+                    notes.append("[DEGRADED:JS_LOCK_TOOL_MISSING] yarn lock present but yarn unavailable")
+            elif js_tool == "npm":
+                if shutil.which("npm"):
+                    rc = _run_cmd(["npm", "ci"], root, 420)
+                    notes.append(
+                        "npm ci ok" if rc == 0 else
+                        f"[DEGRADED:JS_LOCK_INSTALL_FAILED] npm ci rc={rc}"
+                    )
+                else:
+                    notes.append("[DEGRADED:JS_LOCK_TOOL_MISSING] npm lock present but npm unavailable")
         # (4) solc toolchain
         srcs = _production_source_files(root, (".sol",))
         solc = _detect_solc_version(srcs) if srcs else None
@@ -1170,8 +2257,10 @@ def _prepare_evm_build(root: Path) -> str:
         prof = _resolve_foundry_profile_for_recon(root)
         if prof:
             notes.append(f"FOUNDRY_PROFILE={prof}")
-    except Exception:
-        pass
+    except Exception as exc:
+        notes.append(
+            f"[DEGRADED:BUILD_INPUT_PREPARATION_EXCEPTION] {type(exc).__name__}: {exc}"
+        )
     return "; ".join(notes) or "deps present / no prep needed"
 
 _MAX_RECON_FORGE_FILES = 120
@@ -1192,15 +2281,75 @@ def _tail(text: str, n: int = 2048) -> str:
 # scope ships bare `.sol` files with no `foundry.toml`/`hardhat.config.*`, the
 # pre-pass previously fell straight to the grep fallback ("no build env
 # detected"), so Slither never ran and later verification phases had no harness.
-# This best-effort bootstrap scaffolds a minimal Foundry env (foundry.toml +
-# forge-std + import-prefix remappings + well-known libs) and runs `forge
-# build`. It NEVER raises and is idempotent (no-op when a build manifest already
-# exists). On any failure the caller falls back to the existing grep path.
+# This best-effort bootstrap scaffolds a minimal Foundry env and runs `forge
+# build`. It deliberately does NOT fetch third-party dependencies when the bare
+# source bundle has no lockfile/version authority: installing repository HEAD
+# can compile against the wrong API and contaminate analysis. It NEVER raises
+# and is idempotent (no-op when a build manifest already exists). On any failure
+# the caller falls back to the existing source-parse path.
 # ---------------------------------------------------------------------------
 
-_PRAGMA_RE = re.compile(
-    r"pragma\s+solidity\s+[^;]*?(\d+\.\d+\.\d+)", re.IGNORECASE
+_PRAGMA_DIRECTIVE_RE = re.compile(
+    r"pragma\s+solidity\s+([^;]+);", re.IGNORECASE
 )
+_SOLC_VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
+_SOLC_EXACT_RE = re.compile(r"^\s*=?\s*(\d+\.\d+\.\d+)\s*$")
+_SOLC_CONSTRAINT_RE = re.compile(r"(>=|<=|>|<|\^|~|=)?\s*(\d+\.\d+\.\d+)")
+
+
+def _strip_solidity_comments_and_strings(text: str) -> str:
+    """Blank comments/literals while preserving offsets and line boundaries."""
+    out = list(text)
+    index = 0
+    state = "code"
+    quote = ""
+    while index < len(text):
+        char = text[index]
+        nxt = text[index + 1] if index + 1 < len(text) else ""
+        if state == "code":
+            if char == "/" and nxt == "/":
+                out[index] = out[index + 1] = " "
+                state = "line"
+                index += 2
+                continue
+            if char == "/" and nxt == "*":
+                out[index] = out[index + 1] = " "
+                state = "block"
+                index += 2
+                continue
+            if char in {'"', "'"}:
+                out[index] = " "
+                quote = char
+                state = "string"
+                index += 1
+                continue
+        elif state == "line":
+            if char in "\r\n":
+                state = "code"
+            else:
+                out[index] = " "
+        elif state == "block":
+            if char == "*" and nxt == "/":
+                out[index] = out[index + 1] = " "
+                state = "code"
+                index += 2
+                continue
+            if char not in "\r\n":
+                out[index] = " "
+        else:
+            if char == "\\" and nxt:
+                out[index] = " "
+                if nxt not in "\r\n":
+                    out[index + 1] = " "
+                index += 2
+                continue
+            if char == quote:
+                out[index] = " "
+                state = "code"
+            elif char not in "\r\n":
+                out[index] = " "
+        index += 1
+    return "".join(out)
 
 # import-prefix -> (forge install spec, remapping target dir). Order matters:
 # more specific prefixes first so we do not shadow them with a broader match.
@@ -1224,19 +2373,168 @@ _FORGE_LIB_SPECS: Tuple[Tuple[str, str, str, str], ...] = (
 )
 
 
-def _detect_solc_version(source_files: List[Path]) -> Optional[str]:
-    """Return the most common concrete `pragma solidity` version, or None."""
+def _solc_version_tuple(value: str) -> Tuple[int, int, int]:
+    try:
+        major, minor, patch = value.split(".")
+        return int(major), int(minor), int(patch)
+    except Exception:
+        return 0, 0, 0
+
+
+def _solc_clause_satisfied(version: Tuple[int, int, int], clause: str) -> bool:
+    # Solidity uses npm-style conjunctions and supports `||`.  Hyphen ranges
+    # are normalized to an inclusive pair before token evaluation.
+    hyphen = re.fullmatch(
+        r"\s*(\d+\.\d+\.\d+)\s+-\s+(\d+\.\d+\.\d+)\s*", clause
+    )
+    if hyphen:
+        return _solc_version_tuple(hyphen.group(1)) <= version <= _solc_version_tuple(hyphen.group(2))
+    matches = list(_SOLC_CONSTRAINT_RE.finditer(clause))
+    if not matches:
+        return False
+    # Refuse to bless syntax we did not understand.  Whitespace is the only
+    # legal unparsed separator between conjunctive comparator tokens.
+    residue = _SOLC_CONSTRAINT_RE.sub("", clause).strip()
+    if residue:
+        return False
+    for match in matches:
+        operator = match.group(1) or "="
+        bound = _solc_version_tuple(match.group(2))
+        if operator == ">=" and not version >= bound:
+            return False
+        if operator == ">" and not version > bound:
+            return False
+        if operator == "<=" and not version <= bound:
+            return False
+        if operator == "<" and not version < bound:
+            return False
+        if operator == "=" and not version == bound:
+            return False
+        if operator == "^":
+            if bound[0] > 0:
+                upper = (bound[0] + 1, 0, 0)
+            elif bound[1] > 0:
+                upper = (0, bound[1] + 1, 0)
+            else:
+                upper = (0, 0, bound[2] + 1)
+            if not bound <= version < upper:
+                return False
+        if operator == "~":
+            upper = (bound[0], bound[1] + 1, 0)
+            if not bound <= version < upper:
+                return False
+    return True
+
+
+def _solc_directive_satisfied(version: str, directive: str) -> bool:
+    parsed = _solc_version_tuple(version)
+    return any(
+        _solc_clause_satisfied(parsed, clause)
+        for clause in directive.split("||")
+    )
+
+
+def _installed_solc_versions() -> Tuple[str, ...]:
+    """Enumerate locally authoritative compiler candidates, best effort."""
+    found: set[str] = set()
+    probes: List[List[str]] = []
+    if shutil.which("svm"):
+        probes.append(["svm", "list"])
+    if shutil.which("solc-select"):
+        probes.append(["solc-select", "versions"])
+    if shutil.which("solc"):
+        probes.append(["solc", "--version"])
+    for command in probes:
+        rc, output = _run_hardened(command, timeout=20)
+        if rc != 0:
+            continue
+        found.update(_SOLC_VERSION_RE.findall(output or ""))
+    return tuple(sorted(found, key=_solc_version_tuple))
+
+
+def _detect_solc_version(
+    source_files: List[Path],
+    *,
+    available_versions: Optional[Iterable[str]] = None,
+) -> Optional[str]:
+    """Choose a compiler that semantically satisfies every range pragma.
+
+    Exact implementation pins retain priority, but an exact candidate excluded
+    by any range is rejected.  Range-only selection considers installed/tool-
+    authoritative versions plus comparator boundary versions that themselves
+    satisfy the constraint.  Consequently an exclusive upper bound can never
+    be mistaken for a valid compiler pin.
+    """
     from collections import Counter
-    counter: Counter = Counter()
+    exact: Counter = Counter()
+    directives: List[str] = []
     for f in source_files[:200]:  # bounded scan
-        text = _read_text(f)
+        text = _strip_solidity_comments_and_strings(_read_text(f))
         if not text:
             continue
-        for m in _PRAGMA_RE.finditer(text):
-            counter[m.group(1)] += 1
-    if not counter:
+        for directive in _PRAGMA_DIRECTIVE_RE.findall(text):
+            directive = directive.strip()
+            directives.append(directive)
+            exact_match = _SOLC_EXACT_RE.fullmatch(directive)
+            if exact_match:
+                exact[exact_match.group(1)] += 1
+    if not directives:
         return None
-    return counter.most_common(1)[0][0]
+    range_directives = [
+        directive for directive in directives
+        if _SOLC_EXACT_RE.fullmatch(directive) is None
+    ]
+    if exact:
+        candidates = sorted(
+            exact,
+            key=lambda value: (exact[value], _solc_version_tuple(value)),
+            reverse=True,
+        )
+        for candidate in candidates:
+            # A repository may contain more than one exact pragma.  The most
+            # frequent pin is not a valid compiler authority when another
+            # audited source requires a different exact version.  Evaluate
+            # every directive, including the other exact pins, and degrade to
+            # automatic/per-package compilation when no single version can
+            # satisfy the complete source set.
+            if all(_solc_directive_satisfied(candidate, item) for item in directives):
+                return candidate
+        return None
+
+    boundary_candidates: set[str] = set()
+    for directive in range_directives:
+        boundary_candidates.update(_SOLC_VERSION_RE.findall(directive))
+    boundary_valid = [
+        candidate for candidate in boundary_candidates
+        if all(
+            _solc_directive_satisfied(candidate, directive)
+            for directive in range_directives
+        )
+    ]
+    # With no caller-supplied tool inventory, a valid constraint boundary is
+    # the most reproducible pin (e.g. `^0.8.20` -> 0.8.20).  Probe installed
+    # versions only when every mentioned boundary is exclusive/invalid.
+    if available_versions is None and boundary_valid:
+        return max(boundary_valid, key=_solc_version_tuple)
+    authoritative = (
+        tuple(available_versions)
+        if available_versions is not None
+        else _installed_solc_versions()
+    )
+    candidates = {
+        value for value in authoritative
+        if _SOLC_EXACT_RE.fullmatch(str(value).strip())
+    }
+    candidates.update(boundary_candidates)
+    valid = [
+        str(candidate).strip().lstrip("=")
+        for candidate in candidates
+        if all(
+            _solc_directive_satisfied(str(candidate).strip().lstrip("="), directive)
+            for directive in range_directives
+        )
+    ]
+    return max(valid, key=_solc_version_tuple) if valid else None
 
 
 def _detect_import_libs(source_files: List[Path]) -> List[Tuple[str, str, str, str]]:
@@ -1311,40 +2609,17 @@ def _bootstrap_evm_foundry_env(
 
         steps: List[str] = [f"wrote foundry.toml (solc={solc or 'auto'})"]
 
-        # 2) forge-std (test harness). Best-effort; build can still succeed
-        #    for non-test sources without it.
-        rc, out = _run_forge(
-            ["install", "foundry-rs/forge-std", "--no-commit"],
-            proj, timeout=90,
+        # 2) Never guess dependency versions for a manifest-less source bundle.
+        #    A package's latest HEAD may have a different API than the audited
+        #    code. Locked/declared dependencies are materialized by
+        #    `_prepare_evm_build` before snapshot binding on real project roots.
+        detected = ", ".join(sorted({spec[1] for spec in libs})) or "none recognized"
+        steps.append(
+            "unpinned dependency installation skipped "
+            f"(detected import families: {detected})"
         )
-        if rc == 0:
-            steps.append("installed forge-std")
-        else:
-            steps.append(f"forge-std install failed (rc={rc}): {_tail(out, 200)}")
 
-        # 3) Detected well-known libraries + remappings.
-        remap_lines: List[str] = []
-        for prefix, lib_dir, install_spec, remap in libs:
-            rc, out = _run_forge(
-                ["install", install_spec, "--no-commit"], proj, timeout=120,
-            )
-            if rc == 0:
-                steps.append(f"installed {install_spec}")
-                remap_lines.append(remap)
-            else:
-                steps.append(
-                    f"{install_spec} install failed (rc={rc}): {_tail(out, 200)}"
-                )
-        if remap_lines:
-            try:
-                (proj / "remappings.txt").write_text(
-                    "\n".join(remap_lines) + "\n", encoding="utf-8"
-                )
-                steps.append(f"wrote remappings.txt ({len(remap_lines)} entries)")
-            except Exception as e:
-                steps.append(f"could not write remappings.txt: {e}")
-
-        # 4) Build. Size-scale the bootstrap build budget too (large scaffolded
+        # 3) Build. Size-scale the bootstrap build budget too (large scaffolded
         # scopes compile slowly; the hardened wrapper keeps a long ceiling safe).
         _nf = len(_production_source_files(proj, (".sol",)))
         _bt = _scale_build_timeout(180, _nf)
@@ -1358,6 +2633,84 @@ def _bootstrap_evm_foundry_env(
         return False, "; ".join(steps)
     except Exception as e:  # pragma: no cover - defensive top-level guard
         return False, f"bootstrap exception: {e}"
+
+
+def prepare_snapshot_bound_inputs(config: dict) -> Dict[str, str]:
+    """Materialize deterministic build inputs before the audit snapshot binds.
+
+    The EVM bare-source bootstrap writes ``foundry.toml`` and may install
+    dependency/remapping inputs under the project root.  Those files influence
+    Slither, build probes, and PoC execution, so they belong *inside* the bound
+    audit input set.  Running this small ecosystem-gated preparation from the
+    driver before :func:`build_audit_snapshot` prevents the recon pre-pass from
+    being mistaken for mid-run user-source drift.
+
+    This is intentionally best-effort and idempotent.  Existing Foundry or
+    Hardhat projects are never modified, unsupported ecosystems are no-ops, and
+    every failure is returned as a status rather than raised.
+    """
+    def finish(status: str, reason: str) -> Dict[str, str]:
+        receipt = {"status": status, "reason": reason}
+        # Retain the structured result for the current process and tests.  Any
+        # persistent snapshot limitation must be derived read-only by
+        # `resolve_snapshot_build_root` on every startup; otherwise a private
+        # field present only on the fresh run would create false resume drift.
+        config["_snapshot_input_preparation"] = dict(receipt)
+        return receipt
+
+    try:
+        pipeline = str(config.get("pipeline") or "sc").lower()
+        language = str(config.get("language") or "evm").lower()
+        if pipeline != "sc" or language != "evm":
+            return finish("SKIPPED", "not a bare-source EVM lane")
+
+        proj = Path(config["project_root"]).resolve()
+        resolved_root = resolve_snapshot_build_root(config)
+        owns_declared_build = (
+            (resolved_root / "foundry.toml").exists()
+            or bool(list(resolved_root.glob("hardhat.config.*")))
+            or (resolved_root / "package.json").exists()
+        )
+        if owns_declared_build:
+            note = _prepare_evm_build(resolved_root)
+            # Re-derive the private closure/limitations from disk so a fresh
+            # successful or failed materialization has the same snapshot
+            # semantics as a later read-only resume.
+            resolve_snapshot_build_root(config)
+            degraded = "[DEGRADED:" in (note or "")
+            return finish(
+                "DEGRADED" if degraded else "PREPARED",
+                note or "declared dependencies ready",
+            )
+        if not shutil.which("forge"):
+            return finish("SKIPPED", "forge not on PATH")
+
+        sources = sorted(
+            _production_source_files(proj, (".sol",)), key=lambda p: _rel(p, proj)
+        )
+        if not sources:
+            return finish("SKIPPED", "no Solidity source files")
+        if len(sources) > _MAX_RECON_FORGE_FILES:
+            return finish(
+                "SKIPPED",
+                (
+                    f"bare-source scope has {len(sources)} files; bootstrap limit is "
+                    f"{_MAX_RECON_FORGE_FILES}"
+                ),
+            )
+
+        manifest = proj / "foundry.toml"
+        existed_before = manifest.exists()
+        ok, reason = _bootstrap_evm_foundry_env(proj, sources)
+        materialized = not existed_before and manifest.exists()
+        return finish(
+            "PREPARED" if (ok and materialized) else ("READY" if ok else "DEGRADED"),
+            reason,
+        )
+    except SupplyChainAbortError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive startup boundary
+        return finish("DEGRADED", f"{type(exc).__name__}: {exc}")
 
 
 def _write_build_status(scratch: Path, proj: Path, lang: str,
@@ -1433,6 +2786,7 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                         "compiling the project twice.\n")
             return "WRITTEN"
 
+        build_writable_roots: tuple[Path, ...] = ()
         if key == "evm_forge":
             root = _resolve_evm_build_root(proj)
             if root is not None and root != proj.resolve():
@@ -1440,12 +2794,16 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                 # source subdir like `.../smart-contracts/src`). Build the WHOLE
                 # project from the root so its foundry.toml / remappings.txt /
                 # lib resolve every `@import` — running from the scope dir gives
-                # empty remappings and every import fails (an observed
-                # build failure). Make deps + solc real first (never mock).
+                # empty remappings and every import fails (an observed build
+                # failure). Dependency/toolchain materialization is exclusively
+                # owned by prepare_audit_inputs_before_snapshot; recon is
+                # read-only with respect to bound source inputs.
                 # `_bake_evm_slither_graph` resolves the same root downstream.
                 bootstrap_note = ("**Build Root**: resolved to Foundry root "
                                   f"`{root}` (scope dir had no foundry.toml).\n\n"
-                                  "**Build Prep**: " + _prepare_evm_build(root) + "\n\n")
+                                  "**Build Prep**: pre-snapshot preparation "
+                                  "authority reused; no recon-time dependency "
+                                  "materialization attempted.\n\n")
                 build_cwd = root
                 cmd = ["forge", "build"]
                 # Size-scale: whole-project build of a large repo (e.g. ~176
@@ -1506,6 +2864,44 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                     timeout = _scale_build_timeout(timeout, len(source_files))
                     log.info("[recon] evm_forge scoped build: timeout scaled to "
                              "%ss for %d .sol files", timeout, len(source_files))
+
+            # Source and dependencies remain medium-integrity read-only inputs.
+            # Foundry's only build products are redirected to a fresh child of
+            # this pre-pass's unpublished staging directory.  The containment
+            # layer lowers exactly this disposable root, never PROJECT_ROOT or
+            # the scratchpad artifact namespace.
+            # Keep this disposable name short. Audit roots are often deep and
+            # Forge adds ``out/<source>/<contract>.json``; a compact component
+            # keeps third-party consumers below legacy Windows MAX_PATH.
+            foundry_output_root = scratch / ".fb"
+            foundry_output_root.mkdir(mode=0o700)
+            foundry_out = foundry_output_root / "out"
+            foundry_cache = foundry_output_root / "cache"
+            foundry_build_info = foundry_output_root / "build-info"
+            cmd.extend(
+                [
+                    "--out",
+                    str(foundry_out),
+                    "--cache-path",
+                    str(foundry_cache),
+                    "--build-info",
+                    "--build-info-path",
+                    str(foundry_build_info),
+                ]
+            )
+            build_writable_roots = (foundry_output_root,)
+
+        if key == "evm_hardhat":
+            root = _resolve_evm_build_root(proj)
+            if root is None or not list(root.glob("hardhat.config.*")):
+                _write_text(
+                    scratch / "build_status.md",
+                    "# Build Status\n\n**Tool**: evm_hardhat\n\n"
+                    "**Status**: SKIPPED\n\nCanonical Hardhat root could not be resolved.\n",
+                )
+                return "WRITTEN"
+            build_cwd = root
+            cmd = ["npx", "hardhat", "compile"]
 
         # STEP 2C: non-EVM build parity. Give the non-EVM branches the same
         # guards EVM has: (1) a per-language source-file presence check, and
@@ -1596,7 +2992,13 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                      "compile-unit .sol files", timeout, _nf)
         # Hang-proof: temp-file drain + tree-kill (a forge→solc / cargo→cc
         # grandchild holding the build pipe can no longer wedge the driver).
-        rc, combined = _run_hardened(cmd, build_cwd, timeout, env=build_env)
+        rc, combined = _run_hardened(
+            cmd,
+            build_cwd,
+            timeout,
+            env=build_env,
+            writable_roots=build_writable_roots,
+        )
         # Retry-once on a transient non-timeout build failure. A first attempt
         # that fails for a transient reason (a flake, or a stale incremental
         # cache the first attempt itself invalidated) frequently succeeds on a
@@ -1606,11 +3008,22 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
         # Generic across all ecosystems (the rc∉{0,124,127} guard makes it
         # ecosystem-agnostic); the CARGO_INCREMENTAL=0 env above already removes
         # the dominant Rust-specific cause, so most second attempts succeed.
-        if rc not in (0, 124, 127):
+        if rc not in (
+            0,
+            124,
+            127,
+            _TOOL_EXECUTION_AUTHORITY_DEBT_RC,
+        ):
             log.warning("[recon] %s build attempt 1 FAILED (rc=%s) — retrying "
                         "ONCE (transient flake / self-invalidated cache often "
                         "clears on a clean re-run)", key, rc)
-            rc2, combined2 = _run_hardened(cmd, build_cwd, timeout, env=build_env)
+            rc2, combined2 = _run_hardened(
+                cmd,
+                build_cwd,
+                timeout,
+                env=build_env,
+                writable_roots=build_writable_roots,
+            )
             if rc2 == 0:
                 log.info("[recon] %s build retry SUCCEEDED (attempt 1 rc=%s was "
                          "transient)", key, rc)
@@ -1620,11 +3033,24 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
                             key, rc, rc2)
             rc, combined = rc2, combined2
         timed_out = rc == 124
+        authority_debt = rc == _TOOL_EXECUTION_AUTHORITY_DEBT_RC
         # _run_hardened combines stdout+stderr; keep the diagnostic text in the
         # stdout tail and leave stderr empty (split is purely informational).
         so, se = combined, ""
 
-        status = "SUCCESS" if rc == 0 else ("TIMEOUT" if timed_out else "FAILED")
+        status = (
+            "SUCCESS"
+            if rc == 0
+            else (
+                "TIMEOUT"
+                if timed_out
+                else (
+                    "DEGRADED_AUTHORITY_DEBT"
+                    if authority_debt
+                    else "FAILED"
+                )
+            )
+        )
         # Visible degrade logging: the user manually reruns and wants to SEE the
         # build outcome — no silent freeze. The hardened wrapper guarantees we
         # reach this line within (timeout + grace) even on a wedged tree.
@@ -1632,6 +3058,13 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
             log.warning("[recon] %s build timed out after %ss, tree-killed — "
                         "degrading build_status to TIMEOUT (later phases compile "
                         "explicit affected files on demand)", key, timeout)
+        elif authority_debt:
+            log.warning(
+                "[recon] %s tool execution authority failed; not retrying "
+                "or attributing the infrastructure debt to the compiler; "
+                "build_status=DEGRADED_AUTHORITY_DEBT",
+                key,
+            )
         elif rc != 0:
             log.warning("[recon] %s build FAILED (rc=%s) — build_status=FAILED; "
                         "recon/verification degrade to grep + on-demand compile",
@@ -1645,7 +3078,8 @@ def _write_build_status(scratch: Path, proj: Path, lang: str,
             f"**Command**: `{' '.join(cmd)}`\n"
             f"**CWD**: `{build_cwd}`\n"
             f"**Timeout**: {timeout}s\n"
-            f"**Exit Code**: {rc}\n"
+            f"**Exit Code**: "
+            f"{'N/A (tool completion authority unavailable)' if authority_debt else rc}\n"
             f"**Status**: {status}\n\n"
             "## stdout (tail)\n```\n" + _tail(so) + "\n```\n\n"
             "## stderr (tail)\n```\n" + _tail(se) + "\n```\n"
@@ -1674,7 +3108,7 @@ def _dir_stats(d: Path) -> Tuple[int, int]:
     files = 0
     loc = 0
     for root, dns, fns in os.walk(d):
-        dns[:] = [x for x in dns if x not in SKIP_DIR_NAMES and not x.startswith(".")]
+        dns[:] = _prune_walk_dirs(d, root, dns)
         for fn in fns:
             if fn.endswith(_L1_SOURCE_SUFFIXES):
                 files += 1
@@ -1686,7 +3120,7 @@ def _write_subsystem_map_l1(scratch: Path, proj: Path) -> str:
     try:
         buckets: Dict[str, List[Path]] = {k: [] for k in _L1_SUBSYSTEMS}
         for dirpath, dirnames, _ in os.walk(proj):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES and not d.startswith(".")]
+            dirnames[:] = _prune_walk_dirs(proj, dirpath, dirnames)
             dn = Path(dirpath).name.lower()
             for sub, kws in _L1_SUBSYSTEMS.items():
                 if dn in kws:
@@ -1714,8 +3148,12 @@ def _write_subsystem_map_l1(scratch: Path, proj: Path) -> str:
 
 def _write_trust_boundaries_l1(scratch: Path, proj: Path) -> str:
     try:
-        tops = [e for e in sorted(proj.iterdir())
-                if e.is_dir() and e.name not in SKIP_DIR_NAMES and not e.name.startswith(".")]
+        tops = [
+            e for e in sorted(proj.iterdir())
+            if e.is_dir()
+            and e.name not in SKIP_DIR_NAMES
+            and not e.name.startswith(".")
+        ]
         ext_kw = ("rpc", "p2p", "network", "api", "engine_api", "libp2p", "discovery")
         lines = ["# Trust Boundaries", "",
                  "Pre-pass stub: top-level dirs classified by name heuristic.",
@@ -1739,14 +3177,14 @@ def _write_attack_surface_l1(scratch: Path, proj: Path) -> str:
         surface_kws = set(_L1_SUBSYSTEMS["rpc"] + _L1_SUBSYSTEMS["p2p"])
         surface_dirs: List[Path] = []
         for dirpath, dirnames, _ in os.walk(proj):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES and not d.startswith(".")]
+            dirnames[:] = _prune_walk_dirs(proj, dirpath, dirnames)
             if Path(dirpath).name.lower() in surface_kws:
                 surface_dirs.append(Path(dirpath))
 
         rows: List[str] = []
         for d in sorted(set(surface_dirs)):
             for root, dns, fns in os.walk(d):
-                dns[:] = [x for x in dns if x not in SKIP_DIR_NAMES and not x.startswith(".")]
+                dns[:] = _prune_walk_dirs(d, root, dns)
                 for fn in fns:
                     fp = Path(root) / fn
                     text = _read_text(fp)
@@ -1954,16 +3392,149 @@ _RUST_ANALYZER_SCIP_TIMEOUT = 180  # seconds
 # budget; on timeout the caller falls back to grep (non-fatal).
 _SCIP_GO_TIMEOUT = 600  # seconds
 
-_SCIP_GRAPH_ARTIFACT_NAMES = (
-    "caller_map.md", "callee_map.md", "state_write_map.md", "function_summary.md",
-)
+_SCIP_GRAPH_ARTIFACT_NAMES = PRECISE_GRAPH_ARTIFACTS
+_GRAPH_GENERATION_MANIFEST = "_mechanical_graph_generation.json"
+_GRAPH_GENERATION_SCHEMA = "plamen.mechanical_graph_generation.v1"
+
+
+def _provider_authority_debt(authority: dict) -> str:
+    status = str(authority.get("authority_status") or "INVALID")
+    reason = re.sub(
+        r"\s+",
+        " ",
+        str(authority.get("reason") or "provider identity is not authoritative"),
+    ).strip()
+    return f"TOOLCHAIN_AUTHORITY_DEBT:{status}:{reason[:180]}"
+
+
+def _graph_provider_ref(authority: Optional[dict]) -> str:
+    authority = authority if isinstance(authority, dict) else {}
+    safe = {
+        key: authority[key]
+        for key in (
+            "tool_id",
+            "authority_status",
+            "deterministic_provider_authority",
+            "authority_digest",
+            "toolchain_version_lock_sha256",
+            "toolchain_governance_sha256",
+            "reason",
+        )
+        if key in authority
+        and isinstance(authority[key], (str, int, float, bool, type(None)))
+    }
+    return json.dumps(safe, sort_keys=True, separators=(",", ":"))
+
+
+def _record_precise_graph_outcome(
+    scratch: Path,
+    *,
+    capability_id: str,
+    tool: str,
+    status: str,
+    authority: Optional[dict] = None,
+    context: Optional[dict] = None,
+    upstream_outcomes: Iterable[dict] = (),
+) -> None:
+    """Durably record precise-graph success/debt without halting fallback."""
+    normalized = str(status or "FAILED:empty provider status")
+    provider_ref = _graph_provider_ref(authority)
+    completed = normalized == "REUSED" or normalized.startswith("WRITTEN")
+    authoritative = (
+        isinstance(authority, dict)
+        and authority.get("deterministic_provider_authority") is True
+    )
+    if completed and authoritative:
+        try:
+            envelope = build_context_bound_tool_outcome_envelope(
+                Path(scratch),
+                capability_id=capability_id,
+                tool=tool,
+                authority=authority,
+                context=context or {},
+                artifacts=_SCIP_GRAPH_ARTIFACT_NAMES,
+                upstream_outcomes=upstream_outcomes,
+            )
+            outcome = ToolOutcome.succeeded(
+                capability_id,
+                tool,
+                0,
+                artifacts=_SCIP_GRAPH_ARTIFACT_NAMES,
+                provider_ref=json.dumps(
+                    envelope,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+            )
+        except (OSError, ToolCoverageLedgerError, TypeError, ValueError) as exc:
+            normalized = (
+                "FAILED:TOOLCHAIN_OUTCOME_AUTHORITY_DEBT:"
+                f"{type(exc).__name__}:{exc}"
+            )
+            outcome = ToolOutcome.debt(
+                capability_id,
+                tool,
+                ToolOutcomeState.FAILED,
+                normalized,
+                provider_ref=provider_ref,
+            )
+    else:
+        if completed and not authoritative:
+            authority_status = str(
+                (authority or {}).get("authority_status")
+                or "INVALID"
+            )
+            normalized = (
+                "FAILED:TOOLCHAIN_AUTHORITY_DEBT:"
+                f"{authority_status}:provider completed without replayed "
+                "deterministic authority"
+            )
+        unavailable = (
+            normalized.startswith("SKIPPED")
+            and (
+                "not found" in normalized
+                or "not importable" in normalized
+                or "TOOLCHAIN_AUTHORITY_DEBT" in normalized
+            )
+        )
+        state = (
+            ToolOutcomeState.UNAVAILABLE
+            if unavailable
+            else ToolOutcomeState.SKIPPED
+            if normalized.startswith("SKIPPED")
+            else ToolOutcomeState.FAILED
+        )
+        outcome = ToolOutcome.debt(
+            capability_id,
+            tool,
+            state,
+            normalized,
+            provider_ref=provider_ref,
+        )
+    try:
+        record_tool_outcome(Path(scratch), outcome)
+    except Exception as exc:
+        marker = Path(scratch) / "tool_coverage_ledger_repair_required.md"
+        existing = _read_text(marker).rstrip()
+        line = (
+            f"- `{capability_id}`: graph coverage receipt write failed "
+            f"({type(exc).__name__}: {exc})"
+        )
+        body = (
+            existing + "\n" + line + "\n"
+            if existing
+            else "# Tool Coverage Ledger Repair Required\n\n" + line + "\n"
+        )
+        _write_text(marker, body)
 
 
 def _scip_bake_is_fresh(scratch: Path, proj: Path, index_path: Path,
                         suffixes: Tuple[str, ...]) -> bool:
     """L1-8: freshness/reuse guard shared by the Rust and Go SCIP bakers.
 
-    True when a previously-baked SCIP index AND all 4 graph artifacts already
+    True when a previously-baked SCIP index, the human-readable graph artifacts,
+    and the current typed machine graph already
     exist on disk and are at least as new as every in-scope production source
     file. Lets a caller skip the (180s-600s) indexer subprocess entirely when
     nothing changed since the last bake — collapsing the double-bake this
@@ -1977,11 +3548,65 @@ def _scip_bake_is_fresh(scratch: Path, proj: Path, index_path: Path,
     try:
         if not index_path.exists():
             return False
+        index_mtime = index_path.stat().st_mtime
         for name in _SCIP_GRAPH_ARTIFACT_NAMES:
             art = scratch / name
             if not art.exists() or art.stat().st_size == 0:
                 return False
-        index_mtime = index_path.stat().st_mtime
+            if art.stat().st_mtime < index_mtime:
+                return False
+        # A pre-migration graph is temporally fresh but semantically stale: it
+        # drops SCIP signatures and can collapse overloads.  Do not reuse it as
+        # though the new provider contract had run.
+        graph_path = scratch / "_mechanical_graph.json"
+        if graph_path.stat().st_size > 64 * 1024 * 1024:
+            return False
+        graph = json.loads(graph_path.read_text(encoding="utf-8", errors="strict"))
+        if graph.get("function_signature_schema") != "plamen.function_signature_fact.v1":
+            return False
+        from enumeration_type_ir import validate_function_signature_fact
+
+        functions = graph.get("functions")
+        signatures = graph.get("function_signatures")
+        if not isinstance(functions, dict) or not isinstance(signatures, dict):
+            return False
+        if set(functions) != set(signatures):
+            return False
+        live_source_digests: dict[str, str] = {}
+        for identity, row in functions.items():
+            if not isinstance(row, dict):
+                return False
+            fact = row.get("signature_fact")
+            if not isinstance(fact, dict) or fact != signatures.get(identity):
+                return False
+            if fact.get("schema") != "plamen.function_signature_fact.v1":
+                return False
+            if validate_function_signature_fact(fact):
+                return False
+            if str(fact.get("function_identity") or "") != str(identity):
+                return False
+            expected_ecosystem = (
+                "go" if "go" in index_path.name.lower() else "rust"
+            )
+            if str(fact.get("ecosystem") or "").strip().lower() != expected_ecosystem:
+                return False
+            if str(fact.get("provider") or "").strip().lower() != f"scip-{expected_ecosystem}":
+                return False
+            binding = (
+                fact.get("source_binding")
+                if isinstance(fact.get("source_binding"), dict)
+                else {}
+            )
+            if str(binding.get("status") or "") == "EXACT":
+                bound_digest = str(binding.get("source_sha256") or "").lower()
+                bound_path = str(binding.get("path") or "")
+                if bound_path not in live_source_digests:
+                    live_source_digests[bound_path] = _normalized_source_sha256(
+                        proj, bound_path
+                    )
+                live_digest = live_source_digests[bound_path]
+                if not live_digest or live_digest != bound_digest:
+                    return False
         for f in _production_source_files(proj, suffixes):
             try:
                 if f.stat().st_mtime > index_mtime:
@@ -1993,7 +3618,12 @@ def _scip_bake_is_fresh(scratch: Path, proj: Path, index_path: Path,
         return False
 
 
-def _bake_rust_scip(scratch: Path, proj: Path) -> str:
+def _bake_rust_scip(
+    scratch: Path,
+    proj: Path,
+    *,
+    context: Optional[dict] = None,
+) -> str:
     """Run `rust-analyzer scip` on a Rust project and generate graph artifacts.
 
     Produces caller_map.md, callee_map.md, state_write_map.md, function_summary.md
@@ -2003,10 +3633,18 @@ def _bake_rust_scip(scratch: Path, proj: Path) -> str:
     """
     if not shutil.which("rust-analyzer"):
         return "SKIPPED:rust-analyzer not found"
-
     cargo_toml = proj / "Cargo.toml"
     if not cargo_toml.exists():
         return "SKIPPED:no Cargo.toml"
+
+    authority = _capture_command_provider_authority(
+        "rust-analyzer",
+        ("rust-analyzer", "--version"),
+        project_root=proj,
+    )
+    if authority.get("deterministic_provider_authority") is not True:
+        return "SKIPPED:" + _provider_authority_debt(authority)
+    resolved_provider = str(authority["resolved_executable"])
 
     index_path = scratch / "scip_rust.index"
 
@@ -2020,7 +3658,12 @@ def _bake_rust_scip(scratch: Path, proj: Path) -> str:
     # Run rust-analyzer scip (hang-proof: temp-file drain + tree-kill — a
     # rust-analyzer worker grandchild can no longer deadlock the parent).
     rc, _out = _run_hardened(
-        ["rust-analyzer", "scip", str(proj), "--exclude-vendored-libraries"],
+        [
+            resolved_provider,
+            "scip",
+            str(proj),
+            "--exclude-vendored-libraries",
+        ],
         proj, _RUST_ANALYZER_SCIP_TIMEOUT,
     )
     if rc == 124:
@@ -2038,11 +3681,26 @@ def _bake_rust_scip(scratch: Path, proj: Path) -> str:
     except Exception as e:
         return f"FAILED:{e.__class__.__name__}"
 
+    if not _provider_authority_replays(authority, project_root=proj):
+        index_path.unlink(missing_ok=True)
+        return "FAILED:TOOLCHAIN_AUTHORITY_DEBT:IDENTITY_DRIFT_AFTER_EXECUTION"
+
     # Convert SCIP index to graph artifacts
-    return _scip_to_graph_artifacts(scratch, index_path, proj)
+    return _scip_to_graph_artifacts(
+        scratch,
+        index_path,
+        proj,
+        ecosystem="rust",
+        context=context,
+    )
 
 
-def _bake_go_scip(scratch: Path, proj: Path) -> str:
+def _bake_go_scip(
+    scratch: Path,
+    proj: Path,
+    *,
+    context: Optional[dict] = None,
+) -> str:
     """Run `scip-go` on a Go module and generate the graph artifacts.
 
     Mirrors ``_bake_rust_scip``: produces caller_map.md, callee_map.md,
@@ -2056,11 +3714,18 @@ def _bake_go_scip(scratch: Path, proj: Path) -> str:
         return "SKIPPED:scip-go not found"
     if not shutil.which("go"):
         return "SKIPPED:go toolchain not found"
-
     go_mod = proj / "go.mod"
     if not go_mod.exists():
         return "SKIPPED:no go.mod"
 
+    authority = _capture_command_provider_authority(
+        "scip-go",
+        ("scip-go", "--version"),
+        project_root=proj,
+    )
+    if authority.get("deterministic_provider_authority") is not True:
+        return "SKIPPED:" + _provider_authority_debt(authority)
+    resolved_provider = str(authority["resolved_executable"])
     index_path = scratch / "scip_go.index"
 
     # L1-8: reuse a fresh prior bake instead of re-running the 600s indexer.
@@ -2077,7 +3742,7 @@ def _bake_go_scip(scratch: Path, proj: Path) -> str:
         # Hang-proof: temp-file drain + tree-kill (scip-go spawns `go`
         # subprocesses whose grandchildren can no longer wedge the parent).
         rc, _out = _run_hardened(
-            ["scip-go", "--quiet", "--output", str(ra_index)],
+            [resolved_provider, "--quiet", "--output", str(ra_index)],
             proj, _SCIP_GO_TIMEOUT,
         )
         if rc == 124:
@@ -2089,6 +3754,14 @@ def _bake_go_scip(scratch: Path, proj: Path) -> str:
         if not ra_index.exists() or ra_index.stat().st_size < 100:
             return "FAILED:scip-go index not produced or empty"
         shutil.move(str(ra_index), str(index_path))
+        if not _provider_authority_replays(
+            authority, project_root=proj
+        ):
+            index_path.unlink(missing_ok=True)
+            return (
+                "FAILED:TOOLCHAIN_AUTHORITY_DEBT:"
+                "IDENTITY_DRIFT_AFTER_EXECUTION"
+            )
     except Exception as e:
         return f"FAILED:{e.__class__.__name__}"
     finally:
@@ -2100,7 +3773,13 @@ def _bake_go_scip(scratch: Path, proj: Path) -> str:
             pass
 
     # Convert SCIP index to graph artifacts (language-agnostic reader)
-    return _scip_to_graph_artifacts(scratch, index_path, proj)
+    return _scip_to_graph_artifacts(
+        scratch,
+        index_path,
+        proj,
+        ecosystem="go",
+        context=context,
+    )
 
 
 # F1 (recall): mechanical Solidity reference graph via Slither. EVM is the only
@@ -2114,11 +3793,13 @@ _SLITHER_GRAPH_TIMEOUT = 300
 
 
 def _write_mechanical_graph_json(scratch: Path, source: str,
-                                 var_refs: dict, functions: dict) -> None:
+                                 var_refs: dict, functions: dict) -> bool:
     """Write the UNIFIED `_mechanical_graph.json` every provider emits and the
     coverage gate (G2) reads — ecosystem-agnostic, LLM-unclobberable.
 
-    var_refs:   { "<qualified var>": {"bare": str, "refs": ["<descriptor>", ...]} }
+    var_refs:   { "<qualified var>": {"bare": str, "refs": ["<descriptor>", ...],
+                                       "declaration_locus": str (optional),
+                                       "read_sites": [...], "write_sites": [...] (optional)} }
     functions:  { "<qualified fn>":  {"bare": str, "loc": str, "callers": ["<descriptor>", ...],
                                       "callees": ["<descriptor>", ...] (optional, provider-dependent)} }
 
@@ -2128,12 +3809,92 @@ def _write_mechanical_graph_json(scratch: Path, source: str,
     locations; Move/DAML: function/choice names)."""
     import json
     try:
+        # P0-AB: all providers now project the same typed state-symbol schema.
+        # Keep ``var_refs`` unchanged for established enumeration consumers.
+        # The typed projection never upgrades weak provider evidence: a SCIP or
+        # source-parser row with only generic refs remains REFERENCE_ONLY.
+        from state_symbol_authority import GRAPH_SCHEMA, build_typed_state_symbols
+        from enumeration_type_ir import (
+            FUNCTION_SIGNATURE_SCHEMA,
+            build_fallback_signature_fact,
+            normalize_source_binding_path,
+        )
+
+        ecosystem_by_source = {
+            "slither": "sol",
+            "evm-source": "sol",
+            "scip-rust": "rust",
+            "scip-go": "go",
+            "rust-source": "rust",
+            "go-source": "go",
+            "move": "move",
+            "move-source": "move",
+            "daml": "daml",
+        }
+        normalized_functions: dict = {}
+        for identity, raw_row in (functions or {}).items():
+            if not isinstance(raw_row, dict):
+                normalized_functions[identity] = raw_row
+                continue
+            row = dict(raw_row)
+            fact = row.get("signature_fact")
+            if not isinstance(fact, dict):
+                loc = str(row.get("loc") or "")
+                match = re.match(r"^(.*?):L?(\d+)$", loc)
+                source_path = normalize_source_binding_path(
+                    match.group(1) if match else loc
+                )
+                source_line = int(match.group(2)) if match else 0
+                provider_name = str(source or "").lower()
+                fact = build_fallback_signature_fact(
+                    function_identity=str(identity),
+                    bare_name=str(row.get("bare") or str(identity).split(".")[-1]),
+                    provider=provider_name,
+                    source_path=source_path,
+                    source_line=source_line,
+                    ecosystem=ecosystem_by_source.get(provider_name, ""),
+                )
+                row["signature_fact"] = fact
+            normalized_functions[identity] = row
+
         (scratch / "_mechanical_graph.json").write_text(
-            json.dumps({"source": source, "var_refs": var_refs, "functions": functions},
-                       indent=1),
+            json.dumps({
+                "schema_version": GRAPH_SCHEMA,
+                "function_signature_schema": FUNCTION_SIGNATURE_SCHEMA,
+                "source": source,
+                "state_symbols": build_typed_state_symbols(source, var_refs),
+                "var_refs": var_refs,
+                "functions": normalized_functions,
+                "function_signatures": {
+                    identity: row.get("signature_fact", {})
+                    for identity, row in normalized_functions.items()
+                    if isinstance(row, dict)
+                },
+            }, indent=1),
             encoding="utf-8")
+        return True
     except Exception as e:
         log.warning("[mechanical_graph] json write failed (%s): %s", source, e)
+        return False
+
+
+def _normalized_source_sha256(project: Path, relative_path: str) -> str:
+    """Hash UTF-8 source with universal newline normalization.
+
+    The graph consumer reads text the same way, so an LF and CRLF checkout have
+    the same exact binding while a semantic source change still invalidates it.
+    Paths escaping the project root fail closed to an empty digest.
+    """
+    try:
+        from enumeration_type_ir import normalize_source_binding_path
+
+        root = Path(project).resolve()
+        candidate = (root / Path(normalize_source_binding_path(relative_path))).resolve()
+        candidate.relative_to(root)
+        text = candidate.read_text(encoding="utf-8", errors="replace")
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
 
 
 def _slither_fn_loc(f, proj: Path) -> str:
@@ -2146,6 +3907,89 @@ def _slither_fn_loc(f, proj: Path) -> str:
         return "?:L0"
 
 
+def _slither_project_relative_path(f, proj: Path, build_root: Path) -> str:
+    """Resolve Slither's filename metadata into the audited project namespace."""
+    try:
+        from enumeration_type_ir import normalize_source_binding_path
+
+        mapping = f.source_mapping
+        filename = getattr(mapping, "filename", None)
+        short = str(getattr(filename, "short", "") or "")
+        absolute = str(getattr(filename, "absolute", "") or "")
+        project_root = Path(proj).resolve()
+        candidates: list[Path] = []
+        if absolute:
+            candidates.append(Path(absolute))
+        if short:
+            candidates.extend((project_root / short, Path(build_root).resolve() / short))
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                relative = resolved.relative_to(project_root)
+                if resolved.is_file():
+                    return normalize_source_binding_path(relative.as_posix())
+            except Exception:
+                continue
+        return normalize_source_binding_path(short)
+    except Exception:
+        return ""
+
+
+def _slither_item_is_production_source(
+    item, proj: Path, build_root: Path, *, fallback_contract=None,
+) -> bool:
+    """Fail closed unless a Slither item is bound to audited source.
+
+    Slither may compile a wider Foundry/Hardhat build root than ``proj``. Its
+    graph must still obey the snapshot/recon production-source boundary, so a
+    preserved fuzz harness or dependency cannot prime a fresh audit.
+    """
+    candidates = [item]
+    if fallback_contract is not None and fallback_contract is not item:
+        candidates.append(fallback_contract)
+    for candidate_item in candidates:
+        relative = _slither_project_relative_path(
+            candidate_item, proj, build_root
+        )
+        if not relative:
+            continue
+        try:
+            root = Path(proj).resolve()
+            candidate = (root / Path(relative)).resolve()
+            candidate.relative_to(root)
+            if candidate.is_file() and is_production_source_path(candidate, root):
+                return True
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return False
+
+
+def _slither_contract_is_production_source(
+    contract, proj: Path, build_root: Path,
+) -> bool:
+    """Bind a contract through its own mapping or a declared member mapping."""
+    if _slither_item_is_production_source(contract, proj, build_root):
+        return True
+    members = tuple(getattr(contract, "functions_declared", []) or ()) + tuple(
+        getattr(contract, "state_variables_declared", []) or ()
+    )
+    return any(
+        _slither_item_is_production_source(member, proj, build_root)
+        for member in members
+    )
+
+
+def _slither_state_var_loc(variable, proj: Path) -> str:
+    """Best-effort declaration locus for a Slither state variable."""
+    try:
+        sm = variable.source_mapping
+        short = getattr(getattr(sm, "filename", None), "short", "") or ""
+        line = sm.lines[0] if getattr(sm, "lines", None) else 0
+        return f"{short}:L{line}" if short else f"?:L{line}"
+    except Exception:
+        return ""
+
+
 def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
     """Run Slither on a Solidity project and emit MECHANICAL graph artifacts.
 
@@ -2155,10 +3999,27 @@ def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
     on anything other than WRITTEN the caller keeps the LLM-derived maps.
     """
     import json
+    authority = _capture_python_provider_authority(
+        "slither", project_root=proj
+    )
+    if authority.get("deterministic_provider_authority") is not True:
+        return "SKIPPED:" + _provider_authority_debt(authority)
     try:
+        import slither as slither_module  # type: ignore
         from slither import Slither  # type: ignore
     except Exception as e:
         return f"SKIPPED:slither not importable ({e.__class__.__name__})"
+    try:
+        if (
+            Path(str(slither_module.__file__)).resolve(strict=True)
+            != Path(str(authority["module_origin"])).resolve(strict=True)
+        ):
+            return (
+                "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:"
+                "MODULE_ORIGIN_DRIFT"
+            )
+    except (KeyError, OSError, TypeError, ValueError):
+        return "SKIPPED:TOOLCHAIN_AUTHORITY_DEBT:MODULE_ORIGIN_UNBOUND"
     if not any(proj.rglob("*.sol")):
         return "SKIPPED:no .sol sources"
 
@@ -2192,46 +4053,239 @@ def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
             else:
                 os.environ["FOUNDRY_PROFILE"] = _prev_prof
 
+    production_contracts = [
+        contract
+        for contract in sl.contracts
+        if _slither_contract_is_production_source(
+            contract, proj, Path(slither_target)
+        )
+    ]
+
     fn_loc: Dict[str, str] = {}
     var_readers: Dict[str, set] = {}
     var_writers: Dict[str, set] = {}
+    var_read_sites: Dict[str, set] = {}
+    var_write_sites: Dict[str, set] = {}
+    var_declarations: Dict[str, str] = {}
     fn_callees: Dict[str, set] = {}     # qualified fn -> set(qualified callee)
     bare_of: Dict[str, str] = {}        # qualified -> bare name
+    fn_signature_facts: Dict[str, dict] = {}
     try:
-        for c in sl.contracts:
+        from collections import Counter
+        from enumeration_type_ir import build_function_signature_fact
+
+        provider_functions = [
+            (c, f)
+            for c in production_contracts
+            if not getattr(c, "is_interface", False)
+            for f in (getattr(c, "functions_declared", []) or [])
+            if (getattr(f, "name", "") or "")
+            and _slither_item_is_production_source(
+                f, proj, Path(slither_target), fallback_contract=c
+            )
+        ]
+        base_counts = Counter(
+            (str(getattr(c, "name", "")), str(getattr(f, "name", "")))
+            for c, f in provider_functions
+        )
+        fn_key_by_object: Dict[int, str] = {}
+        assigned_keys: set[str] = set()
+        for contract, function in provider_functions:
+            contract_name = str(getattr(contract, "name", ""))
+            function_name = str(getattr(function, "name", ""))
+            base_key = f"{contract_name}.{function_name}"
+            key = base_key
+            if base_counts[(contract_name, function_name)] > 1:
+                canonical = str(
+                    getattr(function, "canonical_name", "")
+                    or getattr(function, "full_name", "")
+                    or getattr(function, "solidity_signature", "")
+                ).strip()
+                if canonical and canonical.startswith(f"{contract_name}."):
+                    key = canonical
+                elif canonical:
+                    key = f"{contract_name}.{canonical}"
+                else:
+                    loc = _slither_fn_loc(function, proj)
+                    key = f"{base_key}@{loc}"
+            if key in assigned_keys:
+                discriminator = hashlib.sha256(
+                    (
+                        key + "\x1f" + _slither_fn_loc(function, proj)
+                        + "\x1f" + str(getattr(function, "solidity_signature", ""))
+                    ).encode("utf-8")
+                ).hexdigest()[:12]
+                key = f"{key}#{discriminator}"
+            assigned_keys.add(key)
+            fn_key_by_object[id(function)] = key
+
+        def _parameter_declaration(parameter) -> str:
+            type_name = str(getattr(parameter, "type", "") or "").strip()
+            name = str(getattr(parameter, "name", "") or "").strip()
+            return " ".join(part for part in (type_name, name) if part)
+
+        def _function_mutability(function) -> str:
+            direct = str(getattr(function, "state_mutability", "") or "").strip()
+            if direct:
+                return direct
+            # These are Slither provider booleans, not source-text guesses.
+            if bool(getattr(function, "pure", False)):
+                return "pure"
+            if bool(getattr(function, "view", False)):
+                return "view"
+            if bool(getattr(function, "payable", False)):
+                return "payable"
+            return "nonpayable"
+
+        def _callee_key(callee, default_contract: str) -> str:
+            exact = fn_key_by_object.get(id(callee))
+            if exact:
+                return exact
+            name = str(getattr(callee, "name", "") or "")
+            contract_name = str(
+                getattr(getattr(callee, "contract", None), "name", "")
+                or default_contract
+            )
+            return f"{contract_name}.{name}" if name else ""
+
+        for c in production_contracts:
             if getattr(c, "is_interface", False):
                 continue
+            # Include declaration-only/constructor-only immutables too.  A
+            # state inventory must not depend on a non-constructor reader or
+            # writer existing in the current compilation unit.
+            for v in getattr(c, "state_variables_declared", []) or []:
+                if not _slither_item_is_production_source(
+                    v, proj, Path(slither_target), fallback_contract=c
+                ):
+                    continue
+                name = getattr(v, "name", "") or ""
+                if not name:
+                    continue
+                vk = f"{getattr(getattr(v, 'contract', None), 'name', c.name)}.{name}"
+                bare_of[vk] = name
+                var_declarations.setdefault(vk, _slither_state_var_loc(v, proj))
             for f in getattr(c, "functions_declared", []) or []:
+                if not _slither_item_is_production_source(
+                    f, proj, Path(slither_target), fallback_contract=c
+                ):
+                    continue
                 fname = getattr(f, "name", "") or ""
                 if not fname:
                     continue
-                fkey = f"{c.name}.{fname}"
+                fkey = fn_key_by_object.get(id(f), f"{c.name}.{fname}")
                 bare_of[fkey] = fname
-                fn_loc.setdefault(fkey, _slither_fn_loc(f, proj))
+                raw_function_loc = _slither_fn_loc(f, proj)
+                loc_match = re.match(r"^(.*?):L?(\d+)$", raw_function_loc)
+                source_line = int(loc_match.group(2)) if loc_match else 0
+                relative_path = _slither_project_relative_path(
+                    f, proj, Path(slither_target)
+                ) or (loc_match.group(1) if loc_match else raw_function_loc)
+                function_loc = f"{relative_path}:L{source_line}"
+                fn_loc.setdefault(fkey, function_loc)
+                raw_parameters = ", ".join(
+                    value for value in (
+                        _parameter_declaration(parameter)
+                        for parameter in (getattr(f, "parameters", []) or [])
+                    ) if value
+                )
+                raw_returns = ", ".join(
+                    value for value in (
+                        _parameter_declaration(parameter)
+                        for parameter in (getattr(f, "returns", []) or [])
+                    ) if value
+                )
+                raw_signature = str(
+                    getattr(f, "canonical_name", "")
+                    or getattr(f, "full_name", "")
+                    or getattr(f, "solidity_signature", "")
+                    or fname
+                )
+                fn_signature_facts[fkey] = build_function_signature_fact(
+                    ecosystem="sol",
+                    provider="slither",
+                    function_identity=fkey,
+                    bare_name=fname,
+                    provider_symbol=str(
+                        getattr(f, "canonical_name", "")
+                        or getattr(f, "full_name", "")
+                        or fkey
+                    ),
+                    raw_signature=raw_signature,
+                    raw_parameters=raw_parameters,
+                    source_path=relative_path,
+                    source_line=source_line,
+                    source_sha256=_normalized_source_sha256(proj, relative_path),
+                    kind=str(getattr(f, "function_type", "") or "Function"),
+                    visibility=str(getattr(f, "visibility", "") or ""),
+                    mutability=_function_mutability(f),
+                    returns=raw_returns,
+                )
                 for v in getattr(f, "state_variables_read", []) or []:
+                    if not _slither_item_is_production_source(
+                        v, proj, Path(slither_target),
+                        fallback_contract=getattr(v, "contract", c),
+                    ):
+                        continue
                     vk = f"{getattr(v.contract, 'name', c.name)}.{v.name}"
                     bare_of[vk] = v.name
+                    var_declarations.setdefault(vk, _slither_state_var_loc(v, proj))
                     var_readers.setdefault(vk, set()).add(fkey)
                 for v in getattr(f, "state_variables_written", []) or []:
+                    if not _slither_item_is_production_source(
+                        v, proj, Path(slither_target),
+                        fallback_contract=getattr(v, "contract", c),
+                    ):
+                        continue
                     vk = f"{getattr(v.contract, 'name', c.name)}.{v.name}"
                     bare_of[vk] = v.name
+                    var_declarations.setdefault(vk, _slither_state_var_loc(v, proj))
                     var_writers.setdefault(vk, set()).add(fkey)
+                # Slither nodes retain the actual access locus.  Use those
+                # reference sites for exact P0-AB citation binding; function
+                # declarations remain only a compatibility fallback.
+                for node in getattr(f, "nodes", []) or []:
+                    node_locus = _slither_fn_loc(node, proj)
+                    for v in getattr(node, "state_variables_read", []) or []:
+                        if not _slither_item_is_production_source(
+                            v, proj, Path(slither_target),
+                            fallback_contract=getattr(v, "contract", c),
+                        ):
+                            continue
+                        vk = f"{getattr(getattr(v, 'contract', None), 'name', c.name)}.{v.name}"
+                        var_read_sites.setdefault(vk, set()).add(node_locus)
+                    for v in getattr(node, "state_variables_written", []) or []:
+                        if not _slither_item_is_production_source(
+                            v, proj, Path(slither_target),
+                            fallback_contract=getattr(v, "contract", c),
+                        ):
+                            continue
+                        vk = f"{getattr(getattr(v, 'contract', None), 'name', c.name)}.{v.name}"
+                        var_write_sites.setdefault(vk, set()).add(node_locus)
                 for ic in (getattr(f, "internal_calls", []) or []):
                     callee = getattr(ic, "function", ic)
-                    cn = getattr(callee, "name", None)
-                    cc = getattr(getattr(callee, "contract", None), "name", c.name)
-                    if cn:
-                        fn_callees.setdefault(fkey, set()).add(f"{cc}.{cn}")
+                    if not _slither_item_is_production_source(
+                        callee, proj, Path(slither_target),
+                        fallback_contract=getattr(callee, "contract", None),
+                    ):
+                        continue
+                    callee_key = _callee_key(callee, c.name)
+                    if callee_key:
+                        fn_callees.setdefault(fkey, set()).add(callee_key)
                 for hc in (getattr(f, "high_level_calls", []) or []):
                     # high_level_calls entries are (Contract, Function) tuples or objects
                     callee = None
                     if isinstance(hc, (tuple, list)) and len(hc) >= 2:
                         callee = hc[1]
                     callee = getattr(callee, "function", callee)
-                    cn = getattr(callee, "name", None)
-                    cc = getattr(getattr(callee, "contract", None), "name", "")
-                    if cn and cc:
-                        fn_callees.setdefault(fkey, set()).add(f"{cc}.{cn}")
+                    if callee is not None and not _slither_item_is_production_source(
+                        callee, proj, Path(slither_target),
+                        fallback_contract=getattr(callee, "contract", None),
+                    ):
+                        continue
+                    callee_key = _callee_key(callee, "") if callee is not None else ""
+                    if callee_key:
+                        fn_callees.setdefault(fkey, set()).add(callee_key)
     except Exception as e:
         return f"FAILED:slither walk ({e.__class__.__name__})"
 
@@ -2256,16 +4310,44 @@ def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
 
     # Unified machine artifact (gate-authoritative; LLM never writes this).
     var_refs = {}
-    for vk in set(var_readers) | set(var_writers):
+    for vk in set(var_declarations) | set(var_readers) | set(var_writers):
         refs = var_readers.get(vk, set()) | var_writers.get(vk, set())
-        var_refs[vk] = {"bare": _bare(vk), "refs": _desc(refs)}
+        precise_reads = sorted(var_read_sites.get(vk, set()))
+        precise_writes = sorted(var_write_sites.get(vk, set()))
+        has_precise_refs = bool(precise_reads or precise_writes)
+        var_refs[vk] = {
+            "bare": _bare(vk),
+            "declaration_locus": var_declarations.get(vk, ""),
+            "read_sites": precise_reads or _desc(var_readers.get(vk, set())),
+            "write_sites": precise_writes or _desc(var_writers.get(vk, set())),
+            "refs": sorted(set(
+                precise_reads + precise_writes + _desc(refs)
+            )),
+            "confidence": (
+                "AST_REFERENCE_SITE" if has_precise_refs
+                else "AST_FUNCTION_SCOPE_REFERENCE" if refs
+                else "AST_DECLARATION_ONLY"
+            ),
+        }
     functions = {
         fk: {"bare": _bare(fk), "loc": fn_loc.get(fk, "?"),
              "callers": sorted(_bare(ck) for ck in fn_callers.get(fk, set())),
-             "callees": sorted(_bare(ck) for ck in fn_callees.get(fk, set()))}
+             "callees": sorted(_bare(ck) for ck in fn_callees.get(fk, set())),
+             "signature_fact": fn_signature_facts.get(fk, {})}
         for fk in fn_loc
     }
-    _write_mechanical_graph_json(scratch, "slither", var_refs, functions)
+    if not _provider_authority_replays(authority, project_root=proj):
+        return (
+            "FAILED:TOOLCHAIN_AUTHORITY_DEBT:"
+            "IDENTITY_DRIFT_AFTER_EXECUTION"
+        )
+    if not _write_mechanical_graph_json(
+        scratch,
+        "slither",
+        var_refs,
+        functions,
+    ):
+        return "FAILED:ARTIFACT_STAGE:mechanical graph JSON write failed"
 
     # Human-readable maps (depth-agent inputs), stamped mechanical.
     def _emit_var_map(filename: str, title: str, data: Dict[str, set], col: str):
@@ -2289,6 +4371,31 @@ def _bake_evm_slither_graph(scratch: Path, proj: Path) -> str:
     for fk in sorted(fn_loc):
         cm.append(f"| `{fk}` ({fn_loc[fk]}) | {', '.join(_with_loc(fn_callers.get(fk, set()))) or '_(none)_'} |")
     _write_text(scratch / "caller_map.md", "\n".join(cm) + "\n")
+
+    summary = [
+        "> **Status**: POPULATED",
+        "> **Source**: Slither compiler/type provider",
+        "",
+        "# Function Summary",
+        "",
+        "| Function | File | Line | Kind | Visibility | Mutability | Provider Signature | Signature Authority | Callers | Callees |",
+        "|----------|------|------|------|------------|------------|--------------------|---------------------|---------|---------|",
+    ]
+    for fk in sorted(fn_loc):
+        fact = fn_signature_facts.get(fk, {})
+        loc_match = re.match(r"^(.*?):L?(\d+)$", fn_loc[fk])
+        path = loc_match.group(1) if loc_match else fn_loc[fk]
+        line = loc_match.group(2) if loc_match else "0"
+        signature = str(
+            fact.get("canonical_signature") or "_(unavailable)_"
+        ).replace("|", "&#124;").replace("`", "&#96;")
+        summary.append(
+            f"| `{fk}` | {path} | {line} | {fact.get('kind', 'Function')} "
+            f"| {fact.get('visibility') or '-'} | {fact.get('mutability') or '-'} "
+            f"| `{signature}` | {fact.get('authority', 'UNKNOWN')} "
+            f"| {len(fn_callers.get(fk, set()))} | {len(fn_callees.get(fk, set()))} |"
+        )
+    _write_text(scratch / "function_summary.md", "\n".join(summary) + "\n")
 
     return "WRITTEN"
 
@@ -2386,7 +4493,12 @@ def _maybe_warn_via_ir_build(proj: Path) -> None:
         pass
 
 
-def _bake_evm_graph(scratch: Path, proj: Path) -> str:
+def _bake_evm_graph(
+    scratch: Path,
+    proj: Path,
+    *,
+    context: Optional[dict] = None,
+) -> str:
     """EVM graph provider with tiered degradation (never mock the compiler):
       1. Slither (PRECISE, type-resolved) when the project builds.
       2. compilation-free source parse (APPROXIMATE) otherwise — same tier the
@@ -2399,9 +4511,43 @@ def _bake_evm_graph(scratch: Path, proj: Path) -> str:
     # the operator before the potentially-long silent build so it isn't mistaken
     # for a hang.
     _maybe_warn_via_ir_build(proj)
-    slither = _bake_evm_slither_graph(scratch, proj)
+    scratch = Path(scratch)
+    scratch.mkdir(parents=True, exist_ok=True)
+    stage = Path(
+        tempfile.mkdtemp(prefix=".slither-graph-", dir=scratch)
+    )
+    try:
+        slither = _bake_evm_slither_graph(stage, proj)
+        if slither == "WRITTEN":
+            publication, _evidence = (
+                _validate_and_publish_graph_artifact_set(
+                    stage,
+                    scratch,
+                )
+            )
+            if publication != "WRITTEN":
+                slither = publication
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    slither_authority = _capture_python_provider_authority(
+        "slither", project_root=proj
+    )
+    _record_precise_graph_outcome(
+        scratch,
+        capability_id="slither.evm-reference-graph",
+        tool="slither",
+        status=slither,
+        authority=slither_authority,
+        context=context,
+    )
     if slither == "WRITTEN":
         return "WRITTEN:slither"
+    discard_issues = _discard_committed_graph_generation(scratch)
+    if discard_issues:
+        return (
+            "FAILED:PRECISE_GRAPH_DISCARD:"
+            + ",".join(discard_issues)
+        )
     fallback = _bake_evm_source_graph(scratch, proj)
     return (f"WRITTEN:evm-source (slither {slither})"
             if fallback == "WRITTEN" else f"FAILED:slither={slither}; source={fallback}")
@@ -2503,16 +4649,34 @@ def _finalize_source_graph(scratch: Path, source: str, fn_loc: Dict[str, str],
         for callee in callees:
             if callee in fn_loc:
                 fn_callers.setdefault(callee, set()).add(caller)
-    # drop symbols referenced by too many functions (noise) for the gate.
+    # Drop only symbols referenced by too many functions (noise).  A symbol
+    # referenced by exactly one function is still security-relevant and must
+    # remain available to relation-scoped consumers; consumers own their own
+    # denoising policy rather than receiving a destructively filtered graph.
     var_refs = {
-        s: {"bare": s, "refs": sorted(f"{fn} ({fn_loc.get(fn, '?')})" for fn in fns)}
-        for s, fns in sym_refs.items() if 1 < len(fns) <= 25
+        s: {
+            "bare": s,
+            "refs": sorted(f"{fn} ({fn_loc.get(fn, '?')})" for fn in fns),
+            "confidence": "FUNCTION_SCOPE_APPROXIMATE",
+        }
+        for s, fns in sym_refs.items() if 0 < len(fns) <= 25
     }
     functions = {
-        fn: {"bare": fn, "loc": loc, "callers": sorted(fn_callers.get(fn, set()))}
+        fn: {
+            "bare": fn,
+            "loc": loc,
+            "callers": sorted(fn_callers.get(fn, set())),
+            "callees": sorted(fn_callees.get(fn, set())),
+        }
         for fn, loc in fn_loc.items()
     }
-    _write_mechanical_graph_json(scratch, source, var_refs, functions)
+    if not _write_mechanical_graph_json(
+        scratch,
+        source,
+        var_refs,
+        functions,
+    ):
+        return "FAILED:ARTIFACT_STAGE:mechanical graph JSON write failed"
     return "WRITTEN"
 
 
@@ -2613,7 +4777,12 @@ def _bake_go_source_graph(scratch: Path, proj: Path) -> str:
     return _finalize_source_graph(scratch, "go-source", fn_loc, sym_refs, fn_callees)
 
 
-def _bake_rust_graph(scratch: Path, proj: Path) -> str:
+def _bake_rust_graph(
+    scratch: Path,
+    proj: Path,
+    *,
+    context: Optional[dict] = None,
+) -> str:
     """Tiered Rust graph (never mock): precise SCIP when the toolchain is present
     and the index builds, else the compilation-free source parse so the
     enumeration gate still has a graph. Mirrors `_bake_evm_graph`.
@@ -2621,36 +4790,100 @@ def _bake_rust_graph(scratch: Path, proj: Path) -> str:
     Return contract (callers may see any of): REUSED:scip | WRITTEN:scip |
     WRITTEN:rust-source (scip {status}) | FAILED:scip={status}; source={status}
     """
-    scip = _bake_rust_scip(scratch, proj)
+    scip = (
+        _bake_rust_scip(scratch, proj)
+        if context is None
+        else _bake_rust_scip(scratch, proj, context=context)
+    )
+    rust_authority = _capture_command_provider_authority(
+        "rust-analyzer",
+        ("rust-analyzer", "--version"),
+        project_root=proj,
+    )
+    _record_precise_graph_outcome(
+        scratch,
+        capability_id="scip-rust.reference-graph",
+        tool="rust-analyzer",
+        status=scip,
+        authority=rust_authority,
+        context=context,
+    )
     if scip == "REUSED":
         return "REUSED:scip"
-    if scip == "WRITTEN":
+    if scip.startswith("WRITTEN"):
         return "WRITTEN:scip"
+    discard_issues = _discard_committed_graph_generation(scratch)
+    if discard_issues:
+        return (
+            "FAILED:PRECISE_GRAPH_DISCARD:"
+            + ",".join(discard_issues)
+        )
     src = _bake_rust_source_graph(scratch, proj)
     return (f"WRITTEN:rust-source (scip {scip})"
             if src == "WRITTEN" else f"FAILED:scip={scip}; source={src}")
 
 
-def _bake_go_graph(scratch: Path, proj: Path) -> str:
+def _bake_go_graph(
+    scratch: Path,
+    proj: Path,
+    *,
+    context: Optional[dict] = None,
+) -> str:
     """Tiered Go graph (never mock): precise SCIP when scip-go is present and the
     index builds, else the compilation-free source parse.
 
     Return contract (callers may see any of): REUSED:scip | WRITTEN:scip |
     WRITTEN:go-source (scip {status}) | FAILED:scip={status}; source={status}
     """
-    scip = _bake_go_scip(scratch, proj)
+    scip = (
+        _bake_go_scip(scratch, proj)
+        if context is None
+        else _bake_go_scip(scratch, proj, context=context)
+    )
+    go_authority = _capture_command_provider_authority(
+        "scip-go",
+        ("scip-go", "--version"),
+        project_root=proj,
+    )
+    _record_precise_graph_outcome(
+        scratch,
+        capability_id="scip-go.reference-graph",
+        tool="scip-go",
+        status=scip,
+        authority=go_authority,
+        context=context,
+    )
     if scip == "REUSED":
         return "REUSED:scip"
-    if scip == "WRITTEN":
+    if scip.startswith("WRITTEN"):
         return "WRITTEN:scip"
+    discard_issues = _discard_committed_graph_generation(scratch)
+    if discard_issues:
+        return (
+            "FAILED:PRECISE_GRAPH_DISCARD:"
+            + ",".join(discard_issues)
+        )
     src = _bake_go_source_graph(scratch, proj)
     return (f"WRITTEN:go-source (scip {scip})"
             if src == "WRITTEN" else f"FAILED:scip={scip}; source={src}")
 
 
-def _scip_to_graph_artifacts(scratch: Path, index_path: Path, proj: Path) -> str:
+def _scip_to_graph_artifacts_impl(
+    scratch: Path, index_path: Path, proj: Path, *, ecosystem: str = ""
+) -> str:
     """Convert a SCIP index into the 4 graph artifacts depth agents consume."""
     try:
+        protobuf_authority = _capture_python_provider_authority(
+            "protobuf",
+            project_root=proj,
+        )
+        if (
+            protobuf_authority.get("deterministic_provider_authority")
+            is not True
+        ):
+            return "FAILED:" + _provider_authority_debt(
+                protobuf_authority
+            )
         sys_path_added = False
         scip_reader_dir = _plamen_home()
         if str(scip_reader_dir) not in sys.path:
@@ -2670,11 +4903,26 @@ def _scip_to_graph_artifacts(scratch: Path, index_path: Path, proj: Path) -> str
         if stats["definitions"] < 5:
             return f"FAILED:SCIP index has only {stats['definitions']} definitions"
 
-        # Build caller/callee maps from SCIP references
-        callers: Dict[str, List[str]] = {}  # fn_name -> [caller locations]
-        callees: Dict[str, List[str]] = {}  # fn_name -> [callee locations]
-        fn_info: Dict[str, dict] = {}       # fn_name -> {path, line, kind, ...}
+        # Build caller/callee maps from SCIP references.  Function identities
+        # are assigned only after every definition has been collected so two
+        # same-name methods/functions cannot clobber each other.
+        from collections import Counter
+        from enumeration_type_ir import (
+            build_function_signature_fact,
+            normalize_source_binding_path,
+        )
+
+        ecosystem = str(ecosystem or "").strip().lower()
+        if ecosystem not in {"rust", "go"}:
+            ecosystem = "go" if "go" in index_path.name.lower() else "rust"
+        signature_provider = f"scip-{ecosystem}"
+        callers: Dict[str, List[str]] = {}  # exact fn identity -> caller locations
+        callees: Dict[str, List[str]] = {}  # exact fn identity -> callee identities
+        fn_info: Dict[str, dict] = {}       # exact identity -> provider facts
+        symbol_to_identity: Dict[str, str] = {}
+        pending_functions: List[dict] = []
         state_writers: Dict[str, List[str]] = {}  # var_name -> [writer locations]
+        state_declarations: Dict[str, str] = {}   # symbol -> declaration locus
 
         # Collect all definitions and their references
         for sym, defn_occ in reader._definitions.items():
@@ -2688,27 +4936,22 @@ def _scip_to_graph_artifacts(scratch: Path, index_path: Path, proj: Path) -> str
 
             # Function-like symbols
             if kind in ("Function", "Method", "Constructor", "") and "()" in sym:
-                path_str = defn_occ.relative_path
-                fn_info[name] = {
+                path_str = normalize_source_binding_path(defn_occ.relative_path)
+                pending_functions.append({
+                    "symbol": sym,
+                    "name": name,
                     "path": path_str,
                     "line": defn_occ.start_line + 1,
                     "kind": kind or "Function",
                     "signature": (info.signature if info else ""),
-                }
-
-                # Build callers from references
-                refs = reader._references.get(sym, [])
-                caller_locs = []
-                callee_locs = []
-                for ref in refs:
-                    loc = f"{ref.relative_path}:L{ref.start_line + 1}"
-                    caller_locs.append(loc)
-                if caller_locs:
-                    callers[name] = caller_locs
+                })
 
             # Field/variable symbols for state_write_map
             elif kind in ("Field", "Property", "Variable", ""):
                 if "()" not in sym:
+                    state_declarations[name] = (
+                        f"{defn_occ.relative_path}:L{defn_occ.start_line + 1}"
+                    )
                     refs = reader._references.get(sym, [])
                     writer_locs = [
                         f"{ref.relative_path}:L{ref.start_line + 1}"
@@ -2716,6 +4959,58 @@ def _scip_to_graph_artifacts(scratch: Path, index_path: Path, proj: Path) -> str
                     ]
                     if writer_locs:
                         state_writers[name] = writer_locs
+
+        name_counts = Counter(row["name"] for row in pending_functions)
+
+        for row in sorted(
+            pending_functions,
+            key=lambda value: (
+                str(value["path"]).casefold(), int(value["line"]),
+                str(value["name"]).casefold(), str(value["symbol"]),
+            ),
+        ):
+            bare = str(row["name"])
+            identity = bare
+            if name_counts[bare] > 1:
+                discriminator = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "symbol": row["symbol"],
+                            "signature": row["signature"],
+                            "path": row["path"],
+                            "line": row["line"],
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()[:12]
+                identity = (
+                    f"{bare}@{row['path']}:L{row['line']}#{discriminator}"
+                )
+            symbol_to_identity[str(row["symbol"])] = identity
+            signature_fact = build_function_signature_fact(
+                ecosystem=ecosystem,
+                provider=signature_provider,
+                function_identity=identity,
+                bare_name=bare,
+                provider_symbol=str(row["symbol"]),
+                raw_signature=str(row["signature"] or ""),
+                source_path=str(row["path"]),
+                source_line=int(row["line"]),
+                source_sha256=_normalized_source_sha256(proj, str(row["path"])),
+                kind=str(row["kind"]),
+            )
+            fn_info[identity] = {
+                **row,
+                "bare": bare,
+                "signature_fact": signature_fact,
+            }
+            caller_locs = [
+                f"{normalize_source_binding_path(ref.relative_path)}:L{ref.start_line + 1}"
+                for ref in reader._references.get(str(row["symbol"]), [])
+            ]
+            if caller_locs:
+                callers[identity] = sorted(set(caller_locs))
 
         # For callee_map: approximate callees by same-file reference
         # co-occurrence. RECON-2b: this was O(F^2 * D) (nested fn_info scan with
@@ -2729,10 +5024,10 @@ def _scip_to_graph_artifacts(scratch: Path, index_path: Path, proj: Path) -> str
         callee_map_status = "HEURISTIC"  # RECON-3: file co-occurrence, not verified call edges
         name_to_ref_files: Dict[str, set] = {}
         for sym, refs in reader._references.items():
-            nm = reader._extract_name_from_symbol(sym)
-            if nm in fn_info:
-                name_to_ref_files.setdefault(nm, set()).update(
-                    r.relative_path for r in refs
+            identity = symbol_to_identity.get(sym)
+            if identity in fn_info:
+                name_to_ref_files.setdefault(identity, set()).update(
+                    normalize_source_binding_path(r.relative_path) for r in refs
                 )
         if len(fn_info) > _CALLEE_NODE_CAP:
             callee_map_status = "PARTIAL"
@@ -2752,6 +5047,19 @@ def _scip_to_graph_artifacts(scratch: Path, index_path: Path, proj: Path) -> str
                 ]
                 if called:
                     callees[fn_name] = called[:20]
+
+        # The Python protobuf runtime parsed attacker-controlled SCIP bytes.
+        # Re-capture its complete authority immediately before any graph
+        # artifact becomes observable; drift degrades to source-graph fallback
+        # without publishing a mixed-authority partial graph.
+        if not _provider_authority_replays(
+            protobuf_authority,
+            project_root=proj,
+        ):
+            return (
+                "FAILED:TOOLCHAIN_AUTHORITY_DEBT:"
+                "IDENTITY_DRIFT_BEFORE_PUBLICATION"
+            )
 
         # Write caller_map.md
         lines = [
@@ -2810,16 +5118,22 @@ def _scip_to_graph_artifacts(scratch: Path, index_path: Path, proj: Path) -> str
             "",
             "# Function Summary",
             "",
-            "| Function | File | Line | Kind | Callers | Callees |",
-            "|----------|------|------|------|---------|---------|",
+            "| Function | File | Line | Kind | Provider Signature | Signature Authority | Callers | Callees |",
+            "|----------|------|------|------|--------------------|---------------------|---------|---------|",
         ]
         for fn_name in sorted(fn_info.keys()):
             data = fn_info[fn_name]
             n_callers = len(callers.get(fn_name, []))
             n_callees = len(callees.get(fn_name, []))
+            signature_fact = data["signature_fact"]
+            signature_cell = str(
+                signature_fact.get("canonical_signature") or "_(unavailable)_"
+            ).replace("|", "&#124;").replace("`", "&#96;")
             lines.append(
                 f"| `{fn_name}` | {data['path']} | {data['line']} "
-                f"| {data['kind']} | {n_callers} | {n_callees} |"
+                f"| {data['kind']} | `{signature_cell}` "
+                f"| {signature_fact.get('authority', 'UNKNOWN')} "
+                f"| {n_callers} | {n_callees} |"
             )
         _write_text(scratch / "function_summary.md", "\n".join(lines))
 
@@ -2827,21 +5141,42 @@ def _scip_to_graph_artifacts(scratch: Path, index_path: Path, proj: Path) -> str
         # are reference LOCATIONS (it does not resolve reader function names);
         # var_refs are all-references (reads+writes combined). The gate matches a
         # descriptor by bare name OR location against the agent's finding prose.
-        var_refs = {v: {"bare": v, "refs": sorted(locs)}
-                    for v, locs in state_writers.items()}
+        var_refs = {
+            v: {
+                "bare": v,
+                "declaration_locus": state_declarations.get(v, ""),
+                # SCIP's current adapter exposes references, not read/write
+                # access polarity.  Preserve that limitation rather than
+                # laundering every reference into a proven write site.
+                "reference_sites": sorted(state_writers.get(v, [])),
+                "refs": sorted(state_writers.get(v, [])),
+                "read_sites": [],
+                "write_sites": [],
+                "confidence": "REFERENCE_SITE_NO_POLARITY",
+            }
+            for v in sorted(set(state_declarations) | set(state_writers))
+        }
         functions = {
-            fn: {"bare": fn,
+            fn: {"bare": data.get("bare", fn),
                  "loc": f"{data['path']}:L{data['line']}",
                  "callers": sorted(callers.get(fn, [])),
-                 "callees": sorted(callees.get(fn, []))}
+                 "callees": sorted(callees.get(fn, [])),
+                 "signature_fact": data["signature_fact"]}
             for fn, data in fn_info.items()
         }
-        _write_mechanical_graph_json(scratch, "scip", var_refs, functions)
+        if not _write_mechanical_graph_json(
+            scratch,
+            f"scip-{ecosystem}",
+            var_refs,
+            functions,
+        ):
+            return "FAILED:ARTIFACT_STAGE:mechanical graph JSON write failed"
 
         # Record status
+        ecosystem_label = ecosystem.upper()
         status_lines = [
-            f"- SCIP_RUST_BAKE: COMPLETE",
-            f"- SCIP_RUST_INDEX: {index_path}",
+            f"- SCIP_{ecosystem_label}_BAKE: COMPLETE",
+            f"- SCIP_{ecosystem_label}_INDEX: {index_path}",
             f"- SCIP_DEFINITIONS: {stats['definitions']}",
             f"- SCIP_DOCUMENTS: {stats['documents']}",
             f"- SCIP_GRAPH_ARTIFACTS: caller_map.md, callee_map.md, state_write_map.md, function_summary.md",
@@ -2864,14 +5199,668 @@ def _scip_to_graph_artifacts(scratch: Path, index_path: Path, proj: Path) -> str
         return f"FAILED:{e.__class__.__name__}:{e}"
 
 
+def _graph_artifact_evidence(root: Path) -> dict[str, dict[str, object]]:
+    from enumeration_type_ir import validate_function_signature_fact
+
+    evidence: dict[str, dict[str, object]] = {}
+    for name in _SCIP_GRAPH_ARTIFACT_NAMES:
+        path = Path(root) / name
+        if not path.is_file():
+            raise ValueError(f"graph artifact missing: {name}")
+        raw = path.read_bytes()
+        if not raw:
+            raise ValueError(f"graph artifact empty: {name}")
+        evidence[name] = {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+        }
+    graph = json.loads(
+        (Path(root) / "_mechanical_graph.json").read_text(
+            encoding="utf-8",
+            errors="strict",
+        )
+    )
+    functions = graph.get("functions") if isinstance(graph, dict) else None
+    signatures = (
+        graph.get("function_signatures")
+        if isinstance(graph, dict)
+        else None
+    )
+    if (
+        not isinstance(graph, dict)
+        or graph.get("schema_version")
+        != "plamen.mechanical_graph.v2"
+        or graph.get("function_signature_schema")
+        != "plamen.function_signature_fact.v1"
+        or not str(graph.get("source") or "").strip()
+        or not isinstance(graph.get("state_symbols"), list)
+        or not isinstance(graph.get("var_refs"), dict)
+        or not isinstance(functions, dict)
+        or not functions
+        or not isinstance(signatures, dict)
+        or set(functions) != set(signatures)
+    ):
+        raise ValueError("mechanical graph JSON schema is incomplete")
+    for identity, row in functions.items():
+        fact = row.get("signature_fact") if isinstance(row, dict) else None
+        if (
+            not isinstance(fact, dict)
+            or fact != signatures.get(identity)
+            or fact.get("schema")
+            != "plamen.function_signature_fact.v1"
+            or str(fact.get("function_identity") or "")
+            != str(identity)
+            or validate_function_signature_fact(fact)
+        ):
+            raise ValueError(
+                "mechanical graph function signature authority is incomplete"
+            )
+    return evidence
+
+
+def _graph_generation_manifest(
+    evidence: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    ordered = [
+        {
+            "path": name,
+            "sha256": evidence[name]["sha256"],
+            "bytes": evidence[name]["bytes"],
+        }
+        for name in _SCIP_GRAPH_ARTIFACT_NAMES
+    ]
+    unsigned: dict[str, object] = {
+        "schema_version": _GRAPH_GENERATION_SCHEMA,
+        "state": "COMMITTED",
+        "artifact_denominator": list(_SCIP_GRAPH_ARTIFACT_NAMES),
+        "artifacts": ordered,
+    }
+    return {
+        **unsigned,
+        "generation_sha256": hashlib.sha256(
+            (
+                json.dumps(
+                    unsigned,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _validate_graph_generation_manifest(
+    root: Path,
+    evidence: dict[str, dict[str, object]],
+) -> None:
+    path = Path(root) / _GRAPH_GENERATION_MANIFEST
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(
+            "graph generation manifest is missing or unreadable"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError("graph generation manifest is malformed")
+    expected = _graph_generation_manifest(evidence)
+    if payload != expected:
+        raise ValueError("graph generation manifest does not bind the set")
+
+
+def _discard_committed_graph_generation(root: Path) -> list[str]:
+    """Remove a prior precise generation before publishing an approximation."""
+
+    root = Path(root)
+    if not (root / _GRAPH_GENERATION_MANIFEST).exists():
+        return []
+    failures: list[str] = []
+    for name in (
+        _GRAPH_GENERATION_MANIFEST,
+        *_SCIP_GRAPH_ARTIFACT_NAMES,
+    ):
+        try:
+            (root / name).unlink(missing_ok=True)
+        except OSError as exc:
+            failures.append(f"{name}:{type(exc).__name__}")
+    return failures
+
+
+def _validate_and_publish_graph_artifact_set(
+    stage: Path,
+    destination: Path,
+) -> tuple[str, dict[str, dict[str, object]]]:
+    """Validate all five artifacts, then publish or restore the prior set."""
+
+    stage = Path(stage)
+    destination = Path(destination)
+    try:
+        staged_evidence = _graph_artifact_evidence(stage)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        return (
+            f"FAILED:ARTIFACT_STAGE:{type(exc).__name__}:{exc}",
+            {},
+        )
+    manifest_payload = (
+        json.dumps(
+            _graph_generation_manifest(staged_evidence),
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    publication_names = (
+        *_SCIP_GRAPH_ARTIFACT_NAMES,
+        _GRAPH_GENERATION_MANIFEST,
+    )
+    destination.mkdir(parents=True, exist_ok=True)
+    prior: dict[str, bytes | None] = {}
+    publish_temps: list[Path] = []
+    restore_temps: list[Path] = []
+    try:
+        for name in publication_names:
+            target = destination / name
+            prior[name] = target.read_bytes() if target.is_file() else None
+            descriptor, raw_tmp = tempfile.mkstemp(
+                prefix=f".{name}.",
+                suffix=".r5-publish",
+                dir=destination,
+            )
+            os.close(descriptor)
+            temp_path = Path(raw_tmp)
+            temp_path.write_bytes(
+                manifest_payload
+                if name == _GRAPH_GENERATION_MANIFEST
+                else (stage / name).read_bytes()
+            )
+            publish_temps.append(temp_path)
+        for name, temp_path in zip(
+            publication_names,
+            publish_temps,
+        ):
+            os.replace(temp_path, destination / name)
+        observed = _graph_artifact_evidence(destination)
+        if observed != staged_evidence:
+            raise OSError("published graph artifact digest mismatch")
+        _validate_graph_generation_manifest(destination, observed)
+        return "WRITTEN", observed
+    except Exception as exc:
+        for name in publication_names:
+            target = destination / name
+            previous = prior.get(name)
+            try:
+                if previous is None:
+                    target.unlink(missing_ok=True)
+                    continue
+                if target.is_file() and target.read_bytes() == previous:
+                    continue
+                descriptor, raw_tmp = tempfile.mkstemp(
+                    prefix=f".{name}.",
+                    suffix=".r5-restore",
+                    dir=destination,
+                )
+                os.close(descriptor)
+                temp_path = Path(raw_tmp)
+                restore_temps.append(temp_path)
+                temp_path.write_bytes(previous)
+                os.replace(temp_path, target)
+            except OSError:
+                # The caller receives typed publication debt.  Never convert a
+                # rollback fault into WRITTEN or a successful ledger receipt.
+                pass
+        restored = True
+        for name in publication_names:
+            target = destination / name
+            previous = prior.get(name)
+            try:
+                if previous is None:
+                    restored = restored and not target.exists()
+                else:
+                    restored = (
+                        restored
+                        and target.is_file()
+                        and target.read_bytes() == previous
+                    )
+            except OSError:
+                restored = False
+        quarantine = ""
+        if not restored:
+            # A partial rollback is more dangerous than losing an optional
+            # graph: direct consumers could combine old and new maps.  Remove
+            # the entire denominator so the pipeline degrades to explicit
+            # graph coverage debt.  Delete the machine graph first because it
+            # is the primary consumer authority.
+            quarantine_failures: list[str] = []
+            for name in (
+                _GRAPH_GENERATION_MANIFEST,
+                "_mechanical_graph.json",
+                "caller_map.md",
+                "callee_map.md",
+                "state_write_map.md",
+                "function_summary.md",
+            ):
+                try:
+                    (destination / name).unlink(missing_ok=True)
+                except OSError as quarantine_exc:
+                    quarantine_failures.append(
+                        f"{name}:{type(quarantine_exc).__name__}"
+                    )
+            quarantine = (
+                ":ROLLBACK_QUARANTINED"
+                if not quarantine_failures
+                else ":ROLLBACK_QUARANTINE_DEBT:"
+                + ",".join(quarantine_failures)
+            )
+        return (
+            f"FAILED:ARTIFACT_PUBLICATION:{type(exc).__name__}:{exc}"
+            f"{quarantine}",
+            {},
+        )
+    finally:
+        for path in (*publish_temps, *restore_temps):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _merge_namespaced_graph_artifacts(
+    scratch: Path,
+    *,
+    ecosystems: tuple[str, ...],
+) -> str:
+    """Merge disjoint provider outputs without allowing shared-slot loss."""
+
+    root = Path(scratch)
+    normalized = tuple(
+        str(value).strip().lower() for value in ecosystems
+    )
+    if (
+        not normalized
+        or len(set(normalized)) != len(normalized)
+        or any(value not in {"go", "rust"} for value in normalized)
+    ):
+        return "FAILED:GRAPH_MERGE:ecosystem denominator is invalid"
+    stage = Path(
+        tempfile.mkdtemp(prefix=".mixed-graph-", dir=root)
+    )
+    try:
+        from enumeration_type_ir import build_function_signature_fact
+
+        merged_functions: dict[str, dict] = {}
+        merged_signatures: dict[str, dict] = {}
+        merged_vars: dict[str, dict] = {}
+        merged_symbols: list[dict] = []
+        markdown: dict[str, list[str]] = {
+            name: [
+                f"# Mixed L1 {name}",
+                "",
+                "Deterministic merge of namespaced provider artifacts.",
+                "",
+            ]
+            for name in _SCIP_GRAPH_ARTIFACT_NAMES[:-1]
+        }
+        graph_schema = ""
+        signature_schema = ""
+        for ecosystem in normalized:
+            provider_root = root / "_graph_providers" / ecosystem
+            _graph_artifact_evidence(provider_root)
+            graph = json.loads(
+                (provider_root / "_mechanical_graph.json").read_text(
+                    encoding="utf-8",
+                    errors="strict",
+                )
+            )
+            graph_schema = graph_schema or str(
+                graph.get("schema_version") or ""
+            )
+            signature_schema = signature_schema or str(
+                graph.get("function_signature_schema") or ""
+            )
+            functions = graph.get("functions") or {}
+            function_keys = {
+                str(identity): f"{ecosystem}::{identity}"
+                for identity in functions
+            }
+            for identity in sorted(functions):
+                row = dict(functions[identity])
+                namespaced = function_keys[str(identity)]
+                row["callers"] = [
+                    function_keys.get(str(value), str(value))
+                    for value in row.get("callers", [])
+                ]
+                row["callees"] = [
+                    function_keys.get(str(value), str(value))
+                    for value in row.get("callees", [])
+                ]
+                fact = row.get("signature_fact")
+                if isinstance(fact, dict):
+                    binding = (
+                        fact.get("source_binding")
+                        if isinstance(fact.get("source_binding"), dict)
+                        else {}
+                    )
+                    rebound = build_function_signature_fact(
+                        ecosystem=str(fact.get("ecosystem") or ecosystem),
+                        provider=str(fact.get("provider") or ""),
+                        function_identity=namespaced,
+                        bare_name=str(
+                            fact.get("bare_name")
+                            or row.get("bare")
+                            or identity
+                        ),
+                        provider_symbol=str(
+                            fact.get("provider_symbol") or ""
+                        ),
+                        raw_signature=str(
+                            fact.get("raw_signature") or ""
+                        ),
+                        source_path=str(binding.get("path") or ""),
+                        source_line=int(binding.get("line") or 0),
+                        source_sha256=str(
+                            binding.get("source_sha256") or ""
+                        ),
+                        kind=str(fact.get("kind") or ""),
+                        raw_parameters=(
+                            str(fact.get("raw_parameters") or "")
+                            if fact.get("parse_status") == "EXACT"
+                            else None
+                        ),
+                        visibility=str(
+                            fact.get("visibility") or ""
+                        ),
+                        mutability=str(
+                            fact.get("mutability") or ""
+                        ),
+                        receiver=str(fact.get("receiver") or ""),
+                        generics=str(fact.get("generics") or ""),
+                        returns=str(fact.get("returns") or ""),
+                        authority=str(fact.get("authority") or ""),
+                    )
+                    row["signature_fact"] = rebound
+                    merged_signatures[namespaced] = rebound
+                merged_functions[namespaced] = row
+            for identity, raw in sorted(
+                (graph.get("var_refs") or {}).items()
+            ):
+                merged_vars[f"{ecosystem}::{identity}"] = dict(raw)
+            for raw in sorted(
+                graph.get("state_symbols") or [],
+                key=lambda value: str(
+                    value.get("qualified_name")
+                    if isinstance(value, dict)
+                    else ""
+                ),
+            ):
+                if not isinstance(raw, dict):
+                    raise ValueError(
+                        "provider state-symbol row is malformed"
+                    )
+                row = dict(raw)
+                identity = str(row.get("qualified_name") or "")
+                if not identity:
+                    raise ValueError(
+                        "provider state-symbol identity is absent"
+                    )
+                namespaced = f"{ecosystem}::{identity}"
+                row["qualified_name"] = namespaced
+                row["symbol_id"] = (
+                    f"{ecosystem}::{row.get('symbol_id') or identity}"
+                )
+                if row.get("state_symbol_identity"):
+                    row["state_symbol_identity"] = (
+                        f"{ecosystem}::"
+                        f"{row['state_symbol_identity']}"
+                    )
+                merged_symbols.append(row)
+            for name in _SCIP_GRAPH_ARTIFACT_NAMES[:-1]:
+                text = (provider_root / name).read_text(
+                    encoding="utf-8",
+                    errors="strict",
+                ).rstrip()
+                markdown[name].extend(
+                    [
+                        f"## Provider namespace: {ecosystem}",
+                        "",
+                        text,
+                        "",
+                    ]
+                )
+        for name, lines in markdown.items():
+            (stage / name).write_text(
+                "\n".join(lines).rstrip() + "\n",
+                encoding="utf-8",
+            )
+        graph_payload = {
+            "schema_version": graph_schema,
+            "function_signature_schema": signature_schema,
+            "source": "mixed:go+rust",
+            "state_symbols": merged_symbols,
+            "var_refs": merged_vars,
+            "functions": merged_functions,
+            "function_signatures": merged_signatures,
+            "provider_namespaces": list(normalized),
+        }
+        (stage / "_mechanical_graph.json").write_text(
+            json.dumps(
+                graph_payload,
+                indent=1,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        status, _evidence = _validate_and_publish_graph_artifact_set(
+            stage,
+            root,
+        )
+        return "WRITTEN:mixed" if status == "WRITTEN" else status
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return f"FAILED:GRAPH_MERGE:{type(exc).__name__}:{exc}"
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def _record_mixed_graph_outcomes(
+    scratch: Path,
+    project: Path,
+    *,
+    statuses: dict[str, str],
+    context: Optional[dict],
+) -> None:
+    """Project lane outcomes onto the exact merged consumer artifacts."""
+
+    merge_status = str(statuses.get("merge") or "FAILED:merge missing")
+    protobuf_upstreams: list[dict[str, str]] = []
+    for ecosystem, capability_id, tool in (
+        ("go", "scip-go.reference-graph", "scip-go"),
+        ("rust", "scip-rust.reference-graph", "rust-analyzer"),
+    ):
+        lane_status = str(
+            statuses.get(ecosystem) or "SKIPPED:lane not executed"
+        )
+        lane_ledger_relative = (
+            f"_graph_providers/{ecosystem}/"
+            "tool_coverage_ledger.json"
+        )
+        lane_precise = lane_status in {
+            "REUSED:scip",
+            "WRITTEN:scip",
+        }
+        if lane_precise:
+            try:
+                from tool_coverage_ledger import (
+                    load_tool_coverage_ledger,
+                )
+
+                lane_outcomes = load_tool_coverage_ledger(
+                    Path(scratch)
+                    / "_graph_providers"
+                    / ecosystem
+                )
+                lane_outcome = lane_outcomes.get(capability_id)
+                lane_precise = (
+                    lane_outcome is not None
+                    and lane_outcome.state
+                    is ToolOutcomeState.SUCCEEDED
+                    and lane_outcome.tool == tool
+                )
+                parser_outcome = lane_outcomes.get(
+                    "protobuf.scip-graph-parser"
+                )
+                if (
+                    lane_precise
+                    and parser_outcome is not None
+                    and parser_outcome.state
+                    is ToolOutcomeState.SUCCEEDED
+                    and parser_outcome.tool == "protobuf"
+                ):
+                    protobuf_upstreams.append(
+                        {
+                            "ledger_path": lane_ledger_relative,
+                            "capability_id": (
+                                "protobuf.scip-graph-parser"
+                            ),
+                        }
+                    )
+            except (OSError, ToolCoverageLedgerError, ValueError):
+                lane_precise = False
+        outcome_status = (
+            "WRITTEN"
+            if lane_precise and merge_status == "WRITTEN:mixed"
+            else (
+                f"FAILED:MIXED_GRAPH_PUBLICATION:{merge_status}"
+                if lane_precise
+                else f"SKIPPED:PRECISE_PROVIDER_FALLBACK:{lane_status}"
+            )
+        )
+        authority = _capture_command_provider_authority(
+            tool,
+            (tool, "--version"),
+            project_root=project,
+        )
+        _record_precise_graph_outcome(
+            scratch,
+            capability_id=capability_id,
+            tool=tool,
+            status=outcome_status,
+            authority=authority,
+            # This is the root mixed projection.  Its current-run identity is
+            # therefore mixed; the bound upstream lane ledger retains the
+            # lane-specific go/rust context.
+            context=context,
+            upstream_outcomes=(
+                (
+                    {
+                        "ledger_path": lane_ledger_relative,
+                        "capability_id": capability_id,
+                    },
+                )
+                if lane_precise
+                else ()
+            ),
+        )
+    protobuf = _capture_python_provider_authority(
+        "protobuf",
+        project_root=project,
+    )
+    _record_precise_graph_outcome(
+        scratch,
+        capability_id="protobuf.scip-graph-parser",
+        tool="protobuf",
+        status=(
+            "WRITTEN"
+            if protobuf_upstreams and merge_status == "WRITTEN:mixed"
+            else f"SKIPPED:MIXED_SCIP_PARSER_NOT_ACCEPTED:{merge_status}"
+        ),
+        authority=protobuf,
+        context=context,
+        upstream_outcomes=tuple(protobuf_upstreams),
+    )
+
+
+def _scip_to_graph_artifacts(
+    scratch: Path,
+    index_path: Path,
+    proj: Path,
+    *,
+    ecosystem: str = "",
+    context: Optional[dict] = None,
+) -> str:
+    """Convert SCIP and durably bind the protobuf parser capability outcome."""
+    scratch = Path(scratch)
+    scratch.mkdir(parents=True, exist_ok=True)
+    stage = Path(
+        tempfile.mkdtemp(
+            prefix=f".scip-{ecosystem or 'unknown'}-",
+            dir=scratch,
+        )
+    )
+    try:
+        status = _scip_to_graph_artifacts_impl(
+            stage,
+            index_path,
+            proj,
+            ecosystem=ecosystem,
+        )
+        if str(status).startswith("WRITTEN"):
+            publication, _evidence = (
+                _validate_and_publish_graph_artifact_set(
+                    stage,
+                    scratch,
+                )
+            )
+            if publication != "WRITTEN":
+                status = publication
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    protobuf_authority = _capture_python_provider_authority(
+        "protobuf",
+        project_root=proj,
+    )
+    _record_precise_graph_outcome(
+        scratch,
+        capability_id="protobuf.scip-graph-parser",
+        tool="protobuf",
+        status=status,
+        authority=protobuf_authority,
+        context=context,
+    )
+    return status
+
+
 # OpenGrep cross-ecosystem scanner (v2.5.0 P2)
 
 _OPENGREP_SCAN_TIMEOUT = 300  # seconds
-_OPENGREP_RULES_BASE = Path(os.path.expanduser("~/.plamen/opengrep-rules"))
-_OPENGREP_RULE_REPOS = {
-    "opengrep-rules": "https://github.com/opengrep/opengrep-rules.git",
-    "decurity-rules": "https://github.com/Decurity/semgrep-smart-contracts.git",
-    "aptos-move-rules": "https://github.com/aptos-labs/semgrep-move-rules.git",
+# Test-only override. Production resolution is late-bound to the same
+# PLAMEN_HOME authority as prompts, rules, and scripts so a staged runtime
+# cannot silently consume scanner rules from an ambient user installation.
+_OPENGREP_RULES_BASE: Optional[Path] = None
+
+
+def _opengrep_rules_base() -> Path:
+    override = _OPENGREP_RULES_BASE
+    return (
+        Path(override)
+        if override is not None
+        else _plamen_home() / "opengrep-rules"
+    )
+# The three rule trees are repository gitlinks. The installer initializes
+# submodules before any audit; recon only accepts the exact release-bound
+# revisions and never materializes or repairs rules while source is bound.
+_OPENGREP_RULE_REVISIONS = {
+    "aptos-move-rules": "9ee5c476c6161d9eece74fd2f38685eb483b999c",
+    "decurity-rules": "2e878a89ac7bba1f8435e8a68e3ecb7700096cd5",
+    "opengrep-rules": "f1d2b562b414783763fd02a6ed2736eaed622efa",
 }
 _OPENGREP_LANG_RULES: Dict[str, List[str]] = {
     "evm": ["opengrep-rules/solidity", "decurity-rules/solidity/security"],
@@ -2889,75 +5878,170 @@ _OPENGREP_LANG_EXT: Dict[str, Tuple[str, ...]] = {
 }
 
 
-# Populated by _ensure_opengrep_rules() with per-repo clone/init failure
-# reasons so the caller can surface them via its SKIPPED-reason path instead
-# of failing silently.
+# Populated by _ensure_opengrep_rules() with per-repo validation failures so
+# the caller can surface coverage debt instead of failing silently.
 _OPENGREP_RULE_FAILURES: Dict[str, str] = {}
 
 
 def _ensure_opengrep_rules() -> Dict[str, Path]:
-    """Clone rule repos if missing. Returns {name: local_path} for present repos.
-
-    Records any clone/init failures in module-level ``_OPENGREP_RULE_FAILURES``
-    keyed by repo name so the caller can report 'rules unavailable: clone
-    failed' rather than swallowing the error silently.
-    """
-    _OPENGREP_RULES_BASE.mkdir(parents=True, exist_ok=True)
+    """Return only populated rule submodules at their release-bound revisions."""
     _OPENGREP_RULE_FAILURES.clear()
     available: Dict[str, Path] = {}
-    for name, url in _OPENGREP_RULE_REPOS.items():
-        local = _OPENGREP_RULES_BASE / name
-        if local.exists() and (local / ".git").exists():
-            available[name] = local
-            continue
-        # The rule dir may already exist as an uninitialized/partial git
-        # submodule checkout (no .git). `git clone` into a non-empty existing
-        # dir fails with 'destination path already exists and is not an empty
-        # directory'. Try to initialize the submodule first; if that fails,
-        # remove the stale/partial tree so the clone has an empty target.
-        if local.exists() and not (local / ".git").exists():
-            init_rc, _init_out = _run_hardened(
-                ["git", "submodule", "update", "--init", str(local)],
-                None, 60,
+    rules_base = _opengrep_rules_base()
+    for name, expected_revision in _OPENGREP_RULE_REVISIONS.items():
+        local = rules_base / name
+        try:
+            populated = local.is_dir() and any(local.iterdir())
+        except OSError as exc:
+            _OPENGREP_RULE_FAILURES[name] = (
+                f"prebound rule submodule is unreadable: {type(exc).__name__}"
             )
-            if init_rc == 0 and (local / ".git").exists():
-                available[name] = local
-                continue
-            try:
-                shutil.rmtree(local)
-            except Exception as e:
-                _OPENGREP_RULE_FAILURES[name] = (
-                    f"stale rule dir could not be removed: "
-                    f"{e.__class__.__name__}: {e}"
-                )
-                continue
-        clone_rc, clone_out = _run_hardened(
-            ["git", "clone", "--depth", "1", url, str(local)],
-            None, 60,
+            continue
+        if not populated:
+            _OPENGREP_RULE_FAILURES[name] = (
+                "prebound rule submodule is absent or empty; run installer "
+                "submodule initialization before the audit"
+            )
+            continue
+        if not (local / ".git").exists():
+            _OPENGREP_RULE_FAILURES[name] = (
+                "rule tree has no gitlink metadata; revision cannot be verified"
+            )
+            continue
+        rc, output = _run_hardened(
+            ["git", "-C", str(local), "rev-parse", "HEAD"], None, 20,
         )
-        if local.exists() and (local / ".git").exists():
-            available[name] = local
-        else:
-            detail = (clone_out or "").strip().splitlines()
-            reason = detail[-1] if detail else f"git clone exited {clone_rc}"
-            _OPENGREP_RULE_FAILURES[name] = f"clone failed: {reason}"
+        actual_revision = (output or "").strip().splitlines()
+        actual_revision = actual_revision[-1].strip() if actual_revision else ""
+        if rc != 0 or actual_revision != expected_revision:
+            _OPENGREP_RULE_FAILURES[name] = (
+                "rule revision mismatch: "
+                f"expected {expected_revision}, got {actual_revision or 'unreadable'}"
+            )
+            continue
+        available[name] = local
     return available
 
 
-def _run_opengrep_scan(scratch: Path, proj: Path, lang: str) -> str:
+def _record_scanner_outcome(
+    scratch: Path,
+    outcome: ToolOutcome,
+    *,
+    context: Optional[dict] = None,
+) -> ToolOutcome:
+    """Persist scanner coverage debt without turning ledger I/O into a halt."""
+    recorded = outcome
+    if outcome.state is ToolOutcomeState.SUCCEEDED:
+        try:
+            recorded = bind_succeeded_tool_outcome(
+                scratch,
+                outcome,
+                context=context or {},
+            )
+        except (OSError, ToolCoverageLedgerError, TypeError, ValueError) as exc:
+            recorded = ToolOutcome.debt(
+                outcome.capability_id,
+                outcome.tool,
+                ToolOutcomeState.FAILED,
+                "FAILED:TOOL_SUCCESS_AUTHORITY_DEBT:"
+                f"{type(exc).__name__}:{exc}",
+                provider_ref=outcome.provider_ref,
+            )
+    try:
+        record_tool_outcome(scratch, recorded)
+    except Exception as exc:
+        marker = scratch / "tool_coverage_ledger_repair_required.md"
+        existing = _read_text(marker).rstrip()
+        line = (
+            f"- `{recorded.capability_id}`: coverage receipt write failed "
+            f"({type(exc).__name__}: {exc})"
+        )
+        body = (
+            existing + "\n" + line + "\n"
+            if existing
+            else "# Tool Coverage Ledger Repair Required\n\n" + line + "\n"
+        )
+        _write_text(marker, body)
+    return recorded
+
+
+def _validated_sarif(path: Path) -> dict:
+    """Load the minimum SARIF 2.1 schema needed to prove a scan completed."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="strict"))
+    except Exception as exc:
+        raise ValueError(f"invalid SARIF JSON: {type(exc).__name__}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("SARIF root must be an object")
+    if data.get("version") != "2.1.0":
+        raise ValueError("SARIF version must be 2.1.0")
+    runs = data.get("runs")
+    if not isinstance(runs, list) or not runs:
+        raise ValueError("SARIF runs must be a non-empty array")
+    for run_index, run in enumerate(runs):
+        if not isinstance(run, dict):
+            raise ValueError(f"SARIF run {run_index} must be an object")
+        driver = ((run.get("tool") or {}).get("driver") or {})
+        if not isinstance(driver, dict) or not str(driver.get("name") or "").strip():
+            raise ValueError(f"SARIF run {run_index} has no tool driver name")
+        results = run.get("results", [])
+        if not isinstance(results, list):
+            raise ValueError(f"SARIF run {run_index} results must be an array")
+        for result_index, result in enumerate(results):
+            if not isinstance(result, dict):
+                raise ValueError(
+                    f"SARIF result {run_index}:{result_index} must be an object"
+                )
+            message = result.get("message")
+            if not isinstance(message, dict):
+                raise ValueError(
+                    f"SARIF result {run_index}:{result_index} has no message object"
+                )
+    return data
+
+
+def _run_opengrep_scan(
+    scratch: Path,
+    proj: Path,
+    lang: str,
+    *,
+    context: Optional[dict] = None,
+) -> str:
     """Run OpenGrep scan and write results to scratchpad.
 
     Produces: opengrep_results.sarif (raw), opengrep_findings.md (summary).
     Returns status string: WRITTEN:{n} findings | SKIPPED:{reason} | FAILED:{reason}
     """
-    if not shutil.which("opengrep"):
-        return "SKIPPED:opengrep not found"
+    capability_id = "opengrep.static-analysis"
+
+    def finish(outcome: ToolOutcome) -> str:
+        return _record_scanner_outcome(
+            scratch, outcome, context=context
+        ).legacy_status()
+
+    # Windows installs Semgrep as the compatible adapter. Prefer native
+    # OpenGrep where present, but accept the same Semgrep binary the installer
+    # provisions instead of reporting a false tool absence.
+    scanner_binary = shutil.which("opengrep") or shutil.which("semgrep")
+    if not scanner_binary:
+        return finish(ToolOutcome.debt(
+            capability_id, "opengrep/semgrep", ToolOutcomeState.UNAVAILABLE,
+            "opengrep-compatible scanner not found",
+        ))
+    scanner_name = (
+        "semgrep"
+        if "semgrep" in Path(scanner_binary).name.lower()
+        else "opengrep"
+    )
 
     rule_dirs = _OPENGREP_LANG_RULES.get(lang, [])
     if not rule_dirs:
-        return f"SKIPPED:no OpenGrep rules for {lang}"
+        return finish(ToolOutcome.debt(
+            capability_id, scanner_name, ToolOutcomeState.SKIPPED,
+            f"no OpenGrep rules for {lang}",
+        ))
 
-    # Ensure rule repos are cloned
+    # Accept only the release-bound, installer-populated rule submodules.
     available_repos = _ensure_opengrep_rules()
 
     # Resolve rule paths
@@ -2975,67 +6059,181 @@ def _run_opengrep_scan(scratch: Path, proj: Path, lang: str) -> str:
             detail = "; ".join(
                 f"{n}: {r}" for n, r in sorted(_OPENGREP_RULE_FAILURES.items())
             )
-            return f"SKIPPED:rules unavailable: {detail}"
-        return "SKIPPED:no rule directories available"
+            return finish(ToolOutcome.debt(
+                capability_id, scanner_name, ToolOutcomeState.UNAVAILABLE,
+                f"rules unavailable: {detail}",
+            ))
+        return finish(ToolOutcome.debt(
+            capability_id, scanner_name, ToolOutcomeState.UNAVAILABLE,
+            "no rule directories available",
+        ))
 
     # Check project has relevant source files
     exts = _OPENGREP_LANG_EXT.get(lang, ())
     source_files = sorted(_production_source_files(proj, exts), key=lambda p: _rel(p, proj))
     if not source_files:
-        return f"SKIPPED:no production {'/'.join(exts)} files in project"
+        return finish(ToolOutcome.debt(
+            capability_id, scanner_name, ToolOutcomeState.SKIPPED,
+            f"no production {'/'.join(exts)} files in project",
+        ))
     if len(source_files) > _MAX_OPENGREP_SOURCE_FILES:
-        return f"SKIPPED:{len(source_files)} production source files exceeds bounded OpenGrep prepass limit"
+        return finish(ToolOutcome.debt(
+            capability_id, scanner_name, ToolOutcomeState.SKIPPED,
+            (
+                f"{len(source_files)} production source files exceeds "
+                "bounded OpenGrep prepass limit"
+            ),
+        ))
 
     sarif_path = scratch / "opengrep_results.sarif"
-    cmd = ["opengrep", "scan"]
+    findings_path = scratch / "opengrep_findings.md"
+    # A retry must never leave a prior successful generation looking current.
+    stale_cleanup_failed = False
+    for stale in (sarif_path, findings_path):
+        try:
+            stale.unlink(missing_ok=True)
+        except OSError:
+            stale_cleanup_failed = True
+        if os.path.lexists(stale):
+            stale_cleanup_failed = True
+    if stale_cleanup_failed:
+        return finish(ToolOutcome.debt(
+            capability_id,
+            scanner_name,
+            ToolOutcomeState.FAILED,
+            "stale scanner artifacts could not be cleared",
+        ))
+
+    # The live scratchpad contains locks, checkpoints, and artifact authority.
+    # Relabeling that whole tree for a low-integrity scanner can fail recovery
+    # on Windows and quarantine the global lease for the driver's lifetime.
+    # Grant write authority only to one fresh private stage, validate there,
+    # then atomically promote the authenticated SARIF bytes.
+    stage = Path(tempfile.mkdtemp(prefix=".og-", dir=scratch))
+    staged_sarif = stage / "results.sarif"
+    scanner_env = dict(os.environ)
+    scanner_env.update({
+        # The scanner's Python wrapper and native core may both create
+        # temporary/cache files.  Route every documented/legacy Semgrep path
+        # into the same disposable low-integrity stage rather than granting
+        # write access to the user's profile or system temporary directory.
+        # Do not precreate medium-integrity children before lease activation.
+        # The lease lowers this exact empty root; scanner-created descendants
+        # then inherit its low MIC label.
+        "TEMP": str(stage),
+        "TMP": str(stage),
+        "TMPDIR": str(stage),
+        "XDG_CACHE_HOME": str(stage),
+        "SEMGREP_SETTINGS_FILE": str(stage / "settings.yml"),
+        "SEMGREP_VERSION_CACHE_PATH": str(stage / "version"),
+        "SEMGREP_LOG_FILE": str(stage / "scanner.log"),
+        "OPENGREP_ENABLE_VERSION_CHECK": "0",
+    })
+    cmd = [scanner_binary, "scan", "--disable-version-check"]
+    rule_flag = "--config" if scanner_name == "semgrep" else "-f"
     for rp in resolved_rules:
-        cmd.extend(["-f", rp])
-    cmd.extend(["--sarif-output", str(sarif_path)])
+        cmd.extend([rule_flag, rp])
+    cmd.extend(["--sarif-output", str(staged_sarif)])
     cmd.extend([_rel(p, proj) for p in source_files])
 
     # Hang-proof: temp-file drain + tree-kill. The prior Popen+communicate()
     # drained an OS PIPE — exactly the construct a grandchild holding the handle
     # can wedge forever; _run_hardened removes the pipe entirely.
-    rc, _out = _run_hardened(cmd, proj, _OPENGREP_SCAN_TIMEOUT)
-    if rc == 124:
-        return f"FAILED:timeout after {_OPENGREP_SCAN_TIMEOUT}s"
-    if rc == 127:
-        return "SKIPPED:opengrep not found"
-
-    # opengrep returns 0 on success (even with findings), 1 on findings in some modes
-    if not sarif_path.exists() or sarif_path.stat().st_size < 10:
+    # The hardened runner treats ``cwd`` as read-only input authority.  The
+    # scanner receives only the fresh stage as explicit write authority.
+    try:
+        rc, scanner_output = _run_hardened(
+            cmd,
+            proj,
+            _OPENGREP_SCAN_TIMEOUT,
+            env=scanner_env,
+            writable_roots=(stage,),
+        )
+        if rc == 124:
+            return finish(ToolOutcome.debt(
+                capability_id, scanner_name, ToolOutcomeState.FAILED,
+                f"timeout after {_OPENGREP_SCAN_TIMEOUT}s",
+            ))
+        if rc == 127:
+            return finish(ToolOutcome.debt(
+                capability_id, scanner_name, ToolOutcomeState.UNAVAILABLE,
+                "scanner executable could not be started",
+            ))
         if rc != 0:
-            return f"FAILED:exit {rc}, no SARIF produced"
-        return "WRITTEN:0 findings"
+            detail_lines = [
+                line.strip()
+                for line in str(scanner_output or "").splitlines()
+                if line.strip()
+            ]
+            detail = " | ".join(detail_lines[-3:])[-800:]
+            reason = f"exit {rc}: {detail or 'scanner exited abnormally'}"
+            return finish(ToolOutcome.debt(
+                capability_id, scanner_name, ToolOutcomeState.FAILED, reason,
+            ))
+
+        # A return code is transport evidence, not result authority. Clean-zero
+        # is accepted only from a fresh, schema-valid SARIF document.
+        if not staged_sarif.exists() or staged_sarif.stat().st_size < 10:
+            return finish(ToolOutcome.debt(
+                capability_id, scanner_name, ToolOutcomeState.FAILED,
+                f"exit {rc}, no SARIF produced",
+            ))
+        try:
+            sarif_data = _validated_sarif(staged_sarif)
+        except ValueError as exc:
+            return finish(ToolOutcome.debt(
+                capability_id, scanner_name, ToolOutcomeState.FAILED,
+                str(exc),
+            ))
+        os.replace(staged_sarif, sarif_path)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
 
     # Parse SARIF and write human-readable summary
-    finding_count = _parse_opengrep_sarif(scratch, sarif_path)
+    finding_count = _parse_opengrep_sarif(
+        scratch, sarif_path, sarif_data=sarif_data,
+    )
 
-    # Record in build_status.md
-    bs = scratch / "build_status.md"
-    if bs.exists():
-        try:
-            existing = bs.read_text(encoding="utf-8", errors="replace")
-            if "OPENGREP" not in existing:
-                bs.write_text(
-                    existing.rstrip() + "\n\n## OpenGrep\n"
-                    f"- OPENGREP_AVAILABLE: true\n"
-                    f"- OPENGREP_FINDINGS: {finding_count}\n"
-                    f"- OPENGREP_RULES: {', '.join(resolved_rules)}\n",
-                    encoding="utf-8",
-                )
-        except Exception:
-            pass
+    # ``build_status.md`` is a committed canonical-recon output by the time
+    # this optional pre-breadth provider runs.  Mutating one member after the
+    # canonical merge invalidates the producer's bundle receipt and makes
+    # every unchanged recon sibling fail strict downstream input-authority
+    # replay.  OpenGrep already publishes its result through the governed
+    # SARIF, summary, and tool-outcome artifacts below; keep recon immutable.
 
-    return f"WRITTEN:{finding_count} findings"
+    revisions = ",".join(
+        f"{name}@{_OPENGREP_RULE_REVISIONS[name]}"
+        for name in sorted({
+            item.split("/")[0] for item in rule_dirs
+            if item.split("/")[0] in available_repos
+        })
+    )
+    return finish(ToolOutcome.succeeded(
+        capability_id,
+        scanner_name,
+        finding_count,
+        artifacts=("opengrep_results.sarif", "opengrep_findings.md"),
+        provider_ref=revisions,
+    ))
 
 
-def _parse_opengrep_sarif(scratch: Path, sarif_path: Path) -> int:
+def _parse_opengrep_sarif(
+    scratch: Path,
+    sarif_path: Path,
+    *,
+    sarif_data: Optional[dict] = None,
+) -> int:
     """Parse SARIF output and write opengrep_findings.md summary. Returns finding count."""
     import json as _json
 
     try:
-        data = _json.loads(sarif_path.read_text(encoding="utf-8", errors="replace"))
+        data = (
+            sarif_data
+            if sarif_data is not None
+            else _json.loads(
+                sarif_path.read_text(encoding="utf-8", errors="replace")
+            )
+        )
     except Exception:
         _write_text(scratch / "opengrep_findings.md",
                      "# OpenGrep Findings\n\n> SARIF parse failed\n")
@@ -3083,38 +6281,97 @@ def _parse_opengrep_sarif(scratch: Path, sarif_path: Path) -> int:
 
 # Sec3 X-Ray Solana scanner (v2.5.0 P4)
 
-_SEC3_XRAY_IMAGE = "ghcr.io/sec3-product/x-ray:latest"
+# No mutable image default. A governed capability registry/config must supply
+# an immutable reference; absence is explicit coverage debt, not clean-zero.
+_SEC3_XRAY_IMAGE = ""
+_SEC3_IMAGE_RE = re.compile(r"^ghcr\.io/[^@\s]+@sha256:[0-9a-f]{64}$")
 _SEC3_XRAY_TIMEOUT = 600  # seconds — Docker pull + LLVM analysis can be slow
 _SEC3_SARIF_FILENAME = "sec3-report.sarif"
 
 
-def _run_sec3_xray(scratch: Path, proj: Path) -> str:
+def _resolve_sec3_image(image_ref: Optional[str] = None) -> Optional[str]:
+    candidate = str(image_ref or _SEC3_XRAY_IMAGE or "").strip()
+    return candidate if _SEC3_IMAGE_RE.fullmatch(candidate) else None
+
+
+def _run_sec3_xray(
+    scratch: Path,
+    proj: Path,
+    image_ref: Optional[str] = None,
+    *,
+    context: Optional[dict] = None,
+) -> str:
     """Run Sec3 X-Ray scanner via Docker and write results to scratchpad.
 
     Produces: sec3_results.sarif (raw), sec3_findings.md (summary).
     Returns status string: WRITTEN:{n} findings | SKIPPED:{reason} | FAILED:{reason}
     """
+    capability_id = "sec3-xray.solana-static-analysis"
+
+    def finish(outcome: ToolOutcome) -> str:
+        return _record_scanner_outcome(
+            scratch, outcome, context=context
+        ).legacy_status()
+
+    image = _resolve_sec3_image(image_ref)
+    if image is None:
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.UNAVAILABLE,
+            "immutable Sec3 image digest is not configured",
+        ))
     if not shutil.which("docker"):
-        return "SKIPPED:docker not found"
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.UNAVAILABLE,
+            "docker not found",
+            provider_ref=image,
+        ))
 
     # Verify Docker is running (hang-proof probe).
     probe_rc, _probe_out = _run_hardened(["docker", "info"], None, 15)
     if probe_rc in (124, 127):
-        return "SKIPPED:docker not available"
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.UNAVAILABLE,
+            "docker not available",
+            provider_ref=image,
+        ))
     if probe_rc != 0:
-        return "SKIPPED:docker daemon not running"
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.UNAVAILABLE,
+            "docker daemon not running",
+            provider_ref=image,
+        ))
 
     # Check project has Rust/Solana source files
     source_files = _iter_files(proj, (".rs",))
     if not source_files:
-        return "SKIPPED:no .rs files in project"
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.SKIPPED,
+            "no .rs files in project",
+            provider_ref=image,
+        ))
 
-    # X-Ray mounts workspace and writes SARIF to the project root
-    proj_posix = str(proj).replace("\\", "/")
+    # Source is immutable. X-Ray writes only to a dedicated scratchpad mount;
+    # cwd=/output keeps generated SARIF outside the audit snapshot.
+    output_dir = scratch / ".sec3-output"
+    try:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.FAILED,
+            f"cannot prepare isolated output directory: {type(exc).__name__}",
+            provider_ref=image,
+        ))
+    proj_posix = str(proj.resolve()).replace("\\", "/")
+    output_posix = str(output_dir.resolve()).replace("\\", "/")
     cmd = [
         "docker", "run", "--rm",
-        "-v", f"{proj_posix}:/workspace",
-        _SEC3_XRAY_IMAGE,
+        "--tmpfs", "/tmp:rw,nosuid,size=1g",
+        "-e", "CARGO_TARGET_DIR=/tmp/sec3-target",
+        "-v", f"{proj_posix}:/workspace:ro",
+        "-v", f"{output_posix}:/output:rw",
+        "-w", "/output",
+        image,
         "/workspace",
     ]
 
@@ -3122,44 +6379,74 @@ def _run_sec3_xray(scratch: Path, proj: Path) -> str:
     # workers can no longer wedge the parent on a held pipe handle).
     rc, _xray_out = _run_hardened(cmd, None, _SEC3_XRAY_TIMEOUT)
     if rc == 124:
-        return f"FAILED:timeout after {_SEC3_XRAY_TIMEOUT}s"
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.FAILED,
+            f"timeout after {_SEC3_XRAY_TIMEOUT}s",
+            provider_ref=image,
+        ))
     if rc == 127:
-        return "SKIPPED:docker not found"
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.UNAVAILABLE,
+            "docker executable could not be started",
+            provider_ref=image,
+        ))
+    if rc != 0:
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.FAILED,
+            f"exit {rc}: scanner exited abnormally",
+            provider_ref=image,
+        ))
 
-    # X-Ray writes SARIF into the workspace root
-    sarif_source = proj / _SEC3_SARIF_FILENAME
+    # X-Ray writes SARIF into the isolated output mount.
+    sarif_source = output_dir / _SEC3_SARIF_FILENAME
     sarif_dest = scratch / "sec3_results.sarif"
 
     if not sarif_source.exists():
         # Some versions write to current dir or use different name
         alt_names = ["x-ray-report.sarif", "report.sarif", "xray.sarif"]
         for alt in alt_names:
-            alt_path = proj / alt
+            alt_path = output_dir / alt
             if alt_path.exists():
                 sarif_source = alt_path
                 break
 
     if not sarif_source.exists() or sarif_source.stat().st_size < 10:
-        if rc != 0:
-            return f"FAILED:exit {rc}, no SARIF produced"
-        return "WRITTEN:0 findings"
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.FAILED,
+            f"exit {rc}, no SARIF produced",
+            provider_ref=image,
+        ))
 
-    # Move SARIF to scratchpad
+    # Copy SARIF into its stable artifact name; source remains confined to the
+    # dedicated output directory and the project tree is never mutated.
     try:
         shutil.copy2(str(sarif_source), str(sarif_dest))
-        sarif_source.unlink()
-    except Exception:
-        pass
+    except Exception as exc:
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.FAILED,
+            f"SARIF copy failed: {type(exc).__name__}",
+            provider_ref=image,
+        ))
 
     if not sarif_dest.exists():
-        # Fallback: if copy failed, try reading from source
-        if sarif_source.exists():
-            sarif_dest = sarif_source
-        else:
-            return "FAILED:SARIF copy failed"
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.FAILED,
+            "SARIF copy failed",
+            provider_ref=image,
+        ))
+    try:
+        sarif_data = _validated_sarif(sarif_dest)
+    except ValueError as exc:
+        return finish(ToolOutcome.debt(
+            capability_id, "sec3-xray", ToolOutcomeState.FAILED,
+            str(exc),
+            provider_ref=image,
+        ))
 
     # Parse SARIF and write human-readable summary
-    finding_count = _parse_sec3_sarif(scratch, sarif_dest)
+    finding_count = _parse_sec3_sarif(
+        scratch, sarif_dest, sarif_data=sarif_data,
+    )
 
     # Record in build_status.md
     bs = scratch / "build_status.md"
@@ -3176,15 +6463,32 @@ def _run_sec3_xray(scratch: Path, proj: Path) -> str:
         except Exception:
             pass
 
-    return f"WRITTEN:{finding_count} findings"
+    return finish(ToolOutcome.succeeded(
+        capability_id,
+        "sec3-xray",
+        finding_count,
+        artifacts=("sec3_results.sarif", "sec3_findings.md"),
+        provider_ref=image,
+    ))
 
 
-def _parse_sec3_sarif(scratch: Path, sarif_path: Path) -> int:
+def _parse_sec3_sarif(
+    scratch: Path,
+    sarif_path: Path,
+    *,
+    sarif_data: Optional[dict] = None,
+) -> int:
     """Parse Sec3 X-Ray SARIF output and write sec3_findings.md summary. Returns finding count."""
     import json as _json
 
     try:
-        data = _json.loads(sarif_path.read_text(encoding="utf-8", errors="replace"))
+        data = (
+            sarif_data
+            if sarif_data is not None
+            else _json.loads(
+                sarif_path.read_text(encoding="utf-8", errors="replace")
+            )
+        )
     except Exception:
         _write_text(scratch / "sec3_findings.md",
                      "# Sec3 X-Ray Findings\n\n> SARIF parse failed\n")
@@ -3248,28 +6552,36 @@ _GOVULNCHECK_TIMEOUT = 300  # seconds
 _CARGO_AUDIT_TIMEOUT = 180  # seconds
 
 
-def _parse_govulncheck_ndjson(raw: str) -> List[dict]:
+def _parse_govulncheck_ndjson_validated(
+    raw: str,
+) -> Tuple[List[dict], bool]:
     """Parse `govulncheck -json` NDJSON stream into structured hits.
 
     Each line is a `Message` with either an `osv` entry (vulnerability
     metadata) or a `finding` (a concrete call-site trace). Only `finding`
     messages are surfaced as hits -- `osv`-only messages describe the wider
-    vulnerability DB and are used only to backfill the summary text. Malformed
-    or partial lines are skipped rather than aborting the whole parse (the
-    stream can be truncated on timeout).
+    vulnerability DB and are used only to backfill the summary text.
+
+    ``parse_ok`` is true only when every non-empty line is a JSON object and
+    at least one protocol message exists. This prevents rc=0 plus a banner,
+    truncated stream, or arbitrary text from being promoted to clean-zero.
     """
     import json as _json
 
     findings: List[dict] = []
     osv_summary: Dict[str, str] = {}
+    message_count = 0
     for line in (raw or "").splitlines():
         line = line.strip()
-        if not line or not line.startswith("{"):
+        if not line:
             continue
         try:
             msg = _json.loads(line)
         except Exception:
-            continue
+            return [], False
+        if not isinstance(msg, dict):
+            return [], False
+        message_count += 1
         osv = msg.get("osv")
         if isinstance(osv, dict) and osv.get("id"):
             osv_summary[osv["id"]] = str(osv.get("summary", ""))
@@ -3287,36 +6599,291 @@ def _parse_govulncheck_ndjson(raw: str) -> List[dict]:
                 "fixed_version": str(finding.get("fixed_version", "")),
                 "summary": osv_summary.get(osv_id, "")[:200],
             })
-    return findings
+    return findings, message_count > 0
+
+
+def _parse_govulncheck_ndjson(raw: str) -> List[dict]:
+    """Compatibility projection returning only validated parsed findings."""
+    findings, parse_ok = _parse_govulncheck_ndjson_validated(raw)
+    return findings if parse_ok else []
+
+
+def _dependency_outcome_status(outcome: ToolOutcome) -> str:
+    if outcome.state is ToolOutcomeState.SUCCEEDED:
+        return "WRITTEN"
+    return outcome.legacy_status(unavailable_token="TOOLCHAIN_UNAVAILABLE")
+
+
+_ADVISORY_MANIFEST = "plamen-advisory-source.json"
+_ADVISORY_SOURCE_ENV = {
+    "rustsec-local": "PLAMEN_RUSTSEC_DB",
+    "govulndb-local": "PLAMEN_GOVULNDB",
+}
+_ADVISORY_SOURCE_SCHEMA = "plamen.advisory_source.v1"
+_ADVISORY_MAX_DIRS = 20_000
+_ADVISORY_MAX_FILES = 100_000
+_ADVISORY_MAX_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def _parse_advisory_timestamp(value: object) -> datetime:
+    text = str(value or "").strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _advisory_content_sha256(root: Path) -> str:
+    """Hash a bounded local advisory tree without trusting VCS metadata."""
+    if root.is_symlink() or (
+        hasattr(root, "is_junction") and root.is_junction()
+    ):
+        raise ValueError("advisory source root is a link or junction")
+    digest = hashlib.sha256()
+    count = 0
+    total = 0
+    directories = 0
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        directories += 1
+        if directories > _ADVISORY_MAX_DIRS:
+            raise ValueError("advisory source exceeds bounded directory limits")
+        directory = Path(dirpath)
+        retained: list[str] = []
+        for name in sorted(dirnames):
+            if name == ".git":
+                continue
+            candidate = directory / name
+            if candidate.is_symlink() or (
+                hasattr(candidate, "is_junction")
+                and candidate.is_junction()
+            ):
+                raise ValueError(
+                    f"advisory source contains directory link: {candidate}"
+                )
+            retained.append(name)
+        dirnames[:] = retained
+        for name in sorted(filenames):
+            path = directory / name
+            if path.relative_to(root).as_posix() != _ADVISORY_MANIFEST:
+                files.append(path)
+                if len(files) > _ADVISORY_MAX_FILES:
+                    raise ValueError(
+                        "advisory source exceeds bounded file limits"
+                    )
+    for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root)
+        if path.is_symlink() or (
+            hasattr(path, "is_junction") and path.is_junction()
+        ):
+            raise ValueError(f"advisory source contains symlink: {relative}")
+        if not path.is_file():
+            continue
+        count += 1
+        size = path.stat().st_size
+        total += size
+        if count > _ADVISORY_MAX_FILES or total > _ADVISORY_MAX_BYTES:
+            raise ValueError("advisory source exceeds bounded hashing limits")
+        digest.update(relative.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_advisory_source(
+    source_id: str,
+) -> tuple[Optional[Path], str, str]:
+    """Return (database path, canonical provider reference, issue).
+
+    A successful known-CVE scan is authoritative only when its local advisory
+    bytes, as-of time, and expiry are bound by a validated manifest.
+    """
+    env_name = _ADVISORY_SOURCE_ENV.get(source_id)
+    if not env_name:
+        return None, "", f"unknown advisory source: {source_id}"
+    configured = os.environ.get(env_name, "").strip()
+    if not configured:
+        return None, "", f"{env_name} is not configured"
+    root = Path(configured).expanduser()
+    if not root.is_dir():
+        return None, "", f"{env_name} is not a directory"
+    manifest_path = root / _ADVISORY_MANIFEST
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return None, "", (
+            f"advisory manifest unreadable: {type(exc).__name__}"
+        )
+    if not isinstance(manifest, dict):
+        return None, "", "advisory manifest root is not an object"
+    if (
+        manifest.get("schema_version") != _ADVISORY_SOURCE_SCHEMA
+        or manifest.get("source_id") != source_id
+    ):
+        return None, "", "advisory manifest schema/source mismatch"
+    supplied_digest = str(manifest.get("content_sha256") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", supplied_digest):
+        return None, "", "advisory manifest content_sha256 is invalid"
+    try:
+        as_of = _parse_advisory_timestamp(manifest.get("as_of"))
+        expires_at = _parse_advisory_timestamp(manifest.get("expires_at"))
+        registry = load_toolchain_governance()
+        policy = next(
+            row
+            for row in registry["advisory_sources"]
+            if row.get("source_id") == source_id
+        )
+        provider = str(policy["provider"])
+        if manifest.get("provider") != provider:
+            raise ValueError("advisory provider mismatch")
+        freshness_policy = policy["freshness_policy"]
+        max_age = int(freshness_policy["max_age_seconds"])
+        skew = int(
+            freshness_policy.get("future_clock_skew_seconds", 0)
+        )
+        now = datetime.now(timezone.utc)
+        if as_of.timestamp() > now.timestamp() + skew:
+            raise ValueError("advisory as_of is in the future")
+        if now.timestamp() - as_of.timestamp() > max_age:
+            raise ValueError("advisory source is stale")
+        if expires_at <= as_of:
+            raise ValueError("advisory expiry does not follow as_of")
+        if expires_at.timestamp() - as_of.timestamp() > max_age:
+            raise ValueError("advisory expiry exceeds governance maximum")
+        if now >= expires_at:
+            raise ValueError("advisory source is expired")
+        observed_digest = _advisory_content_sha256(root)
+        if observed_digest != supplied_digest:
+            raise ValueError("advisory content digest mismatch")
+    except (KeyError, StopIteration, TypeError, ValueError, OSError) as exc:
+        return None, "", f"advisory provenance invalid: {exc}"
+    provider = {
+        "schema_version": _ADVISORY_SOURCE_SCHEMA,
+        "source_id": source_id,
+        "provider": provider,
+        "content_sha256": supplied_digest,
+        "as_of": as_of.isoformat().replace("+00:00", "Z"),
+        "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+    }
+    return (
+        root.resolve(),
+        json.dumps(provider, sort_keys=True, separators=(",", ":")),
+        "",
+    )
+
+
+def _advisory_source_is_external(root: Path, project: Path) -> bool:
+    try:
+        root.resolve().relative_to(project.resolve())
+    except ValueError:
+        return True
+    return False
+
+
+def _govulncheck_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
+    """Run `govulncheck -json ./...` against a Go module.
+
+    Returns a typed outcome plus any schema-validated findings.
+    """
+    if not shutil.which("govulncheck"):
+        return ToolOutcome.debt(
+            "govulncheck.dependency-audit",
+            "govulncheck",
+            ToolOutcomeState.UNAVAILABLE,
+            "govulncheck not found on PATH",
+        ), []
+    if not (proj / "go.mod").exists():
+        return ToolOutcome.debt(
+            "govulncheck.dependency-audit",
+            "govulncheck",
+            ToolOutcomeState.SKIPPED,
+            "no go.mod",
+        ), []
+
+    advisory_root, provider_ref, provenance_issue = _resolve_advisory_source(
+        "govulndb-local"
+    )
+    if advisory_root is None:
+        return ToolOutcome.debt(
+            "govulncheck.dependency-audit",
+            "govulncheck",
+            ToolOutcomeState.UNAVAILABLE,
+            provenance_issue,
+        ), []
+    if not _advisory_source_is_external(advisory_root, proj):
+        return ToolOutcome.debt(
+            "govulncheck.dependency-audit",
+            "govulncheck",
+            ToolOutcomeState.UNAVAILABLE,
+            "advisory database must be outside the untrusted target checkout",
+        ), []
+    govuln_env = dict(os.environ)
+    govuln_env.update({
+        "GOPROXY": "off",
+        "GOSUMDB": "off",
+        "GOTOOLCHAIN": "local",
+    })
+    rc, out = _run_hardened(
+        [
+            "govulncheck",
+            "-db",
+            advisory_root.as_uri(),
+            "-json",
+            "./...",
+        ],
+        proj,
+        _GOVULNCHECK_TIMEOUT,
+        govuln_env,
+    )
+    if rc == 127:
+        return ToolOutcome.debt(
+            "govulncheck.dependency-audit",
+            "govulncheck",
+            ToolOutcomeState.UNAVAILABLE,
+            "govulncheck not found on PATH",
+        ), []
+    if rc == 124:
+        return ToolOutcome.debt(
+            "govulncheck.dependency-audit",
+            "govulncheck",
+            ToolOutcomeState.FAILED,
+            f"timeout after {_GOVULNCHECK_TIMEOUT}s",
+        ), []
+
+    findings, parse_ok = _parse_govulncheck_ndjson_validated(out)
+    if not parse_ok:
+        return ToolOutcome.debt(
+            "govulncheck.dependency-audit",
+            "govulncheck",
+            ToolOutcomeState.FAILED,
+            f"govulncheck exit {rc}, invalid NDJSON output",
+        ), []
+    # govulncheck exits 0 (clean) or 3 (vulnerabilities found) on a normal
+    # run. A different code is incomplete even if a partial stream parsed.
+    if rc not in (0, 3):
+        return ToolOutcome.debt(
+            "govulncheck.dependency-audit",
+            "govulncheck",
+            ToolOutcomeState.FAILED,
+            f"govulncheck exit {rc}",
+        ), findings
+    return ToolOutcome.succeeded(
+        "govulncheck.dependency-audit",
+        "govulncheck",
+        len(findings),
+        artifacts=("dependency_audit_findings.md",),
+        provider_ref=provider_ref,
+    ), findings
 
 
 def _govulncheck_scan(proj: Path) -> Tuple[str, List[dict]]:
-    """Run `govulncheck -json ./...` against a Go module.
-
-    Returns (status, findings). status is one of:
-    WRITTEN | SKIPPED:{reason} | TOOLCHAIN_UNAVAILABLE:{reason} | FAILED:{reason}
-    """
-    if not shutil.which("govulncheck"):
-        return "TOOLCHAIN_UNAVAILABLE:govulncheck not found on PATH", []
-    if not (proj / "go.mod").exists():
-        return "SKIPPED:no go.mod", []
-
-    rc, out = _run_hardened(
-        ["govulncheck", "-json", "./..."], proj, _GOVULNCHECK_TIMEOUT,
-    )
-    if rc == 127:
-        return "TOOLCHAIN_UNAVAILABLE:govulncheck not found on PATH", []
-    if rc == 124:
-        return f"FAILED:timeout after {_GOVULNCHECK_TIMEOUT}s", []
-
-    findings = _parse_govulncheck_ndjson(out)
-    # govulncheck exits 0 (clean) or 3 (vulnerabilities found) on a normal
-    # run; any other exit code (1 = setup/analysis error, e.g. unresolved
-    # module graph) with zero parsed findings is a genuine tool failure, not
-    # a clean scan.
-    if not findings and rc not in (0, 3):
-        return f"FAILED:govulncheck exit {rc}", []
-    return "WRITTEN", findings
+    """Compatibility wrapper returning the legacy status-string shape."""
+    outcome, findings = _govulncheck_outcome(proj)
+    return _dependency_outcome_status(outcome), findings
 
 
 def _parse_cargo_audit_json(raw: str) -> Tuple[List[dict], bool]:
@@ -3339,7 +6906,14 @@ def _parse_cargo_audit_json(raw: str) -> Tuple[List[dict], bool]:
         data = _json.loads(text[brace:])
     except Exception:
         return [], False
-    vulns = ((data.get("vulnerabilities") or {}).get("list")) or []
+    if not isinstance(data, dict):
+        return [], False
+    vulnerabilities = data.get("vulnerabilities")
+    if not isinstance(vulnerabilities, dict):
+        return [], False
+    vulns = vulnerabilities.get("list")
+    if not isinstance(vulns, list):
+        return [], False
     findings: List[dict] = []
     for v in vulns:
         if not isinstance(v, dict):
@@ -3365,42 +6939,135 @@ def _parse_cargo_audit_json(raw: str) -> Tuple[List[dict], bool]:
     return findings, True
 
 
-def _cargo_audit_scan(proj: Path) -> Tuple[str, List[dict]]:
+def _cargo_audit_outcome(proj: Path) -> Tuple[ToolOutcome, List[dict]]:
     """Run `cargo audit --json` against a Rust workspace.
 
-    Returns (status, findings). status is one of:
-    WRITTEN | SKIPPED:{reason} | TOOLCHAIN_UNAVAILABLE:{reason} | FAILED:{reason}
+    Returns a typed outcome plus any schema-validated findings.
     """
-    if not shutil.which("cargo"):
-        return "TOOLCHAIN_UNAVAILABLE:cargo not found on PATH", []
+    cargo_audit_binary = shutil.which("cargo-audit")
+    if not cargo_audit_binary:
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.UNAVAILABLE,
+            "cargo-audit not found on PATH",
+        ), []
     if not (proj / "Cargo.toml").exists():
-        return "SKIPPED:no Cargo.toml", []
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.SKIPPED,
+            "no Cargo.toml",
+        ), []
 
-    # cargo-audit is a cargo subcommand, not a standalone binary on PATH --
-    # probe it explicitly so a missing subcommand degrades to
-    # TOOLCHAIN_UNAVAILABLE instead of a confusing FAILED.
+    # Invoke the resolved plugin binary directly. Running `cargo audit` in an
+    # untrusted checkout allows target-controlled Cargo aliases to interpose.
     probe_rc, _probe_out = _run_hardened(
-        ["cargo", "audit", "--version"], proj, 30,
+        [cargo_audit_binary, "--version"], proj, 30,
     )
     if probe_rc == 127:
-        return "TOOLCHAIN_UNAVAILABLE:cargo not found on PATH", []
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.UNAVAILABLE,
+            "cargo-audit not found on PATH",
+        ), []
     if probe_rc != 0:
-        return "TOOLCHAIN_UNAVAILABLE:cargo-audit subcommand not installed", []
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.UNAVAILABLE,
+            "cargo-audit executable probe failed",
+        ), []
 
-    rc, out = _run_hardened(
-        ["cargo", "audit", "--json"], proj, _CARGO_AUDIT_TIMEOUT,
+    advisory_root, provider_ref, provenance_issue = _resolve_advisory_source(
+        "rustsec-local"
     )
+    if advisory_root is None:
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.UNAVAILABLE,
+            provenance_issue,
+        ), []
+    if not _advisory_source_is_external(advisory_root, proj):
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.UNAVAILABLE,
+            "advisory database must be outside the untrusted target checkout",
+        ), []
+    lockfile = (proj / "Cargo.lock").resolve()
+    if not lockfile.is_file():
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.SKIPPED,
+            "no Cargo.lock",
+        ), []
+    # A neutral working directory prevents target-controlled
+    # `.cargo/audit.toml` from silently ignoring advisories.
+    with tempfile.TemporaryDirectory(prefix="plamen-cargo-audit-") as neutral:
+        neutral_path = Path(neutral)
+        cargo_home = neutral_path / "cargo-home"
+        cargo_home.mkdir()
+        audit_env = dict(os.environ)
+        audit_env["CARGO_HOME"] = str(cargo_home)
+        audit_env["CARGO_NET_OFFLINE"] = "true"
+        rc, out = _run_hardened(
+            [
+                cargo_audit_binary,
+                "audit",
+                "--json",
+                "--no-fetch",
+                "--db",
+                str(advisory_root),
+                "--file",
+                str(lockfile),
+            ],
+            neutral_path,
+            _CARGO_AUDIT_TIMEOUT,
+            audit_env,
+        )
     if rc == 124:
-        return f"FAILED:timeout after {_CARGO_AUDIT_TIMEOUT}s", []
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.FAILED,
+            f"timeout after {_CARGO_AUDIT_TIMEOUT}s",
+        ), []
 
     findings, parse_ok = _parse_cargo_audit_json(out)
     if not parse_ok:
-        if rc == 0:
-            # A clean run legitimately produces an empty vulnerabilities list;
-            # tolerate a parse miss on rc==0 as "0 findings" rather than FAILED.
-            return "WRITTEN", []
-        return f"FAILED:cargo audit exit {rc}, no JSON produced", []
-    return "WRITTEN", findings
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.FAILED,
+            f"cargo audit exit {rc}, invalid JSON output",
+        ), []
+    # cargo-audit uses 0 for clean and 1 when advisories are present. Other
+    # codes mean setup/database failure; retain parsed partial hits but do not
+    # assert complete coverage.
+    if rc not in (0, 1):
+        return ToolOutcome.debt(
+            "cargo-audit.dependency-audit",
+            "cargo-audit",
+            ToolOutcomeState.FAILED,
+            f"cargo audit exit {rc}",
+        ), findings
+    return ToolOutcome.succeeded(
+        "cargo-audit.dependency-audit",
+        "cargo-audit",
+        len(findings),
+        artifacts=("dependency_audit_findings.md",),
+        provider_ref=provider_ref,
+    ), findings
+
+
+def _cargo_audit_scan(proj: Path) -> Tuple[str, List[dict]]:
+    """Compatibility wrapper returning the legacy status-string shape."""
+    outcome, findings = _cargo_audit_outcome(proj)
+    return _dependency_outcome_status(outcome), findings
 
 
 def _write_dependency_audit_md(
@@ -3429,9 +7096,15 @@ def _write_dependency_audit_md(
             )
             lines.append("")
             continue
-        if status.startswith(("SKIPPED", "FAILED")):
+        if status.startswith(("SKIPPED", "FAILED")) and not findings:
             lines.append("")
             continue
+        if status.startswith("FAILED") and findings:
+            lines.append(
+                "> Partial schema-valid hits are retained below, but this "
+                "capability did not establish complete coverage."
+            )
+            lines.append("")
         total += len(findings)
         if not findings:
             lines.append("No known-vulnerability dependency findings.")
@@ -3466,7 +7139,13 @@ def _write_dependency_audit_md(
     return total
 
 
-def _run_dependency_audit_l1(scratch: Path, proj: Path, language: str) -> str:
+def _run_dependency_audit_l1(
+    scratch: Path,
+    proj: Path,
+    language: str,
+    *,
+    context: Optional[dict] = None,
+) -> str:
     """L1 mechanical dependency-vulnerability scan (Wave-2 A5).
 
     Runs `govulncheck` for a Go module and/or `cargo audit` for a Rust
@@ -3486,23 +7165,89 @@ def _run_dependency_audit_l1(scratch: Path, proj: Path, language: str) -> str:
         lang = (language or "").strip().lower()
         sections: List[Tuple[str, str, List[dict]]] = []
         statuses: List[str] = []
-        if lang in ("go", "mixed"):
-            status, findings = _govulncheck_scan(proj)
-            sections.append(("Go (govulncheck)", status, findings))
+        outcomes: List[ToolOutcome] = []
+
+        def run_capability(
+            label: str,
+            prefix: str,
+            capability_id: str,
+            tool: str,
+            source_id: str,
+            scanner,
+        ) -> None:
+            try:
+                status, findings = scanner(proj)
+            except Exception as exc:
+                status = f"FAILED:{type(exc).__name__}:{exc}"
+                findings = []
+            sections.append((label, status, findings))
             statuses.append(
-                f"go={status}:{len(findings)}" if status == "WRITTEN" else f"go={status}"
+                f"{prefix}={status}:{len(findings)}"
+                if status == "WRITTEN"
+                else f"{prefix}={status}"
+            )
+            if status == "WRITTEN":
+                _root, provider_ref, issue = _resolve_advisory_source(source_id)
+                if provider_ref:
+                    outcomes.append(ToolOutcome.succeeded(
+                        capability_id,
+                        tool,
+                        len(findings),
+                        artifacts=("dependency_audit_findings.md",),
+                        provider_ref=provider_ref,
+                    ))
+                    return
+                status = f"FAILED:{issue}"
+            reason = status.partition(":")[2] or status
+            if status.startswith("TOOLCHAIN_UNAVAILABLE"):
+                state = ToolOutcomeState.UNAVAILABLE
+            elif status.startswith("SKIPPED"):
+                state = ToolOutcomeState.SKIPPED
+            else:
+                state = ToolOutcomeState.FAILED
+            outcomes.append(ToolOutcome.debt(
+                capability_id, tool, state, reason,
+            ))
+
+        # Each ecosystem is isolated. A parser/process defect in one scanner
+        # cannot suppress the other half of a mixed L1 dependency audit.
+        if lang in ("go", "mixed"):
+            run_capability(
+                "Go (govulncheck)",
+                "go",
+                "govulncheck.dependency-audit",
+                "govulncheck",
+                "govulndb-local",
+                _govulncheck_scan,
             )
         if lang in ("rust", "mixed"):
-            status, findings = _cargo_audit_scan(proj)
-            sections.append(("Rust (cargo audit)", status, findings))
-            statuses.append(
-                f"rust={status}:{len(findings)}" if status == "WRITTEN" else f"rust={status}"
+            run_capability(
+                "Rust (cargo audit)",
+                "rust",
+                "cargo-audit.dependency-audit",
+                "cargo-audit",
+                "rustsec-local",
+                _cargo_audit_scan,
             )
         if not sections:
-            reason = f"TOOLCHAIN_UNAVAILABLE:no govulncheck/cargo-audit route for language={lang!r}"
-            sections.append(("Dependency Audit", reason, []))
-            statuses.append(reason)
+            reason = (
+                "no govulncheck/cargo-audit route for "
+                f"language={lang!r}"
+            )
+            status = f"TOOLCHAIN_UNAVAILABLE:{reason}"
+            sections.append(("Dependency Audit", status, []))
+            statuses.append(status)
+            outcomes.append(ToolOutcome.debt(
+                "dependency-audit.routing",
+                "dependency-audit",
+                ToolOutcomeState.UNAVAILABLE,
+                reason,
+            ))
         _write_dependency_audit_md(scratch, sections)
+        for outcome in outcomes:
+            _record_scanner_outcome(
+                scratch, outcome, context=context
+            )
         return "; ".join(statuses)
     except Exception as e:
         # Absolute degrade-continue floor -- never let this step raise into
@@ -4048,8 +7793,8 @@ def _force_overwrite_prepass(p: Path, content: str) -> bool:
         return False
 
 
-# Main entry point
-def run_recon_prepass(config: dict) -> Dict[str, str]:
+# Main entry point renderer.  The public transaction wrapper is below it.
+def _render_recon_prepass(config: dict) -> Dict[str, str]:
     """Write mechanical recon artifacts. Returns {artifact: status} dict."""
     results: Dict[str, str] = {}
 
@@ -4071,6 +7816,15 @@ def run_recon_prepass(config: dict) -> Dict[str, str]:
         scratch.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         return {"_mkdir_scratch": f"FAILED:{e}"}
+
+    try:
+        tool_context = build_tool_execution_context(
+            config,
+            phase="recon-prebreadth",
+        )
+    except (OSError, ToolCoverageLedgerError, TypeError, ValueError):
+        # Precise/scanner success will fail closed into typed coverage debt.
+        tool_context = None
 
     skill_index = _plamen_home() / "rules" / "skill-index.md"
 
@@ -4143,7 +7897,9 @@ def run_recon_prepass(config: dict) -> Dict[str, str]:
         # M2 (recall): interface-vs-implementation parity.
         if lang == "evm":
             _safe("_mechanical_graph.json",
-                  lambda: _bake_evm_graph(scratch, proj))
+                  lambda: _bake_evm_graph(
+                      scratch, proj, context=tool_context
+                  ))
             _safe("niche_interface_parity_findings.md",
                   lambda: _write_interface_parity_findings(scratch, proj))
             # M2 (recall): permissionless-setter detector.
@@ -4180,7 +7936,12 @@ def run_recon_prepass(config: dict) -> Dict[str, str]:
         if lang in ("solana", "soroban") and run_startup_scanners:
             # Tiered: precise SCIP when available, else compilation-free source
             # parse so the enumeration gate still gets a graph (never advisory-only).
-            _safe("scip_bake", lambda: _bake_rust_graph(scratch, proj))
+            _safe(
+                "scip_bake",
+                lambda: _bake_rust_graph(
+                    scratch, proj, context=tool_context
+                ),
+            )
         # F1 (recall): approximate Move reference graph for the coverage gate
         # (Aptos/Sui have no SCIP indexer wired). Best-effort, never halts.
         if lang in ("aptos", "sui"):
@@ -4225,15 +7986,5444 @@ def run_recon_prepass(config: dict) -> Dict[str, str]:
     # Deferred to the driver pre-breadth hook by default (see run_startup_scanners
     # above); the escape hatch keeps the old startup behavior for local debugging.
     if pipeline != "l1" and run_startup_scanners:
-        _safe("opengrep_scan", lambda: _run_opengrep_scan(scratch, proj, lang))
+        _safe(
+            "opengrep_scan",
+            lambda: _run_opengrep_scan(
+                scratch, proj, lang, context=tool_context
+            ),
+        )
 
     # v2.5.0 P4: Sec3 X-Ray for Solana (Docker-based, SC only).
     # RECON-1: deferred to the driver pre-breadth hook by default (a Docker run
     # can take ~10 min and would stall the silent startup window).
     if pipeline != "l1" and lang == "solana" and run_startup_scanners:
-        _safe("sec3_xray", lambda: _run_sec3_xray(scratch, proj))
+        _safe(
+            "sec3_xray",
+            lambda: _run_sec3_xray(
+                scratch,
+                proj,
+                config.get("sec3_xray_image"),
+                context=tool_context,
+            ),
+        )
 
     return results
+
+
+_PREPASS_PUBLICATION_RECEIPT = "recon_prepass_publication_receipt.json"
+_PREPASS_TIMEOUT_SECONDS = 30
+_PREPASS_PREEXECUTION_AUTHORITY_SCHEMA = (
+    "plamen.recon-prepass-preexecution-authority.v1"
+)
+_SC_PREPASS_PUBLIC_OUTPUTS = (
+    "contract_inventory.md",
+    "state_variables.md",
+    "function_list.md",
+    "build_status.md",
+    "design_context.md",
+    "attack_surface.md",
+    "detected_patterns.md",
+    "setter_list.md",
+    "emit_list.md",
+    "template_recommendations.md",
+    "recon_summary.md",
+    "meta_buffer.md",
+    "external_dependency_research.md",
+)
+_L1_PREPASS_PUBLIC_OUTPUTS = (
+    "subsystem_map.md",
+    "trust_boundaries.md",
+    "attack_surface.md",
+    "threat_model.md",
+    "template_recommendations.md",
+    "recon_summary.md",
+    "meta_buffer.md",
+    "external_dependency_research.md",
+)
+_PREPASS_AUXILIARY_OUTPUTS = frozenset({
+    *PRECISE_GRAPH_ARTIFACTS,
+    "_mechanical_graph_generation.json",
+    "state_read_map.md",
+    "daml_prepass_noop.md",
+    "niche_interface_parity_findings.md",
+    "niche_permissionless_setters_findings.md",
+    "tool_coverage_ledger.json",
+    "tool_coverage_ledger.md",
+    "tool_coverage_ledger_repair_required.md",
+    "toolchain_coverage_debt.json",
+    "report_semantic_toolchain_coverage.md",
+    "opengrep_results.sarif",
+    "opengrep_findings.md",
+    "sec3_results.sarif",
+    "sec3_findings.md",
+    "dependency_audit_findings.md",
+})
+_PREPASS_STAGE_MAX_ENTRIES = 128
+_PREPASS_STAGE_MAX_FILE_BYTES = 64 * 1024 * 1024
+_PREPASS_STAGE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+_PREPASS_PRIVATE_TREE_MAX_ENTRIES = 100_000
+_PREPASS_PRIVATE_TREE_MAX_DEPTH = 64
+
+
+class ReconPrepassAuthorityError(RuntimeError):
+    """The public recon prepass could not establish exact DRIVER authority."""
+
+
+def _prepass_collect_private_tree_manifest(
+    root: Path,
+    directory: Path,
+    *,
+    label: str,
+    seen: list[int],
+) -> tuple[
+    list[tuple[Path, int, tuple[int, int, int]]],
+    list[tuple[Path, tuple[int, int, int, int, int, int]]],
+]:
+    """Validate one disposable tree and return an immutable identity manifest."""
+
+    relative = directory.relative_to(root).as_posix()
+    target = _rooted_io.safe_descendant(
+        root, relative, allow_missing=False, label=label
+    )
+    first = _rooted_io.lstat(target)
+    if not stat.S_ISDIR(first.st_mode) or _rooted_io.is_reparse(target):
+        raise ReconPrepassAuthorityError(f"{label} is not a literal directory")
+    directories: list[tuple[Path, int, tuple[int, int, int]]] = []
+    files: list[tuple[Path, tuple[int, int, int, int, int, int]]] = []
+    pending: list[tuple[Path, int]] = [(target, 0)]
+    while pending:
+        current, depth = pending.pop()
+        if depth > _PREPASS_PRIVATE_TREE_MAX_DEPTH:
+            raise ReconPrepassAuthorityError(f"{label} depth budget exceeded")
+        current_row = _rooted_io.lstat(current)
+        if (
+            not stat.S_ISDIR(current_row.st_mode)
+            or _rooted_io.is_reparse(current)
+        ):
+            raise ReconPrepassAuthorityError(f"{label} directory changed")
+        directories.append((current, depth, (
+            int(current_row.st_dev), int(current_row.st_ino),
+            stat.S_IFMT(current_row.st_mode),
+        )))
+        with _rooted_io.scandir(current) as iterator:
+            entries = []
+            for entry in iterator:
+                seen[0] += 1
+                if seen[0] > _PREPASS_PRIVATE_TREE_MAX_ENTRIES:
+                    raise ReconPrepassAuthorityError(
+                        f"{label} entry budget exceeded"
+                    )
+                entries.append(entry)
+        for entry in entries:
+            child = current / entry.name
+            row = _rooted_io.lstat(child)
+            if stat.S_ISLNK(row.st_mode) or _rooted_io.is_reparse(child):
+                raise ReconPrepassAuthorityError(f"{label} contains an alias")
+            if stat.S_ISDIR(row.st_mode):
+                pending.append((child, depth + 1))
+            elif stat.S_ISREG(row.st_mode) and int(row.st_nlink) == 1:
+                files.append((child, (
+                    int(row.st_dev), int(row.st_ino), int(row.st_size),
+                    int(row.st_mtime_ns), int(row.st_nlink),
+                    stat.S_IFMT(row.st_mode),
+                )))
+            else:
+                raise ReconPrepassAuthorityError(
+                    f"{label} contains a non-regular entry"
+                )
+    return directories, files
+
+
+def _prepass_delete_private_tree_manifests(
+    manifests: Sequence[
+        tuple[
+            list[tuple[Path, int, tuple[int, int, int]]],
+            list[tuple[Path, tuple[int, int, int, int, int, int]]],
+        ]
+    ],
+    *,
+    label: str,
+) -> None:
+    """Delete only after every registered tree and identity validates together."""
+
+    directories = [row for manifest, _files in manifests for row in manifest]
+    files = [row for _directories, manifest in manifests for row in manifest]
+
+    # A complete preflight prevents a bad later tree from partially deleting an
+    # earlier valid tree.  Each entry is checked again immediately before its
+    # destructive operation to retain the per-entry TOCTOU guard.
+    for child, expected in files:
+        row = _rooted_io.lstat(child)
+        observed = (
+            int(row.st_dev), int(row.st_ino), int(row.st_size),
+            int(row.st_mtime_ns), int(row.st_nlink),
+            stat.S_IFMT(row.st_mode),
+        )
+        if observed != expected or _rooted_io.is_reparse(child):
+            raise ReconPrepassAuthorityError(
+                f"{label} file identity changed before deletion"
+            )
+    for current, _depth, expected in directories:
+        row = _rooted_io.lstat(current)
+        observed = (
+            int(row.st_dev), int(row.st_ino), stat.S_IFMT(row.st_mode),
+        )
+        if observed != expected or _rooted_io.is_reparse(current):
+            raise ReconPrepassAuthorityError(
+                f"{label} directory identity changed before deletion"
+            )
+    for child, expected in files:
+        row = _rooted_io.lstat(child)
+        observed = (
+            int(row.st_dev), int(row.st_ino), int(row.st_size),
+            int(row.st_mtime_ns), int(row.st_nlink),
+            stat.S_IFMT(row.st_mode),
+        )
+        if observed != expected or _rooted_io.is_reparse(child):
+            raise ReconPrepassAuthorityError(
+                f"{label} file identity changed before deletion"
+            )
+        os.unlink(_rooted_io.native_path(child))
+    for current, _depth, expected in sorted(
+        directories, key=lambda item: item[1], reverse=True
+    ):
+        row = _rooted_io.lstat(current)
+        observed = (
+            int(row.st_dev), int(row.st_ino), stat.S_IFMT(row.st_mode),
+        )
+        if observed != expected or _rooted_io.is_reparse(current):
+            raise ReconPrepassAuthorityError(
+                f"{label} directory identity changed before deletion"
+            )
+        os.rmdir(_rooted_io.native_path(current))
+
+
+def _prepass_private_tree_attestation(
+    root: Path,
+    name: str,
+    manifest: tuple[
+        list[tuple[Path, int, tuple[int, int, int]]],
+        list[tuple[Path, tuple[int, int, int, int, int, int]]],
+    ],
+) -> tuple[
+    str,
+    tuple[tuple[str, int, tuple[int, int, int]], ...],
+    tuple[tuple[str, tuple[int, int, int, int, int, int]], ...],
+]:
+    """Seal one private-tree denominator as immutable rooted identities."""
+
+    directories, files = manifest
+    return (
+        name,
+        tuple(sorted(
+            (path.relative_to(root).as_posix(), depth, identity)
+            for path, depth, identity in directories
+        )),
+        tuple(sorted(
+            (path.relative_to(root).as_posix(), identity)
+            for path, identity in files
+        )),
+    )
+
+
+def _prepass_remove_private_tree(root: Path, directory: Path, *, label: str) -> None:
+    """Remove one rooted disposable tree without following aliases/reparse points."""
+
+    try:
+        manifest = _prepass_collect_private_tree_manifest(
+            root, directory, label=label, seen=[0]
+        )
+        _prepass_delete_private_tree_manifests([manifest], label=label)
+    except ReconPrepassAuthorityError:
+        raise
+    except (OSError, ValueError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(f"{label} could not be removed safely") from exc
+
+
+def _prepass_cleanup_renderer_private_stage(stage: Path) -> tuple[
+    tuple[
+        str,
+        tuple[tuple[str, int, tuple[int, int, int]], ...],
+        tuple[tuple[str, tuple[int, int, int, int, int, int]], ...],
+    ],
+    ...,
+]:
+    """Validate and exclude the complete renderer-private tree denominator.
+
+    Publication preparation deliberately does not delete these trees.  That
+    keeps every authority-validation failure zero-mutation, including a late
+    concurrent namespace change; the run-private stage is disposed only by the
+    outer transaction cleanup.
+    """
+
+    try:
+        with _rooted_io.scandir(stage) as iterator:
+            names = []
+            for entry in iterator:
+                if len(names) >= _PREPASS_STAGE_MAX_ENTRIES:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass renderer-private top-level entry budget exceeded"
+                    )
+                names.append(entry.name)
+    except OSError as exc:
+        raise ReconPrepassAuthorityError(
+            "recon prepass renderer-private enumeration failed"
+        ) from exc
+    attestations = []
+    seen = [0]
+    try:
+        for name in names:
+            registered = name == ".fb" or any(name.startswith(prefix) for prefix in (
+                ".slither-graph-", ".mixed-graph-", ".scip-", ".og-",
+            ))
+            path = stage / name
+            row = _rooted_io.lstat(path)
+            if registered:
+                if not stat.S_ISDIR(row.st_mode) or _rooted_io.is_reparse(path):
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass registered renderer-private path is aliased"
+                    )
+                manifest = _prepass_collect_private_tree_manifest(
+                    stage,
+                    path,
+                    label="recon prepass renderer-private tree",
+                    seen=seen,
+                )
+                attestations.append(_prepass_private_tree_attestation(
+                    stage, name, manifest
+                ))
+    except ReconPrepassAuthorityError:
+        raise
+    except (OSError, ValueError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(
+            "recon prepass renderer-private trees could not be validated safely"
+        ) from exc
+    return tuple(sorted(attestations, key=lambda row: row[0]))
+
+
+def _prepass_commit_ledger_cas(
+    scratchpad: Path,
+    prestate: Mapping[str, Any],
+    replacement: Mapping[str, Any],
+) -> None:
+    """Commit one exact ledger transition under the cross-process lock."""
+
+    expected_digest = artifact_ledger_digest(prestate)
+    try:
+        compare_and_swap_artifact_ledger(
+            scratchpad,
+            expected_digest=expected_digest,
+            mutator=lambda current: (
+                dict(replacement)
+                if artifact_ledger_digest(current) == expected_digest
+                else (_ for _ in ()).throw(ArtifactLedgerCASMismatch(
+                    "recon prepass ledger prestate changed"
+                ))
+            ),
+        )
+    except ArtifactLedgerError as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass ledger CAS failed: {exc}"
+        ) from exc
+
+
+def _prepass_stable_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _prepass_dimensions(config: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    pipeline = str(config.get("pipeline") or "sc").strip().lower()
+    mode = str(config.get("mode") or "core").strip().lower()
+    language = str(config.get("language") or "unknown").strip().lower()
+    ecosystem = {"solidity": "evm", "ethereum": "evm"}.get(language, language)
+    backend = str(config.get("cli_backend") or "claude").strip().lower()
+    return pipeline, mode, ecosystem, backend
+
+
+def _prepass_output_names(pipeline: str) -> tuple[str, ...]:
+    selected = (
+        _L1_PREPASS_PUBLIC_OUTPUTS
+        if pipeline == "l1"
+        else _SC_PREPASS_PUBLIC_OUTPUTS
+    )
+    return (*selected, _PREPASS_PUBLICATION_RECEIPT)
+
+
+_PREPASS_SOURCE_ROOT_SCHEMA = "plamen.recon-prepass-source-root.v1"
+_FILE_ATTRIBUTE_REPARSE_POINT = int(
+    getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+)
+_FILE_ATTRIBUTE_DIRECTORY = int(
+    getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
+)
+_PREPASS_CAPTURE_MAX_ENTRIES = 100_000
+_PREPASS_CAPTURE_MAX_FILES = 50_000
+_PREPASS_CAPTURE_MAX_DEPTH = 64
+_PREPASS_CAPTURE_MAX_FILE_BYTES = 64 * 1024 * 1024
+_PREPASS_CAPTURE_MAX_TOTAL_BYTES = 512 * 1024 * 1024
+_PREPASS_SEMANTIC_MAX_ENTRIES = 10_000
+_PREPASS_SEMANTIC_MAX_FILES = 256
+_PREPASS_SEMANTIC_MAX_FILE_BYTES = 8 * 1024 * 1024
+_PREPASS_SEMANTIC_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+
+
+def _prepass_windows_canonical_device(raw_device: object) -> int:
+    """Validate CPython's Windows identity width before low-DWORD binding."""
+
+    if (
+        type(raw_device) is not int
+        or raw_device < 1
+        or raw_device > 0xFFFFFFFFFFFFFFFF
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root physical identity is unavailable"
+        )
+    canonical_device = raw_device & 0xFFFFFFFF
+    if canonical_device < 1:
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root physical identity is unavailable"
+        )
+    return canonical_device
+
+
+def _prepass_source_root_authority(
+    source_root: Path,
+    *,
+    logical_identity: str = "project:src",
+) -> dict[str, Any]:
+    """Observe ``src`` exactly once without following it.
+
+    This helper is deliberately the first filesystem operation applied to the
+    source root.  In particular, callers must not probe ``is_dir``/``exists``
+    or enumerate children before this observation.
+    """
+
+    try:
+        observed = os.lstat(source_root)
+    except FileNotFoundError:
+        return {
+            "schema": _PREPASS_SOURCE_ROOT_SCHEMA,
+            "logical_identity": logical_identity,
+            "status": "ABSENT",
+            "device": None,
+            "inode": None,
+            "mode_type": None,
+            "file_attributes": None,
+            "reparse_tag": None,
+        }
+    except (NotADirectoryError, PermissionError, OSError) as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass source root no-follow inspection failed: {exc}"
+        ) from exc
+
+    mode = getattr(observed, "st_mode", 0)
+    attributes = getattr(observed, "st_file_attributes", 0)
+    reparse_tag = getattr(observed, "st_reparse_tag", 0)
+    if (
+        type(mode) is not int
+        or type(attributes) is not int
+        or type(reparse_tag) is not int
+        or mode < 0
+        or attributes < 0
+        or attributes > 0xFFFFFFFF
+        or reparse_tag < 0
+        or reparse_tag > 0xFFFFFFFF
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root physical identity is unavailable"
+        )
+    mode_type = stat.S_IFMT(mode)
+    if (
+        stat.S_ISLNK(mode)
+        or not stat.S_ISDIR(mode)
+        or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+        or (os.name == "nt" and not bool(
+            attributes & _FILE_ATTRIBUTE_DIRECTORY
+        ))
+        or reparse_tag != 0
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root is an unsafe link/reparse or "
+            "non-directory authority"
+        )
+    device = getattr(observed, "st_dev", None)
+    inode = getattr(observed, "st_ino", None)
+    if (
+        type(device) is not int
+        or device < 0
+        or type(inode) is not int
+        or inode <= 0
+        or (os.name == "nt" and inode > 0xFFFFFFFFFFFFFFFF)
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root physical identity is unavailable"
+        )
+    if os.name == "nt":
+        # CPython's Windows st_dev is a 64-bit volume identifier while the
+        # no-follow BY_HANDLE_FILE_INFORMATION authority exposes the canonical
+        # DWORD volume serial in its low 32 bits.
+        device = _prepass_windows_canonical_device(device)
+    if (
+        device < (1 if os.name == "nt" else 0)
+        or (os.name == "nt" and device > 0xFFFFFFFF)
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root physical identity is unavailable"
+        )
+    return {
+        "schema": _PREPASS_SOURCE_ROOT_SCHEMA,
+        "logical_identity": logical_identity,
+        "status": "PRESENT",
+        "device": device,
+        "inode": inode,
+        "mode_type": mode_type,
+        "file_attributes": attributes,
+        "reparse_tag": reparse_tag,
+    }
+
+
+def _prepass_assert_source_root_authority(
+    source_root: Path,
+    expected: Mapping[str, Any],
+) -> None:
+    """Require one exact no-follow replay of the approved root identity."""
+
+    try:
+        observed = _prepass_source_root_authority(
+            source_root,
+            logical_identity=str(expected.get("logical_identity") or ""),
+        )
+    except ReconPrepassAuthorityError as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass source root identity drift: {exc}"
+        ) from exc
+    if observed != dict(expected):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root identity drift"
+        )
+
+
+def _prepass_assert_capture_source_root(
+    project_root: Path,
+    capture: Mapping[str, Any],
+) -> None:
+    authority = capture.get("source_root_authority")
+    if not isinstance(authority, Mapping):
+        raise ReconPrepassAuthorityError(
+            "recon prepass capture lacks source-root authority"
+        )
+    _prepass_assert_source_root_authority(
+        project_root, authority
+    )
+
+
+def _prepass_exact_unsigned(
+    value: object,
+    *,
+    bits: int,
+    positive: bool = False,
+) -> int:
+    """Return an exact unsigned native field without coercion."""
+
+    if (
+        type(value) is not int
+        or value < (1 if positive else 0)
+        or value > ((1 << bits) - 1)
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root native physical identity mismatch"
+        )
+    return value
+
+
+def _prepass_validate_native_source_root_identity(
+    information: object,
+    authority: Mapping[str, Any],
+) -> dict[str, int]:
+    """Join exact Windows handle identity to the signed lstat authority."""
+
+    missing = object()
+    volume = _prepass_exact_unsigned(
+        getattr(information, "dwVolumeSerialNumber", missing),
+        bits=32,
+        positive=True,
+    )
+    index_high = _prepass_exact_unsigned(
+        getattr(information, "nFileIndexHigh", missing), bits=32
+    )
+    index_low = _prepass_exact_unsigned(
+        getattr(information, "nFileIndexLow", missing), bits=32
+    )
+    attributes = _prepass_exact_unsigned(
+        getattr(information, "dwFileAttributes", missing), bits=32
+    )
+    file_index = (index_high << 32) | index_low
+    if file_index == 0:
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root native physical identity mismatch"
+        )
+
+    signed_device = _prepass_exact_unsigned(
+        authority.get("device", missing), bits=32, positive=True
+    )
+    signed_inode = _prepass_exact_unsigned(
+        authority.get("inode", missing), bits=64, positive=True
+    )
+    signed_attributes = _prepass_exact_unsigned(
+        authority.get("file_attributes", missing), bits=32
+    )
+    signed_mode_type = authority.get("mode_type", missing)
+    signed_reparse_tag = _prepass_exact_unsigned(
+        authority.get("reparse_tag", missing), bits=32
+    )
+    if (
+        signed_mode_type != stat.S_IFDIR
+        or signed_reparse_tag != 0
+        or volume != signed_device
+        or file_index != signed_inode
+        or attributes != signed_attributes
+        or not bool(attributes & 0x10)
+        or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root native physical identity mismatch"
+        )
+    return {
+        "volume_serial_number": volume,
+        "file_index": file_index,
+        "file_attributes": attributes,
+    }
+
+
+def _prepass_windows_source_root_native_api() -> tuple[Any, Any, Any, Any]:
+    """Resolve the one Windows no-follow handle API used by the root guard."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = (
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    )
+    get_information.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    return _ByHandleFileInformation, create_file, get_information, close_handle
+
+
+@contextmanager
+def _prepass_source_root_guard(
+    source_root: Path,
+    authority: Mapping[str, Any],
+):
+    """Retain a no-delete/no-follow Windows directory handle during capture."""
+
+    _prepass_assert_source_root_authority(source_root, authority)
+    if authority.get("status") != "PRESENT" or os.name != "nt":
+        try:
+            yield
+            _prepass_assert_source_root_authority(source_root, authority)
+        finally:
+            pass
+        return
+
+    import ctypes
+    (
+        information_type,
+        create_file,
+        get_information,
+        close_handle,
+    ) = _prepass_windows_source_root_native_api()
+    handle = create_file(
+        str(source_root),
+        0x80,  # FILE_READ_ATTRIBUTES
+        0x1 | 0x2,  # FILE_SHARE_READ | FILE_SHARE_WRITE; deliberately no DELETE
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        None,
+    )
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root no-follow handle open failed: "
+            f"winerror={ctypes.get_last_error()}"
+        )
+    try:
+        information = information_type()
+        if not get_information(handle, ctypes.byref(information)):
+            raise ReconPrepassAuthorityError(
+                "recon prepass source root native identity query failed: "
+                f"winerror={ctypes.get_last_error()}"
+            )
+        _prepass_validate_native_source_root_identity(information, authority)
+        _prepass_assert_source_root_authority(source_root, authority)
+        yield
+        _prepass_assert_source_root_authority(source_root, authority)
+    finally:
+        close_handle(handle)
+
+
+def _prepass_descendant_metadata(path: Path) -> tuple[int, int, int, int, int, int]:
+    try:
+        observed = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError) as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass source descendant inspection failed: {path}: {exc}"
+        ) from exc
+    mode = int(getattr(observed, "st_mode", 0) or 0)
+    attributes = int(getattr(observed, "st_file_attributes", 0) or 0)
+    reparse_tag = int(getattr(observed, "st_reparse_tag", 0) or 0)
+    if (
+        stat.S_ISLNK(mode)
+        or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+        or reparse_tag != 0
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source root authority contains a link/reparse "
+            f"path: {path}"
+        )
+    if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
+        raise ReconPrepassAuthorityError(
+            f"recon prepass source authority contains a non-file path: {path}"
+        )
+    device = getattr(observed, "st_dev", None)
+    inode = getattr(observed, "st_ino", None)
+    if not isinstance(device, int) or not isinstance(inode, int) or inode <= 0:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass source descendant identity is unavailable: {path}"
+        )
+    return (
+        device,
+        inode,
+        stat.S_IFMT(mode),
+        attributes,
+        reparse_tag,
+        int(getattr(observed, "st_size", 0) or 0),
+    )
+
+
+def _prepass_regular_file_present(path: Path, *, label: str) -> bool:
+    """Distinguish literal absence from every unsafe named filesystem object."""
+
+    try:
+        if not _rooted_io.lexists(path):
+            return False
+        _rooted_io.checked_file(
+            path, label=label, require_single_link=True
+        )
+    except (OSError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(
+            f"{label} is not a safe single-link regular file: {path}: {exc}"
+        ) from exc
+    return True
+
+
+def _prepass_bounded_file_digest(
+    path: Path,
+    *,
+    label: str,
+    max_bytes: int,
+) -> tuple[str, int]:
+    """Hash one no-follow regular file without allocating its full contents."""
+
+    try:
+        checked = _rooted_io.checked_file(
+            path, label=label, require_single_link=True
+        )
+        before = _rooted_io.lstat(checked)
+        declared_size = int(getattr(before, "st_size", -1))
+        if declared_size < 0 or declared_size > max_bytes:
+            raise ReconPrepassAuthorityError(
+                f"{label} exceeds the {max_bytes}-byte authority budget: {path}"
+            )
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(_rooted_io.native_path(checked), flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                int(getattr(before, "st_dev", -1))
+                != int(getattr(opened, "st_dev", -2))
+                or int(getattr(before, "st_ino", -1))
+                != int(getattr(opened, "st_ino", -2))
+                or not stat.S_ISREG(opened.st_mode)
+                or int(getattr(opened, "st_nlink", 1) or 1) != 1
+            ):
+                raise ReconPrepassAuthorityError(
+                    f"{label} identity changed while opening: {path}"
+                )
+            digest = hashlib.sha256()
+            observed_size = 0
+            while True:
+                chunk = os.read(descriptor, min(1024 * 1024, max_bytes + 1))
+                if not chunk:
+                    break
+                observed_size += len(chunk)
+                if observed_size > max_bytes:
+                    raise ReconPrepassAuthorityError(
+                        f"{label} exceeds the {max_bytes}-byte authority budget: "
+                        f"{path}"
+                    )
+                digest.update(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        named_after = _rooted_io.lstat(checked)
+        before_identity = (
+            int(getattr(before, "st_dev", -1)),
+            int(getattr(before, "st_ino", -1)),
+            int(getattr(before, "st_size", -1)),
+            int(getattr(before, "st_mtime_ns", -1)),
+        )
+        if before_identity != (
+            int(getattr(after, "st_dev", -2)),
+            int(getattr(after, "st_ino", -2)),
+            int(getattr(after, "st_size", -2)),
+            int(getattr(after, "st_mtime_ns", -2)),
+        ) or before_identity != (
+            int(getattr(named_after, "st_dev", -3)),
+            int(getattr(named_after, "st_ino", -3)),
+            int(getattr(named_after, "st_size", -3)),
+            int(getattr(named_after, "st_mtime_ns", -3)),
+        ) or observed_size != declared_size:
+            raise ReconPrepassAuthorityError(
+                f"{label} identity changed while hashing: {path}"
+            )
+        return digest.hexdigest(), observed_size
+    except ReconPrepassAuthorityError:
+        raise
+    except (OSError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(
+            f"{label} could not be hashed safely: {path}: {exc}"
+        ) from exc
+
+
+def _prepass_bounded_read_bytes(
+    path: Path,
+    *,
+    label: str,
+    max_bytes: int,
+) -> bytes:
+    """Read a stable no-follow file with a hard allocation ceiling."""
+
+    try:
+        checked = _rooted_io.checked_file(
+            path, label=label, require_single_link=True
+        )
+        before = _rooted_io.lstat(checked)
+        declared = int(getattr(before, "st_size", -1))
+        if declared < 0 or declared > max_bytes:
+            raise ReconPrepassAuthorityError(
+                f"{label} exceeds the {max_bytes}-byte read budget"
+            )
+        descriptor = os.open(
+            _rooted_io.native_path(checked),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        chunks: list[bytes] = []
+        observed = 0
+        try:
+            while True:
+                chunk = os.read(descriptor, min(1024 * 1024, max_bytes + 1))
+                if not chunk:
+                    break
+                observed += len(chunk)
+                if observed > max_bytes:
+                    raise ReconPrepassAuthorityError(
+                        f"{label} exceeds the {max_bytes}-byte read budget"
+                    )
+                chunks.append(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        named = _rooted_io.lstat(checked)
+        identity = lambda row: (
+            int(getattr(row, "st_dev", -1)),
+            int(getattr(row, "st_ino", -1)),
+            int(getattr(row, "st_size", -1)),
+            int(getattr(row, "st_mtime_ns", -1)),
+        )
+        if identity(before) != identity(after) or identity(before) != identity(named):
+            raise ReconPrepassAuthorityError(f"{label} changed while reading")
+        if observed != declared:
+            raise ReconPrepassAuthorityError(f"{label} size changed while reading")
+        return b"".join(chunks)
+    except ReconPrepassAuthorityError:
+        raise
+    except (OSError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(f"{label} bounded read failed: {exc}") from exc
+
+
+def _prepass_durable_replace_from_stage(
+    source: Path,
+    destination: Path,
+    *,
+    label: str,
+    retire_source: bool = False,
+) -> None:
+    """Copy a bounded checked source into a durable same-parent replacement."""
+
+    temp: Path | None = None
+    try:
+        checked = _rooted_io.checked_file(
+            source, label=label, require_single_link=True
+        )
+        before = _rooted_io.lstat(checked)
+        declared_size = int(getattr(before, "st_size", -1))
+        if declared_size < 0 or declared_size > _PREPASS_STAGE_MAX_FILE_BYTES:
+            raise ReconPrepassAuthorityError(
+                f"{label} exceeds the publication byte budget"
+            )
+        source_fd = os.open(
+            _rooted_io.native_path(checked),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        temp_fd, temp = _rooted_io.exclusive_temp_file(
+            destination.parent, prefix=".recon-publish-"
+        )
+        observed_size = 0
+        try:
+            while True:
+                chunk = os.read(source_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                observed_size += len(chunk)
+                if observed_size > _PREPASS_STAGE_MAX_FILE_BYTES:
+                    raise ReconPrepassAuthorityError(
+                        f"{label} exceeds the publication byte budget"
+                    )
+                view = memoryview(chunk)
+                offset = 0
+                while offset < len(view):
+                    written = os.write(temp_fd, view[offset:])
+                    if written <= 0:
+                        raise OSError("short recon prepass publication write")
+                    offset += written
+            os.fsync(temp_fd)
+            after = os.fstat(source_fd)
+            if (
+                observed_size != declared_size
+                or int(getattr(after, "st_dev", -1))
+                != int(getattr(before, "st_dev", -2))
+                or int(getattr(after, "st_ino", -1))
+                != int(getattr(before, "st_ino", -2))
+                or int(getattr(after, "st_size", -1)) != declared_size
+            ):
+                raise ReconPrepassAuthorityError(
+                    f"{label} changed during durable publication"
+                )
+        finally:
+            os.close(source_fd)
+            os.close(temp_fd)
+        _rooted_io.durable_replace(temp, destination)
+        if retire_source:
+            _rooted_io.durable_unlink(checked)
+    except ReconPrepassAuthorityError:
+        raise
+    except (OSError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(
+            f"{label} durable publication failed: {exc}"
+        ) from exc
+    finally:
+        if temp is not None and _rooted_io.lexists(temp):
+            _rooted_io.durable_unlink(temp)
+
+
+def _prepass_fallback_production_records(
+    project_root: Path,
+    scratchpad: Path,
+    source_root_authority: Mapping[str, Any],
+    source_exts: set[str],
+) -> dict[str, str]:
+    """Bounded iterative fallback used only when no audit snapshot is bound."""
+
+    records: dict[str, str] = {}
+    casefolded: set[str] = set()
+    entry_count = 0
+    file_count = 0
+    total_bytes = 0
+    pending: list[tuple[Path, int]] = [(project_root, 0)]
+    with _prepass_source_root_guard(project_root, source_root_authority):
+        while pending:
+            directory, depth = pending.pop()
+            try:
+                with _rooted_io.scandir(directory) as iterator:
+                    entries = []
+                    for entry in iterator:
+                        entry_count += 1
+                        if entry_count > _PREPASS_CAPTURE_MAX_ENTRIES:
+                            raise ReconPrepassAuthorityError(
+                                "recon prepass source entry budget exceeded"
+                            )
+                        entries.append(entry)
+            except ReconPrepassAuthorityError:
+                raise
+            except OSError as exc:
+                raise ReconPrepassAuthorityError(
+                    f"recon prepass source enumeration failed: {directory}: {exc}"
+                ) from exc
+            for entry in sorted(entries, key=lambda item: item.name, reverse=True):
+                # rooted_path_io may enumerate with a Windows extended-length
+                # spelling; retain the caller's canonical lexical root.
+                path = directory / entry.name
+                before = _prepass_descendant_metadata(path)
+                relative = path.relative_to(project_root).as_posix()
+                folded = relative.casefold()
+                if folded in casefolded:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass source authority contains a case alias: "
+                        f"{relative}"
+                    )
+                casefolded.add(folded)
+                if before[2] == stat.S_IFDIR:
+                    if (
+                        entry.name in SKIP_DIR_NAMES
+                        or entry.name.startswith(".")
+                        or (depth == 0 and entry.name == scratchpad.name)
+                    ):
+                        continue
+                    if depth + 1 > _PREPASS_CAPTURE_MAX_DEPTH:
+                        raise ReconPrepassAuthorityError(
+                            "recon prepass source depth budget exceeded"
+                        )
+                    pending.append((path, depth + 1))
+                    continue
+                if (
+                    path.suffix.lower() not in source_exts
+                    or not is_production_source_path(path, project_root)
+                ):
+                    continue
+                file_count += 1
+                if file_count > _PREPASS_CAPTURE_MAX_FILES:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass source file-count budget exceeded"
+                    )
+                declared_size = before[5]
+                if declared_size > _PREPASS_CAPTURE_MAX_FILE_BYTES:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass source per-file byte budget exceeded: "
+                        f"{path}"
+                    )
+                if total_bytes + declared_size > _PREPASS_CAPTURE_MAX_TOTAL_BYTES:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass source total-byte budget exceeded"
+                    )
+                digest, size = _prepass_bounded_file_digest(
+                    path,
+                    label="recon prepass production source",
+                    max_bytes=_PREPASS_CAPTURE_MAX_FILE_BYTES,
+                )
+                total_bytes += size
+                records[relative] = digest
+        _prepass_assert_source_root_authority(
+            project_root, source_root_authority
+        )
+    return dict(sorted(records.items()))
+
+
+def _prepass_capture(
+    scratchpad: Path,
+    project_root: Path,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    source_root = project_root
+    source_root_authority = _prepass_source_root_authority(
+        source_root, logical_identity="project:root"
+    )
+    try:
+        semantic_config = _audit_snapshot_authority._semantic_config(config)
+        snapshot = config.get("_audit_snapshot") or config.get(
+            "audit_snapshot"
+        )
+        snapshot_digest = ""
+        source_scope_digest = ""
+        source_path_authority: dict[str, Any] = {}
+        audit_config_authority: dict[str, Any] = {}
+        if isinstance(snapshot, Mapping):
+            if not _audit_snapshot_authority._valid_snapshot(dict(snapshot)):
+                raise ValueError("bound audit snapshot is invalid")
+            snapshot_digest = str(snapshot.get("snapshot_digest") or "")
+            components = snapshot.get("components")
+            source_scope = (
+                components.get("source_scope")
+                if isinstance(components, Mapping)
+                else None
+            )
+            source_scope_digest = str(
+                source_scope.get("digest")
+                if isinstance(source_scope, Mapping)
+                else ""
+            )
+            current_config_authority = (
+                _audit_snapshot_authority._config_component(config)
+            )
+            bound_config_authority = (
+                components.get("audit_config")
+                if isinstance(components, Mapping)
+                else None
+            )
+            if current_config_authority != bound_config_authority:
+                raise ValueError(
+                    "semantic config differs from bound audit snapshot"
+                )
+            audit_config_authority = dict(current_config_authority)
+            source_path_authority = _build_source_path_authority(
+                config, snapshot
+            )
+        if snapshot_digest and re.fullmatch(
+            r"[0-9a-fA-F]{64}", snapshot_digest
+        ) is None:
+            raise ValueError("snapshot digest is malformed")
+        if source_scope_digest and re.fullmatch(
+            r"[0-9a-fA-F]{64}", source_scope_digest
+        ) is None:
+            raise ValueError("source-scope digest is malformed")
+        config_digest = _prepass_stable_digest(semantic_config)
+    except (TypeError, ValueError) as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass config authority is not canonical JSON: {exc}"
+        ) from exc
+    semantic_candidates: list[Path] = []
+    try:
+        with _rooted_io.scandir(scratchpad) as iterator:
+            semantic_entry_count = 0
+            for entry in iterator:
+                semantic_entry_count += 1
+                if semantic_entry_count > _PREPASS_SEMANTIC_MAX_ENTRIES:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass semantic entry budget exceeded"
+                    )
+                if re.fullmatch(
+                    r"recon_unplanned_semantic.*\.md", entry.name
+                ):
+                    semantic_candidates.append(scratchpad / entry.name)
+                    if len(semantic_candidates) > _PREPASS_SEMANTIC_MAX_FILES:
+                        raise ReconPrepassAuthorityError(
+                            "recon prepass semantic file-count budget exceeded"
+                        )
+    except ReconPrepassAuthorityError:
+        raise
+    except OSError as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass semantic enumeration failed: {exc}"
+        ) from exc
+    semantic_candidates.sort(key=lambda candidate: candidate.name)
+    unexpected: dict[str, str] = {}
+    semantic_total_bytes = 0
+    for path in semantic_candidates:
+        digest, size = _prepass_bounded_file_digest(
+            path,
+            label="recon prepass unplanned semantic authority",
+            max_bytes=_PREPASS_SEMANTIC_MAX_FILE_BYTES,
+        )
+        semantic_total_bytes += size
+        if semantic_total_bytes > _PREPASS_SEMANTIC_MAX_TOTAL_BYTES:
+            raise ReconPrepassAuthorityError(
+                "recon prepass semantic total-byte budget exceeded"
+            )
+        unexpected[path.name] = digest
+    _prepass_assert_source_root_authority(
+        source_root, source_root_authority
+    )
+    source_exts = set(_OPENGREP_LANG_EXT.get(
+        str(config.get("language") or "").strip().lower(), ()
+    ))
+    if not source_exts:
+        source_exts = {".sol", ".rs", ".move", ".vy", ".cairo", ".daml"}
+    production_records: dict[str, str] = {}
+    if not source_path_authority:
+        production_records = _prepass_fallback_production_records(
+            project_root,
+            scratchpad,
+            source_root_authority,
+            source_exts,
+        )
+    production_source_capture_digest = _prepass_stable_digest(
+        dict(sorted(production_records.items()))
+    )
+    if source_path_authority:
+        production_source_capture_digest = str(
+            source_path_authority["authority_digest"]
+        )
+    source_capture_digest = production_source_capture_digest
+    input_set_digest = _prepass_stable_digest({
+        "source_capture_digest": source_capture_digest,
+        "production_source_capture_digest": production_source_capture_digest,
+        "source_root_authority": source_root_authority,
+        "config_digest": config_digest,
+        "snapshot_digest": snapshot_digest.lower(),
+        "source_scope_digest": source_scope_digest.lower(),
+        "source_path_authority": source_path_authority,
+        "audit_config_authority": audit_config_authority,
+        "unexpected_semantic_outputs": unexpected,
+    })
+    return {
+        "source_capture_digest": source_capture_digest,
+        "production_source_capture_digest": production_source_capture_digest,
+        "source_root_authority": source_root_authority,
+        "config_digest": config_digest,
+        "snapshot_digest": snapshot_digest.lower(),
+        "source_scope_digest": source_scope_digest.lower(),
+        "source_path_authority": source_path_authority,
+        "audit_config_authority": audit_config_authority,
+        "unexpected_semantic_outputs": unexpected,
+        "input_set_digest": input_set_digest,
+    }
+
+
+def _prepass_preexecution_authority(
+    contract: Any,
+    launch: LaunchSpec,
+    *,
+    run_id: str,
+    capture: Mapping[str, Any],
+) -> dict[str, Any]:
+    unsigned: dict[str, Any] = {
+        "schema": _PREPASS_PREEXECUTION_AUTHORITY_SCHEMA,
+        "work_unit_key": contract.key,
+        "run_id": run_id,
+        "contract_digest": contract.digest,
+        "launch_digest": launch.digest,
+        "pipeline": contract.pipeline,
+        "mode": contract.mode,
+        "ecosystem": contract.ecosystem,
+        "backend": contract.backend,
+        "planned_output_roster": [
+            item.identity for item in contract.outputs
+        ],
+        "authority_capture": dict(capture),
+    }
+    return {
+        **unsigned,
+        "authority_sha256": _prepass_stable_digest(unsigned),
+    }
+
+
+def _validated_prepass_preexecution_authority(
+    value: object,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ReconPrepassAuthorityError(
+            "recon prepass durable arm lacks a full authority object"
+        )
+    expected_fields = {
+        "schema",
+        "work_unit_key",
+        "run_id",
+        "contract_digest",
+        "launch_digest",
+        "pipeline",
+        "mode",
+        "ecosystem",
+        "backend",
+        "planned_output_roster",
+        "authority_capture",
+        "authority_sha256",
+    }
+    if set(value) != expected_fields:
+        raise ReconPrepassAuthorityError(
+            "recon prepass preexecution authority field denominator drift"
+        )
+    scalar_fields = (
+        "work_unit_key",
+        "run_id",
+        "contract_digest",
+        "launch_digest",
+        "pipeline",
+        "mode",
+        "ecosystem",
+        "backend",
+    )
+    if value.get("schema") != _PREPASS_PREEXECUTION_AUTHORITY_SCHEMA:
+        raise ReconPrepassAuthorityError(
+            "recon prepass preexecution authority schema mismatch"
+        )
+    if any(
+        not isinstance(value.get(field), str)
+        or not str(value[field]).strip()
+        for field in scalar_fields
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass preexecution authority scalar is invalid"
+        )
+    for field in ("contract_digest", "launch_digest"):
+        if re.fullmatch(r"[0-9a-f]{64}", str(value[field])) is None:
+            raise ReconPrepassAuthorityError(
+                f"recon prepass preexecution authority {field} is invalid"
+            )
+    roster = value.get("planned_output_roster")
+    if (
+        not isinstance(roster, list)
+        or not roster
+        or any(not isinstance(item, str) or not item for item in roster)
+        or len(roster) != len(set(roster))
+        or len(roster) != len({item.casefold() for item in roster})
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass planned output roster is malformed or aliased"
+        )
+    capture = value.get("authority_capture")
+    capture_fields = {
+        "source_capture_digest",
+        "production_source_capture_digest",
+        "source_root_authority",
+        "config_digest",
+        "snapshot_digest",
+        "source_scope_digest",
+        "source_path_authority",
+        "audit_config_authority",
+        "unexpected_semantic_outputs",
+        "input_set_digest",
+    }
+    if not isinstance(capture, dict) or set(capture) != capture_fields:
+        raise ReconPrepassAuthorityError(
+            "recon prepass arm authority capture denominator mismatch"
+        )
+    source_root_authority = capture.get("source_root_authority")
+    source_root_fields = {
+        "schema",
+        "logical_identity",
+        "status",
+        "device",
+        "inode",
+        "mode_type",
+        "file_attributes",
+        "reparse_tag",
+    }
+    if (
+        not isinstance(source_root_authority, dict)
+        or set(source_root_authority) != source_root_fields
+        or source_root_authority.get("schema") != _PREPASS_SOURCE_ROOT_SCHEMA
+        or source_root_authority.get("logical_identity") != "project:root"
+        or source_root_authority.get("status") not in {"PRESENT", "ABSENT"}
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source-root authority denominator mismatch"
+        )
+    if source_root_authority["status"] == "ABSENT":
+        if any(
+            source_root_authority.get(field) is not None
+            for field in (
+                "device",
+                "inode",
+                "mode_type",
+                "file_attributes",
+                "reparse_tag",
+            )
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass absent source-root authority is malformed"
+            )
+    else:
+        integer_fields = (
+            "device",
+            "inode",
+            "mode_type",
+            "file_attributes",
+            "reparse_tag",
+        )
+        exact_integers = all(
+            type(source_root_authority.get(field)) is int
+            for field in integer_fields
+        )
+        if os.name == "nt":
+            valid_identity = (
+                exact_integers
+                and 1 <= source_root_authority["device"] <= 0xFFFFFFFF
+                and 1 <= source_root_authority["inode"] <= 0xFFFFFFFFFFFFFFFF
+                and source_root_authority["mode_type"] == stat.S_IFDIR
+                and 0 <= source_root_authority["file_attributes"] <= 0xFFFFFFFF
+                and bool(
+                    source_root_authority["file_attributes"]
+                    & _FILE_ATTRIBUTE_DIRECTORY
+                )
+                and not bool(
+                    source_root_authority["file_attributes"]
+                    & _FILE_ATTRIBUTE_REPARSE_POINT
+                )
+                and 0 <= source_root_authority["reparse_tag"] <= 0xFFFFFFFF
+                and source_root_authority["reparse_tag"] == 0
+            )
+        else:
+            valid_identity = (
+                exact_integers
+                and source_root_authority["device"] >= 0
+                and source_root_authority["inode"] > 0
+                and source_root_authority["mode_type"] == stat.S_IFDIR
+                and not bool(
+                    source_root_authority["file_attributes"]
+                    & _FILE_ATTRIBUTE_REPARSE_POINT
+                )
+                and source_root_authority["reparse_tag"] == 0
+            )
+        if not valid_identity:
+            raise ReconPrepassAuthorityError(
+                "recon prepass present source-root authority is malformed"
+            )
+    unexpected = capture.get("unexpected_semantic_outputs")
+    if (
+        not isinstance(unexpected, dict)
+        or list(unexpected) != sorted(unexpected)
+        or len(unexpected) != len({str(key).casefold() for key in unexpected})
+        or any(
+            not isinstance(key, str)
+            or not key
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for key, digest in unexpected.items()
+        )
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass unexpected semantic authority is malformed"
+        )
+    for field in ("snapshot_digest", "source_scope_digest"):
+        digest_value = capture.get(field)
+        if (
+            not isinstance(digest_value, str)
+            or (
+                digest_value
+                and re.fullmatch(r"[0-9a-f]{64}", digest_value) is None
+            )
+        ):
+            raise ReconPrepassAuthorityError(
+                f"recon prepass arm authority capture {field} is invalid"
+            )
+    source_path_authority = capture.get("source_path_authority")
+    audit_config_authority = capture.get("audit_config_authority")
+    if not isinstance(source_path_authority, dict) or not isinstance(
+        audit_config_authority, dict
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass snapshot-derived authority is malformed"
+        )
+    if bool(capture["snapshot_digest"]) != bool(source_path_authority):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source-path authority presence differs from snapshot"
+        )
+    if bool(capture["snapshot_digest"]) != bool(audit_config_authority):
+        raise ReconPrepassAuthorityError(
+            "recon prepass config authority presence differs from snapshot"
+        )
+    if source_path_authority and (
+        source_path_authority.get("snapshot_digest")
+        != capture["snapshot_digest"]
+        or source_path_authority.get("source_scope_digest")
+        != capture["source_scope_digest"]
+        or source_path_authority.get("authority_digest")
+        != capture["production_source_capture_digest"]
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass source-path authority binding mismatch"
+        )
+    for field in (
+        "source_capture_digest",
+        "production_source_capture_digest",
+        "config_digest",
+        "input_set_digest",
+    ):
+        if (
+            not isinstance(capture.get(field), str)
+            or re.fullmatch(r"[0-9a-f]{64}", str(capture[field])) is None
+        ):
+            raise ReconPrepassAuthorityError(
+                f"recon prepass arm authority capture {field} is invalid"
+            )
+    expected_input_digest = _prepass_stable_digest({
+        "source_capture_digest": capture["source_capture_digest"],
+        "production_source_capture_digest": capture[
+            "production_source_capture_digest"
+        ],
+        "source_root_authority": source_root_authority,
+        "config_digest": capture["config_digest"],
+        "snapshot_digest": capture["snapshot_digest"],
+        "source_scope_digest": capture["source_scope_digest"],
+        "source_path_authority": source_path_authority,
+        "audit_config_authority": audit_config_authority,
+        "unexpected_semantic_outputs": unexpected,
+    })
+    if capture["input_set_digest"] != expected_input_digest:
+        raise ReconPrepassAuthorityError(
+            "recon prepass arm authority input-set digest mismatch"
+        )
+    unsigned = dict(value)
+    stored_digest = unsigned.pop("authority_sha256", None)
+    if (
+        not isinstance(stored_digest, str)
+        or stored_digest != _prepass_stable_digest(unsigned)
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass preexecution authority digest mismatch"
+        )
+    try:
+        replayed = json.loads(json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+        ))
+    except (TypeError, ValueError) as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass preexecution authority is not canonical JSON: {exc}"
+        ) from exc
+    if replayed != value:
+        raise ReconPrepassAuthorityError(
+            "recon prepass preexecution authority changes under JSON replay"
+        )
+    return replayed
+
+
+def _prepass_authority_pair(
+    authority: Mapping[str, Any],
+) -> tuple[Any, LaunchSpec]:
+    key = str(authority.get("work_unit_key") or "")
+    key_parts = key.split("/")
+    if len(key_parts) != 6:
+        raise ReconPrepassAuthorityError(
+            "recon prepass stored work-unit key is not six-component"
+        )
+    work_unit_id = key_parts[-1]
+    if (
+        work_unit_id != "prepass"
+        and re.fullmatch(r"prepass\.attempt-\d{4}", work_unit_id) is None
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass stored work-unit identity is not registered"
+        )
+    contract = resolve_phase_io_contract(
+        pipeline=str(authority["pipeline"]),
+        mode=str(authority["mode"]),
+        ecosystem=str(authority["ecosystem"]),
+        backend=str(authority["backend"]),
+        phase="recon",
+        work_unit_id=work_unit_id,
+    )
+    if (
+        contract.key != authority.get("work_unit_key")
+        or contract.digest != authority.get("contract_digest")
+        or [item.identity for item in contract.outputs]
+        != authority.get("planned_output_roster")
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass stored contract/roster authority mismatch"
+        )
+    launch = LaunchSpec(
+        work_unit_key=contract.key,
+        pipeline=contract.pipeline,
+        mode=contract.mode,
+        ecosystem=contract.ecosystem,
+        backend=contract.backend,
+        model="driver",
+        timeout_s=_PREPASS_TIMEOUT_SECONDS,
+        exec_mode="python",
+        tool_policy=("filesystem",),
+    )
+    if launch.digest != authority.get("launch_digest"):
+        raise ReconPrepassAuthorityError(
+            "recon prepass stored launch authority mismatch"
+        )
+    return contract, launch
+
+
+def _prepass_receipt(
+    stage: Path,
+    output_names: tuple[str, ...],
+    capture: Mapping[str, Any],
+    results: Mapping[str, str],
+    auxiliary_output_sha256: Mapping[str, str],
+) -> dict[str, Any]:
+    selected = output_names[:-1]
+    hashes = {
+        name: _prepass_bounded_file_digest(
+            stage / name,
+            label="recon prepass staged selected output",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )[0]
+        for name in selected
+    }
+    payload: dict[str, Any] = {
+        "schema": "plamen.recon_prepass_publication.v2",
+        "authority_capture": dict(capture),
+        "selected_outputs": list(selected),
+        "selected_output_sha256": hashes,
+        "auxiliary_outputs": sorted(auxiliary_output_sha256),
+        "auxiliary_output_sha256": dict(auxiliary_output_sha256),
+        "results": dict(results),
+    }
+    payload["artifact_sha256"] = hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest().upper()
+    return payload
+
+
+def _prepass_auxiliary_output_sha256(
+    stage: Path,
+    output_names: tuple[str, ...],
+    excluded_private_roots: tuple[
+        tuple[
+            str,
+            tuple[tuple[str, int, tuple[int, int, int]], ...],
+            tuple[tuple[str, tuple[int, int, int, int, int, int]], ...],
+        ],
+        ...,
+    ] = (),
+) -> dict[str, str]:
+    """Bind every renderer sidecar omitted from the PhaseIO denominator.
+
+    Graphs, scanner evidence, and the tool-coverage ledger are independent
+    machine authorities rather than canonical recon outputs. They still have
+    to cross the staging boundary with the selected prepass generation.
+    """
+
+    selected = set(output_names)
+    rows: dict[str, str] = {}
+    total_bytes = 0
+    try:
+        with _rooted_io.scandir(stage) as iterator:
+            entries = []
+            for entry in iterator:
+                if len(entries) >= _PREPASS_STAGE_MAX_ENTRIES:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass staged entry budget exceeded"
+                    )
+                entries.append(entry.name)
+    except ReconPrepassAuthorityError:
+        raise
+    except OSError as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass staged enumeration failed: {exc}"
+        ) from exc
+    excluded_by_name = {row[0]: row for row in excluded_private_roots}
+    if len(excluded_by_name) != len(excluded_private_roots):
+        raise ReconPrepassAuthorityError(
+            "recon prepass renderer-private attestation is ambiguous"
+        )
+    replay_seen = [0]
+    for name, _directories, _files in excluded_private_roots:
+        try:
+            replay = _prepass_collect_private_tree_manifest(
+                stage,
+                stage / name,
+                label="recon prepass renderer-private replay",
+                seen=replay_seen,
+            )
+            replay_attestation = _prepass_private_tree_attestation(
+                stage, name, replay
+            )
+        except ReconPrepassAuthorityError as exc:
+            raise ReconPrepassAuthorityError(
+                "recon prepass renderer-private attestation changed"
+            ) from exc
+        except (OSError, ValueError, _rooted_io.RootedPathIOError) as exc:
+            raise ReconPrepassAuthorityError(
+                "recon prepass renderer-private attestation changed"
+            ) from exc
+        if replay_attestation != excluded_by_name[name]:
+            raise ReconPrepassAuthorityError(
+                "recon prepass renderer-private attestation changed"
+            )
+    for relative in sorted(entries):
+        path = stage / relative
+        if relative in excluded_by_name:
+            continue
+        if not _prepass_regular_file_present(
+            path, label="recon prepass staged artifact"
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass renderer produced a missing staged artifact"
+            )
+        if relative in selected:
+            continue
+        if relative not in _PREPASS_AUXILIARY_OUTPUTS:
+            raise ReconPrepassAuthorityError(
+                "recon prepass renderer produced an unregistered auxiliary "
+                f"output: {relative}"
+            )
+        digest, size = _prepass_bounded_file_digest(
+            path,
+            label="recon prepass staged auxiliary output",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        total_bytes += size
+        if total_bytes > _PREPASS_STAGE_MAX_TOTAL_BYTES:
+            raise ReconPrepassAuthorityError(
+                "recon prepass staged total-byte budget exceeded"
+            )
+        rows[relative] = digest
+    return rows
+
+
+def _prepass_auxiliary_path(root: Path, relative: object) -> Path:
+    """Resolve one receipt-bound sidecar without accepting path escape."""
+
+    if not isinstance(relative, str) or not relative or "\\" in relative:
+        raise ReconPrepassAuthorityError(
+            "recon prepass auxiliary output path is malformed"
+        )
+    parts = relative.split("/")
+    if any(part in {"", ".", ".."} or ":" in part for part in parts):
+        raise ReconPrepassAuthorityError(
+            "recon prepass auxiliary output path is malformed"
+        )
+    try:
+        return _rooted_io.safe_descendant(
+            root,
+            "/".join(parts),
+            allow_missing=True,
+            label="recon prepass auxiliary output",
+        )
+    except _rooted_io.RootedPathIOError as exc:
+        raise ReconPrepassAuthorityError(
+            "recon prepass auxiliary output path is unsafe"
+        ) from exc
+
+
+def _prepass_read_receipt(scratchpad: Path) -> Mapping[str, Any] | None:
+    try:
+        receipt_path = _rooted_io.safe_descendant(
+            scratchpad,
+            _PREPASS_PUBLICATION_RECEIPT,
+            allow_missing=True,
+            label="recon prepass publication receipt",
+        )
+        if not _rooted_io.lexists(receipt_path):
+            return None
+        payload = json.loads(_prepass_bounded_read_bytes(
+            receipt_path,
+            label="recon prepass publication receipt",
+            max_bytes=8 * 1024 * 1024,
+        ))
+    except (
+        FileNotFoundError,
+        OSError,
+        TypeError,
+        ValueError,
+        _rooted_io.RootedPathIOError,
+    ):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    stored = payload.get("artifact_sha256")
+    unsigned = dict(payload)
+    unsigned.pop("artifact_sha256", None)
+    expected = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest().upper()
+    return payload if stored == expected else None
+
+
+def _prepass_published_records(
+    scratchpad: Path,
+    output_names: tuple[str, ...],
+    capture: Mapping[str, Any],
+) -> dict[str, dict[str, Any]] | None:
+    receipt = _prepass_read_receipt(scratchpad)
+    if receipt is None or receipt.get("authority_capture") != capture:
+        return None
+    selected = output_names[:-1]
+    if tuple(receipt.get("selected_outputs") or ()) != selected:
+        return None
+    output_hashes = receipt.get("selected_output_sha256")
+    if not isinstance(output_hashes, dict) or set(output_hashes) != set(selected):
+        return None
+    auxiliary = receipt.get("auxiliary_outputs")
+    auxiliary_hashes = receipt.get("auxiliary_output_sha256")
+    if (
+        not isinstance(auxiliary, list)
+        or any(not isinstance(item, str) for item in auxiliary)
+        or auxiliary != sorted(auxiliary)
+        or len(auxiliary) != len(set(auxiliary))
+        or not isinstance(auxiliary_hashes, dict)
+        or set(auxiliary_hashes) != set(auxiliary)
+        or any(item not in _PREPASS_AUXILIARY_OUTPUTS for item in auxiliary)
+    ):
+        return None
+    for relative in auxiliary:
+        try:
+            path = _prepass_auxiliary_path(scratchpad, relative)
+        except ReconPrepassAuthorityError:
+            return None
+        if not _prepass_regular_file_present(
+            path, label="recon prepass published auxiliary output"
+        ):
+            return None
+        digest, _size = _prepass_bounded_file_digest(
+            path,
+            label="recon prepass published auxiliary output",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        if auxiliary_hashes.get(relative) != digest:
+            return None
+    for relative in _PREPASS_AUXILIARY_OUTPUTS.difference(auxiliary):
+        try:
+            orphan = _prepass_auxiliary_path(scratchpad, relative)
+        except ReconPrepassAuthorityError:
+            return None
+        if _rooted_io.lexists(orphan):
+            return None
+    records: dict[str, dict[str, Any]] = {}
+    for name in output_names:
+        path = scratchpad / name
+        if not _prepass_regular_file_present(
+            path, label="recon prepass published selected output"
+        ):
+            return None
+        digest, size = _prepass_bounded_file_digest(
+            path,
+            label="recon prepass published selected output",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        if size == 0:
+            return None
+        if name != _PREPASS_PUBLICATION_RECEIPT:
+            if output_hashes.get(name) != digest:
+                return None
+        records[f"scratchpad:{name}"] = {
+            "sha256": digest,
+            "size": size,
+        }
+    return records
+
+
+def _prepass_bind_publication_intent_ledger(
+    scratchpad: Path,
+    intent: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """CAS-bind one authenticated publication intent into its exact row."""
+
+    ledger = read_artifact_ledger(scratchpad)
+    prestate = json.loads(json.dumps(ledger))
+    units = ledger.get("work_units")
+    key = str(intent.get("successor_work_unit_key") or "")
+    authority = _validated_prepass_preexecution_authority(
+        intent.get("successor_preexecution_authority")
+    )
+    row = units.get(key) if isinstance(units, dict) else None
+    intent_digest = intent.get("intent_digest")
+    authority_digest = authority.get("authority_sha256")
+    if (
+        not isinstance(row, dict)
+        or not isinstance(intent_digest, str)
+        or row.get("run_id") != intent.get("run_id")
+        or row.get("preexecution_authority") != authority
+        or row.get("preexecution_authority_digest") != authority_digest
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass publication intent lacks exact ledger authority"
+        )
+    bound = row.get("auxiliary_publication_intent_digest")
+    if bound not in {None, intent_digest}:
+        raise ReconPrepassAuthorityError(
+            "recon prepass publication ledger intent collision"
+        )
+    if bound is None:
+        row["auxiliary_publication_intent_digest"] = intent_digest
+        row["auxiliary_publication_authority_digest"] = authority_digest
+        _prepass_commit_ledger_cas(scratchpad, prestate, ledger)
+        row = read_artifact_ledger(scratchpad)["work_units"][key]
+    elif row.get("auxiliary_publication_authority_digest") != authority_digest:
+        raise ReconPrepassAuthorityError(
+            "recon prepass publication ledger authority differs"
+        )
+    return row
+
+
+def _prepass_seal_publication_transaction(
+    scratchpad: Path,
+    stage: Path | None,
+    output_names: tuple[str, ...],
+    current_auxiliary: Mapping[str, str],
+    *,
+    run_id: str,
+    successor_authority: Mapping[str, Any],
+    successor_work_unit_key: str,
+    successor_receipt_sha256: str,
+) -> tuple[dict[str, Any], Path]:
+    """Persist the exact rendered generation and bind its intent in the ledger."""
+
+    authority = _validated_prepass_preexecution_authority(successor_authority)
+    authority_digest = str(authority["authority_sha256"])
+    if authority.get("work_unit_key") != successor_work_unit_key:
+        raise ReconPrepassAuthorityError(
+            "recon prepass publication authority work unit differs"
+        )
+    transaction_root = _prepass_ensure_private_directory(
+        scratchpad, scratchpad / "_recon_prepass_auxiliary_transactions"
+    )
+    intent_path = transaction_root / f"{authority_digest}.intent.json"
+    existing = _prepass_read_private_json(scratchpad, intent_path)
+    payload_root = transaction_root / "payload" / authority_digest
+
+    if existing is None:
+        if stage is None:
+            raise ReconPrepassAuthorityError(
+                "recon prepass sealed publication intent is absent"
+            )
+        if _rooted_io.lexists(payload_root):
+            _prepass_remove_private_tree(
+                scratchpad,
+                payload_root,
+                label="recon prepass unbound publication payload",
+            )
+        payload_root = _prepass_ensure_private_directory(scratchpad, payload_root)
+        members: dict[str, dict[str, Any]] = {}
+        for relative in (*output_names, *tuple(sorted(current_auxiliary))):
+            source = _prepass_auxiliary_path(stage, relative)
+            digest, size = _prepass_bounded_file_digest(
+                source,
+                label="recon prepass publication payload source",
+                max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+            )
+            target = _prepass_auxiliary_path(payload_root, relative)
+            _prepass_durable_replace_from_stage(
+                source,
+                target,
+                label="recon prepass private publication payload",
+            )
+            members[relative] = {
+                "sha256": digest,
+                "size": size,
+                "kind": (
+                    "AUXILIARY" if relative in current_auxiliary
+                    else "RECEIPT" if relative == _PREPASS_PUBLICATION_RECEIPT
+                    else "SELECTED"
+                ),
+            }
+        prior = _prepass_read_receipt(scratchpad)
+        prior_names = prior.get("auxiliary_outputs") if prior is not None else []
+        prior_hashes = prior.get("auxiliary_output_sha256") if prior is not None else {}
+        if (
+            not isinstance(prior_names, list)
+            or not isinstance(prior_hashes, Mapping)
+            or set(prior_names) != set(prior_hashes)
+            or any(name not in _PREPASS_AUXILIARY_OUTPUTS for name in prior_names)
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass predecessor auxiliary denominator is malformed"
+            )
+        receipt_digest = str(prior.get("artifact_sha256") or "") if prior else ""
+        predecessor_archive = _prepass_ensure_private_directory(
+            scratchpad,
+            transaction_root / "predecessor" / (receipt_digest or "NONE"),
+        )
+        predecessor_records: dict[str, dict[str, Any]] = {}
+        for relative in prior_names:
+            candidates = (
+                _prepass_auxiliary_path(scratchpad, relative),
+                _prepass_auxiliary_path(predecessor_archive, relative),
+            )
+            matched: dict[str, Any] | None = None
+            for candidate in candidates:
+                if not _rooted_io.lexists(candidate):
+                    continue
+                digest, size = _prepass_bounded_file_digest(
+                    candidate,
+                    label="recon prepass predecessor publication member",
+                    max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+                )
+                if digest == prior_hashes[relative]:
+                    matched = {"sha256": digest, "size": size}
+                    break
+            if matched is None:
+                raise ReconPrepassAuthorityError(
+                    "recon prepass predecessor publication member differs"
+                )
+            predecessor_records[relative] = matched
+        unsigned = {
+            "schema": "plamen.recon-prepass-publication-transaction.v2",
+            "run_id": run_id,
+            "successor_authority_digest": authority_digest,
+            "successor_preexecution_authority": authority,
+            "successor_work_unit_key": successor_work_unit_key,
+            "successor_receipt_sha256": successor_receipt_sha256,
+            "predecessor_receipt_sha256": receipt_digest,
+            "predecessor_auxiliary": predecessor_records,
+            "successor_auxiliary": {
+                name: {"sha256": members[name]["sha256"], "size": members[name]["size"]}
+                for name in sorted(current_auxiliary)
+            },
+            "publication_members": members,
+        }
+        existing = {**unsigned, "intent_digest": _prepass_stable_digest(unsigned)}
+        _prepass_write_json_atomic(scratchpad, intent_path, existing)
+    intent = dict(existing)
+    if (
+        intent.get("schema")
+        != "plamen.recon-prepass-publication-transaction.v2"
+        or intent.get("run_id") != run_id
+        or intent.get("successor_authority_digest") != authority_digest
+        or intent.get("successor_preexecution_authority") != authority
+        or intent.get("successor_work_unit_key") != successor_work_unit_key
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass publication transaction intent collision"
+        )
+    unsigned = dict(intent)
+    stored_digest = unsigned.pop("intent_digest", None)
+    if stored_digest != _prepass_stable_digest(unsigned):
+        raise ReconPrepassAuthorityError(
+            "recon prepass publication transaction digest differs"
+        )
+    members = intent.get("publication_members")
+    if not isinstance(members, Mapping):
+        raise ReconPrepassAuthorityError(
+            "recon prepass publication payload denominator is malformed"
+        )
+    total = 0
+    payload_root = _prepass_ensure_private_directory(scratchpad, payload_root)
+    for relative, record in members.items():
+        if (
+            not isinstance(relative, str)
+            or not isinstance(record, Mapping)
+            or set(record) != {"sha256", "size", "kind"}
+            or record.get("kind") not in {"SELECTED", "AUXILIARY", "RECEIPT"}
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass publication payload record is malformed"
+            )
+        digest, size = _prepass_bounded_file_digest(
+            _prepass_auxiliary_path(payload_root, relative),
+            label="recon prepass sealed publication payload",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        if digest != record.get("sha256") or size != record.get("size"):
+            raise ReconPrepassAuthorityError(
+                "recon prepass sealed publication payload differs"
+            )
+        total += size
+        if total > _PREPASS_STAGE_MAX_TOTAL_BYTES:
+            raise ReconPrepassAuthorityError(
+                "recon prepass sealed publication payload exceeds budget"
+            )
+
+    _prepass_bind_publication_intent_ledger(scratchpad, intent)
+    return intent, payload_root
+
+
+def _prepass_prepare_auxiliary_transaction(
+    scratchpad: Path,
+    current_intent: Mapping[str, Any],
+    *,
+    successor_authority_digest: str,
+    successor_work_unit_key: str,
+) -> None:
+    """Journal and isolate every auxiliary generation before publication.
+
+    The public receipt is written last.  Consequently a crash can expose only
+    a subset of the new sidecars while the old receipt is still authoritative.
+    Each intent stores both denominators before any public sidecar changes.  A
+    later generation first finishes/retire-replays that exact intent, so old,
+    partial-new, and current bytes can never be confused.
+    """
+
+    transaction_root = _prepass_ensure_private_directory(
+        scratchpad, scratchpad / "_recon_prepass_auxiliary_transactions"
+    )
+
+    def _record(path: Path, *, label: str) -> dict[str, Any]:
+        digest, size = _prepass_bounded_file_digest(
+            path, label=label, max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES
+        )
+        return {"sha256": digest, "size": size}
+
+    def _validate_intent(value: Mapping[str, Any]) -> dict[str, Any]:
+        unsigned = dict(value)
+        stored = unsigned.pop("intent_digest", None)
+        if (
+            value.get("schema")
+            != "plamen.recon-prepass-publication-transaction.v2"
+            or stored != _prepass_stable_digest(unsigned)
+            or not isinstance(value.get("run_id"), str)
+            or not isinstance(value.get("successor_authority_digest"), str)
+            or not isinstance(value.get("successor_preexecution_authority"), Mapping)
+            or not isinstance(value.get("successor_work_unit_key"), str)
+            or not isinstance(value.get("successor_receipt_sha256"), str)
+            or not isinstance(value.get("publication_members"), Mapping)
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass auxiliary transaction intent is malformed"
+            )
+        for field in ("predecessor_auxiliary", "successor_auxiliary"):
+            records = value.get(field)
+            if (
+                not isinstance(records, Mapping)
+                or any(name not in _PREPASS_AUXILIARY_OUTPUTS for name in records)
+            ):
+                raise ReconPrepassAuthorityError(
+                    "recon prepass auxiliary transaction denominator is malformed"
+                )
+            for record in records.values():
+                if (
+                    not isinstance(record, Mapping)
+                    or set(record) != {"sha256", "size"}
+                    or not isinstance(record.get("sha256"), str)
+                    or not isinstance(record.get("size"), int)
+                    or record.get("size", -1) < 0
+                ):
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass auxiliary transaction record is malformed"
+                    )
+        return dict(value)
+
+    def _validate_provenance(
+        intent: Mapping[str, Any], *, require_binding: bool
+    ) -> Mapping[str, Any]:
+        ledger = read_artifact_ledger(scratchpad)
+        units = ledger.get("work_units")
+        key = str(intent["successor_work_unit_key"])
+        row = units.get(key) if isinstance(units, Mapping) else None
+        authority = _validated_prepass_preexecution_authority(
+            intent.get("successor_preexecution_authority")
+        )
+        if (
+            not isinstance(row, Mapping)
+            or row.get("run_id") != intent.get("run_id")
+            or authority.get("work_unit_key") != key
+            or authority.get("run_id") != intent.get("run_id")
+            or authority.get("authority_sha256")
+            != intent.get("successor_authority_digest")
+            or row.get("preexecution_authority") != authority
+            or row.get("preexecution_authority_digest")
+            != authority.get("authority_sha256")
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass auxiliary intent lacks ledger provenance"
+            )
+        if require_binding and (
+            row.get("auxiliary_publication_intent_digest")
+            != intent.get("intent_digest")
+            or row.get("auxiliary_publication_authority_digest")
+            != authority.get("authority_sha256")
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass auxiliary intent lacks ledger binding"
+            )
+        prefix = key.split("/")[:5]
+        generations = [
+            candidate for candidate in units
+            if isinstance(candidate, str)
+            and candidate.split("/")[:5] == prefix
+            and len(candidate.split("/")) == 6
+            and (
+                candidate.endswith("/prepass")
+                or _PREPASS_ATTEMPT_ID_RE.fullmatch(candidate.split("/")[-1])
+            )
+        ]
+        if not generations:
+            raise ReconPrepassAuthorityError(
+                "recon prepass auxiliary intent lineage is absent"
+            )
+        head = max(generations, key=_prepass_generation_ordinal)
+        _prepass_validate_closed_lineage(
+            scratchpad,
+            units,
+            {
+                "pipeline": prefix[0], "mode": prefix[1],
+                "language": prefix[2], "cli_backend": prefix[3],
+            },
+            run_id=str(intent["run_id"]),
+            head_key=head,
+        )
+        return row
+
+    def _public_generation_matches(intent: Mapping[str, Any]) -> bool:
+        members = intent.get("publication_members")
+        if not isinstance(members, Mapping):
+            return False
+        for relative, expected in members.items():
+            path = _prepass_auxiliary_path(scratchpad, relative)
+            if not _prepass_regular_file_present(
+                path, label="recon prepass terminal publication member"
+            ):
+                return False
+            if _record(
+                path, label="recon prepass terminal publication member"
+            ) != {
+                "sha256": expected.get("sha256"),
+                "size": expected.get("size"),
+            }:
+                return False
+        return True
+
+    def _resolution_path(authority_digest: str) -> Path:
+        return transaction_root / f"{authority_digest}.resolved.json"
+
+    def _resolve(intent: Mapping[str, Any], status: str) -> None:
+        authority_digest = str(intent["successor_authority_digest"])
+        path = _resolution_path(authority_digest)
+        unsigned = {
+            "schema": "plamen.recon-prepass-auxiliary-resolution.v1",
+            "intent_digest": intent["intent_digest"],
+            "successor_authority_digest": authority_digest,
+            "status": status,
+            "terminal_receipt_sha256": (
+                intent["successor_receipt_sha256"]
+                if status == "COMMITTED" else None
+            ),
+        }
+        value = {**unsigned, "resolution_digest": _prepass_stable_digest(unsigned)}
+        existing = _prepass_read_private_json(scratchpad, path)
+        if existing is None:
+            _prepass_write_json_atomic(scratchpad, path, value)
+        elif existing != value:
+            raise ReconPrepassAuthorityError(
+                "recon prepass auxiliary resolution collision"
+            )
+
+    def _archive_predecessor(intent: Mapping[str, Any]) -> None:
+        receipt_digest = str(intent.get("predecessor_receipt_sha256") or "NONE")
+        archive_root = _prepass_ensure_private_directory(
+            scratchpad, transaction_root / "predecessor" / receipt_digest
+        )
+        for relative, expected in intent["predecessor_auxiliary"].items():
+            source = _prepass_auxiliary_path(scratchpad, relative)
+            archived = _prepass_auxiliary_path(archive_root, relative)
+            source_exists = _prepass_regular_file_present(
+                source, label="recon prepass predecessor auxiliary source"
+            )
+            archive_exists = _prepass_regular_file_present(
+                archived, label="recon prepass predecessor auxiliary archive"
+            )
+            if source_exists and archive_exists:
+                source_digest, source_size = _prepass_bounded_file_digest(
+                    source,
+                    label="recon prepass predecessor auxiliary source",
+                    max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+                )
+                # A differing source can only be the already-published
+                # successor member; the authenticated predecessor archive is
+                # still the sole predecessor evidence in that case.
+                if (
+                    source_digest == expected["sha256"]
+                    and source_size == expected["size"]
+                ):
+                    source_exists, archive_exists = _prepass_recover_durable_move(
+                        source,
+                        archived,
+                        source_exists=True,
+                        archive_exists=True,
+                        expected_sha256=expected["sha256"],
+                        expected_size=expected["size"],
+                        label="recon prepass predecessor auxiliary",
+                    )
+            if not archive_exists:
+                if not source_exists:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass predecessor auxiliary disappeared"
+                    )
+                digest, size = _prepass_bounded_file_digest(
+                    source,
+                    label="recon prepass predecessor auxiliary source",
+                    max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+                )
+                if digest != expected["sha256"] or size != expected["size"]:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass predecessor auxiliary bytes changed"
+                    )
+                _prepass_move_private(
+                    scratchpad,
+                    source,
+                    archived,
+                    expected_sha256=expected["sha256"],
+                    expected_size=expected["size"],
+                )
+                archive_exists = True
+            archived_record = _record(
+                archived, label="recon prepass predecessor auxiliary archive"
+            )
+            if archived_record != expected:
+                raise ReconPrepassAuthorityError(
+                    "recon prepass predecessor auxiliary archive changed"
+                )
+
+    def _retire_partial_successor(intent: Mapping[str, Any]) -> None:
+        archive_root = _prepass_ensure_private_directory(
+            scratchpad,
+            transaction_root / "successor"
+            / str(intent["successor_authority_digest"]),
+        )
+        for relative, expected in intent["successor_auxiliary"].items():
+            source = _prepass_auxiliary_path(scratchpad, relative)
+            archived = _prepass_auxiliary_path(archive_root, relative)
+            source_exists = _prepass_regular_file_present(
+                source, label="recon prepass partial auxiliary source"
+            )
+            archive_exists = _prepass_regular_file_present(
+                archived, label="recon prepass partial auxiliary archive"
+            )
+            source_exists, archive_exists = _prepass_recover_durable_move(
+                source,
+                archived,
+                source_exists=source_exists,
+                archive_exists=archive_exists,
+                expected_sha256=expected["sha256"],
+                expected_size=expected["size"],
+                label="recon prepass partial auxiliary",
+            )
+            if source_exists:
+                if _record(
+                    source, label="recon prepass partial auxiliary source"
+                ) != expected:
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass partial auxiliary bytes changed"
+                    )
+                _prepass_move_private(
+                    scratchpad,
+                    source,
+                    archived,
+                    expected_sha256=expected["sha256"],
+                    expected_size=expected["size"],
+                )
+            elif archive_exists and _record(
+                archived, label="recon prepass partial auxiliary archive"
+            ) != expected:
+                raise ReconPrepassAuthorityError(
+                    "recon prepass partial auxiliary archive changed"
+                )
+            # Absence is valid: this member may not have crossed the public
+            # boundary before the crash.
+
+    # Enumerate a closed, bounded transaction namespace.  Unknown or aliased
+    # private entries are authority corruption, never ignorable clutter.
+    intents: list[dict[str, Any]] = []
+    try:
+        with _rooted_io.scandir(transaction_root) as iterator:
+            names = []
+            for entry in iterator:
+                names.append(entry.name)
+                if len(names) > (_PREPASS_STAGE_MAX_ENTRIES * 2 + 2):
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass auxiliary transaction entry budget exceeded"
+                    )
+    except OSError as exc:
+        raise ReconPrepassAuthorityError(
+            "recon prepass auxiliary transaction enumeration failed"
+        ) from exc
+    for name in sorted(names):
+        if name in {"predecessor", "successor", "payload"}:
+            continue
+        if name.endswith(".resolved.json"):
+            continue
+        if not name.endswith(".intent.json"):
+            raise ReconPrepassAuthorityError(
+                "recon prepass auxiliary transaction namespace is malformed"
+            )
+        value = _prepass_read_private_json(scratchpad, transaction_root / name)
+        if value is None:
+            raise ReconPrepassAuthorityError(
+                "recon prepass auxiliary transaction intent disappeared"
+            )
+        intent = _validate_intent(value)
+        if name != f"{intent['successor_authority_digest']}.intent.json":
+            raise ReconPrepassAuthorityError(
+                "recon prepass auxiliary transaction filename differs"
+            )
+        intents.append(intent)
+    intents.sort(key=lambda item: _prepass_generation_ordinal(
+        item["successor_work_unit_key"]
+    ))
+    # Authenticate the complete intent denominator before processing even the
+    # first member. A forged future/cross-run intent must cause zero public
+    # mutation, not fail only after earlier legitimate intents were replayed.
+    for intent in intents:
+        _validate_provenance(intent, require_binding=True)
+    public_receipt = _prepass_read_receipt(scratchpad)
+    for intent in intents:
+        row = _validate_provenance(intent, require_binding=True)
+        resolution = _prepass_read_private_json(
+            scratchpad,
+            _resolution_path(str(intent["successor_authority_digest"])),
+        )
+        if resolution is not None:
+            unsigned_resolution = dict(resolution)
+            stored_resolution_digest = unsigned_resolution.pop(
+                "resolution_digest", None
+            )
+            if (
+                set(resolution) != {
+                    "schema", "intent_digest", "successor_authority_digest",
+                    "status", "terminal_receipt_sha256", "resolution_digest",
+                }
+                or resolution.get("schema")
+                != "plamen.recon-prepass-auxiliary-resolution.v1"
+                or resolution.get("intent_digest") != intent["intent_digest"]
+                or resolution.get("successor_authority_digest")
+                != intent["successor_authority_digest"]
+                or resolution.get("status") not in {"COMMITTED", "SUPERSEDED"}
+                or (
+                    resolution.get("terminal_receipt_sha256")
+                    != intent["successor_receipt_sha256"]
+                    if resolution.get("status") == "COMMITTED"
+                    else resolution.get("terminal_receipt_sha256") is not None
+                )
+                or stored_resolution_digest
+                != _prepass_stable_digest(unsigned_resolution)
+            ):
+                raise ReconPrepassAuthorityError(
+                    "recon prepass auxiliary resolution is malformed"
+                )
+            if (
+                resolution.get("status") == "COMMITTED"
+                and not isinstance(row.get("commit_authority"), Mapping)
+            ):
+                raise ReconPrepassAuthorityError(
+                    "recon prepass committed auxiliary resolution lacks commit authority"
+                )
+            continue
+        if (
+            public_receipt is not None
+            and public_receipt.get("artifact_sha256")
+            == intent["successor_receipt_sha256"]
+        ):
+            if not _public_generation_matches(intent):
+                raise ReconPrepassAuthorityError(
+                    "recon prepass terminal publication bytes differ"
+                )
+            _resolve(intent, "COMMITTED")
+            continue
+        _archive_predecessor(intent)
+        if intent["successor_authority_digest"] != successor_authority_digest:
+            _retire_partial_successor(intent)
+            _resolve(intent, "SUPERSEDED")
+
+    intent = _validate_intent(current_intent)
+    if (
+        intent["successor_authority_digest"] != successor_authority_digest
+        or intent["successor_work_unit_key"] != successor_work_unit_key
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass auxiliary transaction intent collision"
+        )
+    _archive_predecessor(intent)
+    for relative, expected in intent["successor_auxiliary"].items():
+        public = _prepass_auxiliary_path(scratchpad, relative)
+        if _rooted_io.lexists(public) and _record(
+            public, label="recon prepass current partial auxiliary"
+        ) != expected:
+            raise ReconPrepassAuthorityError(
+                "recon prepass current partial auxiliary bytes differ"
+            )
+    for relative in _PREPASS_AUXILIARY_OUTPUTS.difference(
+        intent["successor_auxiliary"]
+    ):
+        if _rooted_io.lexists(_prepass_auxiliary_path(scratchpad, relative)):
+            raise ReconPrepassAuthorityError(
+                "recon prepass predecessor auxiliary was not isolated"
+            )
+
+
+def _prepass_bound_generation_state(
+    scratchpad: Path,
+    prior: Mapping[str, Any],
+    output_names: tuple[str, ...],
+) -> str:
+    prestates = prior.get("output_prestates")
+    if not isinstance(prestates, Mapping):
+        return "mixed"
+    old = 0
+    new = 0
+    for name in output_names:
+        identity = f"scratchpad:{name}"
+        prestate = prestates.get(identity)
+        if not isinstance(prestate, Mapping):
+            return "mixed"
+        path = scratchpad / name
+        exists = _prepass_regular_file_present(
+            path, label="recon prepass bound selected output"
+        )
+        existed = prestate.get("existed") is True
+        if not exists and not existed:
+            old += 1
+            continue
+        if exists and existed:
+            digest, _size = _prepass_bounded_file_digest(
+                path,
+                label="recon prepass bound selected output",
+                max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+            )
+            if digest == prestate.get("sha256"):
+                old += 1
+                continue
+        new += 1
+    if old == len(output_names):
+        return "all_old"
+    if new == len(output_names):
+        return "all_new"
+    return "mixed"
+
+
+_PREPASS_ATTEMPT_ID_RE = re.compile(r"prepass\.attempt-(\d{4})")
+_PREPASS_LEGACY_MIGRATION_RECEIPT = (
+    "_recon_prepass_legacy_successor_migration.json"
+)
+
+
+def _prepass_generation_ordinal(work_unit_key: object) -> int:
+    key = str(work_unit_key or "")
+    parts = key.split("/")
+    if len(parts) != 6 or parts[-2] != "recon":
+        raise ReconPrepassAuthorityError(
+            "recon prepass generation key is not six-component"
+        )
+    if parts[-1] == "prepass":
+        return 1
+    matched = _PREPASS_ATTEMPT_ID_RE.fullmatch(parts[-1])
+    if matched is None or int(matched.group(1)) < 2:
+        raise ReconPrepassAuthorityError(
+            "recon prepass generation identity is malformed"
+        )
+    return int(matched.group(1))
+
+
+def _prepass_successor_pair(
+    predecessor_contract: Any,
+    *,
+    ordinal: int,
+) -> tuple[Any, LaunchSpec]:
+    if ordinal < 2 or ordinal != _prepass_generation_ordinal(
+        predecessor_contract.key
+    ) + 1:
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor lineage is not contiguous"
+        )
+    contract = resolve_phase_io_contract(
+        pipeline=predecessor_contract.pipeline,
+        mode=predecessor_contract.mode,
+        ecosystem=predecessor_contract.ecosystem,
+        backend=predecessor_contract.backend,
+        phase="recon",
+        work_unit_id=f"prepass.attempt-{ordinal:04d}",
+    )
+    launch = LaunchSpec(
+        work_unit_key=contract.key,
+        pipeline=contract.pipeline,
+        mode=contract.mode,
+        ecosystem=contract.ecosystem,
+        backend=contract.backend,
+        model="driver",
+        timeout_s=_PREPASS_TIMEOUT_SECONDS,
+        exec_mode="python",
+        tool_policy=("filesystem",),
+    )
+    return contract, launch
+
+
+def _prepass_disposition_key(successor_key: str, ordinal: int) -> str:
+    parts = successor_key.split("/")
+    if len(parts) != 6:
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor key is not six-component"
+        )
+    parts[-1] = f"prepass.disposition-{ordinal:04d}"
+    return "/".join(parts)
+
+
+def _prepass_write_json_atomic(
+    scratchpad: Path,
+    path: Path,
+    value: Mapping[str, Any],
+) -> None:
+    raw = (
+        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+    try:
+        relative = path.relative_to(scratchpad).as_posix()
+        destination = _rooted_io.safe_descendant(
+            scratchpad,
+            relative,
+            allow_missing=True,
+            label="recon prepass authority JSON",
+        )
+        parent = _rooted_io.checked_directory(
+            destination.parent,
+            label="recon prepass authority JSON parent",
+        )
+        descriptor, temporary = _rooted_io.exclusive_temp_file(
+            parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _rooted_io.durable_publish_new(temporary, destination)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+    except (OSError, ValueError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(
+            "recon prepass authority JSON publication failed"
+        ) from exc
+
+
+def _prepass_read_private_json(
+    scratchpad: Path,
+    path: Path,
+) -> Mapping[str, Any] | None:
+    try:
+        relative = path.relative_to(scratchpad).as_posix()
+        candidate = _rooted_io.safe_descendant(
+            scratchpad,
+            relative,
+            allow_missing=True,
+            label="recon prepass private authority",
+        )
+        if not _rooted_io.lexists(candidate):
+            return None
+        payload = json.loads(_prepass_bounded_read_bytes(
+            candidate,
+            label="recon prepass private authority",
+            max_bytes=8 * 1024 * 1024,
+        ))
+    except (OSError, TypeError, ValueError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(
+            "recon prepass private authority is unreadable"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ReconPrepassAuthorityError(
+            "recon prepass private authority is malformed"
+        )
+    return payload
+
+
+def _prepass_ensure_private_directory(
+    scratchpad: Path,
+    directory: Path,
+) -> Path:
+    try:
+        relative = directory.relative_to(scratchpad).as_posix()
+        candidate = _rooted_io.safe_descendant(
+            scratchpad,
+            relative,
+            allow_missing=True,
+            label="recon prepass private directory",
+        )
+        _rooted_io.ensure_directory(
+            candidate,
+            parents=True,
+            label="recon prepass private directory",
+        )
+        return _rooted_io.safe_descendant(
+            scratchpad,
+            relative,
+            allow_missing=False,
+            label="recon prepass private directory",
+        )
+    except (OSError, ValueError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(
+            "recon prepass private directory is unsafe"
+        ) from exc
+
+
+def _prepass_move_private(
+    scratchpad: Path,
+    source: Path,
+    archived: Path,
+    *,
+    expected_sha256: str,
+    expected_size: int,
+) -> None:
+    try:
+        source_relative = source.relative_to(scratchpad).as_posix()
+        archive_relative = archived.relative_to(scratchpad).as_posix()
+        checked_source = _rooted_io.safe_descendant(
+            scratchpad,
+            source_relative,
+            allow_missing=False,
+            label="recon prepass quarantine source",
+        )
+        checked_archive = _rooted_io.safe_descendant(
+            scratchpad,
+            archive_relative,
+            allow_missing=True,
+            label="recon prepass quarantine destination",
+        )
+        _prepass_ensure_private_directory(scratchpad, checked_archive.parent)
+        raw = _prepass_bounded_read_bytes(
+            checked_source,
+            label="recon prepass quarantine source",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        if (
+            hashlib.sha256(raw).hexdigest() != expected_sha256
+            or len(raw) != expected_size
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass quarantine source bytes changed"
+            )
+        if _rooted_io.lexists(checked_archive):
+            raise ReconPrepassAuthorityError(
+                "recon prepass quarantine destination already exists"
+            )
+        _prepass_durable_replace_from_stage(
+            checked_source,
+            checked_archive,
+            label="recon prepass quarantine artifact",
+            retire_source=True,
+        )
+        archived_raw = _prepass_bounded_read_bytes(
+            checked_archive,
+            label="recon prepass quarantined artifact",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        if archived_raw != raw or _rooted_io.lexists(checked_source):
+            raise ReconPrepassAuthorityError(
+                "recon prepass quarantine move was not exact"
+            )
+    except _rooted_io.RootedPathIOError as exc:
+        raise ReconPrepassAuthorityError(
+            "recon prepass quarantine move escaped rooted authority"
+        ) from exc
+
+
+def _prepass_recover_durable_move(
+    source: Path,
+    archived: Path,
+    *,
+    source_exists: bool,
+    archive_exists: bool,
+    expected_sha256: str,
+    expected_size: int,
+    label: str,
+) -> tuple[bool, bool]:
+    """Finish the only valid copy-before-unlink crash poststate.
+
+    Durable cross-directory retirement deliberately publishes the archive before
+    unlinking the public name.  A power loss can therefore leave two independent
+    regular files.  That state is recoverable only when *both* files still match
+    the exact intent-bound digest and size; aliases and links have already been
+    rejected by ``_prepass_regular_file_present``.
+    """
+
+    if not (source_exists and archive_exists):
+        return source_exists, archive_exists
+    for path, suffix in ((source, "source"), (archived, "archive")):
+        digest, size = _prepass_bounded_file_digest(
+            path,
+            label=f"{label} {suffix}",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        if digest != expected_sha256 or size != expected_size:
+            raise ReconPrepassAuthorityError(
+                f"{label} duplicated bytes differ from durable intent"
+            )
+    try:
+        _rooted_io.durable_unlink(source)
+    except (OSError, _rooted_io.RootedPathIOError) as exc:
+        raise ReconPrepassAuthorityError(
+            f"{label} could not retire the durable source copy"
+        ) from exc
+    return False, True
+
+
+def _prepass_projection_snapshot(
+    ledger: Mapping[str, Any],
+    roster: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    bindings = ledger.get("artifact_bindings")
+    legacy = ledger.get("artifacts")
+    return {
+        identity: {
+            "artifact_binding": json.loads(json.dumps(
+                bindings.get(identity)
+                if isinstance(bindings, Mapping) else None
+            )),
+            "legacy_artifact": json.loads(json.dumps(
+                legacy.get(identity.split(":", 1)[1])
+                if isinstance(legacy, Mapping) else None
+            )),
+        }
+        for identity in roster
+    }
+
+
+def _prepass_assert_projection_snapshot(
+    ledger: Mapping[str, Any],
+    roster: Sequence[str],
+    expected: object,
+) -> None:
+    if (
+        not isinstance(expected, Mapping)
+        or _prepass_projection_snapshot(ledger, roster) != expected
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass artifact projection CAS changed"
+        )
+
+
+def _prepass_assert_projection_owner(
+    snapshot: object,
+    roster: Sequence[str],
+    *,
+    allowed_owner: str,
+) -> None:
+    """Reject intents that would retire an unrelated projection owner."""
+
+    if not isinstance(snapshot, Mapping) or set(snapshot) != set(roster):
+        raise ReconPrepassAuthorityError(
+            "recon prepass artifact projection denominator differs"
+        )
+    for identity in roster:
+        pair = snapshot.get(identity)
+        if not isinstance(pair, Mapping) or set(pair) != {
+            "artifact_binding", "legacy_artifact"
+        }:
+            raise ReconPrepassAuthorityError(
+                "recon prepass artifact projection record is malformed"
+            )
+        for row in pair.values():
+            if row is not None and (
+                not isinstance(row, Mapping)
+                or row.get("owner_key") != allowed_owner
+            ):
+                raise ReconPrepassAuthorityError(
+                    "recon prepass artifact projection has unrelated owner"
+                )
+
+
+def recon_prepass_expected_owner_prefix(config: Mapping[str, Any]) -> str:
+    """Return the canonical five-component prepass owner prefix."""
+
+    if not isinstance(config, Mapping):
+        raise ReconPrepassAuthorityError(
+            "recon prepass owner-prefix config is malformed"
+        )
+    return "/".join(_prepass_expected_prefix(config))
+
+
+def _prepass_legacy_authority(value: object) -> dict[str, Any]:
+    """Replay the exact pre-v3 authority without accepting it for execution."""
+
+    if not isinstance(value, dict):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass authority is absent"
+        )
+    expected = {
+        "schema", "work_unit_key", "run_id", "contract_digest",
+        "launch_digest", "pipeline", "mode", "ecosystem", "backend",
+        "planned_output_roster", "authority_capture", "authority_sha256",
+    }
+    unsigned = dict(value)
+    digest = unsigned.pop("authority_sha256", None)
+    capture = value.get("authority_capture")
+    if (
+        set(value) != expected
+        or value.get("schema") != _PREPASS_PREEXECUTION_AUTHORITY_SCHEMA
+        or not isinstance(capture, dict)
+        or set(capture) != {
+            "source_capture_digest", "source_root_authority", "config_digest",
+            "unexpected_semantic_outputs", "input_set_digest",
+        }
+        or digest != _prepass_stable_digest(unsigned)
+        or len(str(value.get("work_unit_key") or "").split("/")) != 6
+    ):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass authority integrity failure"
+        )
+    return json.loads(json.dumps(value, sort_keys=True))
+
+
+def _prepass_expected_prefix(config: Mapping[str, Any]) -> tuple[str, ...]:
+    return (*_prepass_dimensions(dict(config)), "recon")
+
+
+def _prepass_validate_legacy_migration_receipt(
+    scratchpad: Path,
+    units: Mapping[str, Any],
+    *,
+    run_id: str,
+    predecessor_key: str,
+    successor_key: str,
+    lineage_head_key: str | None = None,
+) -> bool:
+    receipt = _prepass_read_private_json(
+        scratchpad, scratchpad / _PREPASS_LEGACY_MIGRATION_RECEIPT
+    )
+    if receipt is None:
+        return False
+    unsigned = dict(receipt)
+    digest = unsigned.pop("migration_digest", None)
+    legacy_key = f"{predecessor_key}/attempt-2"
+    predecessor = units.get(predecessor_key)
+    legacy = units.get(legacy_key)
+    successor = units.get(successor_key)
+    successor_authority = (
+        successor.get("preexecution_authority")
+        if isinstance(successor, Mapping) else None
+    )
+    if (
+        receipt.get("schema")
+        != "plamen.recon-prepass-legacy-successor-migration.v3"
+        or digest != _prepass_stable_digest(unsigned)
+        or receipt.get("run_id") != run_id
+        or receipt.get("predecessor_work_unit_key") != predecessor_key
+        or receipt.get("legacy_evidence_key") != legacy_key
+        or receipt.get("successor_work_unit_key") != successor_key
+        or not isinstance(predecessor, Mapping)
+        or not isinstance(legacy, Mapping)
+        or not isinstance(successor_authority, Mapping)
+        or receipt.get("successor_preexecution_authority")
+        != successor_authority
+        or receipt.get("legacy_evidence_digest")
+        != _prepass_stable_digest(dict(legacy))
+        or receipt.get("successor_preexecution_authority_digest")
+        != successor_authority.get("authority_sha256")
+    ):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass migration receipt lineage is invalid"
+        )
+    predecessor_digest = _prepass_stable_digest(dict(predecessor))
+    successor_state = (
+        successor.get("semantic_status"), successor.get("execution_state")
+    )
+    allowed_predecessor_digests = {
+        receipt.get("quarantined_predecessor_digest"),
+        receipt.get("finalized_predecessor_digest"),
+    }
+    normalized_predecessor_digest = predecessor_digest
+    if (
+        predecessor_digest not in allowed_predecessor_digests
+        and
+        lineage_head_key is not None
+        and lineage_head_key != successor_key
+        and isinstance(predecessor, Mapping)
+    ):
+        lineage_head_ordinal = _prepass_generation_ordinal(lineage_head_key)
+        if (
+            predecessor.get("superseded_by_work_unit_key")
+            != lineage_head_key
+            or predecessor.get("superseded_by_generation_ordinal")
+            != lineage_head_ordinal
+            or (predecessor.get("semantic_status"),
+                predecessor.get("execution_state")) != ("INVALID", "FAILED")
+        ):
+            raise ReconPrepassAuthorityError(
+                "legacy recon prepass predecessor lineage head differs"
+            )
+        normalized = json.loads(json.dumps(predecessor))
+        normalized["superseded_by_work_unit_key"] = successor_key
+        normalized["superseded_by_generation_ordinal"] = 2
+        normalized_predecessor_digest = _prepass_stable_digest(normalized)
+    if (
+        predecessor_digest not in allowed_predecessor_digests
+        and normalized_predecessor_digest
+        != receipt.get("finalized_predecessor_digest")
+    ):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass predecessor finalized state differs"
+        )
+    if (
+        successor_state == ("ACTIVE", "OUTPUT_COMMITTED")
+        and predecessor_digest == receipt.get("quarantined_predecessor_digest")
+    ):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass committed successor did not retire predecessor"
+        )
+    expected_absent = {
+        identity: {"artifact_binding": None, "legacy_artifact": None}
+        for identity in receipt.get("artifact_roster") or ()
+    }
+    ledger = read_artifact_ledger(scratchpad)
+    if _prepass_projection_snapshot(
+        ledger, tuple(receipt.get("artifact_roster") or ())
+    ) != expected_absent:
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass finalized projections reappeared"
+        )
+    return True
+
+
+def _prepass_validate_closed_lineage(
+    scratchpad: Path,
+    units: Mapping[str, Any],
+    config: Mapping[str, Any],
+    *,
+    run_id: str,
+    head_key: str,
+) -> None:
+    prefix = _prepass_expected_prefix(config)
+    head_parts = head_key.split("/")
+    if tuple(head_parts[:5]) != prefix:
+        raise ReconPrepassAuthorityError(
+            "recon prepass owner dimensions differ from current config"
+        )
+    head_ordinal = _prepass_generation_ordinal(head_key)
+    generation_keys = {
+        "/".join((*prefix, "prepass" if ordinal == 1 else
+                  f"prepass.attempt-{ordinal:04d}"))
+        for ordinal in range(1, head_ordinal + 1)
+    }
+    disposition_keys = {
+        _prepass_disposition_key(
+            "/".join((*prefix, f"prepass.attempt-{ordinal:04d}")),
+            ordinal,
+        )
+        for ordinal in range(2, head_ordinal + 1)
+    }
+    legacy_key = "/".join((*prefix, "prepass", "attempt-2"))
+    observed_generations: set[str] = set()
+    observed_dispositions: set[str] = set()
+    observed_legacy: set[str] = set()
+    for key, row in units.items():
+        if not isinstance(key, str):
+            continue
+        parts = key.split("/")
+        role = parts[-1] if parts else ""
+        relevant = (
+            (len(parts) == 6 and parts[-2] == "recon" and (
+                role == "prepass"
+                or role.startswith("prepass.attempt-")
+                or role.startswith("prepass.disposition-")
+            ))
+            or (len(parts) == 7 and parts[-3:] == [
+                "recon", "prepass", "attempt-2"
+            ])
+        )
+        if not relevant:
+            continue
+        if tuple(parts[:5]) != prefix:
+            if isinstance(row, Mapping) and row.get("run_id") in {None, run_id}:
+                raise ReconPrepassAuthorityError(
+                    "recon prepass ledger contains wrong-dimension authority"
+                )
+            continue
+        if len(parts) == 7:
+            observed_legacy.add(key)
+        elif role.startswith("prepass.disposition-"):
+            observed_dispositions.add(key)
+        else:
+            _prepass_generation_ordinal(key)
+            observed_generations.add(key)
+    if observed_generations != generation_keys:
+        raise ReconPrepassAuthorityError(
+            "recon prepass generation lineage has an orphan, gap, or future row"
+        )
+    base_key = "/".join((*prefix, "prepass"))
+    migrated = False
+    if observed_legacy:
+        if observed_legacy != {legacy_key} or head_ordinal < 2:
+            raise ReconPrepassAuthorityError(
+                "recon prepass legacy evidence is outside its exact migration"
+            )
+        migrated = _prepass_validate_legacy_migration_receipt(
+            scratchpad,
+            units,
+            run_id=run_id,
+            predecessor_key=base_key,
+            successor_key="/".join((*prefix, "prepass.attempt-0002")),
+            lineage_head_key=head_key,
+        )
+    expected_dispositions = set(disposition_keys)
+    if migrated:
+        expected_dispositions.discard(_prepass_disposition_key(head_key, 2))
+    extra_dispositions = observed_dispositions - expected_dispositions
+    if extra_dispositions:
+        pending_ordinal = head_ordinal + 1
+        pending_key = _prepass_disposition_key(
+            "/".join((*prefix, f"prepass.attempt-{pending_ordinal:04d}")),
+            pending_ordinal,
+        )
+        pending_row = units.get(pending_key)
+        pending = (
+            pending_row.get("durable_disposition")
+            if isinstance(pending_row, Mapping) else None
+        )
+        if (
+            extra_dispositions != {pending_key}
+            or not isinstance(pending, Mapping)
+            or (
+                pending_row.get("semantic_status"),
+                pending_row.get("execution_state"),
+            ) != ("DEBT", "FAILED")
+            or pending.get("state") != "FAILED"
+            or pending.get("predecessor_work_unit_key") != head_key
+            or pending.get("generation_ordinal") != pending_ordinal
+            or pending.get("producer_attempt_identity")
+            != "/".join((
+                *prefix, f"prepass.attempt-{pending_ordinal:04d}"
+            ))
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass pending successor disposition is invalid"
+            )
+        expected_dispositions.add(pending_key)
+    if observed_dispositions != expected_dispositions:
+        raise ReconPrepassAuthorityError(
+            "recon prepass disposition lineage denominator differs"
+        )
+    for ordinal in range(1, head_ordinal + 1):
+        key = "/".join((*prefix, "prepass" if ordinal == 1 else
+                        f"prepass.attempt-{ordinal:04d}"))
+        row = units.get(key)
+        if not isinstance(row, Mapping) or row.get("run_id") != run_id:
+            raise ReconPrepassAuthorityError(
+                "recon prepass lineage row is absent or cross-run"
+            )
+        if migrated and ordinal == 1:
+            _prepass_legacy_authority(row.get("preexecution_authority"))
+        else:
+            authority = _validated_prepass_preexecution_authority(
+                row.get("preexecution_authority")
+            )
+            if (
+                authority.get("work_unit_key") != key
+                or authority.get("run_id") != run_id
+                or row.get("preexecution_authority_digest")
+                != authority.get("authority_sha256")
+            ):
+                raise ReconPrepassAuthorityError(
+                    "recon prepass lineage authority binding differs"
+                )
+            _prepass_authority_pair(authority)
+        if ordinal == 1 or (migrated and ordinal == 2):
+            continue
+        predecessor_key = "/".join((
+            *prefix,
+            "prepass" if ordinal == 2 else
+            f"prepass.attempt-{ordinal - 1:04d}",
+        ))
+        disposition_key = _prepass_disposition_key(key, ordinal)
+        disposition_row = units.get(disposition_key)
+        disposition = (
+            disposition_row.get("durable_disposition")
+            if isinstance(disposition_row, Mapping) else None
+        )
+        predecessor = units.get(predecessor_key)
+        attempted = row.get("preexecution_authority")
+        original = (
+            predecessor.get("preexecution_authority")
+            if isinstance(predecessor, Mapping) else None
+        )
+        state = disposition.get("state") if isinstance(disposition, Mapping) else None
+        expected_row_state = (
+            ("HISTORY", "OUTPUT_COMMITTED")
+            if state == "COMMITTED" else ("DEBT", "FAILED")
+        )
+        if (
+            not isinstance(disposition, Mapping)
+            or not isinstance(disposition_row, Mapping)
+            or not isinstance(attempted, Mapping)
+            or not isinstance(original, Mapping)
+            or disposition.get("schema")
+            != "plamen.recon-mutation-disposition.v1"
+            or disposition.get("producer_attempt_identity") != key
+            or disposition.get("predecessor_work_unit_key") != predecessor_key
+            or disposition.get("generation_ordinal") != ordinal
+            or disposition.get("attempted_preexecution_authority") != attempted
+            or disposition.get("attempted_preexecution_authority_digest")
+            != attempted.get("authority_sha256")
+            or disposition.get("original_preexecution_authority") != original
+            or disposition.get("original_authority_digest")
+            != original.get("authority_sha256")
+            or state not in {"FAILED", "COMMITTED"}
+            or (
+                disposition_row.get("semantic_status"),
+                disposition_row.get("execution_state"),
+            ) != expected_row_state
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass successor disposition lineage is invalid"
+            )
+
+
+def _migrate_legacy_prepass_terminal(
+    scratchpad: Path,
+    project_root: Path,
+    config: Mapping[str, Any],
+    *,
+    run_id: str,
+    failure_injector: Callable[..., None] | None = None,
+) -> tuple[Any, LaunchSpec, dict[str, Any], Mapping[str, Any]] | None:
+    """Quarantine a legacy failed generation, then arm attempt-0002 fresh."""
+
+    ledger = read_artifact_ledger(scratchpad)
+    units = ledger.get("work_units")
+    if not isinstance(units, dict):
+        return None
+    expected_predecessor_key = "/".join((
+        *_prepass_expected_prefix(config), "prepass"
+    ))
+    base_rows = [
+        (key, row) for key, row in units.items()
+        if isinstance(key, str) and key == expected_predecessor_key
+        and isinstance(row, dict)
+        and (row.get("semantic_status"), row.get("execution_state"))
+        == ("INVALID", "FAILED")
+    ]
+    if len(base_rows) != 1:
+        return None
+    predecessor_key, predecessor = base_rows[0]
+    if predecessor.get("run_id") != run_id:
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass predecessor is cross-run"
+        )
+    legacy_key = f"{predecessor_key}/attempt-2"
+    legacy = units.get(legacy_key)
+    disposition = (
+        legacy.get("durable_disposition")
+        if isinstance(legacy, Mapping)
+        else None
+    )
+    if (
+        not isinstance(legacy, Mapping)
+        or (legacy.get("semantic_status"), legacy.get("execution_state"))
+        != ("DEBT", "FAILED")
+        or not isinstance(disposition, Mapping)
+        or disposition.get("reason_codes")
+        != ["PREPASS_INPUT_AUTHORITY_CHANGED"]
+    ):
+        return None
+    original = _prepass_legacy_authority(
+        disposition.get("original_preexecution_authority")
+    )
+    attempted = _prepass_legacy_authority(
+        disposition.get("attempted_preexecution_authority")
+    )
+    if (
+        original.get("work_unit_key") != predecessor_key
+        or attempted.get("work_unit_key") != predecessor_key
+        or original.get("run_id") != run_id
+        or attempted.get("run_id") != run_id
+        or predecessor.get("preexecution_authority_digest")
+        != original.get("authority_sha256")
+        or disposition.get("original_authority_digest")
+        != original.get("authority_sha256")
+        or disposition.get("attempted_preexecution_authority_digest")
+        != attempted.get("authority_sha256")
+    ):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass disposition lineage is invalid"
+        )
+    predecessor_contract, _predecessor_launch = _prepass_authority_pair(
+        original
+    )
+    successor_contract, successor_launch = _prepass_successor_pair(
+        predecessor_contract, ordinal=2
+    )
+    if successor_contract.key in units:
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass migration successor collision"
+        )
+    receipt_path = scratchpad / _PREPASS_LEGACY_MIGRATION_RECEIPT
+    existing_receipt = _prepass_read_private_json(scratchpad, receipt_path)
+    if existing_receipt is not None:
+        stored_unsigned = dict(existing_receipt)
+        stored_digest = stored_unsigned.pop("migration_digest", None)
+        stored_successor_authority = stored_unsigned.get(
+            "successor_preexecution_authority"
+        )
+        if (
+            stored_unsigned.get("schema")
+            != "plamen.recon-prepass-legacy-successor-migration.v3"
+            or stored_digest != _prepass_stable_digest(stored_unsigned)
+        ):
+            raise ReconPrepassAuthorityError(
+                "legacy recon prepass migration receipt collision"
+            )
+        successor_authority = _validated_prepass_preexecution_authority(
+            stored_successor_authority
+        )
+        stored_contract, stored_launch = _prepass_authority_pair(
+            successor_authority
+        )
+        if (
+            successor_authority.get("work_unit_key") != successor_contract.key
+            or successor_authority.get("run_id") != run_id
+            or stored_contract != successor_contract
+            or stored_launch != successor_launch
+        ):
+            raise ReconPrepassAuthorityError(
+                "legacy recon prepass stored successor authority differs"
+            )
+    else:
+        capture = _prepass_capture(scratchpad, project_root, config)
+        successor_authority = _prepass_preexecution_authority(
+            successor_contract, successor_launch, run_id=run_id,
+            capture=capture,
+        )
+    artifacts = predecessor.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass artifact denominator is malformed"
+        )
+    roster = tuple(original.get("planned_output_roster") or ())
+    if set(artifacts) != set(roster):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass artifact denominator differs"
+        )
+    legacy_digest = _prepass_stable_digest(dict(legacy))
+    predecessor_digest = _prepass_stable_digest(dict(predecessor))
+    provisional_digest = _prepass_stable_digest({
+        "run_id": run_id,
+        "predecessor_work_unit_key": predecessor_key,
+        "legacy_evidence_digest": legacy_digest,
+        "successor_work_unit_key": successor_contract.key,
+        "successor_preexecution_authority_digest": successor_authority[
+            "authority_sha256"
+        ],
+    })
+    provisional_quarantine = (
+        scratchpad / "_recon_prepass_legacy_quarantine" / provisional_digest
+    )
+    _prepass_ensure_private_directory(scratchpad, provisional_quarantine)
+    if existing_receipt is not None:
+        migration_unsigned = dict(existing_receipt)
+        migration_digest = migration_unsigned.pop("migration_digest", None)
+        receipt_records = migration_unsigned.get("artifact_records")
+        receipt_projections = migration_unsigned.get("projection_records")
+        if (
+            set(migration_unsigned) != {
+                "schema", "run_id", "predecessor_work_unit_key",
+                "predecessor_evidence_digest", "legacy_evidence_key",
+                "legacy_evidence_digest", "successor_work_unit_key",
+                "successor_preexecution_authority",
+                "successor_preexecution_authority_digest", "artifact_roster",
+                "artifact_records", "projection_records",
+                "quarantined_predecessor_digest",
+                "finalized_predecessor_digest",
+            }
+            or migration_unsigned.get("schema")
+            != "plamen.recon-prepass-legacy-successor-migration.v3"
+            or migration_digest != _prepass_stable_digest(migration_unsigned)
+            or migration_unsigned.get("run_id") != run_id
+            or migration_unsigned.get("predecessor_work_unit_key")
+            != predecessor_key
+            or migration_unsigned.get("legacy_evidence_key") != legacy_key
+            or migration_unsigned.get("legacy_evidence_digest")
+            != legacy_digest
+            or migration_unsigned.get("successor_work_unit_key")
+            != successor_contract.key
+            or migration_unsigned.get(
+                "successor_preexecution_authority_digest"
+            ) != successor_authority["authority_sha256"]
+            or migration_unsigned.get("successor_preexecution_authority")
+            != successor_authority
+            or migration_unsigned.get("artifact_roster") != list(roster)
+            or not isinstance(receipt_records, Mapping)
+            or set(receipt_records) != set(roster)
+            or not isinstance(receipt_projections, Mapping)
+            or set(receipt_projections) != set(roster)
+            or predecessor_digest not in {
+                migration_unsigned.get("predecessor_evidence_digest"),
+                migration_unsigned.get("quarantined_predecessor_digest"),
+            }
+        ):
+            raise ReconPrepassAuthorityError(
+                "legacy recon prepass migration receipt collision"
+            )
+        for identity in roster:
+            record = receipt_records.get(identity)
+            projection = receipt_projections.get(identity)
+            if (
+                not isinstance(record, Mapping)
+                or set(record) != {
+                    "committed_sha256", "committed_size", "observed_status",
+                    "observed_sha256", "observed_size",
+                }
+                or record.get("committed_sha256")
+                != artifacts[identity].get("sha256")
+                or record.get("committed_size")
+                != artifacts[identity].get("size")
+                or record.get("observed_status") not in {
+                    "PRESENT", "BOTH_ABSENT"
+                }
+                or not isinstance(record.get("observed_sha256"), str)
+                or not isinstance(record.get("observed_size"), int)
+                or record.get("observed_size", -1) < 0
+                or not isinstance(projection, Mapping)
+                or set(projection) != {
+                    "artifact_binding", "legacy_artifact"
+                }
+            ):
+                raise ReconPrepassAuthorityError(
+                    "legacy recon prepass migration receipt records differ"
+                )
+        _prepass_assert_projection_owner(
+            receipt_projections,
+            roster,
+            allowed_owner=predecessor_key,
+        )
+        receipt = dict(existing_receipt)
+    else:
+        observed_records: dict[str, dict[str, Any]] = {}
+        for identity in roster:
+            _root, relative = identity.split(":", 1)
+            source = _prepass_auxiliary_path(scratchpad, relative)
+            archived = _prepass_auxiliary_path(provisional_quarantine, relative)
+            source_exists = _prepass_regular_file_present(
+                source, label="legacy recon prepass public artifact"
+            )
+            archived_exists = _prepass_regular_file_present(
+                archived, label="legacy recon prepass quarantined artifact"
+            )
+            if source_exists and archived_exists:
+                raise ReconPrepassAuthorityError(
+                    "legacy recon prepass migration duplicated an artifact"
+                )
+            selected = (
+                source if source_exists else archived if archived_exists else None
+            )
+            raw = (
+                _prepass_bounded_read_bytes(
+                    selected,
+                    label="legacy recon prepass migration artifact",
+                    max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+                )
+                if selected is not None else b""
+            )
+            observed_records[identity] = {
+                "committed_sha256": artifacts[identity].get("sha256"),
+                "committed_size": artifacts[identity].get("size"),
+                "observed_status": (
+                    "PRESENT" if (source_exists or archived_exists)
+                    else "BOTH_ABSENT"
+                ),
+                "observed_sha256": (
+                    hashlib.sha256(raw).hexdigest()
+                    if selected is not None else ""
+                ),
+                "observed_size": len(raw),
+            }
+        migration_unsigned = {
+            "schema": "plamen.recon-prepass-legacy-successor-migration.v3",
+            "run_id": run_id,
+            "predecessor_work_unit_key": predecessor_key,
+            "predecessor_evidence_digest": predecessor_digest,
+            "legacy_evidence_key": legacy_key,
+            "legacy_evidence_digest": legacy_digest,
+            "successor_work_unit_key": successor_contract.key,
+            "successor_preexecution_authority": successor_authority,
+            "successor_preexecution_authority_digest": successor_authority[
+                "authority_sha256"
+            ],
+            "artifact_roster": list(roster),
+            "artifact_records": observed_records,
+            "projection_records": _prepass_projection_snapshot(ledger, roster),
+        }
+        _prepass_assert_projection_owner(
+            migration_unsigned["projection_records"],
+            roster,
+            allowed_owner=predecessor_key,
+        )
+        finalized_predecessor = json.loads(json.dumps(predecessor))
+        for finalized_row in finalized_predecessor["artifacts"].values():
+            if isinstance(finalized_row, dict):
+                finalized_row["status"] = "QUARANTINED"
+                finalized_row["authority_level"] = (
+                    "HISTORICAL_PREDECESSOR_ONLY"
+                )
+        migration_unsigned["quarantined_predecessor_digest"] = (
+            _prepass_stable_digest(finalized_predecessor)
+        )
+        finalized_predecessor["superseded_by_work_unit_key"] = (
+            successor_contract.key
+        )
+        finalized_predecessor["superseded_by_generation_ordinal"] = 2
+        migration_unsigned["finalized_predecessor_digest"] = (
+            _prepass_stable_digest(finalized_predecessor)
+        )
+        migration_digest = _prepass_stable_digest(migration_unsigned)
+        receipt = {**migration_unsigned, "migration_digest": migration_digest}
+        _prepass_write_json_atomic(scratchpad, receipt_path, receipt)
+    if failure_injector is not None:
+        failure_injector("legacy_after_intent")
+    quarantine = _prepass_ensure_private_directory(
+        scratchpad, provisional_quarantine
+    )
+    for identity, expected in migration_unsigned["artifact_records"].items():
+        root, relative = identity.split(":", 1)
+        if root != "scratchpad":
+            raise ReconPrepassAuthorityError(
+                "legacy recon prepass output escaped scratchpad"
+            )
+        source = _prepass_auxiliary_path(scratchpad, relative)
+        archived = _prepass_auxiliary_path(quarantine, relative)
+        source_exists = _prepass_regular_file_present(
+            source, label="legacy recon prepass public artifact"
+        )
+        archived_exists = _prepass_regular_file_present(
+            archived, label="legacy recon prepass quarantined artifact"
+        )
+        source_exists, archived_exists = _prepass_recover_durable_move(
+            source,
+            archived,
+            source_exists=source_exists,
+            archive_exists=archived_exists,
+            expected_sha256=str(expected.get("observed_sha256") or ""),
+            expected_size=int(expected.get("observed_size", -1)),
+            label="legacy recon prepass migration",
+        )
+        selected = source if source_exists else archived if archived_exists else None
+        expected_status = expected.get("observed_status")
+        if expected_status == "BOTH_ABSENT":
+            if selected is not None:
+                raise ReconPrepassAuthorityError(
+                    "legacy recon prepass absent migration artifact appeared"
+                )
+            continue
+        if expected_status != "PRESENT" or selected is None:
+            raise ReconPrepassAuthorityError(
+                "legacy recon prepass migration artifact disappeared"
+            )
+        raw = _prepass_bounded_read_bytes(
+            selected,
+            label="legacy recon prepass migration artifact",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        if (
+            hashlib.sha256(raw).hexdigest() != expected["observed_sha256"]
+            or len(raw) != expected["observed_size"]
+        ):
+            raise ReconPrepassAuthorityError(
+                "legacy recon prepass migration artifact differs"
+            )
+        if source_exists:
+            _prepass_move_private(
+                scratchpad,
+                source,
+                archived,
+                expected_sha256=expected["observed_sha256"],
+                expected_size=expected["observed_size"],
+            )
+    if failure_injector is not None:
+        failure_injector("legacy_after_quarantine")
+    ledger = read_artifact_ledger(scratchpad)
+    ledger_prestate = json.loads(json.dumps(ledger))
+    predecessor = ledger["work_units"].get(predecessor_key)
+    legacy = ledger["work_units"].get(legacy_key)
+    if not isinstance(predecessor, dict) or not isinstance(legacy, dict):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass migration CAS changed"
+        )
+    current_predecessor_digest = _prepass_stable_digest(predecessor)
+    if (
+        _prepass_stable_digest(legacy) != legacy_digest
+        or current_predecessor_digest not in {
+            migration_unsigned["predecessor_evidence_digest"],
+            migration_unsigned["quarantined_predecessor_digest"],
+        }
+    ):
+        raise ReconPrepassAuthorityError(
+            "legacy recon prepass migration CAS changed"
+        )
+    bindings = ledger.get("artifact_bindings")
+    legacy_projection = ledger.get("artifacts")
+    expected_absent = {
+        identity: {"artifact_binding": None, "legacy_artifact": None}
+        for identity in roster
+    }
+    if current_predecessor_digest == migration_unsigned[
+        "predecessor_evidence_digest"
+    ]:
+        _prepass_assert_projection_snapshot(
+            ledger, roster, migration_unsigned["projection_records"]
+        )
+        for identity in roster:
+            rows = (
+                bindings.get(identity) if isinstance(bindings, dict) else None,
+                legacy_projection.get(identity.split(":", 1)[1])
+                if isinstance(legacy_projection, dict)
+                else None,
+            )
+            for row in rows:
+                if (
+                    isinstance(row, dict)
+                    and row.get("owner_key") == predecessor_key
+                ):
+                    row["status"] = "QUARANTINED"
+                    row["authority_level"] = "HISTORICAL_PREDECESSOR_ONLY"
+            if isinstance(bindings, dict):
+                bindings.pop(identity, None)
+            if isinstance(legacy_projection, dict):
+                legacy_projection.pop(identity.split(":", 1)[1], None)
+        for row in predecessor["artifacts"].values():
+            if isinstance(row, dict):
+                row["status"] = "QUARANTINED"
+                row["authority_level"] = "HISTORICAL_PREDECESSOR_ONLY"
+        if _prepass_stable_digest(predecessor) != migration_unsigned[
+            "quarantined_predecessor_digest"
+        ]:
+            raise ReconPrepassAuthorityError(
+                "legacy recon prepass quarantined state differs"
+            )
+        _prepass_assert_projection_snapshot(ledger, roster, expected_absent)
+        _prepass_commit_ledger_cas(scratchpad, ledger_prestate, ledger)
+        if failure_injector is not None:
+            failure_injector("legacy_after_ledger")
+    else:
+        _prepass_assert_projection_snapshot(ledger, roster, expected_absent)
+    try:
+        armed = record_work_unit_inputs(
+            scratchpad,
+            project_root,
+            successor_contract,
+            successor_launch,
+            run_id=run_id,
+            preexecution_authority=successor_authority,
+        )
+    except ArtifactLedgerError as exc:
+        raise ReconPrepassAuthorityError(
+            f"legacy recon prepass successor input arm failed: {exc}"
+        ) from exc
+    return successor_contract, successor_launch, successor_authority, armed
+
+
+def _record_prepass_drift_debt(
+    scratchpad: Path,
+    contract_or_key: Any,
+    capture: Mapping[str, Any],
+    *,
+    original_authority: Mapping[str, Any] | None = None,
+    attempted_authority: Mapping[str, Any] | None = None,
+) -> str:
+    ledger = read_artifact_ledger(scratchpad)
+    ledger_prestate = json.loads(json.dumps(ledger))
+    contract_key = (
+        contract_or_key
+        if isinstance(contract_or_key, str)
+        else contract_or_key.key
+    )
+    old = ledger.get("work_units", {}).get(contract_key)
+    if not isinstance(old, dict):
+        raise ReconPrepassAuthorityError(
+            "recon prepass drift has no committed predecessor"
+        )
+    predecessor_ordinal = _prepass_generation_ordinal(contract_key)
+    attempt_ordinal = predecessor_ordinal + 1
+    if attempted_authority is None:
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor authority is absent"
+        )
+    validated_attempted = _validated_prepass_preexecution_authority(
+        dict(attempted_authority)
+    )
+    attempt_identity = str(validated_attempted["work_unit_key"])
+    if _prepass_generation_ordinal(attempt_identity) != attempt_ordinal:
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor authority is not the immediate attempt"
+        )
+    if attempt_identity.split("/")[:5] != contract_key.split("/")[:5]:
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor changed a fixed dimension"
+        )
+    disposition_key = _prepass_disposition_key(
+        attempt_identity, attempt_ordinal
+    )
+    binding = {
+        "producer_attempt_identity": attempt_identity,
+        "predecessor_work_unit_key": contract_key,
+        "generation_ordinal": attempt_ordinal,
+        "attempt_ordinal": attempt_ordinal,
+        "input_set_digest": capture["input_set_digest"],
+        "config_digest": capture["config_digest"],
+        "source_capture_digest": capture["source_capture_digest"],
+    }
+    binding["attempted_authority_digest"] = _prepass_stable_digest(binding)
+    disposition = {
+        **binding,
+        "schema": "plamen.recon-mutation-disposition.v1",
+        "state": "FAILED",
+        "reason_codes": ["PREPASS_INPUT_AUTHORITY_CHANGED"],
+    }
+    if original_authority is not None:
+        validated_original = _validated_prepass_preexecution_authority(
+            dict(original_authority)
+        )
+        disposition["original_authority_digest"] = validated_original[
+            "authority_sha256"
+        ]
+        disposition["original_preexecution_authority"] = validated_original
+    disposition["attempted_preexecution_authority_digest"] = (
+        validated_attempted["authority_sha256"]
+    )
+    disposition["attempted_preexecution_authority"] = validated_attempted
+    history_row = {
+        **binding,
+        "work_unit_key": disposition_key,
+        "run_id": old.get("run_id"),
+        "semantic_status": "DEBT",
+        "execution_state": "FAILED",
+        "durable_disposition": disposition,
+    }
+    existing = ledger["work_units"].get(disposition_key)
+    if existing is not None and existing != history_row:
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor disposition key collision"
+        )
+    executable_collision = ledger["work_units"].get(attempt_identity)
+    if executable_collision is not None:
+        stored = (
+            executable_collision.get("preexecution_authority")
+            if isinstance(executable_collision, Mapping)
+            else None
+        )
+        if stored != validated_attempted:
+            raise ReconPrepassAuthorityError(
+                "recon prepass successor work-unit key collision"
+            )
+    ledger["work_units"][disposition_key] = history_row
+    _prepass_commit_ledger_cas(scratchpad, ledger_prestate, ledger)
+    return disposition_key
+
+
+def _finalize_prepass_successor(
+    scratchpad: Path,
+    *,
+    predecessor_key: str,
+    successor_key: str,
+) -> None:
+    """Retire only the predecessor after its exact successor committed."""
+
+    ledger = read_artifact_ledger(scratchpad)
+    ledger_prestate = json.loads(json.dumps(ledger))
+    units = ledger.get("work_units")
+    bindings = ledger.get("artifact_bindings")
+    if not isinstance(units, dict) or not isinstance(bindings, dict):
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor finalization ledger is malformed"
+        )
+    predecessor = units.get(predecessor_key)
+    successor = units.get(successor_key)
+    if not isinstance(predecessor, dict) or not isinstance(successor, dict):
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor finalization lineage is absent"
+        )
+    if (
+        _prepass_generation_ordinal(successor_key)
+        != _prepass_generation_ordinal(predecessor_key) + 1
+        or successor.get("semantic_status") != "ACTIVE"
+        or successor.get("execution_state") != "OUTPUT_COMMITTED"
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor finalization authority is incomplete"
+        )
+    successor_artifacts = successor.get("artifacts")
+    predecessor_artifacts = predecessor.get("artifacts")
+    successor_authority = successor.get("preexecution_authority")
+    planned_roster = (
+        set(successor_authority.get("planned_output_roster") or ())
+        if isinstance(successor_authority, Mapping)
+        else set()
+    )
+    if (
+        not isinstance(successor_artifacts, Mapping)
+        or set(successor_artifacts) != planned_roster
+        or len(planned_roster) not in {
+            len(_SC_PREPASS_PUBLIC_OUTPUTS) + 1,
+            len(_L1_PREPASS_PUBLIC_OUTPUTS) + 1,
+        }
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass successor artifact denominator is malformed"
+        )
+    for identity, record in successor_artifacts.items():
+        binding = bindings.get(identity)
+        if (
+            not isinstance(record, Mapping)
+            or not isinstance(binding, Mapping)
+            or binding.get("owner_key") != successor_key
+            or binding.get("status") != "ACTIVE"
+            or binding.get("sha256") != record.get("sha256")
+            or binding.get("size") != record.get("size")
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass successor binding did not commit atomically"
+            )
+    successor_ordinal = _prepass_generation_ordinal(successor_key)
+    for ancestor_key, ancestor in units.items():
+        if not isinstance(ancestor_key, str) or not isinstance(ancestor, dict):
+            continue
+        parts = ancestor_key.split("/")
+        if len(parts) != 6 or parts[:5] != successor_key.split("/")[:5]:
+            continue
+        try:
+            ancestor_ordinal = _prepass_generation_ordinal(ancestor_key)
+        except ReconPrepassAuthorityError:
+            continue
+        if ancestor_ordinal >= successor_ordinal:
+            continue
+        ancestor_artifacts = ancestor.get("artifacts")
+        if isinstance(ancestor_artifacts, dict):
+            for record in ancestor_artifacts.values():
+                if isinstance(record, dict):
+                    record["status"] = "QUARANTINED"
+                    record["authority_level"] = (
+                        "HISTORICAL_PREDECESSOR_ONLY"
+                    )
+        ancestor["semantic_status"] = "INVALID"
+        ancestor["execution_state"] = "FAILED"
+        ancestor["superseded_by_work_unit_key"] = successor_key
+        ancestor["superseded_by_generation_ordinal"] = successor_ordinal
+    disposition_key = _prepass_disposition_key(
+        successor_key, _prepass_generation_ordinal(successor_key)
+    )
+    disposition_row = units.get(disposition_key)
+    if isinstance(disposition_row, dict):
+        disposition = disposition_row.get("durable_disposition")
+        if isinstance(disposition, dict):
+            disposition["state"] = "COMMITTED"
+            disposition["successor_work_unit_key"] = successor_key
+            disposition["successor_commit_receipt_digest"] = str(
+                (successor.get("commit_authority") or {}).get(
+                    "receipt_digest"
+                )
+            )
+        disposition_row["semantic_status"] = "HISTORY"
+        disposition_row["execution_state"] = "OUTPUT_COMMITTED"
+    _prepass_commit_ledger_cas(scratchpad, ledger_prestate, ledger)
+
+
+def _arm_prepass_successor(
+    scratchpad: Path,
+    project_root: Path,
+    predecessor_contract: Any,
+    *,
+    run_id: str,
+    capture: Mapping[str, Any],
+    original_authority: Mapping[str, Any],
+    failure_injector: Callable[..., None] | None = None,
+) -> tuple[Any, LaunchSpec, dict[str, Any], Mapping[str, Any]]:
+    successor_contract, successor_launch = _prepass_successor_pair(
+        predecessor_contract,
+        ordinal=_prepass_generation_ordinal(predecessor_contract.key) + 1,
+    )
+    ordinal = _prepass_generation_ordinal(successor_contract.key)
+    disposition_key = _prepass_disposition_key(successor_contract.key, ordinal)
+    existing_disposition_row = read_artifact_ledger(scratchpad).get(
+        "work_units", {}
+    ).get(disposition_key)
+    if isinstance(existing_disposition_row, Mapping):
+        disposition = existing_disposition_row.get("durable_disposition")
+        attempted = (
+            disposition.get("attempted_preexecution_authority")
+            if isinstance(disposition, Mapping) else None
+        )
+        successor_authority = _validated_prepass_preexecution_authority(
+            attempted
+        )
+        replay_contract, replay_launch = _prepass_authority_pair(
+            successor_authority
+        )
+        if (
+            replay_contract.key != successor_contract.key
+            or replay_launch != successor_launch
+            or disposition.get("predecessor_work_unit_key")
+            != predecessor_contract.key
+            or disposition.get("generation_ordinal") != ordinal
+            or disposition.get("original_preexecution_authority")
+            != original_authority
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass pending disposition replay differs"
+            )
+        capture = successor_authority["authority_capture"]
+    else:
+        successor_authority = _prepass_preexecution_authority(
+            successor_contract,
+            successor_launch,
+            run_id=run_id,
+            capture=capture,
+        )
+        _validated_prepass_preexecution_authority(successor_authority)
+        _record_prepass_drift_debt(
+            scratchpad,
+            predecessor_contract.key,
+            capture,
+            original_authority=original_authority,
+            attempted_authority=successor_authority,
+        )
+        if failure_injector is not None:
+            failure_injector("after_disposition")
+    current_ledger = read_artifact_ledger(scratchpad)
+    current_units = current_ledger.get("work_units", {})
+    predecessor_row = current_units.get(predecessor_contract.key)
+    legacy_migrated = False
+    if (
+        _prepass_generation_ordinal(predecessor_contract.key) == 2
+        and isinstance(current_units, Mapping)
+    ):
+        base_key = "/".join((
+            *predecessor_contract.key.split("/")[:5], "prepass"
+        ))
+        if f"{base_key}/attempt-2" in current_units:
+            legacy_migrated = _prepass_validate_legacy_migration_receipt(
+                scratchpad,
+                current_units,
+                run_id=run_id,
+                predecessor_key=base_key,
+                successor_key=predecessor_contract.key,
+                lineage_head_key=predecessor_contract.key,
+            )
+    uncommitted_quarantined = False
+    if (
+        isinstance(predecessor_row, Mapping)
+        and predecessor_row.get("artifacts") == {}
+    ):
+        uncommitted_quarantined = _quarantine_prepass_uncommitted_publication(
+            scratchpad,
+            predecessor_key=predecessor_contract.key,
+            successor_key=successor_contract.key,
+            original_authority=original_authority,
+            successor_authority=successor_authority,
+            roster=tuple(item.identity for item in successor_contract.outputs),
+        )
+    if (
+        not uncommitted_quarantined
+        and not legacy_migrated
+        and
+        isinstance(predecessor_row, Mapping)
+        and predecessor_row.get("artifacts") == {}
+        and _prepass_generation_ordinal(predecessor_contract.key) > 1
+    ):
+        _quarantine_prepass_committed_ancestors(
+            scratchpad,
+            predecessor_key=predecessor_contract.key,
+            successor_key=successor_contract.key,
+            roster=tuple(
+                item.identity for item in successor_contract.outputs
+            ),
+        )
+    try:
+        armed = record_work_unit_inputs(
+            scratchpad,
+            project_root,
+            successor_contract,
+            successor_launch,
+            run_id=run_id,
+            preexecution_authority=successor_authority,
+        )
+    except ArtifactLedgerError as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass successor input arm failed: {exc}"
+        ) from exc
+    return successor_contract, successor_launch, successor_authority, armed
+
+
+def _quarantine_prepass_uncommitted_publication(
+    scratchpad: Path,
+    *,
+    predecessor_key: str,
+    successor_key: str,
+    original_authority: Mapping[str, Any],
+    successor_authority: Mapping[str, Any],
+    roster: tuple[str, ...],
+) -> bool:
+    """Remove crash-published predecessor bytes before arming a successor.
+
+    A predecessor can crash after one or all public replaces but before its
+    generic artifact commit.  Those bytes have no committed owner and cannot
+    be used as the REPLACE prestate of a fresh authority.  Preserve their
+    exact observed bytes under an intent-bound private quarantine, then arm
+    the successor only after every public destination is absent.
+    """
+
+    identity_unsigned = {
+        "schema": "plamen.recon-prepass-uncommitted-quarantine-identity.v1",
+        "predecessor_work_unit_key": predecessor_key,
+        "successor_work_unit_key": successor_key,
+        "original_preexecution_authority_digest": original_authority.get(
+            "authority_sha256"
+        ),
+        "successor_preexecution_authority_digest": successor_authority.get(
+            "authority_sha256"
+        ),
+        "artifact_roster": list(roster),
+    }
+    intent_id = _prepass_stable_digest(identity_unsigned)
+    intent_path = scratchpad / f"_recon_prepass_uncommitted_{intent_id}.json"
+    quarantine = (
+        scratchpad / "_recon_prepass_uncommitted_quarantine" / intent_id
+    )
+    intent = _prepass_read_private_json(scratchpad, intent_path)
+    if intent is not None:
+        unsigned = dict(intent) if isinstance(intent, dict) else {}
+        intent_digest = unsigned.pop("intent_digest", None)
+        if (
+            set(unsigned) != {
+                *identity_unsigned,
+                "artifact_records",
+                "transaction_authority",
+            }
+            or any(unsigned.get(key) != value for key, value in identity_unsigned.items())
+            or intent_digest != _prepass_stable_digest(unsigned)
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass uncommitted quarantine intent collision"
+            )
+    else:
+        initial_ledger = read_artifact_ledger(scratchpad)
+        initial_units = initial_ledger.get("work_units")
+        predecessor_row = (
+            initial_units.get(predecessor_key)
+            if isinstance(initial_units, Mapping) else None
+        )
+        if not isinstance(predecessor_row, Mapping):
+            raise ReconPrepassAuthorityError(
+                "recon prepass uncommitted predecessor is absent"
+            )
+        predecessor_ordinal = _prepass_generation_ordinal(predecessor_key)
+        committed = [
+            (key, row)
+            for key, row in initial_units.items()
+            if isinstance(key, str)
+            and isinstance(row, Mapping)
+            and len(key.split("/")) == 6
+            and key.split("/")[:5] == predecessor_key.split("/")[:5]
+            and (
+                key.split("/")[-1] == "prepass"
+                or _PREPASS_ATTEMPT_ID_RE.fullmatch(key.split("/")[-1])
+                is not None
+            )
+            and _prepass_generation_ordinal(key) < predecessor_ordinal
+            and (row.get("semantic_status"), row.get("execution_state"))
+            == ("ACTIVE", "OUTPUT_COMMITTED")
+        ]
+        if len(committed) > 1:
+            raise ReconPrepassAuthorityError(
+                "recon prepass uncommitted transaction has multiple ancestors"
+            )
+        ancestor_key = committed[0][0] if committed else ""
+        ancestor_row = committed[0][1] if committed else None
+        finalized_ancestor_digest = ""
+        if isinstance(ancestor_row, Mapping):
+            finalized = json.loads(json.dumps(ancestor_row))
+            finalized["semantic_status"] = "INVALID"
+            finalized["execution_state"] = "FAILED"
+            finalized["superseded_by_work_unit_key"] = successor_key
+            for record in (finalized.get("artifacts") or {}).values():
+                if isinstance(record, dict):
+                    record["status"] = "QUARANTINED"
+                    record["authority_level"] = (
+                        "HISTORICAL_PREDECESSOR_ONLY"
+                    )
+            finalized_ancestor_digest = _prepass_stable_digest(finalized)
+        transaction_authority = {
+            "predecessor_evidence_digest": _prepass_stable_digest(
+                dict(predecessor_row)
+            ),
+            "committed_ancestor_work_unit_key": ancestor_key,
+            "committed_ancestor_evidence_digest": (
+                _prepass_stable_digest(dict(ancestor_row))
+                if isinstance(ancestor_row, Mapping) else ""
+            ),
+            "finalized_ancestor_digest": finalized_ancestor_digest,
+            "projection_records": _prepass_projection_snapshot(
+                initial_ledger, roster
+            ),
+        }
+        projection_owner = ancestor_key or predecessor_key
+        _prepass_assert_projection_owner(
+            transaction_authority["projection_records"],
+            roster,
+            allowed_owner=projection_owner,
+        )
+        observed: dict[str, dict[str, Any]] = {}
+        any_present = False
+        for identity in roster:
+            root, relative = identity.split(":", 1)
+            if root != "scratchpad":
+                raise ReconPrepassAuthorityError(
+                    "recon prepass uncommitted output escaped scratchpad"
+                )
+            source = _prepass_auxiliary_path(scratchpad, relative)
+            source_present = _prepass_regular_file_present(
+                source, label="recon prepass uncommitted output"
+            )
+            if source_present:
+                raw = _prepass_bounded_read_bytes(
+                    source,
+                    label="recon prepass uncommitted output",
+                    max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+                )
+                any_present = True
+                observed[identity] = {
+                    "observed_status": "PRESENT",
+                    "observed_sha256": hashlib.sha256(raw).hexdigest(),
+                    "observed_size": len(raw),
+                }
+            else:
+                observed[identity] = {
+                    "observed_status": "BOTH_ABSENT",
+                    "observed_sha256": "",
+                    "observed_size": 0,
+                }
+        if not any_present:
+            return False
+        unsigned = {
+            **identity_unsigned,
+            "artifact_records": observed,
+            "transaction_authority": transaction_authority,
+        }
+        intent = {
+            **unsigned,
+            "intent_digest": _prepass_stable_digest(unsigned),
+        }
+        _prepass_write_json_atomic(scratchpad, intent_path, intent)
+
+    records = intent.get("artifact_records")
+    if not isinstance(records, dict) or set(records) != set(roster):
+        raise ReconPrepassAuthorityError(
+            "recon prepass uncommitted quarantine denominator differs"
+        )
+    replay_transaction = intent.get("transaction_authority")
+    if not isinstance(replay_transaction, Mapping):
+        raise ReconPrepassAuthorityError(
+            "recon prepass uncommitted transaction authority is malformed"
+        )
+    replay_owner = str(
+        replay_transaction.get("committed_ancestor_work_unit_key")
+        or predecessor_key
+    )
+    _prepass_assert_projection_owner(
+        replay_transaction.get("projection_records"),
+        roster,
+        allowed_owner=replay_owner,
+    )
+    quarantine = _prepass_ensure_private_directory(scratchpad, quarantine)
+    for identity, expected in records.items():
+        _root, relative = identity.split(":", 1)
+        source = _prepass_auxiliary_path(scratchpad, relative)
+        archived = _prepass_auxiliary_path(quarantine, relative)
+        source_exists = _prepass_regular_file_present(
+            source, label="recon prepass uncommitted public artifact"
+        )
+        archive_exists = _prepass_regular_file_present(
+            archived, label="recon prepass uncommitted quarantined artifact"
+        )
+        source_exists, archive_exists = _prepass_recover_durable_move(
+            source,
+            archived,
+            source_exists=source_exists,
+            archive_exists=archive_exists,
+            expected_sha256=str(expected.get("observed_sha256") or ""),
+            expected_size=int(expected.get("observed_size", -1)),
+            label="recon prepass uncommitted quarantine",
+        )
+        selected = source if source_exists else archived if archive_exists else None
+        if expected.get("observed_status") == "BOTH_ABSENT":
+            if selected is not None:
+                raise ReconPrepassAuthorityError(
+                    "recon prepass absent uncommitted output appeared"
+                )
+            continue
+        if expected.get("observed_status") != "PRESENT" or selected is None:
+            raise ReconPrepassAuthorityError(
+                "recon prepass uncommitted output disappeared"
+            )
+        raw = _prepass_bounded_read_bytes(
+            selected,
+            label="recon prepass uncommitted quarantine artifact",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        if (
+            hashlib.sha256(raw).hexdigest() != expected.get("observed_sha256")
+            or len(raw) != expected.get("observed_size")
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass uncommitted output bytes changed"
+            )
+        if source_exists:
+            _prepass_move_private(
+                scratchpad,
+                source,
+                archived,
+                expected_sha256=expected["observed_sha256"],
+                expected_size=expected["observed_size"],
+            )
+    ledger = read_artifact_ledger(scratchpad)
+    ledger_prestate = json.loads(json.dumps(ledger))
+    units = ledger.get("work_units")
+    if not isinstance(units, dict):
+        raise ReconPrepassAuthorityError(
+            "recon prepass uncommitted quarantine ledger is malformed"
+        )
+    transaction = intent.get("transaction_authority")
+    predecessor_row = units.get(predecessor_key)
+    if (
+        not isinstance(transaction, Mapping)
+        or not isinstance(predecessor_row, Mapping)
+        or _prepass_stable_digest(dict(predecessor_row))
+        != transaction.get("predecessor_evidence_digest")
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass uncommitted predecessor CAS changed"
+        )
+    ancestor_key = str(transaction.get("committed_ancestor_work_unit_key") or "")
+    if not ancestor_key:
+        _prepass_assert_projection_snapshot(
+            ledger, roster, transaction.get("projection_records")
+        )
+    if ancestor_key:
+        ancestor = units.get(ancestor_key)
+        if not isinstance(ancestor, dict):
+            raise ReconPrepassAuthorityError(
+                "recon prepass uncommitted ancestor disappeared"
+            )
+        ancestor_digest = _prepass_stable_digest(ancestor)
+        evidence_digest = transaction.get("committed_ancestor_evidence_digest")
+        finalized_digest = transaction.get("finalized_ancestor_digest")
+        if ancestor_digest == finalized_digest:
+            bindings = ledger.get("artifact_bindings")
+            legacy = ledger.get("artifacts")
+            if any(
+                (
+                    isinstance(bindings, Mapping) and identity in bindings
+                ) or (
+                    isinstance(legacy, Mapping)
+                    and identity.split(":", 1)[1] in legacy
+                )
+                for identity in roster
+            ):
+                raise ReconPrepassAuthorityError(
+                    "recon prepass finalized uncommitted projections reappeared"
+                )
+            return True
+        if ancestor_digest != evidence_digest:
+            raise ReconPrepassAuthorityError(
+                "recon prepass uncommitted ancestor CAS changed"
+            )
+        _prepass_assert_projection_snapshot(
+            ledger, roster, transaction.get("projection_records")
+        )
+        artifacts = ancestor.get("artifacts")
+        if not isinstance(artifacts, dict) or set(artifacts) != set(roster):
+            raise ReconPrepassAuthorityError(
+                "recon prepass uncommitted ancestor denominator differs"
+            )
+        ancestor["semantic_status"] = "INVALID"
+        ancestor["execution_state"] = "FAILED"
+        ancestor["superseded_by_work_unit_key"] = successor_key
+        bindings = ledger.get("artifact_bindings")
+        legacy = ledger.get("artifacts")
+        for identity in roster:
+            for row in (
+                bindings.get(identity) if isinstance(bindings, dict) else None,
+                legacy.get(identity.split(":", 1)[1])
+                if isinstance(legacy, dict) else None,
+                artifacts.get(identity),
+            ):
+                if isinstance(row, dict) and row.get("owner_key") == ancestor_key:
+                    row["status"] = "QUARANTINED"
+                    row["authority_level"] = "HISTORICAL_PREDECESSOR_ONLY"
+            if isinstance(bindings, dict):
+                bindings.pop(identity, None)
+            if isinstance(legacy, dict):
+                legacy.pop(identity.split(":", 1)[1], None)
+        _prepass_commit_ledger_cas(scratchpad, ledger_prestate, ledger)
+    return True
+
+
+def _quarantine_prepass_committed_ancestors(
+    scratchpad: Path,
+    *,
+    predecessor_key: str,
+    successor_key: str,
+    roster: tuple[str, ...],
+) -> None:
+    """Retire exact committed ancestors when an unexecuted arm itself drifts."""
+
+    intent_identity = {
+        "schema": "plamen.recon-prepass-drifted-arm-quarantine.v2",
+        "predecessor_work_unit_key": predecessor_key,
+        "successor_work_unit_key": successor_key,
+        "artifact_roster": list(roster),
+    }
+    intent_id = _prepass_stable_digest(intent_identity)
+    intent_path = scratchpad / f"_recon_prepass_drifted_arm_{intent_id}.json"
+    intent = _prepass_read_private_json(scratchpad, intent_path)
+    if intent is not None:
+        unsigned = dict(intent)
+        intent_digest = unsigned.pop("intent_digest", None)
+        if (
+            any(unsigned.get(key) != value for key, value in intent_identity.items())
+            or intent_digest != _prepass_stable_digest(unsigned)
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass drifted-arm intent collision"
+            )
+    else:
+        ledger = read_artifact_ledger(scratchpad)
+        units = ledger.get("work_units")
+        predecessor = units.get(predecessor_key) if isinstance(units, Mapping) else None
+        if not isinstance(units, Mapping) or not isinstance(predecessor, Mapping):
+            raise ReconPrepassAuthorityError(
+                "recon prepass ancestor ledger is malformed"
+            )
+        predecessor_ordinal = _prepass_generation_ordinal(predecessor_key)
+        committed = []
+        for key, row in units.items():
+            if not isinstance(key, str) or not isinstance(row, Mapping):
+                continue
+            parts = key.split("/")
+            if len(parts) != 6 or parts[:5] != predecessor_key.split("/")[:5]:
+                continue
+            try:
+                ordinal = _prepass_generation_ordinal(key)
+            except ReconPrepassAuthorityError:
+                continue
+            if (
+                ordinal < predecessor_ordinal
+                and (row.get("semantic_status"), row.get("execution_state"))
+                == ("ACTIVE", "OUTPUT_COMMITTED")
+            ):
+                committed.append((key, row))
+        if len(committed) != 1:
+            raise ReconPrepassAuthorityError(
+                "recon prepass drifted arm lacks one committed ancestor"
+            )
+        ancestor_key, ancestor = committed[0]
+        records = ancestor.get("artifacts")
+        if not isinstance(records, Mapping) or set(records) != set(roster):
+            raise ReconPrepassAuthorityError(
+                "recon prepass committed ancestor denominator differs"
+            )
+        finalized = json.loads(json.dumps(ancestor))
+        finalized["semantic_status"] = "INVALID"
+        finalized["execution_state"] = "FAILED"
+        finalized["superseded_by_work_unit_key"] = successor_key
+        for record in finalized["artifacts"].values():
+            if isinstance(record, dict):
+                record["status"] = "QUARANTINED"
+                record["authority_level"] = "HISTORICAL_PREDECESSOR_ONLY"
+        intent_unsigned = {
+            **intent_identity,
+            "predecessor_evidence_digest": _prepass_stable_digest(
+                dict(predecessor)
+            ),
+            "committed_ancestor_work_unit_key": ancestor_key,
+            "committed_ancestor_evidence_digest": _prepass_stable_digest(
+                dict(ancestor)
+            ),
+            "finalized_ancestor_digest": _prepass_stable_digest(finalized),
+            "projection_records": _prepass_projection_snapshot(
+                ledger, roster
+            ),
+            "artifact_records": {
+                identity: {
+                    "sha256": records[identity].get("sha256"),
+                    "size": records[identity].get("size"),
+                }
+                for identity in roster
+            },
+        }
+        _prepass_assert_projection_owner(
+            intent_unsigned["projection_records"],
+            roster,
+            allowed_owner=ancestor_key,
+        )
+        intent = {
+            **intent_unsigned,
+            "intent_digest": _prepass_stable_digest(intent_unsigned),
+        }
+        _prepass_write_json_atomic(scratchpad, intent_path, intent)
+    quarantine = scratchpad / "_recon_prepass_drifted_arm_quarantine" / intent_id
+    quarantine = _prepass_ensure_private_directory(scratchpad, quarantine)
+    artifact_records = intent.get("artifact_records")
+    if not isinstance(artifact_records, Mapping) or set(artifact_records) != set(roster):
+        raise ReconPrepassAuthorityError(
+            "recon prepass drifted-arm intent denominator differs"
+        )
+    _prepass_assert_projection_owner(
+        intent.get("projection_records"),
+        roster,
+        allowed_owner=str(intent.get("committed_ancestor_work_unit_key") or ""),
+    )
+    for identity, expected in artifact_records.items():
+        relative = identity.split(":", 1)[1]
+        source = _prepass_auxiliary_path(scratchpad, relative)
+        archived = _prepass_auxiliary_path(quarantine, relative)
+        source_exists = _prepass_regular_file_present(
+            source, label="recon prepass drifted-arm public artifact"
+        )
+        archive_exists = _prepass_regular_file_present(
+            archived, label="recon prepass drifted-arm quarantined artifact"
+        )
+        source_exists, archive_exists = _prepass_recover_durable_move(
+            source,
+            archived,
+            source_exists=source_exists,
+            archive_exists=archive_exists,
+            expected_sha256=str(expected.get("sha256") or ""),
+            expected_size=int(expected.get("size", -1)),
+            label="recon prepass drifted-arm quarantine",
+        )
+        selected = source if source_exists else archived if archive_exists else None
+        if selected is None:
+            raise ReconPrepassAuthorityError(
+                "recon prepass drifted-arm ancestor byte is absent"
+            )
+        raw = _prepass_bounded_read_bytes(
+            selected,
+            label="recon prepass drifted-arm artifact",
+            max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+        )
+        if (
+            hashlib.sha256(raw).hexdigest() != expected["sha256"]
+            or len(raw) != expected["size"]
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass drifted-arm ancestor byte differs"
+            )
+        if source_exists:
+            _prepass_move_private(
+                scratchpad,
+                source,
+                archived,
+                expected_sha256=expected["sha256"],
+                expected_size=expected["size"],
+            )
+    ledger = read_artifact_ledger(scratchpad)
+    ledger_prestate = json.loads(json.dumps(ledger))
+    units = ledger.get("work_units")
+    predecessor = units.get(predecessor_key) if isinstance(units, dict) else None
+    ancestor_key = str(intent.get("committed_ancestor_work_unit_key") or "")
+    ancestor = units.get(ancestor_key) if isinstance(units, dict) else None
+    if (
+        not isinstance(predecessor, Mapping)
+        or _prepass_stable_digest(dict(predecessor))
+        != intent.get("predecessor_evidence_digest")
+        or not isinstance(ancestor, dict)
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass drifted-arm predecessor/ancestor CAS changed"
+        )
+    ancestor_digest = _prepass_stable_digest(ancestor)
+    bindings = ledger.get("artifact_bindings")
+    legacy = ledger.get("artifacts")
+    if ancestor_digest == intent.get("finalized_ancestor_digest"):
+        if any(
+            (
+                isinstance(bindings, Mapping) and identity in bindings
+            ) or (
+                isinstance(legacy, Mapping)
+                and identity.split(":", 1)[1] in legacy
+            )
+            for identity in roster
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass drifted-arm finalized projections reappeared"
+            )
+        return
+    if ancestor_digest != intent.get("committed_ancestor_evidence_digest"):
+        raise ReconPrepassAuthorityError(
+            "recon prepass committed ancestor CAS changed"
+        )
+    _prepass_assert_projection_snapshot(
+        ledger, roster, intent.get("projection_records")
+    )
+    ancestor["semantic_status"] = "INVALID"
+    ancestor["execution_state"] = "FAILED"
+    ancestor["superseded_by_work_unit_key"] = successor_key
+    for identity in roster:
+        for row in (
+            bindings.get(identity) if isinstance(bindings, dict) else None,
+            legacy.get(identity.split(":", 1)[1])
+            if isinstance(legacy, dict) else None,
+            ancestor.get("artifacts", {}).get(identity),
+        ):
+            if isinstance(row, dict) and row.get("owner_key") == ancestor_key:
+                row["status"] = "QUARANTINED"
+                row["authority_level"] = "HISTORICAL_PREDECESSOR_ONLY"
+        if isinstance(bindings, dict):
+            bindings.pop(identity, None)
+        if isinstance(legacy, dict):
+            legacy.pop(identity.split(":", 1)[1], None)
+    _prepass_commit_ledger_cas(scratchpad, ledger_prestate, ledger)
+
+
+def _prepass_resume_sealed_publication(
+    scratchpad: Path,
+    project_root: Path,
+    config: Mapping[str, Any],
+    contract: Any,
+    launch: LaunchSpec,
+    *,
+    run_id: str,
+    authority: Mapping[str, Any],
+    predecessor_owner_key: str | None,
+    failure_injector: Callable[..., None] | None,
+) -> dict[str, Any] | None:
+    """Publish an existing exact sealed transaction without rerendering."""
+
+    authority_digest = str(authority.get("authority_sha256") or "")
+    intent_path = (
+        scratchpad / "_recon_prepass_auxiliary_transactions"
+        / f"{authority_digest}.intent.json"
+    )
+    if _prepass_read_private_json(scratchpad, intent_path) is None:
+        return None
+    output_names = tuple(item.path for item in contract.outputs)
+    intent, publication_root = _prepass_seal_publication_transaction(
+        scratchpad,
+        None,
+        output_names,
+        {},
+        run_id=run_id,
+        successor_authority=authority,
+        successor_work_unit_key=contract.key,
+        successor_receipt_sha256="",
+    )
+    members = intent.get("publication_members")
+    auxiliary = intent.get("successor_auxiliary")
+    if (
+        not isinstance(members, Mapping)
+        or not isinstance(auxiliary, Mapping)
+        or set(members) != set(output_names).union(auxiliary)
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass sealed resume denominator differs"
+        )
+    receipt = json.loads(_prepass_bounded_read_bytes(
+        publication_root / _PREPASS_PUBLICATION_RECEIPT,
+        label="recon prepass sealed resume receipt",
+        max_bytes=8 * 1024 * 1024,
+    ))
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("artifact_sha256")
+        != intent.get("successor_receipt_sha256")
+        or not isinstance(receipt.get("results"), Mapping)
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass sealed resume receipt differs"
+        )
+    current_capture = _prepass_capture(scratchpad, project_root, config)
+    if _prepass_preexecution_authority(
+        contract, launch, run_id=run_id, capture=current_capture
+    ) != authority:
+        return None
+    _prepass_prepare_auxiliary_transaction(
+        scratchpad,
+        intent,
+        successor_authority_digest=authority_digest,
+        successor_work_unit_key=contract.key,
+    )
+    for name in output_names[:-1]:
+        _prepass_durable_replace_from_stage(
+            publication_root / name,
+            scratchpad / name,
+            label="recon prepass sealed-resume selected output",
+        )
+    for relative in sorted(auxiliary):
+        _prepass_durable_replace_from_stage(
+            _prepass_auxiliary_path(publication_root, relative),
+            _prepass_auxiliary_path(scratchpad, relative),
+            label="recon prepass sealed-resume auxiliary output",
+        )
+    _prepass_durable_replace_from_stage(
+        publication_root / _PREPASS_PUBLICATION_RECEIPT,
+        scratchpad / _PREPASS_PUBLICATION_RECEIPT,
+        label="recon prepass sealed-resume receipt",
+    )
+    if failure_injector is not None:
+        failure_injector("after_publish")
+    commit_capture = _prepass_capture(scratchpad, project_root, config)
+    if _prepass_preexecution_authority(
+        contract, launch, run_id=run_id, capture=commit_capture
+    ) != authority:
+        raise ReconPrepassAuthorityError(
+            "recon prepass sealed resume authority changed before commit"
+        )
+    if failure_injector is not None:
+        failure_injector("before_commit")
+    expected_records = {
+        f"scratchpad:{name}": {
+            "sha256": members[name]["sha256"],
+            "size": members[name]["size"],
+        }
+        for name in output_names
+    }
+    committed = record_work_unit_artifacts(
+        scratchpad,
+        project_root,
+        contract,
+        launch,
+        run_id=run_id,
+        actor="DRIVER",
+        expected_output_records=expected_records,
+    )
+    if failure_injector is not None:
+        failure_injector("after_artifact_commit_before_publication_rebind")
+    committed = _prepass_bind_publication_intent_ledger(scratchpad, intent)
+    if (
+        committed.get("semantic_status") != "ACTIVE"
+        or committed.get("execution_state") != "OUTPUT_COMMITTED"
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass sealed resume did not commit"
+        )
+    issues = validate_work_unit_artifacts(
+        scratchpad,
+        project_root,
+        contract,
+        launch,
+        run_id=run_id,
+        actor="DRIVER",
+        preexecution_authority=authority,
+    )
+    if issues:
+        raise ReconPrepassAuthorityError(
+            "recon prepass sealed resume replay failed: " + "; ".join(issues)
+        )
+    if failure_injector is not None:
+        failure_injector("after_commit")
+    if predecessor_owner_key is not None:
+        _finalize_prepass_successor(
+            scratchpad,
+            predecessor_key=predecessor_owner_key,
+            successor_key=contract.key,
+        )
+    return dict(receipt["results"])
+
+
+def run_recon_prepass(
+    config: dict,
+    *,
+    failure_injector: Callable[..., None] | None = None,
+) -> Dict[str, str]:
+    """Publish one exact, replayable DRIVER-owned prepass generation."""
+
+    if not isinstance(config, dict):
+        raise ReconPrepassAuthorityError("recon prepass config must be a dict")
+    scratchpad_text = str(config.get("scratchpad") or "")
+    project_root_text = str(config.get("project_root") or "")
+    run_id = str(config.get("_run_id") or config.get("run_id") or "").strip()
+    if not run_id or not scratchpad_text.strip() or not project_root_text.strip():
+        raise ReconPrepassAuthorityError(
+            "recon prepass requires current run_id and project_root"
+        )
+    scratchpad = Path(scratchpad_text)
+    project_root = Path(project_root_text)
+    ledger = read_artifact_ledger(scratchpad)
+    units = ledger.get("work_units")
+    if not isinstance(units, dict):
+        raise ReconPrepassAuthorityError(
+            "recon prepass ledger work-unit authority is malformed"
+        )
+    possible_owners: list[tuple[str, Mapping[str, Any]]] = []
+    terminal_rows: list[str] = []
+    expected_prefix = _prepass_expected_prefix(config)
+    for key, row in units.items():
+        key_text = str(key)
+        key_parts = key_text.split("/")
+        role = key_parts[-1] if key_parts else ""
+        is_prepass_authority = (
+            len(key_parts) == 6
+            and key_parts[-2] == "recon"
+            and (
+                role == "prepass"
+                or role.startswith("prepass.attempt-")
+                or role.startswith("prepass.disposition-")
+            )
+        ) or (
+            len(key_parts) == 7
+            and key_parts[-3:] == ["recon", "prepass", "attempt-2"]
+        )
+        if (
+            is_prepass_authority
+            and isinstance(row, Mapping)
+            and row.get("run_id") in {None, run_id}
+            and tuple(key_parts[:5]) != expected_prefix
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass ledger contains wrong-dimension authority"
+            )
+        if (
+            len(key_parts) != 6
+            or key_parts[-2] != "recon"
+            or (
+                key_parts[-1] != "prepass"
+                and _PREPASS_ATTEMPT_ID_RE.fullmatch(key_parts[-1]) is None
+            )
+        ):
+            continue
+        if not isinstance(key, str) or not isinstance(row, Mapping):
+            raise ReconPrepassAuthorityError(
+                "recon prepass owner row is malformed"
+            )
+        if row.get("run_id") != run_id:
+            raise ReconPrepassAuthorityError(
+                "recon prepass observed a cross-run bound owner"
+            )
+        state_pair = (
+            row.get("semantic_status"),
+            row.get("execution_state"),
+        )
+        if state_pair in {
+            ("INPUTS_BOUND", "INPUTS_BOUND_PREEXECUTION"),
+            ("ACTIVE", "OUTPUT_COMMITTED"),
+        }:
+            possible_owners.append((key, row))
+        elif state_pair in {
+            ("INVALID", "FAILED"),
+            ("DEBT", "FAILED"),
+            ("REJECTED", "INPUT_REJECTED"),
+            ("QUARANTINED", "OUTPUT_QUARANTINED"),
+        }:
+            terminal_rows.append(key)
+        else:
+            raise ReconPrepassAuthorityError(
+                f"recon prepass owner {key} has an incompatible state"
+            )
+    possible_owners.sort(
+        key=lambda item: _prepass_generation_ordinal(item[0])
+    )
+    if possible_owners:
+        _prepass_validate_closed_lineage(
+            scratchpad,
+            units,
+            config,
+            run_id=run_id,
+            head_key=possible_owners[-1][0],
+        )
+    migrated_legacy = None
+    if not possible_owners and terminal_rows:
+        migrated_legacy = _migrate_legacy_prepass_terminal(
+            scratchpad,
+            project_root,
+            config,
+            run_id=run_id,
+            failure_injector=failure_injector,
+        )
+        if migrated_legacy is None:
+            raise ReconPrepassAuthorityError(
+                "recon prepass prior authority is terminal and cannot be healed"
+            )
+
+    if migrated_legacy is not None:
+        contract, launch, stored_arm_authority, armed = migrated_legacy
+        output_names = tuple(item.path for item in contract.outputs)
+        predecessor_owner_key = "/".join(
+            (*contract.key.split("/")[:5], "prepass")
+        )
+    elif possible_owners:
+        owner_key, owner = possible_owners[-1]
+        predecessor_owner_key = (
+            possible_owners[-2][0]
+            if len(possible_owners) > 1
+            else None
+        )
+        stored_authority = _validated_prepass_preexecution_authority(
+            owner.get("preexecution_authority")
+        )
+        if (
+            owner.get("preexecution_authority_digest")
+            != stored_authority["authority_sha256"]
+            or stored_authority["work_unit_key"] != owner_key
+            or stored_authority["run_id"] != run_id
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass durable arm authority binding mismatch"
+            )
+        owner_contract, owner_launch = _prepass_authority_pair(
+            stored_authority
+        )
+        issues = validate_work_unit_inputs(
+            scratchpad,
+            project_root,
+            owner_contract,
+            owner_launch,
+            run_id=run_id,
+            preexecution_authority=stored_authority,
+        )
+        if issues:
+            raise ReconPrepassAuthorityError(
+                "recon prepass bound input replay failed: " + "; ".join(issues)
+            )
+        # Generic replay first authenticates the immutable stored object.  Only
+        # then may current source/config/semantic authority be recomputed.
+        pipeline, mode, ecosystem, backend = _prepass_dimensions(config)
+        current_output_names = _prepass_output_names(pipeline)
+        if tuple(item.path for item in owner_contract.outputs) != current_output_names:
+            raise ReconPrepassAuthorityError(
+                "recon prepass contract output denominator/order drift"
+            )
+        capture = _prepass_capture(scratchpad, project_root, config)
+        current_authority = _prepass_preexecution_authority(
+            owner_contract,
+            owner_launch,
+            run_id=run_id,
+            capture=capture,
+        )
+        _validated_prepass_preexecution_authority(current_authority)
+        if failure_injector is not None:
+            failure_injector("after_capture")
+        if current_authority != stored_authority:
+            (
+                successor_contract,
+                successor_launch,
+                successor_authority,
+                armed,
+            ) = _arm_prepass_successor(
+                scratchpad,
+                project_root,
+                owner_contract,
+                run_id=run_id,
+                capture=capture,
+                original_authority=stored_authority,
+                failure_injector=failure_injector,
+            )
+            predecessor_owner_key = owner_key
+            contract, launch = successor_contract, successor_launch
+            output_names = tuple(item.path for item in contract.outputs)
+            stored_arm_authority = successor_authority
+        else:
+            contract, launch = owner_contract, owner_launch
+            output_names = tuple(item.path for item in contract.outputs)
+            if (
+                owner.get("semantic_status") == "ACTIVE"
+                and owner.get("execution_state") == "OUTPUT_COMMITTED"
+            ):
+                output_issues = validate_work_unit_artifacts(
+                    scratchpad,
+                    project_root,
+                    contract,
+                    launch,
+                    run_id=run_id,
+                    actor="DRIVER",
+                    preexecution_authority=stored_authority,
+                )
+                receipt = _prepass_read_receipt(scratchpad)
+                if (
+                    output_issues
+                    or not isinstance(receipt, Mapping)
+                    or receipt.get("authority_capture") != capture
+                    or tuple(receipt.get("selected_outputs") or ())
+                    != output_names[:-1]
+                ):
+                    raise ReconPrepassAuthorityError(
+                        "recon prepass committed output authority changed"
+                    )
+                if predecessor_owner_key is not None:
+                    _finalize_prepass_successor(
+                        scratchpad,
+                        predecessor_key=predecessor_owner_key,
+                        successor_key=contract.key,
+                    )
+                result = receipt.get("results")
+                return dict(result) if isinstance(result, Mapping) else {}
+            armed = owner
+            stored_arm_authority = stored_authority
+    else:
+        predecessor_owner_key = None
+        if not project_root.is_dir():
+            raise ReconPrepassAuthorityError(
+                "recon prepass requires current run_id and project_root"
+            )
+        scratchpad.mkdir(parents=True, exist_ok=True)
+        pipeline, mode, ecosystem, backend = _prepass_dimensions(config)
+        output_names = _prepass_output_names(pipeline)
+        contract = resolve_phase_io_contract(
+            pipeline=pipeline,
+            mode=mode,
+            ecosystem=ecosystem,
+            backend=backend,
+            phase="recon",
+            work_unit_id="prepass",
+        )
+        if tuple(item.path for item in contract.outputs) != output_names:
+            raise ReconPrepassAuthorityError(
+                "recon prepass contract output denominator/order drift"
+            )
+        launch = LaunchSpec(
+            work_unit_key=contract.key,
+            pipeline=contract.pipeline,
+            mode=contract.mode,
+            ecosystem=contract.ecosystem,
+            backend=contract.backend,
+            model="driver",
+            timeout_s=_PREPASS_TIMEOUT_SECONDS,
+            exec_mode="python",
+            tool_policy=("filesystem",),
+        )
+        capture = _prepass_capture(scratchpad, project_root, config)
+        current_authority = _prepass_preexecution_authority(
+            contract,
+            launch,
+            run_id=run_id,
+            capture=capture,
+        )
+        _validated_prepass_preexecution_authority(current_authority)
+        if failure_injector is not None:
+            failure_injector("after_capture")
+        prearm_capture = _prepass_capture(scratchpad, project_root, config)
+        if prearm_capture != capture:
+            raise ReconPrepassAuthorityError(
+                "recon prepass source root identity drift before input arm"
+            )
+        _prepass_assert_capture_source_root(project_root, capture)
+        try:
+            armed = record_work_unit_inputs(
+                scratchpad,
+                project_root,
+                contract,
+                launch,
+                run_id=run_id,
+                preexecution_authority=current_authority,
+            )
+        except ArtifactLedgerError as exc:
+            raise ReconPrepassAuthorityError(
+                f"recon prepass input arm failed: {exc}"
+            ) from exc
+        stored_arm_authority = current_authority
+    if (
+        armed.get("semantic_status") != "INPUTS_BOUND"
+        or armed.get("execution_state") != "INPUTS_BOUND_PREEXECUTION"
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass did not establish a clean preexecution arm"
+        )
+    if failure_injector is not None:
+        failure_injector("after_arm")
+
+    resumed_capture = _prepass_capture(scratchpad, project_root, config)
+    resumed_authority = _prepass_preexecution_authority(
+        contract,
+        launch,
+        run_id=run_id,
+        capture=resumed_capture,
+    )
+    if resumed_authority != stored_arm_authority:
+        _arm_prepass_successor(
+            scratchpad,
+            project_root,
+            contract,
+            run_id=run_id,
+            capture=resumed_capture,
+            original_authority=stored_arm_authority,
+            failure_injector=failure_injector,
+        )
+        return run_recon_prepass(config)
+    capture = resumed_capture
+
+    state = _prepass_bound_generation_state(scratchpad, armed, output_names)
+    # The receipt is the written-last generation marker.  Authenticate it
+    # before interpreting output prestates: byte-identical members can look
+    # old while changed members look new, and a crash between replaces is a
+    # normal recoverable mixed state.  A valid receipt commits immediately;
+    # otherwise the exact bound authority deterministically rerenders and
+    # republishes the complete denominator below.
+    recovered = _prepass_published_records(
+        scratchpad, output_names, capture
+    )
+    if recovered is not None:
+        try:
+            committed = record_work_unit_artifacts(
+                scratchpad,
+                project_root,
+                contract,
+                launch,
+                run_id=run_id,
+                actor="DRIVER",
+                expected_output_records=recovered,
+            )
+        except ArtifactLedgerError as exc:
+            raise ReconPrepassAuthorityError(
+                f"recon prepass recovery commit failed: {exc}"
+            ) from exc
+        if failure_injector is not None:
+            failure_injector(
+                "after_artifact_commit_before_publication_rebind"
+            )
+        recovery_intent = _prepass_read_private_json(
+            scratchpad,
+            scratchpad / "_recon_prepass_auxiliary_transactions"
+            / f"{stored_arm_authority['authority_sha256']}.intent.json",
+        )
+        if recovery_intent is None:
+            raise ReconPrepassAuthorityError(
+                "recon prepass recovery publication intent is absent"
+            )
+        committed = _prepass_bind_publication_intent_ledger(
+            scratchpad, recovery_intent
+        )
+        if (
+            committed.get("semantic_status") != "ACTIVE"
+            or committed.get("execution_state") != "OUTPUT_COMMITTED"
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass recovery was not ACTIVE/OUTPUT_COMMITTED"
+            )
+        if predecessor_owner_key is not None:
+            _finalize_prepass_successor(
+                scratchpad,
+                predecessor_key=predecessor_owner_key,
+                successor_key=contract.key,
+            )
+        receipt = _prepass_read_receipt(scratchpad)
+        result = receipt.get("results") if isinstance(receipt, Mapping) else None
+        return dict(result) if isinstance(result, Mapping) else {}
+
+    sealed_resume = _prepass_resume_sealed_publication(
+        scratchpad,
+        project_root,
+        config,
+        contract,
+        launch,
+        run_id=run_id,
+        authority=stored_arm_authority,
+        predecessor_owner_key=predecessor_owner_key,
+        failure_injector=failure_injector,
+    )
+    if sealed_resume is not None:
+        return sealed_resume
+
+    _prepass_assert_capture_source_root(project_root, capture)
+    # Durable same-volume replacement is the publication primitive below, so
+    # the staging directory must share the destination volume. The system temporary
+    # directory is commonly on C: while an audited project/scratchpad is on
+    # D: on Windows; publishing from the former raises WinError 17 after the
+    # expensive mechanical pre-pass has already completed.  Keep the private
+    # stage inside the run-owned scratchpad so every replace is same-volume
+    # and remains atomic.
+    scratchpad.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(
+        prefix=".plamen-recon-prepass-",
+        dir=scratchpad,
+    ))
+    try:
+        _prepass_assert_capture_source_root(project_root, capture)
+        stage_config = dict(config)
+        stage_config["scratchpad"] = str(stage)
+        results = _render_recon_prepass(stage_config)
+        excluded_private_roots = _prepass_cleanup_renderer_private_stage(stage)
+        for name in output_names[:-1]:
+            path = stage / name
+            if not _prepass_regular_file_present(
+                path, label="recon prepass staged selected output"
+            ):
+                raise ReconPrepassAuthorityError(
+                    f"recon prepass renderer omitted selected output: {name}"
+                )
+            _digest, size = _prepass_bounded_file_digest(
+                path,
+                label="recon prepass staged selected output",
+                max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+            )
+            if size == 0:
+                raise ReconPrepassAuthorityError(
+                    f"recon prepass renderer omitted selected output: {name}"
+                )
+        auxiliary_output_sha256 = _prepass_auxiliary_output_sha256(
+            stage, output_names, excluded_private_roots
+        )
+        receipt = _prepass_receipt(
+            stage,
+            output_names,
+            capture,
+            results,
+            auxiliary_output_sha256,
+        )
+        (stage / _PREPASS_PUBLICATION_RECEIPT).write_text(
+            json.dumps(receipt, indent=2, sort_keys=True, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        staged_records = {}
+        staged_total_bytes = 0
+        for name in output_names:
+            digest, size = _prepass_bounded_file_digest(
+                stage / name,
+                label="recon prepass staged committed output",
+                max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+            )
+            staged_total_bytes += size
+            if staged_total_bytes > _PREPASS_STAGE_MAX_TOTAL_BYTES:
+                raise ReconPrepassAuthorityError(
+                    "recon prepass staged total-byte budget exceeded"
+                )
+            staged_records[f"scratchpad:{name}"] = {
+                "sha256": digest,
+                "size": size,
+            }
+        for relative in auxiliary_output_sha256:
+            digest, size = _prepass_bounded_file_digest(
+                _prepass_auxiliary_path(stage, relative),
+                label="recon prepass staged aggregate auxiliary",
+                max_bytes=_PREPASS_STAGE_MAX_FILE_BYTES,
+            )
+            if digest != auxiliary_output_sha256[relative]:
+                raise ReconPrepassAuthorityError(
+                    "recon prepass staged auxiliary changed before publication"
+                )
+            staged_total_bytes += size
+            if staged_total_bytes > _PREPASS_STAGE_MAX_TOTAL_BYTES:
+                raise ReconPrepassAuthorityError(
+                    "recon prepass staged total-byte budget exceeded"
+                )
+        if failure_injector is not None:
+            failure_injector("after_stage")
+        publish_capture = _prepass_capture(
+            scratchpad, project_root, config
+        )
+        publish_authority = _prepass_preexecution_authority(
+            contract,
+            launch,
+            run_id=run_id,
+            capture=publish_capture,
+        )
+        if publish_authority != stored_arm_authority:
+            _arm_prepass_successor(
+                scratchpad,
+                project_root,
+                contract,
+                run_id=run_id,
+                capture=publish_capture,
+                original_authority=stored_arm_authority,
+                failure_injector=failure_injector,
+            )
+            return run_recon_prepass(config)
+        publication_intent, publication_root = (
+            _prepass_seal_publication_transaction(
+                scratchpad,
+                stage,
+                output_names,
+                auxiliary_output_sha256,
+                run_id=run_id,
+                successor_authority=stored_arm_authority,
+                successor_work_unit_key=contract.key,
+                successor_receipt_sha256=str(receipt["artifact_sha256"]),
+            )
+        )
+        publication_members = publication_intent.get("publication_members")
+        sealed_auxiliary = publication_intent.get("successor_auxiliary")
+        if (
+            not isinstance(publication_members, Mapping)
+            or not isinstance(sealed_auxiliary, Mapping)
+            or set(publication_members)
+            != set(output_names).union(sealed_auxiliary)
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass sealed publication denominator differs"
+            )
+        sealed_receipt = json.loads(_prepass_bounded_read_bytes(
+            publication_root / _PREPASS_PUBLICATION_RECEIPT,
+            label="recon prepass sealed publication receipt",
+            max_bytes=8 * 1024 * 1024,
+        ))
+        if (
+            not isinstance(sealed_receipt, Mapping)
+            or sealed_receipt.get("artifact_sha256")
+            != publication_intent.get("successor_receipt_sha256")
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass sealed publication receipt differs"
+            )
+        receipt = dict(sealed_receipt)
+        sealed_results = receipt.get("results")
+        if not isinstance(sealed_results, Mapping):
+            raise ReconPrepassAuthorityError(
+                "recon prepass sealed publication results are malformed"
+            )
+        results = dict(sealed_results)
+        auxiliary_output_sha256 = {
+            name: record["sha256"]
+            for name, record in sealed_auxiliary.items()
+        }
+        staged_records = {
+            f"scratchpad:{name}": {
+                "sha256": publication_members[name]["sha256"],
+                "size": publication_members[name]["size"],
+            }
+            for name in output_names
+        }
+        _prepass_prepare_auxiliary_transaction(
+            scratchpad,
+            publication_intent,
+            successor_authority_digest=stored_arm_authority[
+                "authority_sha256"
+            ],
+            successor_work_unit_key=contract.key,
+        )
+        # Preserve the canonical mixed-generation detector: selected outputs
+        # publish first, auxiliary machine authorities second, and the signed
+        # receipt remains the written-last commit marker.
+        for name in output_names[:-1]:
+            _prepass_durable_replace_from_stage(
+                publication_root / name,
+                scratchpad / name,
+                label="recon prepass selected output",
+            )
+        for relative in sorted(auxiliary_output_sha256):
+            source = _prepass_auxiliary_path(publication_root, relative)
+            target = _prepass_auxiliary_path(scratchpad, relative)
+            _prepass_durable_replace_from_stage(
+                source,
+                target,
+                label="recon prepass auxiliary output",
+            )
+        _prepass_durable_replace_from_stage(
+            publication_root / _PREPASS_PUBLICATION_RECEIPT,
+            scratchpad / _PREPASS_PUBLICATION_RECEIPT,
+            label="recon prepass publication receipt",
+        )
+        if failure_injector is not None:
+            failure_injector("after_publish")
+        commit_capture = _prepass_capture(scratchpad, project_root, config)
+        commit_authority = _prepass_preexecution_authority(
+            contract,
+            launch,
+            run_id=run_id,
+            capture=commit_capture,
+        )
+        if commit_authority != stored_arm_authority:
+            _arm_prepass_successor(
+                scratchpad,
+                project_root,
+                contract,
+                run_id=run_id,
+                capture=commit_capture,
+                original_authority=stored_arm_authority,
+                failure_injector=failure_injector,
+            )
+            return run_recon_prepass(config)
+        if failure_injector is not None:
+            failure_injector("before_commit")
+        commit_capture = _prepass_capture(scratchpad, project_root, config)
+        commit_authority = _prepass_preexecution_authority(
+            contract,
+            launch,
+            run_id=run_id,
+            capture=commit_capture,
+        )
+        if commit_authority != stored_arm_authority:
+            _arm_prepass_successor(
+                scratchpad,
+                project_root,
+                contract,
+                run_id=run_id,
+                capture=commit_capture,
+                original_authority=stored_arm_authority,
+                failure_injector=failure_injector,
+            )
+            return run_recon_prepass(config)
+        expected_records = staged_records
+        committed = record_work_unit_artifacts(
+            scratchpad,
+            project_root,
+            contract,
+            launch,
+            run_id=run_id,
+            actor="DRIVER",
+            expected_output_records=expected_records,
+        )
+        if failure_injector is not None:
+            failure_injector(
+                "after_artifact_commit_before_publication_rebind"
+            )
+        committed = _prepass_bind_publication_intent_ledger(
+            scratchpad, publication_intent
+        )
+        if (
+            committed.get("semantic_status") != "ACTIVE"
+            or committed.get("execution_state") != "OUTPUT_COMMITTED"
+        ):
+            raise ReconPrepassAuthorityError(
+                "recon prepass commit was not ACTIVE/OUTPUT_COMMITTED"
+            )
+        issues = validate_work_unit_artifacts(
+            scratchpad,
+            project_root,
+            contract,
+            launch,
+            run_id=run_id,
+            actor="DRIVER",
+            preexecution_authority=stored_arm_authority,
+        )
+        if issues:
+            raise ReconPrepassAuthorityError(
+                "recon prepass committed replay failed: " + "; ".join(issues)
+            )
+        if failure_injector is not None:
+            failure_injector("after_commit")
+        if predecessor_owner_key is not None:
+            _finalize_prepass_successor(
+                scratchpad,
+                predecessor_key=predecessor_owner_key,
+                successor_key=contract.key,
+            )
+        return results
+    except ArtifactLedgerError as exc:
+        raise ReconPrepassAuthorityError(
+            f"recon prepass transaction failed: {exc}"
+        ) from exc
+    finally:
+        shutil.rmtree(stage, ignore_errors=False)
+
+
+def assert_recon_prepass_dispatch_authority(config: Mapping[str, Any]) -> str:
+    """Prove the sole current prepass generation is safe for phase dispatch."""
+
+    if not isinstance(config, Mapping):
+        raise ReconPrepassAuthorityError(
+            "recon prepass dispatch config is malformed"
+        )
+    run_id = str(config.get("_run_id") or config.get("run_id") or "").strip()
+    scratchpad = Path(str(config.get("scratchpad") or ""))
+    project_root = Path(str(config.get("project_root") or ""))
+    if not run_id or not scratchpad.is_dir() or not project_root.is_dir():
+        raise ReconPrepassAuthorityError(
+            "recon prepass dispatch authority lacks current roots/run"
+        )
+    ledger = read_artifact_ledger(scratchpad)
+    units = ledger.get("work_units")
+    if not isinstance(units, Mapping):
+        raise ReconPrepassAuthorityError(
+            "recon prepass dispatch ledger is malformed"
+        )
+    prefix = _prepass_expected_prefix(config)
+    active: list[tuple[str, Mapping[str, Any]]] = []
+    for key, row in units.items():
+        if not isinstance(key, str) or not isinstance(row, Mapping):
+            continue
+        parts = key.split("/")
+        role = parts[-1] if parts else ""
+        relevant = (
+            len(parts) == 6
+            and parts[-2] == "recon"
+            and (
+                role == "prepass"
+                or role.startswith("prepass.attempt-")
+                or role.startswith("prepass.disposition-")
+            )
+        ) or (
+            len(parts) == 7
+            and parts[-3:] == ["recon", "prepass", "attempt-2"]
+        )
+        if not relevant:
+            continue
+        if tuple(parts[:5]) != prefix:
+            raise ReconPrepassAuthorityError(
+                "recon prepass dispatch observed wrong-dimension authority"
+            )
+        if len(parts) == 7:
+            # Preserved legacy evidence is never an owner.  Its exact v2
+            # migration receipt is authenticated by the closed-lineage replay
+            # below; every other seven-component row is rejected there.
+            continue
+        if (
+            role == "prepass" or _PREPASS_ATTEMPT_ID_RE.fullmatch(role)
+        ) and (
+            row.get("semantic_status"), row.get("execution_state")
+        ) == ("ACTIVE", "OUTPUT_COMMITTED"):
+            active.append((key, row))
+    if len(active) != 1:
+        raise ReconPrepassAuthorityError(
+            "recon prepass dispatch requires exactly one committed owner"
+        )
+    head_key, head = active[0]
+    _prepass_validate_closed_lineage(
+        scratchpad,
+        units,
+        config,
+        run_id=run_id,
+        head_key=head_key,
+    )
+    pending_ordinal = _prepass_generation_ordinal(head_key) + 1
+    pending_key = _prepass_disposition_key(
+        "/".join((*prefix, f"prepass.attempt-{pending_ordinal:04d}")),
+        pending_ordinal,
+    )
+    pending_row = units.get(pending_key)
+    if isinstance(pending_row, Mapping) and (
+        pending_row.get("semantic_status"), pending_row.get("execution_state")
+    ) == ("DEBT", "FAILED"):
+        raise ReconPrepassAuthorityError(
+            "recon prepass dispatch rejects pending successor debt"
+        )
+    authority = _validated_prepass_preexecution_authority(
+        head.get("preexecution_authority")
+    )
+    if authority.get("authority_capture") != _prepass_capture(
+        scratchpad, project_root, config
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass dispatch current capture changed"
+        )
+    contract, launch = _prepass_authority_pair(authority)
+    input_issues = validate_work_unit_inputs(
+        scratchpad,
+        project_root,
+        contract,
+        launch,
+        run_id=run_id,
+        preexecution_authority=authority,
+    )
+    artifact_issues = validate_work_unit_artifacts(
+        scratchpad,
+        project_root,
+        contract,
+        launch,
+        run_id=run_id,
+        actor="DRIVER",
+        preexecution_authority=authority,
+    )
+    receipt = _prepass_read_receipt(scratchpad)
+    output_names = tuple(item.path for item in contract.outputs)
+    if (
+        input_issues
+        or artifact_issues
+        or not isinstance(receipt, Mapping)
+        or receipt.get("authority_capture") != authority.get("authority_capture")
+        or tuple(receipt.get("selected_outputs") or ()) != output_names[:-1]
+        or _prepass_published_records(
+            scratchpad,
+            output_names,
+            authority["authority_capture"],
+        ) is None
+    ):
+        raise ReconPrepassAuthorityError(
+            "recon prepass dispatch replay or receipt authority failed"
+        )
+    return head_key
 
 
 if __name__ == "__main__":

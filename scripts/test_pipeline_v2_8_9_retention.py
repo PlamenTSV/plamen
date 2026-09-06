@@ -59,9 +59,14 @@ def test_pattern_does_not_match_report_ids_or_word_internal():
     for x in ["C-01", "M-12", "H-05", "L-3", "I-2"]:
         assert not _full(x), x
     pat = re.compile(r"\b" + P._PROMOTABLE_FEEDER_ID_PATTERN + r"\b")
+    context_free = re.compile(
+        r"\b" + P._PROMOTABLE_CONTEXT_FREE_FEEDER_ID_PATTERN + r"\b"
+    )
     # DS-/DE-/DT- require a digit, so they cannot match inside DST-/DEC-/DX-N
     # nor inside ordinary words.
-    assert pat.findall("see WORDS-1 and ADDRESS-12") == []
+    # Generic producer-local IDs are valid only at an owning-artifact boundary;
+    # context-free extraction must reject ordinary word-shaped tokens.
+    assert context_free.findall("see WORDS-1 and ADDRESS-12") == []
     assert pat.findall("| C-02 | Critical | drains funds |") == []
 
 

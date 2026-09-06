@@ -11,23 +11,37 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  lock-authority:
+    name: deterministic CI dependency authority
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Bootstrap and run the deterministic dependency authority
+        run: python -I scripts/ci_dependency_authority.py bootstrap-gate --root .
+
   pytest:
-    name: pytest (${{ matrix.os }})
+    name: pytest (${{ matrix.os }} / py${{ matrix.python }})
+    needs: lock-authority
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.12"]
     env:
-      # Matches the python-version used elsewhere in this repo's CI
-      # (.github/workflows/install-smoke.yml) and the interpreter this
-      # gate was authored/verified against.
-      PYTHON_VERSION: "3.12"
       # Non-interactive guard: makes the driver's halt/purge prompts
       # (wait_halt_choice / wait_critical_halt_choice / wait_purge_choice)
       # auto-answer instead of blocking on a keypress. Without this the
@@ -35,34 +49,24 @@ jobs:
       # (pseudo-)tty. `exit` = stop cleanly / keep artifacts (never auto-purge).
       PLAMEN_AUTO_HALT_CHOICE: "exit"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python }}
 
-      - name: Install dependencies
-        # Detect a requirements/pyproject file rather than assuming one
-        # exists; skip cleanly if neither is present.
+      - name: Install reviewed, hash-locked CI dependencies
         shell: bash
         run: |
           set -e
-          python -m pip install --upgrade pip
-          # Pinned test deps (pytest + pytest-xdist) via requirements-dev.txt,
-          # which itself pulls in runtime requirements.txt. Fall back cleanly if
-          # the dev file is absent (older checkout).
-          if [ -f requirements-dev.txt ]; then
-            echo "Installing pinned test deps from requirements-dev.txt"
-            python -m pip install -r requirements-dev.txt
-          elif [ -f requirements.txt ]; then
-            echo "Installing from requirements.txt (+ unpinned pytest fallback)"
-            python -m pip install -r requirements.txt pytest pytest-xdist
-          else
-            echo "No requirements file found - installing pytest + pytest-xdist only"
-            python -m pip install pytest pytest-xdist
+          if [ ! -f requirements-ci.lock ]; then
+            echo "::error::requirements-ci.lock is required; refusing an unpinned network fallback"
+            exit 1
           fi
+          python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r requirements-ci.lock
 
       # Two lanes, together = the full suite (no test is skipped across them):
       #   fast lane        — everything EXCEPT the ~14 real-subprocess/timing
@@ -82,3 +86,52 @@ jobs:
         shell: bash
         run: |
           cd scripts && python -m pytest -m "integration" -q
+
+  dependency-review:
+    name: dependency review (introduced High/Critical)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          warn-only: false
+
+  dependency-submission:
+    name: submit exact CI lock dependency snapshot
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lock-authority
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build and submit the exact reviewed lock denominator
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SCANNED=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          python scripts/ci_dependency_authority.py dependency-snapshot \
+            --root . \
+            --output "$RUNNER_TEMP/dependency-snapshot.json" \
+            --sha "$GITHUB_SHA" \
+            --ref "$GITHUB_REF" \
+            --run-id "$GITHUB_RUN_ID" \
+            --scanned "$SCANNED"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            --data-binary "@$RUNNER_TEMP/dependency-snapshot.json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/dependency-graph/snapshots"

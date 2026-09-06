@@ -44,6 +44,7 @@ Read:
 - {SCRATCHPAD}/confidence_scores.md (for prioritization)
 - {SCRATCHPAD}/attack_surface.md (for enabler enumeration)
 - {SCRATCHPAD}/depth_*_findings.md (for STEP 0-pre: scan for [CROSS-DOMAIN-DEP] tags)
+- {SCRATCHPAD}/chain_enabler_baseline.md (driver-owned, read-only STEP 0a baseline)
 
 For specific findings referenced in enabler enumeration, read the relevant source files directly.
 
@@ -82,7 +83,7 @@ From all CONFIRMED, PARTIAL, and CONTESTED findings, extract each dangerous prec
 
 | Finding ID | Dangerous State S | Current Known Path(s) to S | Actor Category of Known Path |
 
-**Low-confidence candidate enablers (ENABLER-ONLY relaxation).** A finding may serve as a candidate ENABLER (a postcondition provider) or a blocked-finding even when its verdict is UNVERIFIED / NEEDS_VERIFICATION / LOW_CONFIDENCE — not only CONFIRMED/PARTIAL/CONTESTED. This is exactly the class of "individually-invalid observation that enables another finding" that chain analysis exists to catch, and chain runs BEFORE verify. The driver pre-fills these in `enabler_results.md` under `## STEP 0a-LC: Low-Confidence Potential Enablers (unverified — ENUMGAP/derivers)`, carrying each candidate's `Postconditions Created` / `Missing Precondition` type tags. Treat STEP 0a-LC rows as candidate enablers ONLY: do NOT add them to the dangerous-state baseline above, and do NOT report them as standalone findings. Any chain you build on a STEP 0a-LC enabler is LOW-CONFIDENCE until its constituents verify — and like every chain hypothesis it is sent to verification (see PHASE 3 / verification handoff), which refutes spurious enabler chains. So include them as enabler candidates freely; precision is preserved downstream by the verify-the-positives filter.
+**Low-confidence candidate enablers (ENABLER-ONLY relaxation).** A finding may serve as a candidate ENABLER (a postcondition provider) or a blocked-finding even when its verdict is UNVERIFIED / NEEDS_VERIFICATION / LOW_CONFIDENCE — not only CONFIRMED/PARTIAL/CONTESTED. This is exactly the class of "individually-invalid observation that enables another finding" that chain analysis exists to catch, and chain runs BEFORE verify. The driver pre-fills these in the read-only `chain_enabler_baseline.md` under `## STEP 0a-LC: Low-Confidence Potential Enablers (unverified — ENUMGAP/derivers)`, carrying each candidate's `Postconditions Created` / `Missing Precondition` type tags. Copy and build on that denominator in the final `enabler_results.md`. Treat STEP 0a-LC rows as candidate enablers ONLY: do NOT add them to the dangerous-state baseline above, and do NOT report them as standalone findings. Any chain you build on a STEP 0a-LC enabler is LOW-CONFIDENCE until its constituents verify — and like every chain hypothesis it is sent to verification (see PHASE 3 / verification handoff), which refutes spurious enabler chains. So include them as enabler candidates freely; precision is preserved downstream by the verify-the-positives filter.
 
 ### STEP 0b: Enumerate Missing Paths (Rule 12)
 
@@ -129,6 +130,13 @@ Check if reaching state S1 (from Finding A) also reaches state S2 (from Finding 
    (b) Grouping does not obscure a severity difference > 1 tier
    (c) Reader can understand BOTH attack paths from a single description
    (d) **Fix comparison test**: Write a 1-line fix for each. If fixes modify DIFFERENT functions → separate hypotheses.
+   (e) A group is an additive composition proposal, not identity authority.
+       Preserve every exact constituent as an independently addressable claim
+       and verification obligation. Locus/title/Jaccard/severity and an
+       `Anti-absorption override` are proposal signals only. Only a separately
+       applied typed decision proving the same mechanism, preconditions,
+       effect, impact, and remediation scope may share one verification work
+       identity; the chain worker cannot authorize its own exception.
 7. **Severity inheritance**: When grouping findings of different severities, the hypothesis inherits the HIGHEST severity from its constituent findings.
 
 **Confidence-aware grouping**: Group LOW_CONFIDENCE findings with CONFIDENT findings of the same root cause where possible. Flag CONTESTED findings for verification priority.
@@ -165,7 +173,7 @@ Read:
 - {SCRATCHPAD}/hypotheses.md (grouped hypotheses from Agent 1)
 - {SCRATCHPAD}/finding_mapping.md (finding → hypothesis mapping from Agent 1)
 - {SCRATCHPAD}/enabler_results.md (enabler enumeration + cross-state interactions from Agent 1)
-- {SCRATCHPAD}/variable_finding_map.md (variable→finding cross-reference for variable-level matching - if missing, fall back to grep-based variable name matching in findings_inventory.md)
+- {SCRATCHPAD}/variable_finding_map.md (qualified state-symbol→finding cross-reference from the driver-owned graph resolver; if missing, grep is only a degraded recall fallback and cannot establish enumeration completeness)
 - {SCRATCHPAD}/chain_candidate_pairs.md (pre-filtered pairs with shared state/type — if present, evaluate ONLY these pairs)
 - {SCRATCHPAD}/findings_inventory.md (for full finding details when needed)
 
@@ -178,9 +186,17 @@ For specific chain candidates, read the relevant source files directly.
 Read {SCRATCHPAD}/chain_candidate_pairs.md. If present:
 - Evaluate ONLY the pairs listed in the STATE Pairs and TYPE Pairs tables
 - For each pair: read both findings' full details, verify the mechanical match is semantically valid
+- A `role: mutual-zero` row is nomination-only: confirm an authentication
+  anchor is operational while zero/unarmed AND a degenerate input derives to
+  zero/null and is accepted. Reject atomic/inert-until-armed initialization or
+  fail-closed zero rejection; compose only when the conjunction reaches a
+  privileged or otherwise harmful effect not established by either half alone.
 - Create CHAIN HYPOTHESIS for valid matches
 - Mark each evaluated pair as EXPLORED in composition_coverage.md
-- All pairs NOT in chain_candidate_pairs.md are EXCLUDED (no shared state or type) — mark them as a single summary row "EXCLUDED: {N} pairs with no shared state/type" in composition_coverage.md. Do NOT spend time evaluating them.
+- Do not disposition out-of-packet pairs from the bounded file. The driver
+  reconciles the complete set: real-signal tail rows route through
+  `chain_candidate_pairs_iter2.md`, and any unconsumed remainder stays in
+  `chain_composition_coverage_gaps.md`, never silently called excluded.
 
 If chain_candidate_pairs.md is MISSING, fall back to the original algorithm below.
 
@@ -188,7 +204,7 @@ If chain_candidate_pairs.md is MISSING, fall back to the original algorithm belo
 
 For each PARTIAL or REFUTED finding:
 1. Extract its missing precondition and type (STATE/ACCESS/TIMING/EXTERNAL/BALANCE)
-2. **For STATE-type preconditions**: extract the specific state variable name(s). Use variable_finding_map.md to find ALL findings that write to the SAME variable - match on variable names, not just descriptions.
+2. **For STATE-type preconditions**: extract the specific qualified state symbol(s). Use variable_finding_map.md to find ALL findings mechanically bound to the SAME symbol (declaration/read/write/reference). Do not merge same-bare fields from different contracts/modules and do not infer extra pairs outside the driver-owned bounded ledgers.
 3. Search ALL CONFIRMED/PARTIAL findings for matching postconditions - across ALL severity tiers and vulnerability classes. **Also search the low-confidence candidate enablers** (UNVERIFIED / NEEDS_VERIFICATION / LOW_CONFIDENCE findings, including the driver's `## STEP 0a-LC` rows in `enabler_results.md` — ENUMGAP/deriver candidates carry `Postconditions Created` + type tags for exactly this match). A blocked finding may ALSO be one of these unverified candidates.
 4. If found: Create CHAIN HYPOTHESIS with combined attack sequence. **If either constituent is an unverified candidate enabler, mark the chain LOW-CONFIDENCE** (Match Strength WEAK unless the postcondition→precondition match is exact) — it remains a hypothesis sent to verification, which confirms or refutes it. Never report such a chain as confirmed without verification.
 
@@ -266,19 +282,25 @@ After chain matching, write a coverage map of finding pairs you considered:
 
 Rules: List pairs where at least one has a postcondition or missing precondition. Cross-class pairs (state + token, access + external) are HIGH PRIORITY.
 
-## PHASE 3: RAG VALIDATION FOR CHAINS
+## PHASE 3: ADDITIVE PRECEDENT TEST IDEAS (AFTER CODE PLAN)
 
-For each chain hypothesis:
-1. assess_hypothesis_strength(hypothesis='Chain: {B title} enables {A title}')
-2. get_similar_findings(pattern='{combined attack description}')
-3. If local results < 5: search_solodit_live(keywords='{chain pattern}', impact=['HIGH','MEDIUM'], quality_score=3, max_results=20)
-4. If historical precedent found → upgrade chain severity
+First finish and record every code-derived chain hypothesis, negative/unknown
+pair disposition, combined-impact claim, and verification plan from Phases 1-2.
+Only after that plan is sealed may you read the centralized, driver-derived
+`{SCRATCHPAD}/precedent_context.md`. Do not run fresh RAG/database/web searches
+inside this discriminator.
 
-**RAG fallback**: If unified-vuln-db tools fail or return errors (missing deps, timeout, empty DB), skip RAG validation for chains. Use WebSearch as fallback: search `site:solodit.xyz {chain pattern}` for each chain hypothesis. If WebSearch also fails, proceed without historical validation — chain severity is determined by the postcondition-precondition match logic above, not by RAG. Do NOT retry failed MCP calls.
+Use supporting/context rows only to append extra positive chain paths or test
+ideas under a separate `Precedent-suggested additions` subsection. They cannot
+erase a pair, support a negative disposition, change confidence/verdict/severity,
+or replace code-derived evidence. Refuting precedent is deliberately withheld
+from this projection because the pipeline's measured failure mode is mistaken
+safe demotion. An empty or unavailable projection changes nothing.
 
 ## Output
 
-Update {SCRATCHPAD}/hypotheses.md - add chain hypotheses to the hypothesis table
+Do not update {SCRATCHPAD}/hypotheses.md. It is an immutable Agent-1 output;
+downstream consumers read the dedicated chain delta directly.
 Write:
 - {SCRATCHPAD}/synthesis_full.md - full analysis (enabler + grouping + chain results)
 - {SCRATCHPAD}/chain_hypotheses.md - chain summary with:
@@ -334,28 +356,38 @@ ITERATIVE_CHAIN_COMPOSITION(SCRATCHPAD):
 Task(subagent_type="security-analyzer", prompt="
 You are the Chain Composition Agent - ITERATION 2 (targeted cross-class pass).
 
-The first chain analysis identified {M} chains. {U} cross-class finding pairs were NOT explored.
-Analyze ONLY these unexplored pairs for compound attack paths.
+The first chain analysis identified {M} chains. Analyze every pair in the
+bounded iteration-2 tail packet for compound attack paths.
 
 ## Your Inputs
+- {SCRATCHPAD}/chain_candidate_pairs_iter2.md (authoritative bounded shard from the exact typed tail manifest)
 - {SCRATCHPAD}/composition_coverage.md (focus on NOT EXPLORED rows)
 - {SCRATCHPAD}/chain_hypotheses.md (do NOT duplicate existing chains)
 - {SCRATCHPAD}/findings_inventory.md (full finding details)
 
 ## Unexplored Pairs
-{PASTE UNEXPLORED CROSS-CLASS PAIRS - max 15}
+{CURRENT MANIFEST-BOUND SHARD - normally max 15}
 
 ## Your Task
 For EACH pair:
 1. Read both findings' full details
 2. Check: does A's postcondition enable B's precondition? And vice versa?
 3. If YES: create CHAIN HYPOTHESIS (use Chain Hypothesis Format from chain_hypotheses.md)
-4. Validate via RAG
+4. After sealing all code-derived dispositions, optionally read the centralized
+   `precedent_context.md` for additive positive paths/test ideas only. Do not
+   run fresh RAG and never change confidence, verdict, severity, proof status,
+   negative dispositions, or remaining investigation depth from precedent.
 
 ## Output
 Write to {SCRATCHPAD}/chain_iteration2.md
-Append new chains to {SCRATCHPAD}/chain_hypotheses.md
-Update {SCRATCHPAD}/composition_coverage.md
+Write every new chain and every coverage disposition into
+{SCRATCHPAD}/chain_iteration2.md only. Treat chain_hypotheses.md and
+composition_coverage.md as immutable inputs; the driver applies a digest-bound
+merge after the delta passes its gates.
+In chain_iteration2.md, write `## Tail Pair Dispositions` with exact columns
+`Pair ID | Finding A | Finding B | Disposition | Evidence`, one row per shard
+pair. Copy Pair ID exactly. A COMPOSED row cites its new CH-N identity and
+routes to ordinary independent verification; it is not self-certified.
 
 Return: 'DONE: {N} new chains from {U} unexplored pairs'
 ")
@@ -363,8 +395,9 @@ Return: 'DONE: {N} new chains from {U} unexplored pairs'
 
 | Condition | Effect |
 |-----------|--------|
-| 0 unexplored cross-class Medium+ pairs | Skip iteration 2 |
-| Hard cap | 2 iterations maximum |
+| Exact typed tail denominator is 0 | Clean no-op; skip worker launch |
+| More rows remain after one shard | Driver advances the hash-bound cursor and launches the next bounded shard |
+| Declared time/shard budget stops continuation | Preserve exact unresolved-composition debt and a report-visible assurance limitation; never call clean |
 
 ---
 
@@ -400,7 +433,9 @@ Chain analysis upgraded these findings:
 For EACH upgraded finding:
 1. Re-analyze with the CHAIN CONTEXT (the enabler finding is now known)
 2. Trace the COMPLETE attack sequence (enabler → blocked finding → impact)
-3. Validate the chain with RAG: search_solodit_live(keywords='<chain pattern>')
+3. After sealing the code-derived chain trace, use centralized
+   `precedent_context.md` only for additional positive test ideas; do not run
+   fresh RAG and do not use precedent to reject or demote the chain
 4. Compute impact with REAL constants for the COMBINED attack
 5. Apply Rule 10: Use worst realistic operational parameters for severity
 

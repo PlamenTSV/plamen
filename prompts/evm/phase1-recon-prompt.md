@@ -1,5 +1,11 @@
 # Phase 1: Recon Agent Prompt Template
 
+> **Legacy compatibility template.** The deterministic V2 driver uses
+> `prompts/evm/v2/phase1-recon-prompt.md`. V2 recon receives no MCP; locked
+> local tools and driver-produced artifacts are authoritative, and precedent
+> research is deferred to post-freeze `rag_sweep`. The MCP procedures below
+> apply only to an explicitly receipt-authorized legacy/manual transport.
+
 > **Usage**: Orchestrator reads this file and spawns recon agents with these prompts.
 > Replace `{path}`, `{scratchpad}`, `{docs_path_or_url_if_provided}`, `{network_if_provided}`, `{scope_file_if_provided}`, `{scope_notes_if_provided}` with actual values. Omit lines for empty placeholders.
 >

@@ -118,8 +118,8 @@ def _make_hypothesis_scenario(sp, hypotheses_content, queue_rows):
     (sp / "verification_queue.md").write_text(header + "\n".join(body) + footer, encoding="utf-8")
 
 
-def test_dedup_collapses_same_hypothesis(tmp_path):
-    """3 INV-* IDs mapped to H-1 should collapse to 1 queue row."""
+def test_dedup_does_not_collapse_unproven_multi_member_hypothesis(tmp_path):
+    """Raw Markdown grouping cannot destructively collapse queue members."""
     sp = tmp_path / "scratchpad"
     sp.mkdir()
 
@@ -141,17 +141,17 @@ def test_dedup_collapses_same_hypothesis(tmp_path):
 
     from plamen_parsers import _dedup_queue_by_hypothesis, parse_verification_queue_rows
     removed = _dedup_queue_by_hypothesis(sp)
-    assert removed == 2, f"Expected 2 removed (3→1 for H-1), got {removed}"
+    assert removed == 0
 
     rows = parse_verification_queue_rows(sp)
     finding_ids = [r.get("finding id", "").upper() for r in rows]
-    assert "H-1" in finding_ids, "Collapsed row should use hypothesis ID"
+    assert {"INV-001", "INV-002", "INV-003"} <= set(finding_ids)
     assert "H-2" in finding_ids, "Single-constituent hypothesis should also use hypo ID"
-    assert len(rows) == 2
+    assert len(rows) == 4
 
 
-def test_dedup_keeps_highest_severity(tmp_path):
-    """Collapsed row should keep the highest severity from constituents."""
+def test_dedup_preserves_each_severity_for_unproven_group(tmp_path):
+    """Proposal-only grouping preserves each constituent and its severity."""
     sp = tmp_path / "scratchpad"
     sp.mkdir()
 
@@ -168,11 +168,13 @@ def test_dedup_keeps_highest_severity(tmp_path):
 
     from plamen_parsers import _dedup_queue_by_hypothesis, parse_verification_queue_rows
     removed = _dedup_queue_by_hypothesis(sp)
-    assert removed == 1
+    assert removed == 0
 
     rows = parse_verification_queue_rows(sp)
-    assert len(rows) == 1
-    assert rows[0].get("severity", "").lower() == "critical"
+    assert len(rows) == 2
+    assert {row.get("severity", "").lower() for row in rows} == {
+        "critical", "medium"
+    }
 
 
 def test_dedup_unmapped_rows_preserved(tmp_path):
@@ -253,12 +255,12 @@ def test_dedup_finding_mapping_preferred(tmp_path):
 
     from plamen_parsers import _dedup_queue_by_hypothesis, parse_verification_queue_rows
     removed = _dedup_queue_by_hypothesis(sp)
-    assert removed == 1  # INV-001 + INV-002 → H-1 (1 removed)
+    assert removed == 0
 
     rows = parse_verification_queue_rows(sp)
-    assert len(rows) == 2
+    assert len(rows) == 3
     finding_ids = {r.get("finding id", "").upper() for r in rows}
-    assert "H-1" in finding_ids
+    assert {"INV-001", "INV-002"} <= finding_ids
     assert "H-2" in finding_ids
 
 
@@ -282,21 +284,22 @@ def test_dedup_chain_hypotheses(tmp_path):
 
     from plamen_parsers import _dedup_queue_by_hypothesis, parse_verification_queue_rows
     removed = _dedup_queue_by_hypothesis(sp)
-    assert removed == 1  # INV-002 + INV-003 → CH-1
+    assert removed == 0
 
     rows = parse_verification_queue_rows(sp)
     finding_ids = {r.get("finding id", "").upper() for r in rows}
     assert "H-1" in finding_ids
-    assert "CH-1" in finding_ids
-    assert len(rows) == 2
+    assert {"INV-002", "INV-003"} <= finding_ids
+    assert "CH-1" not in finding_ids
+    assert len(rows) == 3
 
 
 # ---------------------------------------------------------------------------
 # Fix 3: [LIKELY-DUP] blocking for high-confidence duplicates
 # ---------------------------------------------------------------------------
 
-def test_blocking_high_title_overlap(tmp_path):
-    """Title overlap >= 0.90 should BLOCK promotion."""
+def test_high_title_overlap_is_tag_only(tmp_path):
+    """Title overlap >= 0.90 is a hint, not a pre-verification drop."""
     sp = tmp_path / "scratchpad"
     sp.mkdir()
 
@@ -324,11 +327,12 @@ def test_blocking_high_title_overlap(tmp_path):
 
     from plamen_validators import _promote_depth_findings_to_inventory
     promoted = _promote_depth_findings_to_inventory(sp)
-    assert "DST-1" not in promoted, "High title overlap (>=0.90) should block promotion"
+    assert "DST-1" in promoted
+    assert "LIKELY-DUP" in (sp / "findings_inventory.md").read_text(encoding="utf-8")
 
 
-def test_blocking_location_plus_moderate_title(tmp_path):
-    """Location overlap + title overlap >= 0.50 should BLOCK."""
+def test_location_plus_moderate_title_is_tag_only(tmp_path):
+    """Location plus moderate title similarity still reaches verification."""
     sp = tmp_path / "scratchpad"
     sp.mkdir()
 
@@ -363,7 +367,8 @@ def test_blocking_location_plus_moderate_title(tmp_path):
 
     from plamen_validators import _promote_depth_findings_to_inventory
     promoted = _promote_depth_findings_to_inventory(sp)
-    assert "DST-1" not in promoted, "Location overlap + title >= 0.50 should block"
+    assert "DST-1" in promoted
+    assert "LIKELY-DUP" in (sp / "findings_inventory.md").read_text(encoding="utf-8")
 
 
 def test_tagging_low_title_overlap_with_location(tmp_path):
@@ -472,7 +477,9 @@ def test_parse_hypothesis_constituents_from_hypotheses(tmp_path):
     )
 
     from plamen_parsers import _parse_hypothesis_constituents
-    mapping = _parse_hypothesis_constituents(sp)
+    mapping = _parse_hypothesis_constituents(
+        sp, apply_chain_grouping_authority=False
+    )
     assert "H-1" in mapping
     assert set(mapping["H-1"]) == {"INV-001", "INV-002", "INV-003"}
     assert "H-2" in mapping
@@ -498,6 +505,8 @@ def test_parse_hypothesis_constituents_from_mapping(tmp_path):
     (sp / "hypotheses.md").write_text("## Hypothesis H-5\nblah\n", encoding="utf-8")
 
     from plamen_parsers import _parse_hypothesis_constituents
-    mapping = _parse_hypothesis_constituents(sp)
+    mapping = _parse_hypothesis_constituents(
+        sp, apply_chain_grouping_authority=False
+    )
     assert set(mapping.get("H-5", [])) == {"INV-010", "INV-011"}
     assert set(mapping.get("H-6", [])) == {"INV-012"}

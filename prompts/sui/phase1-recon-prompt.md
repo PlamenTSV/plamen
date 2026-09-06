@@ -1,5 +1,9 @@
 # Phase 1: Recon Agent Prompt Template - Sui Move
 
+> **Legacy compatibility template.** V2 uses
+> `prompts/sui/v2/phase1-recon-prompt.md`; recon receives no MCP and external
+> precedent is deferred to post-freeze `rag_sweep`.
+
 > **Usage**: Orchestrator reads this file and spawns recon agents with these prompts for Sui Move packages.
 > Replace `{path}`, `{scratchpad}`, `{docs_path_or_url_if_provided}`, `{network_if_provided}`, `{scope_file_if_provided}`, `{scope_notes_if_provided}` with actual values. Omit lines for empty placeholders.
 >

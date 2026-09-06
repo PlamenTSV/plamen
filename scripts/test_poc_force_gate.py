@@ -22,6 +22,7 @@ Run: pytest scripts/test_poc_force_gate.py -v
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -152,28 +153,25 @@ def test_ttl_archival_label_independent():
 
 
 # ===========================================================================
-# Anchor 3 — FULLY-TRUSTED UPGRADE: valid blocker -> SKIP remains valid
+# Anchor 3 — FULLY-TRUSTED prose: proposal-only -> PoC remains required
 # ===========================================================================
 
-def test_fully_trusted_upgrade_skip_valid():
+def test_fully_trusted_upgrade_prose_has_no_skip_authority():
     content = _FULLY_TRUSTED_UPGRADE.format(poc_class="structural")
     assert V._has_concrete_material_harm(content) is True
-    assert V._has_fully_trusted_actor_blocker(content) is True
-    assert V._has_valid_skip_blocker(content, "High") is True
+    assert V._has_fully_trusted_actor_blocker(content) is False
+    assert V._has_valid_skip_blocker(content, "High") is False
     row = _row("H-03", "High", "structural")
-    assert V._poc_contract_required(row, "thorough", content) is False
+    assert V._poc_contract_required(row, "thorough", content) is True
 
 
-def test_fully_trusted_upgrade_label_independent():
+def test_fully_trusted_upgrade_proposal_never_relaxes_any_label():
     for declared in ("unit", "property", "structural"):
         content = _FULLY_TRUSTED_UPGRADE.format(poc_class=declared)
         row = _row("H-03", "High", declared)
-        # A declared unit/property does NOT relax via the blocker (anti-gaming
-        # floor): the blocker only excuses a NON-testable declared/queue class
-        # from being FORCED. A finding already declared unit/property stays
-        # required regardless of blocker (it was already testable).
-        expected = declared in {"unit", "property"}
-        assert V._poc_contract_required(row, "thorough", content) is expected, declared
+        # Neither a declared class nor a trust phrase can manufacture the typed
+        # independent authority required to relax verification.
+        assert V._poc_contract_required(row, "thorough", content) is True, declared
 
 
 # ===========================================================================
@@ -208,11 +206,12 @@ def test_default_force_regardless_of_declared_class():
         assert V._poc_contract_required(row, "core", content) is True, declared
 
 
-def test_valid_blocker_suppresses_floor_all_six_categories():
-    # FULLY_TRUSTED_DESIGN
+def test_skip_taxonomy_rejects_raw_trust_and_keeps_other_blockers():
+    # FULLY_TRUSTED_DESIGN prose is proposal-only; the P0-H suite separately
+    # covers the valid typed-authority path.
     assert V._has_valid_skip_blocker(
         _FULLY_TRUSTED_UPGRADE.format(poc_class="structural"), "High"
-    ) is True
+    ) is False
     # DEPLOY_OR_TX_ORDERING
     assert V._has_valid_skip_blocker(
         _DEPLOY_GAP_RACE.format(poc_class="structural"), "High"
@@ -245,6 +244,49 @@ def test_valid_blocker_suppresses_floor_all_six_categories():
         "but the guard already prevents this path.\n"
     )
     assert V._has_valid_skip_blocker(refuted_content, "High") is True
+
+
+def test_bare_internal_fund_loss_is_not_an_external_dependency_blocker():
+    """A material-harm phrase alone cannot manufacture external provenance.
+
+    This is the discriminator boundary: otherwise any ordinary in-scope loss
+    of funds is silently excused whenever no fork RPC is configured.
+    """
+    content = (
+        "**Verdict**: CONFIRMED\n"
+        "**Material Harm**: The internal accounting path causes loss of funds "
+        "for depositors.\n"
+        "### PoC Attempt\n"
+        "- Attempted: NO\n"
+        "- PoC Not Attempted Because: "
+        "EXTERNAL_DEPENDENCY_NO_FORK_OR_ADDRESS\n"
+    )
+    assert V._matches_external_integration_harm(content) is True
+    assert V._has_external_integration_provenance(content) is False
+    assert V._has_valid_skip_blocker(content, "High") is False
+
+
+def test_external_dependency_blocker_requires_harm_and_external_provenance():
+    content = (
+        "**Verdict**: CONFIRMED\n"
+        "**Material Harm**: An untrusted external integration returns a "
+        "recipient that misroutes funds to the wrong destination.\n"
+        "### PoC Attempt\n"
+        "- Attempted: NO\n"
+        "- PoC Not Attempted Because: "
+        "EXTERNAL_DEPENDENCY_NO_FORK_OR_ADDRESS\n"
+    )
+    assert V._matches_external_integration_harm(content) is True
+    assert V._has_external_integration_provenance(content) is True
+    assert V._has_valid_skip_blocker(content, "High") is True
+
+    provenance_without_harm = (
+        "**Verdict**: CONFIRMED\n"
+        "The path invokes an external integration, but no material state or "
+        "fund delta is asserted.\n"
+    )
+    assert V._has_external_integration_provenance(provenance_without_harm) is True
+    assert V._matches_external_integration_harm(provenance_without_harm) is False
 
 
 # ===========================================================================
@@ -286,9 +328,10 @@ def test_no_demote_forced_poc_fail_without_harm_assertion(tmp_path):
     )
 
 
-def test_demote_allowed_when_harm_actually_tested(tmp_path):
-    # Positive control: Attempted: YES with a concrete (non-N/A) Result DOES
-    # demote — a harm-asserting PoC that ran and failed.
+def test_prose_claim_that_harm_was_tested_cannot_self_authorize_demotion(tmp_path):
+    # P1-E: Attempted/Result prose proves neither oracle provenance nor
+    # exhaustive negative scope.  Without the candidate-bound runtime
+    # assessment, preserve severity and create explicit re-verification debt.
     fid = "H-91"
     _queue(tmp_path, fid, "High", "unit")
     (tmp_path / f"verify_{fid}.md").write_text(
@@ -302,9 +345,14 @@ def test_demote_allowed_when_harm_actually_tested(tmp_path):
         encoding="utf-8",
     )
     demotions = V._apply_poc_fail_demotions(tmp_path, "thorough")
-    assert len(demotions) == 1
-    assert demotions[0]["finding_id"] == fid
-    assert demotions[0]["new_severity"] == "Informational"
+    assert demotions == []
+    debt = json.loads(
+        (tmp_path / "execution_scope_reverification.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert debt["candidates"][0]["candidate_id"] == fid
+    assert debt["candidates"][0]["severity_preserved"] == "High"
 
 
 def test_no_demote_helper_direct():
@@ -337,16 +385,15 @@ def test_poc_contract_required_default_signature_unaffected():
 
 # ===========================================================================
 # Regression: a negated PoC-LEDGER phrase must not suppress a POSITIVE harm
-# (the H-01 bug — "No fund-drain assertion attempted" made the negation-aware
-# guard suppress the many positive "drain ... is achievable" mentions, so a
-# flagship semi-trusted fund-drain read as "no material harm" and skipped).
+# ("No fund-drain assertion attempted" can make a negation-aware guard suppress
+# positive "drain ... is achievable" mentions and misclassify material harm).
 # ===========================================================================
 
 def test_negated_ledger_phrase_does_not_suppress_positive_harm():
     content = (
-        "**Severity**: High — realized via a semi-trusted HARVESTER role.\n"
+        "**Severity**: High — realized via a semi-trusted OPERATOR role.\n"
         "A caller-supplied selector on a direct dispatch enables drain of a "
-        "custodied token; the token's require_auth is auto-satisfied so the "
+        "custodied asset; an authorization condition is auto-satisfied so the "
         "custodied balance drains.\n"
         "### PoC Attempt\n- Attempted: NO\n"
         "- PoC Not Attempted Because: STRUCTURAL_NO_EXECUTABLE_HARM_ASSERTION\n"

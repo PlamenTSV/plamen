@@ -2,18 +2,18 @@
 
 > Complete dependency guide for all platforms. **Not sure what you need?** See [getting-started.md](getting-started.md) — most users only need tools for their target chain.
 >
-> `plamen setup` auto-installs chain toolchains, and `plamen rag` builds/rebuilds the RAG vulnerability database separately. This page documents manual installation and troubleshooting.
+> `plamen setup` installs only exact checksum-backed tool recipes. Toolchains whose upstream bootstrap channel is mutable remain operator-provided and are reported by `plamen doctor`. `plamen rag` builds/rebuilds the RAG vulnerability database separately.
 
 ## Quick Start
 
 ```bash
 # Auto-install everything (interactive)
 plamen setup                                    # if PATH is set
-cd ~/.plamen && python3 plamen.py setup         # macOS/Linux (before PATH)
+cd ~/.plamen && python3.12 plamen.py setup      # macOS/Linux (before PATH)
 cd $HOME\.plamen; python plamen.py setup        # Windows PowerShell (before PATH)
 ```
 
-The setup wizard detects your OS and installed tools, then offers to install missing ones. For manual installation or troubleshooting, see below.
+The setup wizard detects your OS and installed tools, installs only admitted locked recipes, and labels everything else as an external prerequisite. It never executes pipe-to-shell, package-manager, `latest`, or moving-branch installers.
 
 ---
 
@@ -21,12 +21,15 @@ The setup wizard detects your OS and installed tools, then offers to install mis
 
 | Tool | Version | Purpose | Install |
 |------|---------|---------|---------|
-| Claude Code and/or Codex CLI | latest | AI runtime (one or both) | `npm install -g @anthropic-ai/claude-code` and/or [github.com/openai/codex](https://github.com/openai/codex) |
-| Python | 3.11-3.12 (recommended) | MCP servers, wrapper | [python.org](https://python.org) |
-| Node.js | 18+ | npm-based MCP servers | [nodejs.org](https://nodejs.org) |
+| Claude Code and Codex CLI payloads | Claude Code 2.1.252; Codex 0.152.0 | Managed AI runtimes (authenticate the backend you use) | `plamen install` materializes and signs both exact payloads; no global package is required |
+| CPython | 3.12 (required) | Reproducible wheel ABI for the private runtime | [python.org](https://python.org) |
+| Managed Node.js/npm | Node.js 24.20.0; npm 11.19.0 | Executes the authenticated backend and MCP closures | Materialized and checksum-verified by `plamen install`; ambient Node/npm/npx are not used |
 | Git | any | Submodules, version control | [git-scm.com](https://git-scm.com) |
 | Rust | stable | Solana (Trident fuzzer), Soroban contracts, L1 Rust clients | [rustup.rs](https://rustup.rs) — Solana, Soroban, and L1 Rust |
-| `pywinpty>=2.0.14` (Windows only) | latest | PTY supervision transport for Claude workers | auto-installed by `plamen install` (gated `platform_system=="Windows"` in `requirements.txt`); macOS/Linux use stdlib `pty.openpty()` with `Popen` ownership + SIGCHLD reset |
+| `pywinpty` (Windows only) | exact + wheel SHA-256 | PTY supervision transport for Claude workers | private Python 3.12 runtime from `requirements-runtime-full.lock`; macOS/Linux use stdlib PTY support |
+| `pydantic` | exact + wheel SHA-256 | Typed mechanical contract schemas and validation | private Python 3.12 runtime from `requirements-runtime-full.lock` |
+| `markdown-it-py` | exact + wheel SHA-256 | Structure-aware parsing of methodology and finding artifacts | private Python 3.12 runtime from `requirements-runtime-full.lock` |
+| `jsonschema` | exact + wheel SHA-256 | Strict provider-output validation | private Python 3.12 runtime from `requirements-runtime-full.lock` |
 
 > **PTY-supervised execution (v2.1.0)**: the driver now drives each Claude/Codex
 > worker through a pseudo-terminal and infers turn completion from artifacts
@@ -38,18 +41,24 @@ The setup wizard detects your OS and installed tools, then offers to install mis
 > `claude --version` and the driver always falls back to a slower respawn path
 > if a probe is inconclusive — no extra setup is required.
 
-### Windows: Developer Mode (required)
+### Windows: Developer Mode (only for external toolchains that need it)
 
-Plamen's installer creates symlinks from `~/.plamen/` into `~/.claude/` (and `~/.codex/plamen/` with `--codex`). On Windows, **file symlinks require Developer Mode** (directory junctions work without it, but file symlinks do not).
+Plamen installation does not require a mutable-checkout symlink. It publishes a
+signed package at `~/.plamen/`, uses a receipt-bound Claude projection with
+governed link/copy fallbacks, and transactionally copies/merges Codex integration
+files. Windows Developer Mode is still needed by some external chain toolchains
+that create their own file symlinks.
 
 **Enable Developer Mode** (one-time):
 - **Settings UI**: Settings > System > For Developers > toggle ON
 - **Admin PowerShell**: `reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock /v AllowDevelopmentWithoutDevLicense /t REG_DWORD /d 1 /f`
 - **Admin CMD**: `reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock /v AllowDevelopmentWithoutDevLicense /t REG_DWORD /d 1 /f`
 
-This is also required later for Solana builds (`cargo-build-sbf` creates symlinks internally).
+For example, Solana builds may require it because `cargo-build-sbf` creates
+symlinks internally.
 
-> **macOS / Linux**: No extra setup needed. Symlinks work without elevated privileges.
+> **macOS / Linux**: Plamen uses native atomic publication and does not require
+> an elevated mutable-source symlink setup.
 
 ---
 
@@ -57,9 +66,9 @@ This is also required later for Solana builds (`cargo-build-sbf` creates symlink
 
 | Tool | Purpose | Install | Required? |
 |------|---------|---------|-----------|
-| Foundry (forge, cast, anvil) | Build, test, invariant fuzz, fork testing | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` | Yes |
-| Slither | Static analysis (MCP) | `pip install slither-analyzer` | Recommended |
-| Medusa | Stateful fuzzing (Thorough mode) | [github.com/crytic/medusa/releases](https://github.com/crytic/medusa/releases) | Optional |
+| Foundry (forge, cast, anvil) | Build, test, invariant fuzz, fork testing | Operator-provided reviewed release from [Foundry](https://book.getfoundry.sh/getting-started/installation) | Yes |
+| Slither | Static analysis (MCP) | Private hash-locked Plamen runtime | Recommended |
+| Medusa | Stateful fuzzing (Thorough mode) | `plamen setup` exact v1.5.1 via Go checksum verification | Optional |
 
 ### EVM Platform Notes
 
@@ -67,7 +76,7 @@ This is also required later for Solana builds (`cargo-build-sbf` creates symlink
 **macOS (Apple Silicon)**: Foundry works natively via Rosetta or arm64.
 **Linux**: Foundry works natively.
 
-Medusa requires Go. The setup wizard installs Go automatically if missing (`go install github.com/crytic/medusa@latest`).
+Medusa requires an operator-provided Go SDK. Plamen will not bootstrap the SDK, but can install exact Medusa v1.5.1 through Go's module checksum mechanism once Go is present.
 
 ---
 
@@ -76,9 +85,9 @@ Medusa requires Go. The setup wizard installs Go automatically if missing (`go i
 | Tool | Purpose | Install | Required? |
 |------|---------|---------|-----------|
 | Solana CLI | Toolchain, account data | [docs.anza.xyz](https://docs.anza.xyz/cli/install) | Yes |
-| Anchor (via AVM) | Build Anchor programs | `avm install latest && avm use latest` | Yes (for Anchor projects) |
-| Trident | Stateful fuzzing (v0.11+) | `cargo install trident-cli` | Recommended |
-| Scout (cargo-scout-audit) | Static analysis (Anchor + native Solana) | `cargo install cargo-scout-audit` | Recommended |
+| Anchor (via AVM) | Build Anchor programs | Operator-provided reviewed release | Yes (for Anchor projects) |
+| Trident | Stateful fuzzing | Operator-provided reviewed release; prerelease-only channels are not admitted | Recommended |
+| Solana Fender | Optional Solana static analysis | Exact reviewed `solana_fender` release | Optional |
 
 ### Solana Platform Notes
 
@@ -99,9 +108,7 @@ Fix (choose one):
 
 **2. Install OpenSSL** (required for Trident fuzz compilation):
 
-```
-winget install ShiningLight.OpenSSL.Dev
-```
+Provide a reviewed OpenSSL build through your organization's normal software channel. Plamen deliberately does not invoke `winget` or another mutable resolver.
 
 The `plamen.py` wrapper auto-detects OpenSSL in standard locations and sets environment variables. It checks (in order):
 1. Existing `OPENSSL_LIB_DIR` / `OPENSSL_INCLUDE_DIR` env vars
@@ -126,7 +133,7 @@ If `anchor build` fails with `error: failed to load manifest for workspace membe
 
 - Solana CLI installs natively on both Intel and Apple Silicon
 - Trident v0.11+ works on Apple Silicon (no honggfuzz dependency)
-- OpenSSL is available via Homebrew: `brew install openssl` (usually pre-installed via Xcode)
+- Provide OpenSSL through a reviewed OS or organization software channel; Plamen does not invoke Homebrew.
 
 </details>
 
@@ -157,7 +164,7 @@ If `anchor build` fails with `error: failed to load manifest for workspace membe
 |------|---------|---------|-----------|
 | Aptos CLI | Build, test, prove | [aptos.dev/build/cli](https://aptos.dev/build/cli) |  Yes |
 
-Works on all platforms. On macOS with Homebrew: `brew install aptos`. Otherwise the setup wizard uses the official Python installer script.
+Works on all platforms. The Aptos CLI is operator-provided because its upstream bootstrap/package-manager channels are mutable; Plamen validates visibility but does not execute those channels.
 
 ---
 
@@ -167,7 +174,7 @@ Works on all platforms. On macOS with Homebrew: `brew install aptos`. Otherwise 
 |------|---------|---------|-----------|
 | Sui CLI (via suiup) | Build, test | [docs.sui.io](https://docs.sui.io/guides/developer/getting-started/sui-install) | Yes |
 
-Works on all platforms. The setup wizard installs via `suiup` (the official Sui version manager). On Windows, a bundled Python installer script handles the download since bash is not always available.
+Works on all platforms. The Sui CLI is operator-provided because moving `suiup` channels are not an immutable installation boundary.
 
 ---
 
@@ -177,8 +184,8 @@ Works on all platforms. The setup wizard installs via `suiup` (the official Sui 
 |------|---------|---------|-----------|
 | Stellar CLI | Build, deploy, test Soroban contracts | [stellar.org/docs](https://stellar.org/docs/build/smart-contracts/getting-started) | Yes |
 | Rust (stable) | Soroban contract compilation | [rustup.rs](https://rustup.rs) | Yes |
-| Scout (cargo-scout-audit) | Soroban static analysis | `cargo install cargo-scout-audit` | Recommended |
-| cargo-fuzz | Thorough-mode libFuzzer fuzzing | `rustup toolchain install nightly && cargo install cargo-fuzz` | Recommended |
+| Scout (cargo-scout-audit) | Soroban static analysis | `plamen setup` exact 0.3.16 + Cargo lock | Recommended |
+| cargo-fuzz | Thorough-mode libFuzzer fuzzing | `plamen setup` exact 0.13.2 + pinned nightly-2026-08-01 (not offered on Windows) | Recommended |
 
 Soroban contracts are Rust-based. The Stellar CLI (`stellar`) handles contract building and testing. Install Rust stable toolchain first, then install the Stellar CLI.
 
@@ -209,27 +216,16 @@ platforms.
 |------|---------|---------|-----------|
 | Go 1.25+ | Build Go-based node clients | [go.dev/dl](https://go.dev/dl/) | Yes (Go clients) |
 | Rust (stable) | Build Rust-based node clients | [rustup.rs](https://rustup.rs) (preferred) | Yes (Rust clients) |
-| scip-go | SCIP indexer for Go | `go install github.com/scip-code/scip-go/cmd/scip-go@latest` | Recommended |
-| rust-analyzer | SCIP indexer for Rust | `rustup component add rust-analyzer` (or `brew install rust-analyzer` on Homebrew Rust; or `cargo install rust-analyzer` when neither rustup nor brew is available) | Recommended |
-| cargo-fuzz | libFuzzer harness runner for Rust (Thorough-mode fuzzing) | `rustup toolchain install nightly && cargo install cargo-fuzz` | Recommended (L1 Rust) |
-| Opengrep | Cross-ecosystem static analysis | [github.com/opengrep/opengrep](https://github.com/opengrep/opengrep) | Recommended |
-| ast-grep | Structural code search | `cargo install ast-grep --locked` (or `brew install ast-grep` on macOS); auto-installed by `plamen setup` | Recommended |
+| scip-go | SCIP indexer for Go | `plamen setup` exact version from the governance lock | Recommended |
+| rust-analyzer | SCIP indexer for Rust | Operator-provided reviewed component/build | Recommended |
+| cargo-fuzz | libFuzzer harness runner for Rust (Thorough-mode fuzzing) | `plamen setup` exact 0.13.2 + nightly-2026-08-01 (Unix only) | Recommended (L1 Rust) |
+| ast-grep | Structural code search | `plamen setup` exact 0.45.2 + Cargo lock | Recommended |
 | CodeQL CLI | Advanced static analysis | [github.com/github/codeql-cli-binaries](https://github.com/github/codeql-cli-binaries) | Optional |
 
-> **macOS — `brew install rust` vs `rustup`**: Plamen's auto-install of
-> `rust-analyzer` uses `rustup component add rust-analyzer`, which only works
-> when Rust came from [rustup.rs](https://rustup.rs). Homebrew's `rust` formula
-> ships the compiler but **not** the rustup multiplexer, so the
-> `component add` command fails. If you installed Rust via Homebrew, either
-> run `brew install rust-analyzer` separately or switch to rustup
-> (`brew uninstall rust && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`).
-> `plamen setup` detects Homebrew Rust and routes to `brew install` for
-> `rust-analyzer` and `ast-grep` automatically. Same applies to `ast-grep`
-> when installed via `cargo install` (needs rustup-managed cargo) vs
-> `brew install ast-grep` (standalone). On a box with **neither rustup nor
-> Homebrew** (e.g. a bare Linux/CI environment with only a system `cargo`),
-> `plamen setup` falls back to `cargo install rust-analyzer` — slower (builds
-> from source) but works everywhere.
+> **macOS/Linux Rust note**: Rust and rust-analyzer are operator-provided.
+> Plamen does not choose or mutate a Homebrew/rustup/system toolchain. Once a
+> working Cargo is visible, setup may install only the exact Cargo recipes in
+> the governance lock; `doctor` reports any remaining external prerequisite.
 
 These tools power the Phase 0.5 "Bake" step that batch-indexes repositories before depth analysis. The pipeline works without them (falls back to grep-based analysis), but SCIP indexing significantly improves cross-reference accuracy.
 
@@ -237,16 +233,21 @@ These tools power the Phase 0.5 "Bake" step that batch-indexes repositories befo
 
 ## MCP Servers & RAG
 
-MCP servers are shared between backends. Claude Code loads them from `mcp.json`; Codex loads them from `[mcp_servers.*]` TOML blocks in `~/.codex/config.toml` that `scripts/codex_adapter.py:generate_config_toml` generates from `mcp.json.example` at install time. The RAG database, Python packages, and Node MCP package versions in `mcp-packages/package.json` apply to both backends. A small subset is disabled or wrapped on Codex (`evm-chain-data` disabled due to MCP protocol version mismatch; four Python servers — `slither-analyzer`, `unified-vuln-db`, `farofino`, `solana-fender` — launched through `mcp-packages/schema-sanitizer.js`). See [mcp-servers.md](mcp-servers.md) for specifics.
+The locked MCP packages are shared installation assets, not ambient audit
+authority. Claude headless may load only `unified-vuln-db` during `rag_sweep`;
+the default Claude PTY and Codex audit transports load no MCP servers and use
+Web fallback for precedent context. Codex's optional global MCP blocks are for
+manual interoperability and are ignored by `codex exec` audit subprocesses.
+See [mcp-servers.md](mcp-servers.md) for the runtime matrix.
 
 | Component | Purpose | Install | Required? |
 |-----------|---------|---------|-----------|
-| unified-vuln-db | RAG vulnerability database | `pip install -r custom-mcp/unified-vuln-db/requirements.txt` | Recommended |
-| slither-mcp | Slither static analyzer bridge | `pip install -e custom-mcp/slither-mcp` | EVM only |
-| farofino-mcp | Aderyn/Slither fallback | `pip install -r custom-mcp/farofino-mcp/requirements.txt` | EVM only |
-| solana-fender | Solana security checks | `pip install -e custom-mcp/solana-fender` | Solana only |
+| unified-vuln-db | RAG vulnerability database | `requirements-runtime-full.lock` via `plamen install` | Recommended |
+| slither-mcp | Slither static analyzer bridge | reviewed local source + full lock | EVM only |
+| farofino-mcp | Aderyn/Slither fallback | reviewed local source + full lock | EVM only |
+| solana-fender | Solana security checks | reviewed local source + full lock | Solana only |
 
-> **Note**: The unified-vuln-db install pulls ~2GB (includes PyTorch for sentence-transformers). First MCP call per session loads ChromaDB and the all-MiniLM-L6-v2 model (~5s cold start). Subsequent calls are instant.
+> **Note**: The unified-vuln-db install pulls ~2GB (includes PyTorch for sentence-transformers). It is optional unless you choose Claude headless RAG; PTY/Codex audits avoid its cold start.
 
 ### API Keys
 
@@ -258,7 +259,9 @@ MCP servers are shared between backends. Claude Code loads them from `mcp.json`;
 | `HELIUS_API_KEY` | [helius.dev](https://helius.dev) | Solana on-chain data | Optional (free tier) |
 | RPC URL | Alchemy/Infura/public | Ethereum fork testing | Optional (free tier) |
 
-Set keys in `~/.claude/mcp.json` (Claude Code) after copying from `mcp.json.example`. On Codex set the same keys in `~/.codex/config.toml` under each `[mcp_servers.<name>.env]` block (generated by the adapter from the same `mcp.json.example`). See [MCP Servers](mcp-servers.md) for details.
+Set MCP-specific keys only when using the optional manual adapters. Audit-time
+Web and governed CLI credentials are supplied through the documented runtime
+environment; global MCP configuration is not inherited. See [MCP Servers](mcp-servers.md).
 
 ---
 
@@ -311,11 +314,12 @@ These are the most frequent post-install problems and their fixes. Run
 `plamen doctor` first — it checks most of these and exits non-zero on hard
 failures.
 
-- **No backend installed (`claude`/`codex` not found).** Plamen needs at least
-  one backend CLI in PATH. Install Claude Code (`npm install -g @anthropic-ai/claude-code`)
-  and/or the OpenAI Codex CLI ([github.com/openai/codex](https://github.com/openai/codex)).
-  `plamen doctor`'s `Backend` row shows which it found.
-- **`claude` is installed but unauthenticated ("Not logged in").** An
+- **Managed backend missing or mismatched.** Re-run `plamen.py install` from a
+  complete reviewed source checkout. Do not repair this with `npm install -g`,
+  an ambient Node/npm/npx executable, or a mutable package under `~/.plamen/`.
+  `plamen doctor` validates the signed current selection and exact managed
+  Claude 2.1.252/Codex 0.152.0 launchers.
+- **Claude is unauthenticated ("Not logged in").** An
   unauthenticated `claude -p` returns rc=0 with a "Not logged in" message and
   does no work, so an audit appears to start and then produces nothing.
   `plamen doctor` probes auth state and points at both supported paths: log in
@@ -335,13 +339,45 @@ failures.
   rust-analyzer. As of v2.1.0 these are installed with `--locked`, so they
   build against the tool's tested lockfile instead of pulling a newer,
   incompatible transitive dependency. If you install one of these manually, add
-  `--locked` yourself (e.g. `cargo install cargo-scout-audit --locked`).
+  both an exact version and `--locked`; setup uses `cargo-scout-audit` 0.3.16.
+- **Dependency audit is marked unavailable even though `govulncheck` or
+  `cargo-audit` is installed.** A zero-known-CVE result is accepted only
+  against an operator-owned, freshness-bound local advisory database. Set
+  `PLAMEN_GOVULNDB` (Go) and/or `PLAMEN_RUSTSEC_DB` (Rust) to directories
+  outside the target checkout. Each directory must contain
+  `plamen-advisory-source.json` with schema
+  `plamen.advisory_source.v1`, the governed `source_id` and `provider`, UTC
+  `as_of` and `expires_at` timestamps, and the SHA-256 of the directory's
+  sorted relative paths and bytes (excluding the manifest and `.git`). The
+  maximum validity window is seven days; stale, future-dated, expired,
+  target-controlled, or digest-mismatched data remains typed coverage debt.
+  The exact provider strings and policy live in
+  `verification_policy/toolchain_governance.v1.json`. Do not “refresh” only
+  the manifest: the receipt must be emitted by the process that refreshed the
+  advisory bytes.
+- **A Move or Soldeer build/test is skipped by the supply-chain gate.**
+  `Move.lock` and `soldeer.lock` are deliberately in the dependency
+  denominator, but OSV-Scanner does not currently list either format as
+  supported and Plamen does not claim an authoritative replacement. Until a
+  governed advisory provider/parser exists, this is an explicit unsupported
+  outcome rather than a false clean. Go projects are checked through `go.mod`
+  (the OSV-supported manifest) when `go.sum` is present. OSV-Scanner v2 is
+  invoked with `scan -L`,
+  `--offline`, and `--offline-vulnerabilities`.
+- **A tool version is later disclosed as vulnerable.** Add the affected
+  version-output token and/or exact executable SHA-256 to that tool's
+  `revocation_policy` in
+  `verification_policy/toolchain_governance.v1.json`. Runtime snapshot
+  construction evaluates this machine policy on Windows, Linux, and macOS and
+  fails closed before a revoked binary can become audit evidence. Empty
+  revocation lists mean “captured and reviewable,” not “permanently trusted”;
+  mutable installer channels remain explicitly marked `GOVERNED_DEBT`.
 
 ### Windows: `error 1314: A required privilege is not held by the client`
 Enable Developer Mode. See [Solana > Windows](#solana-platform-notes) above.
 
 ### Windows: `Could not find directory of OpenSSL installation`
-Install OpenSSL: `winget install ShiningLight.OpenSSL.Dev`. See [Solana > Windows](#solana-platform-notes) above.
+Provide a reviewed OpenSSL build and rerun `plamen doctor`. See [Solana > Windows](#solana-platform-notes) above.
 
 ### macOS: `Unsupported MAC OS X version` when installing honggfuzz
 You don't need honggfuzz. Trident v0.11+ uses TridentSVM. Just `cargo install trident-cli`.
@@ -366,22 +402,20 @@ Run `plamen rag` again — it wipes the existing database and rebuilds from scra
 ### `No IDL files found`
 Run `anchor build` or `cargo build-sbf` first to generate IDL files before `trident init`.
 
-### Python 3.13+ compatibility issues
-PyTorch, sentence-transformers, and Slither may not fully support Python 3.13+. If you encounter import errors or segfaults during RAG indexing, use Python 3.11 or 3.12:
+### Python version error
+Plamen requires CPython 3.12 because its universal binary-wheel lock is reviewed for the `cp312` ABI:
 ```bash
 # macOS (Homebrew)
-brew install python@3.12
-python3.12 -m venv ~/.plamen-venv && source ~/.plamen-venv/bin/activate
-cd ~/.plamen && python plamen.py install
+# Install a reviewed CPython 3.12 build from python.org or your OS policy.
+cd ~/.plamen && python3.12 plamen.py install
 
 # Ubuntu/Debian
 sudo apt install python3.12 python3.12-venv
-python3.12 -m venv ~/.plamen-venv && source ~/.plamen-venv/bin/activate
-cd ~/.plamen && python plamen.py install
+cd ~/.plamen && python3.12 plamen.py install
 ```
 
-### Slither install fails on Python 3.13+
-Slither requires Python 3.11 or 3.12. If your default Python is 3.13+, use a virtualenv with 3.12 (see above).
+### Slither runtime setup fails
+Re-run `python3.12 plamen.py install`; Slither and its transitive dependencies come only from `requirements-runtime-full.lock`.
 
 ### ChromaDB: `Your system has an unsupported version of sqlite3`
 ChromaDB requires SQLite >= 3.35. Older Python versions or OS builds may bundle an older SQLite. Fixes:
@@ -392,7 +426,7 @@ ChromaDB requires SQLite >= 3.35. Older Python versions or OS builds may bundle 
   import sys
   sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
   ```
-- **Windows**: Download latest `sqlite3.dll` from [sqlite.org](https://www.sqlite.org/download.html) and replace the one in your Python `DLLs/` folder
+- **Windows**: repair/reinstall the reviewed CPython 3.12 distribution; do not replace its DLLs with an unpinned download
 
 ### macOS: `Failed to build hnswlib` during pip install
 ChromaDB depends on `hnswlib` which needs a C++ compiler. Install Xcode Command Line Tools first:
@@ -405,8 +439,8 @@ export HNSWLIB_NO_NATIVE=1
 pip3 install chromadb
 ```
 
-### `externally-managed-environment` error on pip install
-macOS (Homebrew Python) and Ubuntu 23.04+ block bare `pip install`. Plamen handles this automatically by detecting the `EXTERNALLY-MANAGED` marker and adding `--break-system-packages`. If you still hit this error running manual pip commands, add `--break-system-packages` or use a virtualenv.
+### `externally-managed-environment` error
+The supported installer cannot produce this error because it writes only to Plamen's private venv. If you see it, a manual/system `pip` command was used; stop and run `python3.12 plamen.py install` instead.
 
 ### `error: failed to load manifest for workspace member programs/*`
 Anchor CLI < 0.32 glob issue on Windows. See [Solana > Windows](#solana-platform-notes) above.

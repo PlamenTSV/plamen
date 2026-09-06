@@ -371,15 +371,16 @@ def test_quality_gate_tolerates_relocation(tmp_path: Path):
     assert "promotion dropout" not in blob, issues
 
 
-def test_quality_gate_promotion_symmetry_acks_appendix(tmp_path: Path):
+def test_quality_gate_promotion_symmetry_rejects_untyped_appendix_ack(tmp_path: Path):
     _seed_floored_scratchpad(tmp_path)
-    # M-01 (H-2) is CONFIRMED but relocated -> must not be flagged a dropout.
+    # P0-R: a raw legacy Appendix row is identity accounting, not disposition
+    # authority. Without the typed receipt/decision it must remain a dropout.
     (tmp_path / "verify_H-2.md").write_text(
         "**Verdict**: CONFIRMED\n**Preferred Tag**: CODE-TRACE\n", encoding="utf-8"
     )
     issues = V._check_promotion_symmetry(tmp_path, str(tmp_path))
     blob = " ".join(issues)
-    assert "H-2" not in blob, issues
+    assert "H-2" in blob, issues
 
 
 if __name__ == "__main__":

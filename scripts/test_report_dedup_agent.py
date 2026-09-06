@@ -4,12 +4,13 @@ applies them through the UNCHANGED zero-loss embed + data-loss gate.
 
 These tests cover the data path the agent adds — they do not spawn an LLM. They
 assert: (1) the decisions parser is robust + conservative, (2) an agent MERGE
-the mechanical signals would NOT pair (no shared location / no shared source ID)
-is executed and loses no content, (3) agent-flagged cosmetic Low/Info is
+without exact source-identity authority remains proposal-only, (3) an
+agent-flagged cosmetic Low/Info is
 retabulated to Quality Observations, and (4) missing/garbage proposals degrade
 to a mechanical-only pass (never a halt, never a drop).
 """
 import importlib
+import json
 from pathlib import Path
 
 import plamen_mechanical as M
@@ -191,7 +192,7 @@ def _run(tmp_path: Path, decisions: str | None):
     return sp, final, pre
 
 
-def test_agent_merge_executed_and_zero_loss(tmp_path: Path):
+def test_agent_merge_remains_proposal_without_exact_alias_authority(tmp_path: Path):
     decisions = """# Report Consolidation Decisions
 ## MERGE Decisions
 | Survivor | Absorbed | Same Root Cause | Reason |
@@ -206,13 +207,20 @@ def test_agent_merge_executed_and_zero_loss(tmp_path: Path):
     # Pre-dedup snapshot preserves the ORIGINAL untouched report (two versions).
     assert "### [H-03]" in pre
     # H-03 is no longer a standalone parseable section (merged into M-04)...
-    assert "\n### [H-03]" not in final
+    assert "\n### [H-03]" in final
     # ...but its distinct content is preserved under the survivor (zero-loss).
-    assert "H-03" in final  # consolidation reference retained
+    assert "Consolidated from H-03" not in final
+    assert "H-03" in final
     assert "M-04" in final
     # Data-loss gate passed → mapping records the merge.
     mapping = (sp / "report_dedup_mapping.md").read_text(encoding="utf-8")
-    assert "MERGE" in mapping and "H-03" in mapping
+    assert "KEEP_SEPARATE" in mapping and "H-03" in mapping
+    receipt = json.loads(
+        (sp / "report_dedup_applied_alias_receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["applied_aliases"] == []
 
 
 def test_agent_qo_reclassification(tmp_path: Path):

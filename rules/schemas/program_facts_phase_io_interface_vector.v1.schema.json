@@ -1,0 +1,1129 @@
+{
+  "$defs": {
+    "authority_ceiling": {
+      "additionalProperties": false,
+      "properties": {
+        "clean_certification": {
+          "const": false,
+          "type": "boolean"
+        },
+        "confidence": {
+          "const": false,
+          "type": "boolean"
+        },
+        "consumer": {
+          "const": false,
+          "type": "boolean"
+        },
+        "finding": {
+          "const": false,
+          "type": "boolean"
+        },
+        "phase": {
+          "const": false,
+          "type": "boolean"
+        },
+        "refutation": {
+          "const": false,
+          "type": "boolean"
+        },
+        "severity": {
+          "const": false,
+          "type": "boolean"
+        },
+        "suppression": {
+          "const": false,
+          "type": "boolean"
+        },
+        "terminal_negative": {
+          "const": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "consumer",
+        "finding",
+        "severity",
+        "confidence",
+        "phase",
+        "clean_certification",
+        "refutation",
+        "suppression",
+        "terminal_negative"
+      ],
+      "type": "object"
+    },
+    "file_identity": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+          "type": "string"
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "gate3_schema_conformance_review_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "check_id": {
+                "enum": [
+                  "SCHEMA-DRAFT",
+                  "VOCABULARY-KEYWORDS",
+                  "CLOSED-OBJECTS",
+                  "REF-CLOSURE",
+                  "VECTOR-CARRIER",
+                  "KEYWORD-OCCURRENCE-COVERAGE",
+                  "POSITIVE-REPLAY",
+                  "NEGATIVE-REPLAY",
+                  "IDENTITY-STABLE-READ"
+                ],
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "maxLength": 64,
+                      "minLength": 64,
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "size_bytes": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size_bytes",
+                    "sha256"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "check_id",
+              "result",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 9,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "disposition": {
+          "enum": [
+            "PASS_SCHEMA_CONTRACT_FOR_GATE3_PREIMPLEMENTATION_ONLY",
+            "REJECTED"
+          ],
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "maxLength": 64,
+                      "minLength": 64,
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "size_bytes": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size_bytes",
+                    "sha256"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "finding_id": {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+                "type": "string"
+              },
+              "severity": {
+                "enum": [
+                  "BLOCKING",
+                  "NONBLOCKING"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "OPEN",
+                  "CLOSED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "finding_id",
+              "severity",
+              "status",
+              "description",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "independence": {
+          "additionalProperties": false,
+          "properties": {
+            "no_self_generated_evidence": {
+              "const": true,
+              "type": "boolean"
+            },
+            "oracle_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "production_implementer_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "subject_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "vector_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "workspace_clean": {
+              "const": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "subject_author_separate",
+            "vector_author_separate",
+            "production_implementer_separate",
+            "oracle_author_separate",
+            "workspace_clean",
+            "no_self_generated_evidence"
+          ],
+          "type": "object"
+        },
+        "open_findings": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+            "type": "string"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "review_body_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "review_id": {
+          "maxLength": 37,
+          "minLength": 37,
+          "pattern": "^pfsr-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "reviewer": {
+          "additionalProperties": false,
+          "properties": {
+            "organization": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "principal_id": {
+              "maxLength": 256,
+              "minLength": 12,
+              "pattern": "^reviewer:[a-z0-9-]+/[a-z0-9-]+$",
+              "type": "string"
+            },
+            "role": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "principal_id",
+            "organization",
+            "role"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_schema_conformance_review.v1",
+          "type": "string"
+        },
+        "subject": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+              "type": "string"
+            },
+            "sha256": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size_bytes": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size_bytes",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "vectors": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+              "type": "string"
+            },
+            "sha256": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size_bytes": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size_bytes",
+            "sha256"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "review_id",
+        "subject",
+        "vectors",
+        "reviewer",
+        "independence",
+        "checks",
+        "findings",
+        "open_findings",
+        "disposition",
+        "review_body_sha256"
+      ],
+      "type": "object"
+    },
+    "gate3_schema_conformance_vectors_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "body_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "keyword_occurrences": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "keyword": {
+                "enum": [
+                  "$ref",
+                  "type",
+                  "const",
+                  "enum",
+                  "required",
+                  "additionalProperties",
+                  "propertyNames",
+                  "properties",
+                  "dependentRequired",
+                  "prefixItems",
+                  "items",
+                  "contains",
+                  "minContains",
+                  "maxContains",
+                  "minProperties",
+                  "maxProperties",
+                  "minItems",
+                  "maxItems",
+                  "uniqueItems",
+                  "minLength",
+                  "maxLength",
+                  "pattern",
+                  "minimum",
+                  "maximum",
+                  "multipleOf",
+                  "allOf",
+                  "anyOf",
+                  "oneOf",
+                  "not",
+                  "if",
+                  "then",
+                  "else"
+                ],
+                "type": "string"
+              },
+              "negative_vector_ids": {
+                "items": {
+                  "maxLength": 37,
+                  "minLength": 37,
+                  "pattern": "^pfsv-[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "positive_vector_ids": {
+                "items": {
+                  "maxLength": 37,
+                  "minLength": 37,
+                  "pattern": "^pfsv-[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "schema_pointer": {
+                "maxLength": 16384,
+                "minLength": 0,
+                "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema_pointer",
+              "keyword",
+              "positive_vector_ids",
+              "negative_vector_ids"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_schema_conformance_vectors.v1",
+          "type": "string"
+        },
+        "subject": {
+          "additionalProperties": false,
+          "properties": {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                  "type": "string"
+                },
+                "sha256": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size_bytes",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            "schema_id": {
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^https://plamen\\.local/schemas/[A-Za-z0-9._-]+\\.schema\\.json$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema",
+            "schema_id"
+          ],
+          "type": "object"
+        },
+        "vector_count": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vectors": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "covers": {
+                "items": {
+                  "maxLength": 16384,
+                  "minLength": 0,
+                  "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "expected": {
+                "enum": [
+                  "VALID",
+                  "INVALID"
+                ],
+                "type": "string"
+              },
+              "instance": {},
+              "target_schema_pointer": {
+                "maxLength": 16384,
+                "minLength": 0,
+                "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                "type": "string"
+              },
+              "vector_id": {
+                "maxLength": 37,
+                "minLength": 37,
+                "pattern": "^pfsv-[0-9a-f]{32}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "vector_id",
+              "target_schema_pointer",
+              "instance",
+              "expected",
+              "covers"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "schema_version",
+        "subject",
+        "vectors",
+        "keyword_occurrences",
+        "vector_count",
+        "body_sha256"
+      ],
+      "type": "object"
+    },
+    "hex64": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "identifier": {
+      "maxLength": 512,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+      "type": "string"
+    },
+    "portable_path": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+      "type": "string"
+    },
+    "source_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "end_byte": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "end_column": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "end_line": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+          "type": "string"
+        },
+        "root_token": {
+          "maxLength": 69,
+          "minLength": 69,
+          "pattern": "^pfrt-[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source_file_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfs-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "start_byte": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_column": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "start_line": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_file_id",
+        "root_token",
+        "path",
+        "start_byte",
+        "end_byte",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://plamen.local/schemas/program_facts_phase_io_interface_vector.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$vocabulary": {
+    "https://json-schema.org/draft/2020-12/vocab/applicator": true,
+    "https://json-schema.org/draft/2020-12/vocab/core": true,
+    "https://json-schema.org/draft/2020-12/vocab/validation": true
+  },
+  "additionalProperties": false,
+  "properties": {
+    "exclusive_operation_order": {
+      "items": false,
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "const": "MATERIALIZE_IMMUTABLE_V3",
+          "type": "string"
+        },
+        {
+          "const": "COMMIT_ACTIVE_HEAD_CAS_V1",
+          "type": "string"
+        },
+        {
+          "const": "MATERIALIZE_ACTIVE_PROJECTION_V1",
+          "type": "string"
+        }
+      ],
+      "type": "array"
+    },
+    "gate3_stage_order": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "ordinal": {
+            "maximum": 12,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stage_id": {
+            "maxLength": 5,
+            "minLength": 5,
+            "pattern": "^G3-(?:0[0-9]|1[0-2])$",
+            "type": "string"
+          },
+          "state": {
+            "const": "CONTRACT_ONLY_PENDING_IMPLEMENTATION",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ordinal",
+          "stage_id",
+          "state"
+        ],
+        "type": "object"
+      },
+      "maxItems": 13,
+      "minItems": 13,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "invalid_pair_mode_vectors": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "ecosystem": {
+            "enum": [
+              "evm",
+              "solana",
+              "soroban",
+              "aptos",
+              "sui",
+              "go",
+              "rust",
+              "daml"
+            ],
+            "type": "string"
+          },
+          "expected_error": {
+            "const": "GOVERNANCE_IDENTITY_MISMATCH",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "light",
+              "core",
+              "thorough"
+            ],
+            "type": "string"
+          },
+          "pipeline": {
+            "enum": [
+              "sc",
+              "l1"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "pipeline",
+          "mode",
+          "ecosystem",
+          "expected_error"
+        ],
+        "type": "object"
+      },
+      "maxItems": 24,
+      "minItems": 24,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "lock_order": {
+      "items": false,
+      "maxItems": 5,
+      "minItems": 5,
+      "prefixItems": [
+        {
+          "const": "audit-run",
+          "type": "string"
+        },
+        {
+          "const": "program-facts-generation",
+          "type": "string"
+        },
+        {
+          "const": "phase-io-work-unit",
+          "type": "string"
+        },
+        {
+          "const": "wtx-children-sorted-by-expected-child-id",
+          "type": "string"
+        },
+        {
+          "const": "artifact-ledger-cas",
+          "type": "string"
+        }
+      ],
+      "type": "array"
+    },
+    "matrix_body_sha256": {
+      "$ref": "#/$defs/hex64"
+    },
+    "output_actor_vectors": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "enum": [
+              "DRIVER",
+              "MODEL",
+              "WORKER_TRANSACTION",
+              "PHASE_IO",
+              "ARTIFACT_LEDGER"
+            ],
+            "type": "string"
+          },
+          "allowed": {
+            "type": "boolean"
+          },
+          "output_or_operation": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "required": [
+          "output_or_operation",
+          "actor",
+          "allowed"
+        ],
+        "type": "object"
+      },
+      "maxItems": 10000000,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "output_raci": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "ArtifactLedger": {
+            "items": {
+              "enum": [
+                "R",
+                "A",
+                "C",
+                "I"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "PhaseIO": {
+            "items": {
+              "enum": [
+                "R",
+                "A",
+                "C",
+                "I"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "RuntimeDriver": {
+            "items": {
+              "enum": [
+                "R",
+                "A",
+                "C",
+                "I"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "WorkerTransaction": {
+            "items": {
+              "enum": [
+                "R",
+                "A",
+                "C",
+                "I"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "output_or_operation": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "required": [
+          "output_or_operation",
+          "RuntimeDriver",
+          "PhaseIO",
+          "WorkerTransaction",
+          "ArtifactLedger"
+        ],
+        "type": "object"
+      },
+      "maxItems": 10000000,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "const": "plamen.program_facts_phase_io_interface_vector.v1",
+      "type": "string"
+    },
+    "specification": {
+      "$ref": "#/$defs/file_identity"
+    },
+    "valid_key_vectors": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "const": "DRIVER",
+            "type": "string"
+          },
+          "backend": {
+            "const": "native",
+            "type": "string"
+          },
+          "canonical_key": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "ecosystem": {
+            "enum": [
+              "evm",
+              "solana",
+              "soroban",
+              "aptos",
+              "sui",
+              "go",
+              "rust",
+              "daml"
+            ],
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "light",
+              "core",
+              "thorough"
+            ],
+            "type": "string"
+          },
+          "phase": {
+            "const": "recon",
+            "type": "string"
+          },
+          "pipeline": {
+            "enum": [
+              "sc",
+              "l1"
+            ],
+            "type": "string"
+          },
+          "static_profile": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_ledger_operations": {
+                "items": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "execution_policy": {
+                "const": "CONTRACT_FROZEN_EXECUTION_DISABLED",
+                "type": "string"
+              },
+              "input_templates": {
+                "items": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "output_templates": {
+                "items": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "publication_operations": {
+                "items": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "schema_ids": {
+                "items": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "writer_actor": {
+                "const": "DRIVER",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input_templates",
+              "output_templates",
+              "schema_ids",
+              "writer_actor",
+              "execution_policy",
+              "publication_operations",
+              "artifact_ledger_operations"
+            ],
+            "type": "object"
+          },
+          "static_profile_sha256": {
+            "$ref": "#/$defs/hex64"
+          },
+          "work_unit_id": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "required": [
+          "pipeline",
+          "mode",
+          "ecosystem",
+          "backend",
+          "phase",
+          "work_unit_id",
+          "canonical_key",
+          "actor",
+          "static_profile",
+          "static_profile_sha256"
+        ],
+        "type": "object"
+      },
+      "maxItems": 264,
+      "minItems": 264,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "specification",
+    "valid_key_vectors",
+    "invalid_pair_mode_vectors",
+    "output_actor_vectors",
+    "output_raci",
+    "exclusive_operation_order",
+    "lock_order",
+    "gate3_stage_order",
+    "matrix_body_sha256"
+  ],
+  "type": "object"
+}

@@ -130,14 +130,16 @@ def test_prompt_targets_cross_tier(text: str):
         "prompt must state cross-tier same-root-cause is the target"
 
 
-# NEGATIVE CONTROL: the gate artifact is the MAPPING, never AUDIT_REPORT.md.
+# NEGATIVE CONTROL: gate on mapping + applied authority, never AUDIT_REPORT.md.
 # Gating on the delivered report would (wrongly) require it to change, but the
 # phase is a no-op/veto in the common case — so the phase MUST gate on mapping.
 def test_phase_gate_artifact_is_mapping_not_report():
     for phases, label in [(T.SC_PHASES, "sc"), (T.L1_PHASES, "l1")]:
         dp = [p for p in phases if p.name == "report_dedup"][0]
-        assert dp.expected_artifacts == ["report_dedup_mapping.md"], \
-            f"{label}: gate artifact must be the mapping, got {dp.expected_artifacts}"
+        assert dp.expected_artifacts == [
+            "report_dedup_mapping.md",
+            "report_dedup_applied_alias_receipt.json",
+        ], f"{label}: gate artifacts must bind mapping + authority, got {dp.expected_artifacts}"
         assert "AUDIT_REPORT.md" not in dp.expected_artifacts, \
             f"{label}: must NOT gate on the delivered report"
 

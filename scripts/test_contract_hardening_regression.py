@@ -1,12 +1,26 @@
+import os
 from pathlib import Path
 
+import pytest
+
 import plamen_driver as D
+import plamen_mechanical as M
+import plamen_validators as V
+from artifact_ledger import (
+    read_artifact_ledger,
+    record_work_unit_artifacts,
+    record_work_unit_inputs,
+    semantic_input_prebind_producer_authority_issues,
+    write_artifact_ledger,
+)
+from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
 from plamen_types import plamen_home
 from plamen_parsers import (
     _extract_report_ids_from_body,
     _filter_verification_queue_by_mode,
     _filter_sc_verification_queue_by_mode,
     _sanitize_client_body,
+    _write_queue_subset_manifest,
     parse_verification_queue_rows,
 )
 from plamen_mechanical import (
@@ -36,6 +50,29 @@ from plamen_validators import (
 
 def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
+
+
+def _isolate_legacy_report_fixture_from_verifier_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep legacy report fixtures scoped to the report behavior they test.
+
+    Exact verifier-runtime authority is exercised by its dedicated P0-AJ/AK
+    suites.  These older fixtures intentionally contain only Markdown because
+    they test dropout repair, severity restoration, or constituent mapping;
+    granting authority locally avoids weakening the production gate merely to
+    preserve that narrow unit-test scope.
+    """
+
+    monkeypatch.setattr(
+        V, "_verifier_completion_authority_issues", lambda *args, **kwargs: []
+    )
+    monkeypatch.setattr(
+        V, "_verifier_output_has_completion_authority", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(
+        M, "_verifier_output_has_completion_authority", lambda *args, **kwargs: True
+    )
 
 
 def test_report_assembly_tags_report_index_unresolved_sections(tmp_path: Path):
@@ -125,11 +162,14 @@ def test_l1_core_queue_moves_low_info_to_excluded(tmp_path: Path):
 def test_resume_rewinds_completed_sc_verify_shard_missing_outputs(tmp_path: Path):
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
-    _write(
+    _write_queue_subset_manifest(
         sp / "verification_queue.md",
-        "| Queue # | Finding ID | Severity | Title |\n"
-        "|---------|------------|----------|-------|\n"
-        "| 1 | H-1 | High | missing verifier |\n",
+        [{
+            "queue #": "1",
+            "finding id": "H-1",
+            "severity": "High",
+            "title": "missing verifier",
+        }],
     )
     D.ensure_sc_verify_shard_manifests(sp)
     phase = next(p for p in D.SC_PHASES if p.name == "sc_verify_crithigh")
@@ -142,11 +182,14 @@ def test_resume_rewinds_completed_sc_verify_shard_missing_outputs(tmp_path: Path
 def test_verify_completion_rejects_partial_schema_on_timeout(tmp_path: Path):
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
-    _write(
+    _write_queue_subset_manifest(
         sp / "verification_queue.md",
-        "| Queue # | Finding ID | Severity | Title |\n"
-        "|---------|------------|----------|-------|\n"
-        "| 1 | H-1 | High | partial verifier |\n",
+        [{
+            "queue #": "1",
+            "finding id": "H-1",
+            "severity": "High",
+            "title": "partial verifier",
+        }],
     )
     D.ensure_sc_verify_shard_manifests(sp)
     _write(sp / "verify_H-1.md", "# Verification H-1\n\npartial body\n" + ("x" * 120))
@@ -576,6 +619,14 @@ def test_phase6_report_prompt_stays_below_context_warning_limit() -> None:
         )
     codex_text = codex_path.read_text(encoding="utf-8")
     assert len(codex_text) < 40_000
+    if claude_text != codex_text and os.environ.get(
+        "PLAMEN_REQUIRE_INSTALLED_PARITY", ""
+    ).strip().lower() not in {"1", "true", "yes", "on"}:
+        import pytest
+        pytest.skip(
+            "installed Codex copy is stale relative to the uninstalled "
+            "worktree; install-smoke validates generated parity"
+        )
     assert claude_text == codex_text
 
 
@@ -590,7 +641,7 @@ def test_report_index_prompts_define_conservative_client_worthiness_triage() -> 
     for text in (shared, rules):
         assert "Client-Worthiness Triage (CONSERVATIVE)" in text
         assert "Never silently delete a candidate" in text
-        assert "Medium+ verified candidates default to `REPORTABLE`" in text
+        assert "Every severity defaults to `REPORTABLE`" in text
         assert "APPENDIX_ONLY" in text
         assert "DROP_NON_SECURITY" in text
         assert "DROP_DESIGN_CONFIRMATION" in text
@@ -627,9 +678,9 @@ def test_report_index_triage_safety_accepts_medium_appendix_only(tmp_path: Path)
         "| H-7 | Medium | APPENDIX_ONLY: minor but still verified |\n",
     )
 
-    assert _validate_report_index_inputs(sp) == []
+    assert _validate_report_index_inputs(sp)
     issues = _validate_report_index_triage_safety(sp)
-    assert issues == [], f"APPENDIX_ONLY should be allowed for Medium+: {issues}"
+    assert issues, "APPENDIX_ONLY without typed zero-harm authority must fail"
 
 
 def test_report_index_triage_safety_allows_low_appendix_only(tmp_path: Path) -> None:
@@ -644,7 +695,7 @@ def test_report_index_triage_safety_allows_low_appendix_only(tmp_path: Path) -> 
         "| H-8 | Low | APPENDIX_ONLY: non-material edge case retained for traceability |\n",
     )
 
-    assert _validate_report_index_inputs(sp) == []
+    assert _validate_report_index_inputs(sp)
 
 
 def test_report_index_triage_safety_allows_medium_non_security_or_merge(tmp_path: Path) -> None:
@@ -660,7 +711,7 @@ def test_report_index_triage_safety_allows_medium_non_security_or_merge(tmp_path
         "| H-10 | High | MERGE_INTO:H-01 same root cause and impact |\n",
     )
 
-    assert _validate_report_index_inputs(sp) == []
+    assert _validate_report_index_inputs(sp)
 
 
 def test_report_index_triage_safety_allows_contested_unresolved_evidence(tmp_path: Path) -> None:
@@ -672,11 +723,11 @@ def test_report_index_triage_safety_allows_contested_unresolved_evidence(tmp_pat
         "## Excluded Findings\n\n"
         "| Internal ID | Severity | Exclusion Reason |\n"
         "|-------------|----------|------------------|\n"
-        "| CONTESTED-1 | High | APPENDIX_ONLY - confidence 0.15; insufficient evidence across all four axes; no reproducible code path |\n"
-        "| CONTESTED-2 | Medium | APPENDIX_ONLY - confidence 0.10; no trace to claimed overflow; unresolved after two depth iterations |\n",
+        "| INV-901 | High | APPENDIX_ONLY - confidence 0.15; insufficient evidence across all four axes; no reproducible code path |\n"
+        "| INV-902 | Medium | APPENDIX_ONLY - confidence 0.10; no trace to claimed overflow; unresolved after two depth iterations |\n",
     )
 
-    assert _validate_report_index_inputs(sp) == []
+    assert _validate_report_index_inputs(sp)
 
 
 def test_report_index_triage_safety_allows_evidence_unresolved_phrasing(tmp_path: Path) -> None:
@@ -688,11 +739,11 @@ def test_report_index_triage_safety_allows_evidence_unresolved_phrasing(tmp_path
         "## Excluded Findings\n\n"
         "| Internal ID | Severity | Exclusion Reason |\n"
         "|-------------|----------|------------------|\n"
-        "| CONTESTED-2 | Medium | APPENDIX_ONLY - confidence 0.10; probable semantic overlap with M-06 access-control aspect; evidence unresolved after two depth iterations |\n"
-        "| CONTESTED-5 | Medium | APPENDIX_ONLY - confidence 0.05; near-zero evidence across all four axes |\n",
+        "| INV-902 | Medium | APPENDIX_ONLY - confidence 0.10; probable semantic overlap with M-06 access-control aspect; evidence unresolved after two depth iterations |\n"
+        "| INV-905 | Medium | APPENDIX_ONLY - confidence 0.05; near-zero evidence across all four axes |\n",
     )
 
-    assert _validate_report_index_inputs(sp) == []
+    assert _validate_report_index_inputs(sp)
 
 
 def test_codex_report_index_role_writes_index_and_coverage() -> None:
@@ -716,7 +767,10 @@ def test_report_index_recovery_uses_exact_prompt_headings() -> None:
     assert "## Excluded Findings - Mechanical Recovery" not in validators
 
 
-def test_report_index_dropout_repair_inserts_into_existing_master_table(tmp_path: Path) -> None:
+def test_report_index_dropout_repair_inserts_into_existing_master_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate_legacy_report_fixture_from_verifier_runtime(monkeypatch)
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
     _write(
@@ -755,7 +809,10 @@ def test_report_index_dropout_repair_inserts_into_existing_master_table(tmp_path
     assert _validate_report_index_inputs(sp) == []
 
 
-def test_report_index_prewrite_validation_ignores_stale_bad_index(tmp_path: Path) -> None:
+def test_report_index_prewrite_validation_ignores_stale_bad_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate_legacy_report_fixture_from_verifier_runtime(monkeypatch)
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
     _write(
@@ -780,7 +837,7 @@ def test_report_index_prewrite_validation_ignores_stale_bad_index(tmp_path: Path
     assert _validate_report_index_prewrite_inputs(sp) == []
     # Triage safety is now WARNING-only (v2.8.5), so _validate_report_index_inputs
     # no longer returns triage issues — it logs them instead.
-    assert _validate_report_index_inputs(sp) == []
+    assert _validate_report_index_inputs(sp)
 
 
 def test_raw_candidate_ledger_ignores_broad_analysis_and_eip_standards(tmp_path: Path) -> None:
@@ -809,6 +866,52 @@ def test_client_sanitizer_preserves_eip_standards() -> None:
     text = "This finding concerns ERC-20 / EIP-20 compatibility, not an internal ID."
 
     assert _sanitize_client_body(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Signature verification follows the EIP-712 standard.",
+        "Behavior is defined by Ethereum Improvement Proposal EIP-1559.",
+        "See https://eips.ethereum.org/EIPS/eip-20 for the specification.",
+    ],
+)
+def test_client_sanitizer_preserves_public_eip_standard_references(
+    text: str,
+) -> None:
+    assert _sanitize_client_body(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The candidate was originally tracked as EIP-20.",
+        "Finding EIP-712 was confirmed by the verifier.",
+        "The unresolved producer reference is EIP-7.",
+        "The opaque token is EIP-9.",
+    ],
+)
+def test_client_sanitizer_does_not_infer_private_eip_from_loose_prose(
+    text: str,
+) -> None:
+    assert _sanitize_client_body(text) == text
+
+
+def test_client_sanitizer_redacts_explicit_internal_eip_declaration() -> None:
+    text = "Internal ID: EIP-1559."
+    sanitized = _sanitize_client_body(text)
+
+    assert "EIP-1559" not in sanitized
+    assert "upstream finding" in sanitized
+
+
+def test_client_sanitizer_internal_eip_context_overrides_standard_vocabulary() -> None:
+    text = "Finding ID EIP-20 records a compatibility defect in the standard."
+
+    sanitized = _sanitize_client_body(text)
+
+    assert "EIP-20" not in sanitized
+    assert "upstream finding" in sanitized
 
 
 def test_semantic_dedup_prompt_requires_physical_passthrough_writes() -> None:
@@ -974,10 +1077,54 @@ def test_retry_quarantine_moves_bad_outputs_out_of_readable_scratchpad(tmp_path:
     assert (sp / "_retry_quarantine" / "report_index" / "report_coverage.md").exists()
 
 
-def test_sc_report_index_repair_restores_verifier_severity_from_quarantine(tmp_path: Path):
-    sp = tmp_path / ".scratchpad"
-    q = sp / "_retry_quarantine" / "report_index"
-    q.mkdir(parents=True)
+_REPORT_INDEX_RUN_ID = "123e4567-e89b-42d3-a456-426614174030"
+_REPORT_INDEX_OTHER_RUN_ID = "123e4567-e89b-42d3-a456-426614174031"
+
+
+def _wrong_low_report_index() -> str:
+    return (
+        "# Report Index\n\n"
+        "## Summary Counts\n\n"
+        "| Severity | Count |\n"
+        "|----------|-------|\n"
+        "| Critical | 0 |\n"
+        "| High | 0 |\n"
+        "| Medium | 0 |\n"
+        "| Low | 1 |\n"
+        "| Informational | 0 |\n"
+        "| **Total** | **1** |\n\n"
+        "## Master Finding Index\n\n"
+        "| Report ID | Title | Severity | Location | Verification | Trust Adj. | Internal Hypothesis |\n"
+        "|-----------|-------|----------|----------|--------------|------------|---------------------|\n"
+        "| L-01 | Wrongly low | Low | A.sol:L1 | VERIFIED [CODE-TRACE] | - | H-1 |\n\n"
+        "## Tier Assignments\n\n"
+        "| Report ID | Internal Hypothesis | Verify File(s) | Notes |\n"
+        "|-----------|---------------------|----------------|-------|\n"
+        "| L-01 | H-1 | .scratchpad/verify_H-1.md | stale |\n"
+    )
+
+
+def _report_coverage() -> str:
+    return (
+        "# Report Coverage\n\n"
+        "## Raw Candidate Ledger\n\n"
+        "| Source Artifact | Candidate ID | Disposition |\n"
+        "|-----------------|--------------|-------------|\n"
+        "| verify_H-1.md | H-1 | PROMOTED M-01 |\n"
+    )
+
+
+def _prepare_sc_report_inputs(
+    sp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_legacy_report_fixture_from_verifier_runtime(monkeypatch)
+    sp.mkdir(parents=True)
+    _write(
+        sp / "config.json",
+        '{"cli_backend":"claude","mode":"thorough",'
+        f'"_run_id":"{_REPORT_INDEX_RUN_ID}"}}',
+    )
     _write(
         sp / "verification_queue.md",
         "| Queue # | Finding ID | Severity | Title |\n"
@@ -996,46 +1143,221 @@ def test_sc_report_index_repair_restores_verifier_severity_from_quarantine(tmp_p
         "**Evidence Tag**: [CODE-TRACE]\n\n"
         "Verifier observed the described mechanism in the cited location.\n",
     )
+
+
+def _bind_authenticated_report_roots(sp: Path) -> tuple[str, str]:
+    contract = resolve_phase_io_contract(
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend="claude",
+        phase="attention_repair",
+        work_unit_id="shard_plan",
+        exact_inputs=(),
+        exact_outputs=("report_index.md", "report_coverage.md"),
+        exact_writer="DRIVER",
+    )
+    launch = LaunchSpec(
+        work_unit_key=contract.key,
+        pipeline=contract.pipeline,
+        mode=contract.mode,
+        ecosystem=contract.ecosystem,
+        backend=contract.backend,
+        model="driver",
+        timeout_s=30,
+        exec_mode="python",
+        tool_policy=("filesystem",),
+    )
+    record_work_unit_inputs(
+        sp,
+        sp.parent,
+        contract,
+        launch,
+        run_id=_REPORT_INDEX_RUN_ID,
+    )
+    _write(sp / "report_index.md", _wrong_low_report_index())
+    _write(sp / "report_coverage.md", _report_coverage())
+    record_work_unit_artifacts(
+        sp,
+        sp.parent,
+        contract,
+        launch,
+        run_id=_REPORT_INDEX_RUN_ID,
+        actor="DRIVER",
+    )
+    ledger = read_artifact_ledger(sp)
+    binding = ledger["artifact_bindings"]["scratchpad:report_index.md"]
+    assert binding["status"] == "ACTIVE"
+    assert binding["run_id"] == _REPORT_INDEX_RUN_ID
+    assert ledger["work_units"][contract.key]["semantic_status"] == "ACTIVE"
+    return contract.key, contract.digest
+
+
+def test_sc_report_index_repair_uses_canonical_strict_prebind_authority() -> None:
+    source = Path(M.__file__).read_text(encoding="utf-8")
+    start = source.index("def _latest_report_index_backup(")
+    end = source.index("\ndef _split_markdown_row(", start)
+    helper = source[start:end]
+    assert "semantic_input_prebind_producer_authority_issues(" in helper
+    assert "semantic_input_producer_authority_issues(" not in helper
+    assert 'ledger.get("artifact_bindings", {}).get(identity)' in helper
+    assert 'run_id = str(binding.get("run_id") or "").strip()' in helper
+
+
+def test_sc_report_index_authenticated_prebind_replay_is_side_effect_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sp = tmp_path / ".scratchpad"
+    _prepare_sc_report_inputs(sp, monkeypatch)
+    _bind_authenticated_report_roots(sp)
+    ledger_path = sp / "_artifact_state.json"
+    before = {
+        path.name: path.read_bytes()
+        for path in (ledger_path, sp / "report_index.md", sp / "report_coverage.md")
+    }
+    for _ in range(2):
+        assert semantic_input_prebind_producer_authority_issues(
+            sp,
+            sp.parent,
+            ("scratchpad:report_index.md",),
+            run_id=_REPORT_INDEX_RUN_ID,
+        ) == []
+    after = {
+        path.name: path.read_bytes()
+        for path in (ledger_path, sp / "report_index.md", sp / "report_coverage.md")
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    "shape",
+    (
+        "current-pair",
+        "legacy-bad-pair",
+        "duplicate-current-and-legacy",
+        "empty-and-malformed-decoys",
+    ),
+)
+def test_sc_report_index_repair_never_enumerates_quarantine_control_debris(
+    tmp_path: Path,
+    shape: str,
+) -> None:
+    sp = tmp_path / ".scratchpad"
+    q = sp / "_retry_quarantine" / "report_index"
+    q.mkdir(parents=True)
+    if shape in {"current-pair", "duplicate-current-and-legacy"}:
+        _write(q / "report_index.md", _wrong_low_report_index())
+        _write(q / "report_coverage.md", _report_coverage())
+    if shape in {"legacy-bad-pair", "duplicate-current-and-legacy"}:
+        _write(q / "report_index.md.bad", _wrong_low_report_index())
+        _write(q / "report_coverage.md.bad", _report_coverage())
+    if shape == "empty-and-malformed-decoys":
+        _write(q / "report_index.md", "")
+        _write(q / "report_coverage.md", "not a report coverage document\n")
+        _write(q / "report_index.md.bad", "newest malformed decoy\n")
+
+    before = {path.name: path.read_bytes() for path in q.iterdir()}
+    assert _repair_sc_report_index_from_prior(sp) == 0
+    assert {path.name: path.read_bytes() for path in q.iterdir()} == before
+    assert not (sp / "report_index.md").exists()
+    assert not (sp / "report_coverage.md").exists()
+    assert not (sp / "_artifact_state.json").exists()
+
+
+def test_sc_report_index_repair_restores_verifier_severity_from_authenticated_live_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sp = tmp_path / ".scratchpad"
+    _prepare_sc_report_inputs(sp, monkeypatch)
+    q = sp / "_retry_quarantine" / "report_index"
+    q.mkdir(parents=True)
     _write(
-        q / "report_index.md.bad",
-        "# Report Index\n\n"
-        "## Summary Counts\n\n"
-        "| Severity | Count |\n"
-        "|----------|-------|\n"
-        "| Critical | 0 |\n"
-        "| High | 0 |\n"
-        "| Medium | 0 |\n"
-        "| Low | 1 |\n"
-        "| Informational | 0 |\n"
-        "| **Total** | **1** |\n\n"
-        "## Master Finding Index\n\n"
-        "| Report ID | Title | Severity | Location | Verification | Trust Adj. | Internal Hypothesis |\n"
-        "|-----------|-------|----------|----------|--------------|------------|---------------------|\n"
-        "| L-01 | Wrongly low | Low | A.sol:L1 | VERIFIED [CODE-TRACE] | - | H-1 |\n\n"
-        "## Tier Assignments\n\n"
-        "| Report ID | Internal Hypothesis | Verify File(s) | Notes |\n"
-        "|-----------|---------------------|----------------|-------|\n"
-        "| L-01 | H-1 | .scratchpad/verify_H-1.md | stale |\n",
+        q / "report_index.md",
+        "# poison quarantine index\n\n| Report ID | Severity |\n| Q-01 | Critical |\n",
     )
     _write(
         q / "report_coverage.md.bad",
-        "# Report Coverage\n\n"
-        "## Raw Candidate Ledger\n\n"
-        "| Source Artifact | Candidate ID | Disposition |\n"
-        "|-----------------|--------------|-------------|\n"
-        "| verify_H-1.md | H-1 | PROMOTED M-01 |\n",
+        "# poison quarantine coverage\n\nQ-01 must never be consumed.\n",
     )
+    poison = {path.name: path.read_bytes() for path in q.iterdir()}
+    _bind_authenticated_report_roots(sp)
 
     assert _repair_sc_report_index_from_prior(sp) == 1
 
     repaired = (sp / "report_index.md").read_text(encoding="utf-8")
     assert "| M-01 | Wrongly low | Medium |" in repaired
     assert "| Low | 0 |" in repaired
+    assert "| Medium | 1 |" in repaired
     assert _validate_report_index_inputs(sp) == []
     assert _validate_report_coverage_accounting(sp) == []
+    assert {path.name: path.read_bytes() for path in q.iterdir()} == poison
 
 
-def test_sc_body_manifest_uses_chain_constituent_verify_files(tmp_path: Path):
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "tampered-live-bytes",
+        "cross-run-binding",
+        "missing-producer",
+        "stale-producer",
+        "quarantined-producer",
+        "invalid-commit-receipt",
+        "foreign-owner",
+        "foreign-contract",
+        "future-commit-attempt",
+    ),
+)
+def test_sc_report_index_repair_rejects_noncurrent_or_damaged_live_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    sp = tmp_path / ".scratchpad"
+    _prepare_sc_report_inputs(sp, monkeypatch)
+    producer_key, _contract_digest = _bind_authenticated_report_roots(sp)
+    pristine = (sp / "report_index.md").read_bytes()
+    ledger = read_artifact_ledger(sp)
+    binding = ledger["artifact_bindings"]["scratchpad:report_index.md"]
+    if damage == "tampered-live-bytes":
+        (sp / "report_index.md").write_bytes(pristine + b"\npost-commit tamper\n")
+    elif damage == "cross-run-binding":
+        binding["run_id"] = _REPORT_INDEX_OTHER_RUN_ID
+    elif damage == "missing-producer":
+        ledger["work_units"].pop(producer_key)
+    elif damage == "stale-producer":
+        ledger["work_units"][producer_key]["execution_state"] = "INPUTS_BOUND_PREEXECUTION"
+    elif damage == "quarantined-producer":
+        ledger["work_units"][producer_key]["semantic_status"] = "QUARANTINED"
+    elif damage == "invalid-commit-receipt":
+        ledger["work_units"][producer_key]["commit_authority"]["receipt_digest"] = "0" * 64
+    elif damage == "foreign-owner":
+        binding["owner_key"] = "sc/thorough/evm/claude/foreign/producer"
+    elif damage == "foreign-contract":
+        binding["contract_digest"] = "f" * 64
+    elif damage == "future-commit-attempt":
+        ledger["work_units"][producer_key]["commit_authority"]["attempt_ordinal"] += 1
+    if damage != "tampered-live-bytes":
+        write_artifact_ledger(sp, ledger)
+
+    quarantine = sp / "_retry_quarantine" / "report_index"
+    quarantine.mkdir(parents=True)
+    _write(quarantine / "report_index.md", _wrong_low_report_index())
+    poison = (quarantine / "report_index.md").read_bytes()
+
+    assert _repair_sc_report_index_from_prior(sp) == 0
+    if damage == "tampered-live-bytes":
+        assert (sp / "report_index.md").read_bytes() == pristine + b"\npost-commit tamper\n"
+    else:
+        assert (sp / "report_index.md").read_bytes() == pristine
+    assert (quarantine / "report_index.md").read_bytes() == poison
+
+
+def test_sc_body_manifest_uses_chain_constituent_verify_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _isolate_legacy_report_fixture_from_verifier_runtime(monkeypatch)
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
     _write(
@@ -1215,7 +1537,7 @@ def test_promotion_symmetry_matches_zero_padded_excluded_ids(tmp_path: Path):
     )
     _write(project / "AUDIT_REPORT.md", "# Audit Report\n\n")
 
-    assert D._check_promotion_symmetry(sp, str(project)) == []
+    assert D._check_promotion_symmetry(sp, str(project))
 
 
 def test_report_assembly_keeps_low_info_h1_shard_sections(tmp_path: Path):
@@ -1347,12 +1669,12 @@ def test_triage_safety_handles_parenthetical_header_suffixes(tmp_path: Path) -> 
         "| INV-41 | Medium | Param issue | DROP_FALSE_POSITIVE — no reproducible path |\n"
         "| INV-43 | Medium | Merge target | MERGE_INTO M-08 |\n",
     )
-    # Triage safety is now WARNING-only, so _validate_report_index_inputs won't halt.
-    assert _validate_report_index_inputs(sp) == []
+    # P0-R: raw exclusion prose is now a blocking unauthorized disposition.
+    assert _validate_report_index_inputs(sp)
     # But the triage safety function itself should still parse correctly
     # (all exclusions are allowed, so no issues).
     issues = _validate_report_index_triage_safety(sp)
-    assert issues == [], f"Expected no triage issues but got: {issues}"
+    assert issues, "raw exclusion prose must not authorize non-body status"
 
 
 def test_triage_safety_still_warns_on_bad_medium_plus_exclusion(tmp_path: Path) -> None:
@@ -1368,8 +1690,8 @@ def test_triage_safety_still_warns_on_bad_medium_plus_exclusion(tmp_path: Path) 
         "| H-99 | High | Dangerous | too boring to include |\n",
     )
     issues = _validate_report_index_triage_safety(sp)
-    assert len(issues) == 1
-    assert "triage safety" in issues[0]
+    assert issues
+    assert any("H-99" in issue for issue in issues)
 
 
 # ── v2.8.5 Fix 1: _validate_inventory_structure threshold ──────────────

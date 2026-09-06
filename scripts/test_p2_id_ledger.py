@@ -372,8 +372,14 @@ def test_chain_anti_absorption_repair_registers_split_ids(tmp_path):
     repaired = _repair_chain_anti_absorption_splits(tmp_path)
 
     assert repaired == 2
-    assert id_ledger_lookup(tmp_path, "HH-01") is not None
-    assert id_ledger_lookup(tmp_path, "HL-01") is not None
+    assert id_ledger_lookup(tmp_path, "HH-01") is None
+    assert id_ledger_lookup(tmp_path, "HL-01") is None
+    relation = json.loads(
+        (tmp_path / "chain_grouping_relations.json").read_text(encoding="utf-8")
+    )
+    assert relation["groups"][0]["member_to_work"] == {
+        "INV-001": "INV-001", "INV-002": "INV-002"
+    }
 
 
 def test_p24_collision_gate_passes_on_first_attempt(tmp_path):

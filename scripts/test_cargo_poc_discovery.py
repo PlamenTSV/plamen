@@ -420,7 +420,7 @@ class TestPrewarmCargoTestTargets:
             calls.append(list(cmd))
             return _FakeProc(0)
 
-        monkeypatch.setattr(MV.subprocess, "run", _fake_run)
+        monkeypatch.setattr(MV, "_run_owned_process", _fake_run)
         monkeypatch.setattr(MV.shutil, "which", lambda b: None)  # keep argv[0] literal
         reg = {"languages": {"solana": {"build_command": "cargo build-sbf"}}}
         ok, note = MV._prewarm_build(tmp_path, "solana", reg, 60)
@@ -433,7 +433,7 @@ class TestPrewarmCargoTestTargets:
     def test_evm_never_gets_second_call(self, monkeypatch, tmp_path):
         calls = []
         monkeypatch.setattr(
-            MV.subprocess, "run",
+            MV, "_run_owned_process",
             lambda cmd, **kw: calls.append(list(cmd)) or _FakeProc(0))
         ok, note = MV._prewarm_build(tmp_path, "evm", {}, 60)
         assert ok is True
@@ -447,7 +447,7 @@ class TestPrewarmCargoTestTargets:
         gated later in _apply_cargo_workspace_fixups."""
         calls = []
         monkeypatch.setattr(
-            MV.subprocess, "run",
+            MV, "_run_owned_process",
             lambda cmd, **kw: calls.append(list(cmd)) or _FakeProc(0))
         monkeypatch.setattr(MV.shutil, "which", lambda b: None)
         reg = {"languages": {"soroban": {"build_command": "stellar contract build"}}}
@@ -459,7 +459,7 @@ class TestPrewarmCargoTestTargets:
     def test_registry_test_prewarm_command_honored(self, monkeypatch, tmp_path):
         calls = []
         monkeypatch.setattr(
-            MV.subprocess, "run",
+            MV, "_run_owned_process",
             lambda cmd, **kw: calls.append(list(cmd)) or _FakeProc(0))
         monkeypatch.setattr(MV.shutil, "which", lambda b: None)
         reg = {"languages": {"l1_rust": {
@@ -475,7 +475,7 @@ class TestPrewarmCargoTestTargets:
                 return _FakeProc(0)
             raise MV.subprocess.TimeoutExpired(cmd, 1)
 
-        monkeypatch.setattr(MV.subprocess, "run", _run)
+        monkeypatch.setattr(MV, "_run_owned_process", _run)
         monkeypatch.setattr(MV.shutil, "which", lambda b: None)
         reg = {"languages": {"solana": {"build_command": "cargo build-sbf"}}}
         ok, note = MV._prewarm_build(tmp_path, "solana", reg, 60)
@@ -484,7 +484,7 @@ class TestPrewarmCargoTestTargets:
 
     def test_never_raises_on_arbitrary_exception(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            MV.subprocess, "run",
+            MV, "_run_owned_process",
             lambda cmd, **kw: (_ for _ in ()).throw(ValueError("boom")))
         reg = {"languages": {"solana": {"build_command": "cargo build-sbf"}}}
         ok, note = MV._prewarm_build(tmp_path, "solana", reg, 60)

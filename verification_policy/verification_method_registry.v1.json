@@ -1,0 +1,210 @@
+{
+  "schema_version": "plamen.verification_method_registry.v1",
+  "registry_version": "1.0.0",
+  "operators": [
+    {
+      "operator_id": "mechanism-trace",
+      "instruction": "Trace the exact state, value, authorization, or message transition from reachable entry to the claimed effect. Cite each decisive edge and distinguish executed evidence from inference.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": []
+    },
+    {
+      "operator_id": "class-before-negative",
+      "instruction": "Classify the claimed bug class and test that class's defining preconditions before any REFUTED, FALSE_POSITIVE, SAFE, or equivalent negative disposition.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": []
+    },
+    {
+      "operator_id": "harm-premise",
+      "instruction": "Separate mechanism from material harm. Challenge every premise needed for the named actor and consequence in both directions; an unresearched external premise is unresolved evidence, not a safety fact.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": []
+    },
+    {
+      "operator_id": "realistic-parameters",
+      "instruction": "Evaluate realistic boundary values, ordering, timing, initialization, configuration, and environment constraints. Do not refute a mechanism using only a convenient best-case value.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": ["NO_PARAMETER_DOMAIN"]
+    },
+    {
+      "operator_id": "context-closure",
+      "instruction": "Use the bound context packet to close caller, callee, state writer/reader, privilege/configuration, and dependency-boundary premises. Use at most one bounded expansion. If context remains insufficient, record CONTEXT_UNRESOLVED and retain the candidate.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": []
+    },
+    {
+      "operator_id": "evidence-proof-scope",
+      "instruction": "Record execution authenticity, oracle provenance/derivation, environment and reachability fidelity, represented preconditions, external-premise evidence state, and exact proof scope separately. A generated or heuristic assertion cannot certify harm without independent in-scope validation.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": []
+    },
+    {
+      "operator_id": "direction-neutral-severity",
+      "instruction": "Record impact and likelihood facts independently of upstream severity and without a one-way cap. Preserve uncertainty as an explicit premise or evidence debt.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": []
+    },
+    {
+      "operator_id": "negative-error-trace",
+      "instruction": "For every negative, partial, blocked, or failed execution result, record the attempted path, first divergence or error, oracle provenance, environment/preconditions, and exhaustiveness. Failure in one generated parameterization refutes only that encoded attempt, never the whole candidate.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": ["NO_NEGATIVE_OR_ERROR_RESULT"]
+    },
+    {
+      "operator_id": "new-observation-staging",
+      "instruction": "Stage any distinct observation as a non-authoritative candidate proposal with location and evidence. Never assign it a terminal verdict or treat this row's proof as proof of the new observation.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": ["NO_DISTINCT_OBSERVATION"]
+    },
+    {
+      "operator_id": "poc-execution",
+      "instruction": "Apply the execution policy for the row's PoC class. Bind the real test path, command, assertion/oracle identity, result, environment, preconditions, and external premises; a model claim never substitutes for the driver's rerun or independently issued scope receipt.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": ["STRUCTURAL_CLASS_WITH_NO_EXECUTABLE_ASSERTION"]
+    },
+    {
+      "operator_id": "executor-evidence",
+      "instruction": "Use only the selected ecosystem executor pattern and the project's actual build/test configuration. Record tool or harness unavailability as evidence debt.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": ["NO_LOCAL_EXECUTOR_FOR_STRUCTURAL_CLASS"]
+    },
+    {
+      "operator_id": "serialization-boundary",
+      "instruction": "For serialization or cross-runtime rows, compare producer and consumer field order, width, signedness, domain, and rejection behavior using the selected executor when available.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": []
+    },
+    {
+      "operator_id": "concurrency-schedule",
+      "instruction": "For concurrency or nondeterminism rows, identify shared state, synchronization, admissible schedules, and the smallest ordering that distinguishes safe from harmful behavior.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": []
+    },
+    {
+      "operator_id": "consensus-boundary",
+      "instruction": "For consensus rows, compare validation, state transition, propagation, persistence, and rollback boundaries without assuming local acceptance implies network-wide safety.",
+      "required_evidence_fields": ["source", "detail"],
+      "valid_not_applicable_predicates": []
+    }
+  ],
+  "modules": [
+    {
+      "module_id": "core.trace",
+      "operator_ids": ["mechanism-trace"],
+      "selector": {"pipelines": ["sc", "l1"]}
+    },
+    {
+      "module_id": "core.classification",
+      "operator_ids": ["class-before-negative"],
+      "selector": {"pipelines": ["sc", "l1"]}
+    },
+    {
+      "module_id": "core.harm",
+      "operator_ids": ["harm-premise"],
+      "selector": {"pipelines": ["sc", "l1"]}
+    },
+    {
+      "module_id": "core.realism",
+      "operator_ids": ["realistic-parameters"],
+      "selector": {"pipelines": ["sc", "l1"]}
+    },
+    {
+      "module_id": "core.context",
+      "operator_ids": ["context-closure"],
+      "selector": {"pipelines": ["sc", "l1"]}
+    },
+    {
+      "module_id": "core.evidence",
+      "operator_ids": ["evidence-proof-scope"],
+      "selector": {"pipelines": ["sc", "l1"]}
+    },
+    {
+      "module_id": "core.severity",
+      "operator_ids": ["direction-neutral-severity"],
+      "selector": {"pipelines": ["sc", "l1"]}
+    },
+    {
+      "module_id": "core.negative",
+      "operator_ids": ["negative-error-trace"],
+      "selector": {"pipelines": ["sc", "l1"]}
+    },
+    {
+      "module_id": "core.observation",
+      "operator_ids": ["new-observation-staging"],
+      "selector": {"pipelines": ["sc", "l1"]}
+    },
+    {
+      "module_id": "poc.executable",
+      "operator_ids": ["poc-execution"],
+      "selector": {"poc_classes": ["unit", "property", "integration"]}
+    },
+    {
+      "module_id": "poc.structural",
+      "operator_ids": ["poc-execution"],
+      "selector": {"poc_classes": ["structural"]}
+    },
+    {
+      "module_id": "executor.evm",
+      "operator_ids": ["executor-evidence"],
+      "selector": {"pipelines": ["sc"], "ecosystems": ["evm"]}
+    },
+    {
+      "module_id": "executor.rust_sc",
+      "operator_ids": ["executor-evidence"],
+      "selector": {"pipelines": ["sc"], "ecosystems": ["solana", "soroban"]}
+    },
+    {
+      "module_id": "executor.move",
+      "operator_ids": ["executor-evidence"],
+      "selector": {"pipelines": ["sc"], "ecosystems": ["aptos", "sui"]}
+    },
+    {
+      "module_id": "executor.l1_go",
+      "operator_ids": ["executor-evidence"],
+      "selector": {"pipelines": ["l1"], "ecosystems": ["go", "mixed"]}
+    },
+    {
+      "module_id": "executor.l1_rust",
+      "operator_ids": ["executor-evidence"],
+      "selector": {"pipelines": ["l1"], "ecosystems": ["rust", "mixed"]}
+    },
+    {
+      "module_id": "bug.serialization",
+      "operator_ids": ["serialization-boundary"],
+      "selector": {"bug_class_terms": ["encoding", "serialization", "cross-vm", "message format"]}
+    },
+    {
+      "module_id": "bug.concurrency",
+      "operator_ids": ["concurrency-schedule"],
+      "selector": {"bug_class_terms": ["concurrency", "race", "nondetermin", "schedule"]}
+    },
+    {
+      "module_id": "bug.consensus",
+      "operator_ids": ["consensus-boundary"],
+      "selector": {"bug_class_terms": ["consensus", "fork", "reorg", "finality"]}
+    }
+  ],
+  "output_contract": {
+    "verifier_markdown_fields": [
+      "Severity",
+      "Impact",
+      "Likelihood",
+      "Trust Adjustment",
+      "Independent Severity",
+      "Evidence Tag",
+      "Verdict",
+      "Rules Applied"
+    ],
+    "operator_proposal_suffix": ".operator_application.json",
+    "operator_receipt_suffix": ".operator_receipt.json",
+    "context_expansion_limit": 1,
+    "terminal_negative_tokens": ["REFUTED", "FALSE_POSITIVE", "SAFE", "DISMISSED"]
+  },
+  "debt_codes": [
+    "CONTEXT_UNRESOLVED",
+    "EVIDENCE_UNAVAILABLE",
+    "EXECUTOR_UNAVAILABLE",
+    "DEPENDENCY_UNRESOLVED",
+    "PROOF_SCOPE_UNRESOLVED"
+  ]
+}

@@ -1,0 +1,239 @@
+{
+  "advisory_ids": [],
+  "limitation": "Point-in-time primary-source observation; advisory data may change and must be refreshed before release.",
+  "observed_at": "2026-08-15T20:12:14Z",
+  "query_count": 27,
+  "raw_request_path": "verification_policy/ci_advisory_responses/request.json",
+  "raw_request_sha256": "00d0e3b93d8677d0c7bdb5133ab4ce49d9f43d226a66ccb96c6b60b653aaa5b7",
+  "raw_response_path": "verification_policy/ci_advisory_responses/response.json",
+  "request": {
+    "queries": [
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "annotated-types"
+        },
+        "version": "0.8.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "attrs"
+        },
+        "version": "26.1.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "colorama"
+        },
+        "version": "0.4.6"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "execnet"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "iniconfig"
+        },
+        "version": "2.3.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "inquirerpy"
+        },
+        "version": "0.3.4"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "jsonschema"
+        },
+        "version": "4.26.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "jsonschema-specifications"
+        },
+        "version": "2025.9.1"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "markdown-it-py"
+        },
+        "version": "4.2.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "mdurl"
+        },
+        "version": "0.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "packaging"
+        },
+        "version": "26.2"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "pfzy"
+        },
+        "version": "0.3.4"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "pluggy"
+        },
+        "version": "1.6.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "prompt-toolkit"
+        },
+        "version": "3.0.53"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "protobuf"
+        },
+        "version": "7.35.1"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "pydantic"
+        },
+        "version": "2.13.4"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "pydantic-core"
+        },
+        "version": "2.46.4"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "pygments"
+        },
+        "version": "2.20.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "pytest"
+        },
+        "version": "9.1.1"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "pytest-xdist"
+        },
+        "version": "3.8.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "pywinpty"
+        },
+        "version": "2.0.15"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "referencing"
+        },
+        "version": "0.37.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "rich"
+        },
+        "version": "15.0.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "rpds-py"
+        },
+        "version": "2026.6.3"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "typing-extensions"
+        },
+        "version": "4.16.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "typing-inspection"
+        },
+        "version": "0.4.2"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "wcwidth"
+        },
+        "version": "0.8.2"
+      }
+    ]
+  },
+  "request_sha256": "00d0e3b93d8677d0c7bdb5133ab4ce49d9f43d226a66ccb96c6b60b653aaa5b7",
+  "response": {
+    "results": [
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {}
+    ]
+  },
+  "response_sha256": "39c60b15a7023caa52ed57cce48ce674c29b244419832afd1ca6c8846b92dd4c",
+  "result": "none-observed-at-check",
+  "schema": "plamen.ci-advisory-evidence.v1",
+  "source": "https://api.osv.dev/v1/querybatch",
+  "source_response_sha256": "39c60b15a7023caa52ed57cce48ce674c29b244419832afd1ca6c8846b92dd4c"
+}

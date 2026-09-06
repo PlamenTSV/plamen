@@ -11,12 +11,34 @@
 #   integration — spawns a real OS subprocess / real tool / real sleep (slower)
 #   slow        — heavyweight even among integration (real driver phase-loop)
 #
-# Fast PR lane:      pytest -m "not integration" -n auto
-# Integration lane:  pytest -m "integration"            (serial; env-guarded)
+# Fast PR lane:      pytest -m "not integration and not fast_quarantine" -n auto
+# Integration lane:  pytest -m "integration"            (logical collection)
+# Windows execution: pytest -m "integration and not posix_only" (serial)
+# Quarantine lane:   pytest -m "fast_quarantine"         (authority-guarded)
 # Full/nightly lane: pytest                             (everything, source of truth)
 [tool.pytest.ini_options]
+addopts = [
+    # Synthetic and review fixtures are governed by an exact external manifest.
+    # They remain explicitly invocable but cannot enter the production lane by
+    # recursive default discovery.
+    "--ignore=Temp",
+    "--ignore=review_fixtures",
+    # Immutable historical RED evidence binds the pre-repair same-path subject.
+    # The GREEN-v2 successor remains in default collection.
+    "--ignore=review_fixtures/program_facts_runtime_gate3/g3_00_schema_crosscheck/test_crosscheck_schema_contracts_stdlib_v1_transport_totality_amendment_red.py",
+]
 markers = [
     "unit: fast, fully-mocked test with no real subprocess/IO (default lane)",
     "integration: spawns a real OS subprocess, real external tool, or real sleep (slower)",
+    "fast_quarantine: exact manifest-bound exclusion from the no-skip production numerator",
+    "windows_only: requires the explicitly supported Windows platform family",
+    "posix_only: requires the explicitly supported POSIX platform family",
+    "provider_live: requires explicit authenticated live-provider authority",
+    "installed_runtime: requires authenticated installed or staged runtime bytes",
+    "symlink: requires authenticated symlink creation capability",
+    "hardlink: requires authenticated hardlink creation capability",
+    "reparse_or_junction: requires authenticated Windows reparse-point or junction capability",
+    "ntfs_ads_sparse: requires authenticated NTFS alternate-stream or sparse-file capability",
+    "path_envelope: requires an authenticated filesystem path-length and mutation envelope",
     "slow: heavyweight even among integration tests (e.g. the real driver phase-loop)",
 ]

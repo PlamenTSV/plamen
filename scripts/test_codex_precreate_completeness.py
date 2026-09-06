@@ -9,8 +9,8 @@ and triggered niche outputs with no target — so the never-cut gate degraded
 the depth phase. Recon had the same gap for its `*_worker.md` shards.
 
 These tests pin the codex-scoped, non-halting fix:
-  1. depth seeds blind_spot_a/b/c + validation_sweep + confidence_scores +
-     the manifest's TRIGGERED niche files (empty files now exist).
+  1. depth seeds blind_spot_a/b/c + validation_sweep + the manifest's
+     TRIGGERED niche files, but not driver-owned confidence artifacts.
   2. recon seeds the *_worker.md shards.
   3. NON-HALTING: an EMPTY seeded blind_spot_a still FAILS the never-cut/stub
      gate (flagged stub, NOT passed) → degrade-and-continue intact.
@@ -66,7 +66,7 @@ def _write_manifest_with_niche(scratchpad: Path, *, triggered: bool) -> None:
 # 1. depth seeds the secondary never-cut artifacts + triggered niche files
 # ---------------------------------------------------------------------------
 
-def test_depth_seeds_blindspot_validation_confidence_and_triggered_niche(tmp_path):
+def test_depth_seeds_model_secondaries_but_not_driver_confidence(tmp_path):
     scratchpad = tmp_path
     _write_manifest_with_niche(scratchpad, triggered=True)
 
@@ -84,11 +84,13 @@ def test_depth_seeds_blindspot_validation_confidence_and_triggered_niche(tmp_pat
         "blind_spot_b_findings.md",
         "blind_spot_c_findings.md",
         "validation_sweep_findings.md",
-        "confidence_scores.md",
     ):
         seeded = scratchpad / name
         assert seeded.exists(), f"{name} should be pre-seeded"
         assert seeded.read_text(encoding="utf-8") == "", f"{name} seeded empty"
+    assert not (scratchpad / "confidence_scores.md").exists()
+    assert not (scratchpad / "confidence_consensus_authority.json").exists()
+    assert not (scratchpad / "consensus_map.md").exists()
 
     # Triggered niche output seeded; untriggered one NOT seeded.
     assert (scratchpad / "niche_event_completeness_findings.md").exists()
@@ -279,12 +281,14 @@ def test_fill_directive_lists_seeded_files(tmp_path):
     for name in (
         "blind_spot_a_findings.md",
         "validation_sweep_findings.md",
-        "confidence_scores.md",
         "niche_event_completeness_findings.md",
     ):
         assert name in directive, f"directive must name {name}"
     # First-representative alternation only.
     assert "scanner_validation_findings.md" not in directive
+    assert "confidence_scores.md" not in directive
+    assert "confidence_consensus_authority.json" not in directive
+    assert "consensus_map.md" not in directive
 
 
 def test_fill_directive_recon_lists_shards():
@@ -316,7 +320,7 @@ def test_l1_depth_seeds_l1_never_cut(tmp_path):
     # L1 base set + core extra.
     assert (scratchpad / "depth_consensus_invariant_findings.md").exists()
     assert (scratchpad / "depth_network_surface_findings.md").exists()
-    assert (scratchpad / "confidence_scores.md").exists()
+    assert not (scratchpad / "confidence_scores.md").exists()
     # L1-4: L1 now has its own scanner floor (mirrors SC's blind-spot A/B/C +
     # validation sweep) as of the L1 rigor buildout, so these ARE seeded under
     # L1 core too -- Codex needs a target file to apply_patch into.

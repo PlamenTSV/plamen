@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -29,12 +30,85 @@ except ImportError:
     RICH_AVAILABLE = False
 
 
+class _LifecycleSafeTextStream:
+    """Best-effort terminal stream that cannot terminate an audit.
+
+    Codex, Claude, CI runners, and SSH sessions may close their captured output
+    pipes while the independently useful audit process is still running.  A
+    later ``print(..., flush=True)`` would otherwise raise ``BrokenPipeError``
+    (or a Windows invalid-handle ``OSError``) and unwind the orchestrator before
+    its next durable phase checkpoint.  Terminal output is observational, not
+    authoritative, so detach that channel after its first write/flush failure.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._detached = False
+        self._lock = threading.Lock()
+
+    @property
+    def detached(self) -> bool:
+        return self._detached
+
+    def write(self, value):
+        if self._detached:
+            return len(value) if value is not None else 0
+        with self._lock:
+            if self._detached:
+                return len(value) if value is not None else 0
+            try:
+                return self._stream.write(value)
+            except (BrokenPipeError, OSError, ValueError):
+                self._detached = True
+                return len(value) if value is not None else 0
+
+    def flush(self):
+        if self._detached:
+            return None
+        with self._lock:
+            if self._detached:
+                return None
+            try:
+                return self._stream.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                self._detached = True
+                return None
+
+    def isatty(self):
+        if self._detached:
+            return False
+        try:
+            return bool(self._stream.isatty())
+        except Exception:
+            return False
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def install_detached_output_guards() -> None:
+    """Make stdout/stderr loss non-fatal for the process lifetime.
+
+    This is deliberately explicit instead of running at import time: the
+    installed-package admission handshake uses stdout as a security protocol
+    before the driver imports this module, and protocol failures must remain
+    fail-closed.  The audit entrypoint enables these guards after admission and
+    CLI discovery have completed.
+    """
+
+    if not isinstance(sys.stdout, _LifecycleSafeTextStream):
+        sys.stdout = _LifecycleSafeTextStream(sys.stdout)
+    if not isinstance(sys.stderr, _LifecycleSafeTextStream):
+        sys.stderr = _LifecycleSafeTextStream(sys.stderr)
+
+
 def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 _FORCE_RICH_OUTPUT = _env_truthy("PLAMEN_FORCE_RICH")
 _PLAIN_OUTPUT = _env_truthy("PLAMEN_PLAIN_OUTPUT")
+_NO_COLOR = "NO_COLOR" in os.environ
 _CAPTURED_OUTPUT = (
     not bool(getattr(sys.stderr, "isatty", lambda: False)())
     or os.environ.get("TERM", "").strip().lower() == "dumb"
@@ -75,7 +149,7 @@ def _gradient_text(text: str, bold: bool = True) -> "Text":
     return result
 
 # Module-level console -- always stderr (driver output channel)
-console = Console(stderr=True, highlight=False) if RICH_AVAILABLE else None
+console = Console(stderr=True, highlight=False, no_color=_NO_COLOR) if RICH_AVAILABLE else None
 
 
 def _extract_agent_text_from_event_stream(text: str) -> str:
@@ -234,8 +308,9 @@ def print_phase_start(phase_idx: int, total: int, phase_name: str,
                       model: str, attempt: int = 1):
     """Print phase start indicator."""
     _clear_spinner()
-    global _phase_start
+    global _phase_start, _total_phases
     _phase_start = time.time()
+    _total_phases = max(_total_phases, total)
 
     if not RICH_AVAILABLE:
         suffix = f" (retry #{attempt})" if attempt > 1 else ""
@@ -324,12 +399,13 @@ def print_phase_done(phase_idx: int, total: int, phase_name: str,
                      gate_summary: str = ""):
     """Print phase completion line."""
     _clear_spinner()
-    global _completed_phases
+    global _completed_phases, _total_phases
+    _total_phases = max(_total_phases, total)
     _completed_phases += 1
 
     phase_elapsed = _elapsed_str(_phase_start) if _phase_start else ""
     pipeline_elapsed = _elapsed_str(_pipeline_start) if _pipeline_start else ""
-    remaining = _total_phases - _completed_phases
+    remaining = max(0, _total_phases - _completed_phases)
 
     if not RICH_AVAILABLE:
         print(f"    + {phase_name}  ({remaining} remaining, {pipeline_elapsed} elapsed)",
@@ -474,7 +550,7 @@ def print_halt_diagnostics(phase_name: str, scratchpad: str,
 
 def print_failure_diagnosis(phase_name: str, scratchpad: str,
                             missing: list, config: dict):
-    """Spawn a Claude subprocess (sonnet) to deeply diagnose the failure.
+    """Generate a deterministic local diagnosis of a failed phase.
 
     Reads the stdio log + prompt snapshot and produces a structured
     diagnosis that can be passed directly into a fixing session.
@@ -644,14 +720,41 @@ def print_failure_diagnosis(phase_name: str, scratchpad: str,
             f"{fix}"
         )
 
+    # Failure diagnosis is advisory and must not create an unexpected paid
+    # provider call after the audit phase has failed.  Old configs may still
+    # contain allow_paid_failure_diagnosis=true, but it grants no authority
+    # until this path is wired through the canonical contained provider.
+    if True:  # unconditional until canonical contained-provider wiring exists
+        diagnosis = _local_diagnosis(
+            "paid provider diagnosis is disabled until the canonical "
+            "contained provider is wired"
+        )
+        diagnosis_path = sp / f"_diagnosis_{phase_name}.md"
+        try:
+            header = (
+                f"# Failure Diagnosis: {phase_name}\n\n"
+                f"**Generated**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"**Missing**: {', '.join(str(m) for m in missing)}\n"
+                f"**Log**: {log_path.name} ({len(log_content)} bytes)\n\n---\n\n"
+            )
+            diagnosis_path.write_text(header + diagnosis, encoding="utf-8")
+        except Exception:
+            pass
+        if not RICH_AVAILABLE:
+            print(f"\n{diagnosis}\n", file=sys.stderr)
+        else:
+            console.print(Panel(diagnosis, title="[bold red]Failure Diagnosis[/]",
+                                border_style="red", width=min(console.width, 90)))
+        return
+
     backend = config.get("cli_backend", "claude")
 
     if backend == "codex":
-        codex_bin = _find_codex_bin()
+        codex_bin = None
         if not codex_bin:
             return
     else:
-        claude_bin = _find_claude_bin()
+        claude_bin = None
         if not claude_bin:
             return
 
@@ -673,25 +776,26 @@ def print_failure_diagnosis(phase_name: str, scratchpad: str,
 
     if backend == "codex":
         from plamen_types import _CODEX_MODEL_MAP
-        diag_model = _CODEX_MODEL_MAP.get("sonnet", "gpt-5.4-mini")
+        diag_model = _CODEX_MODEL_MAP.get("sonnet", "gpt-5.6-terra")
         cmd = [
             codex_bin, "exec",
             "--model", diag_model,
             "--json",
             "--ephemeral",
-            "--dangerously-bypass-approvals-and-sandbox",
+            "--disabled-direct-provider-path",
             "--skip-git-repo-check",
             "--ignore-user-config",
             "--ignore-rules",
             "-",
         ]
     else:
+        from plamen_types import PLAMEN_SONNET_MODEL
         cmd = [
-            claude_bin, "-p", "--model", "sonnet",
+            claude_bin, "-p", "--model", PLAMEN_SONNET_MODEL,
             "--output-format", "text",
             "--no-session-persistence",
-            "--dangerously-skip-permissions",
-            "--disallowedTools", "mcp__*",
+            "--disabled-direct-provider-path",
+            "--disallowedTools", "mcp__*,Task,Agent",
         ]
         # Apply plugin/hook/MCP isolation via --settings overlay
         isolation_path = sp / "_subprocess_isolation.json"
@@ -723,13 +827,18 @@ def print_failure_diagnosis(phase_name: str, scratchpad: str,
             subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
         )
 
-    def _terminate_diagnosis_process(proc: subprocess.Popen):
+    def _disabled_paid_diagnosis_process(*_args, **_kwargs):
+        raise RuntimeError(
+            "direct paid diagnosis is disabled; canonical provider required"
+        )
+
+    def _terminate_diagnosis_process(proc):
         try:
             if proc.poll() is not None:
                 return
             if sys.platform == "win32":
                 try:
-                    subprocess.run(
+                    _disabled_paid_diagnosis_process(
                         ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
@@ -774,7 +883,7 @@ def print_failure_diagnosis(phase_name: str, scratchpad: str,
             deadline = time.time() + timeout_s
             proc = None
             with diagnosis_prompt_path.open("rb") as stdin_file:
-                proc = subprocess.Popen(
+                proc = _disabled_paid_diagnosis_process(
                     cmd,
                     stdin=stdin_file,
                     stdout=subprocess.PIPE,
@@ -916,12 +1025,21 @@ def print_rate_limit_pause(config_path: str):
 
 
 def print_pipeline_complete(degraded: list[str], report_path: Optional[str] = None,
-                            snapshot_path: Optional[str] = None):
+                            snapshot_path: Optional[str] = None,
+                            no_ship: bool = False):
     """Print pipeline completion summary."""
     total_elapsed = _elapsed_str(_pipeline_start) if _pipeline_start else "?"
 
     if not RICH_AVAILABLE:
-        if degraded:
+        if no_ship or not report_path:
+            print(
+                f"\n{'=' * 60}\n"
+                "  PIPELINE FINISHED -- NO DELIVERABLE\n"
+                "  The report was withheld or quarantined; review runtime debt and resume.\n"
+                f"{'=' * 60}",
+                file=sys.stderr, flush=True,
+            )
+        elif degraded:
             print(
                 f"\n{'=' * 60}\n"
                 f"  PIPELINE COMPLETE -- {len(degraded)} degraded phase(s)\n"
@@ -939,7 +1057,15 @@ def print_pipeline_complete(degraded: list[str], report_path: Optional[str] = No
         return
 
     console.print()
-    if degraded:
+    if no_ship or not report_path:
+        content = (
+            "[bold red]No deliverable was released[/]\n\n"
+            "[dim]The report was withheld or quarantined because terminal "
+            "integrity/debt checks did not clear. Review the scratchpad and resume.[/]"
+        )
+        console.print(Panel(content, title="[bold red]! NO SHIP[/]",
+                            border_style="red", width=min(console.width, 72)))
+    elif degraded:
         degraded_list = ", ".join(degraded)
         content = (
             f"[bold yellow]Completed with {len(degraded)} degraded phase(s)[/]\n\n"
@@ -1251,13 +1377,21 @@ def print_purge_done(scratchpad_path: str):
     console.print(f"  [bold red]✗[/] Purged: [dim]{scratchpad_path}[/]")
 
 
-def print_exit_clean():
+def print_exit_clean(config_path: str = "", scratchpad_path: str = ""):
     """Print final exit message when user chooses to stop completely."""
     if not RICH_AVAILABLE:
-        print("  Stopped. Re-run the wizard to start fresh.\n", file=sys.stderr, flush=True)
+        print("  Stopped safely; audit artifacts were preserved.", file=sys.stderr, flush=True)
+        if config_path:
+            print(f"  Resume: plamen resume \"{config_path}\"", file=sys.stderr, flush=True)
+        if scratchpad_path:
+            print(f"  Scratchpad: {scratchpad_path}", file=sys.stderr, flush=True)
         return
     console.print()
-    console.print(f"  [bold]Stopped.[/] Re-run the wizard to start fresh.")
+    console.print("  [bold]Stopped safely.[/] Audit artifacts were preserved.")
+    if config_path:
+        console.print(f"  Resume: [bold]plamen resume \"{config_path}\"[/]")
+    if scratchpad_path:
+        console.print(f"  Scratchpad: [dim]{scratchpad_path}[/]")
     console.print()
 
 

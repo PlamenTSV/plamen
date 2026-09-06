@@ -395,6 +395,67 @@ def test_shard_filename_matches_subagent_prompt_injection():
     )
 
 
+def test_long_focus_filename_is_bounded_deterministic_and_collision_resistant():
+    focus = (
+        "cross_chain_message_integrity_oncall_onrevert_onabort_trusted_gateway_"
+        "verification_message_decode_correctness_swapdatahelperlib_gatewaysend_"
+        "duplicate_decoder_drift"
+    )
+    first = D._opengrep_shard_filename("B7", focus)
+    second = D._opengrep_shard_filename("B7", focus)
+    neighbor = D._opengrep_shard_filename("B7", focus + "_neighbor")
+
+    assert first == second
+    assert first.startswith("opengrep_obligations_B7_cross_chain_")
+    assert re.search(r"_[0-9a-f]{12}\.md$", first)
+    assert len(first.encode("ascii")) <= D._OPENGREP_SHARD_FILENAME_MAX_BYTES
+    assert neighbor != first
+
+
+def test_long_focus_shard_preserves_every_obligation(tmp_path: Path):
+    focus = (
+        "core_state_feepercent_slippage_minreturnamount_expreturnamount_max_"
+        "deadline_deadline_gaslimit_staleness_across_gatewaycrosschain_"
+        "gatewaysend_gatewaytransfernative"
+    )
+    _write_manifest(tmp_path, [("B1", focus), ("B2", "access_control")])
+    _write_opengrep_findings(
+        tmp_path,
+        [
+            {"location": "contracts/GatewayCrossChain.sol:42"},
+            {"location": "contracts/UnmatchedLibrary.sol:7"},
+        ],
+    )
+
+    result = D.shard_opengrep_obligations(tmp_path)
+    shard = Path(result["B1"]["shard_path"])
+    assert shard.is_file()
+    assert len(shard.name.encode("ascii")) <= 96
+    assert D._check_opengrep_sharding_preservation(tmp_path) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="native Win32 path budget")
+def test_long_focus_shard_writes_below_native_windows_legacy_limit(
+    tmp_path: Path,
+):
+    component_budget = max(1, min(50, 150 - len(str(tmp_path)) - 1))
+    scratchpad = tmp_path / ("s" * component_budget)
+    scratchpad.mkdir()
+    focus = "storage_layout_" + ("upgradeable_gateway_contracts_" * 20)
+    _write_manifest(scratchpad, [("B9", focus)])
+    _write_opengrep_findings(
+        scratchpad,
+        [{"location": "contracts/ProxyStorage.sol:9", "message": "storage slot"}],
+    )
+
+    result = D.shard_opengrep_obligations(scratchpad)
+    shard = Path(result["B9"]["shard_path"])
+    assert shard.is_file()
+    assert not str(shard).startswith("\\\\?\\")
+    assert len(str(shard)) < 260
+    assert D._check_opengrep_sharding_preservation(scratchpad) == []
+
+
 # ---------------------------------------------------------------------------
 # Defensive counterparts
 # ---------------------------------------------------------------------------

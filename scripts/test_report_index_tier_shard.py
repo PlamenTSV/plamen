@@ -227,12 +227,13 @@ def test_seed_only_id_absent_from_verify_files_is_caught(tmp_path):
     assert any("VS-1" in i for i in issues)
 
 
-def test_excluded_disposition_satisfies_gate(tmp_path):
-    """A seed ID disposed via Excluded Findings (not a report ID) still passes.
+def test_prose_only_excluded_disposition_does_not_satisfy_gate(tmp_path):
+    """An Excluded Findings row is a proposal, not terminal authority.
 
     Confirms the gate accepts ALL valid dispositions, not just report-ID
     promotion — so the negative control is targeting genuine drops, not
-    legitimate exclusions (recall-safe, no over-flagging).
+    legitimate exclusions.  Bare FALSE_POSITIVE prose is not a replayed
+    provider decision and therefore cannot remove a candidate.
     """
     _seed_everything(tmp_path)
     full = sorted(V._collect_report_index_seed_ids(tmp_path))
@@ -247,7 +248,8 @@ def test_excluded_disposition_satisfies_gate(tmp_path):
     excl_rows = [f"| {excluded} | Low | T | FALSE_POSITIVE - verified safe |"]
     _write_index(tmp_path, rows, excluded_rows=excl_rows)
     issues = V._check_index_completeness(tmp_path, str(tmp_path), write_retry_hint=False)
-    assert issues == [], f"excluded disposition must satisfy the gate; got: {issues}"
+    assert issues, "prose-only exclusion must not authorize candidate loss"
+    assert any(excluded in issue for issue in issues), issues
 
 
 def test_retry_hint_names_dropped_seed_ids(tmp_path):

@@ -33,7 +33,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -41,6 +40,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from owned_process_runner import run_owned_process
 from pty_exec import (  # noqa: E402
     SUBPROCESS_ISOLATION_PAYLOAD,
     append_claude_pty_prompt_arg,
@@ -108,10 +108,8 @@ def get_claude_version(claude_bin: str) -> str:
     safely re-run the probe).
     """
     try:
-        result = subprocess.run(
+        result = run_owned_process(
             [claude_bin, "--version"],
-            capture_output=True,
-            text=True,
             timeout=15,
             encoding="utf-8",
             errors="replace",
@@ -200,12 +198,15 @@ def _build_probe_argv(
     from the probe OMITTING this isolation set and hitting the plugin/MCP
     cold-start hang it was meant to avoid.
 
-    `--model haiku` is intentional: the PTY-continuation / agentId-resume
+    The exact pinned Haiku model is intentional: the PTY-continuation / agentId-resume
     capability is a CLI transport property, independent of the model, and
     haiku keeps the probe cheap. `claude_pty_argv_shape` normalizes the
     model value, so the probe and production shape hashes still match.
     """
-    from plamen_types import plamen_home  # late import: avoid import cycle
+    from plamen_types import (  # late import: avoid import cycle
+        PLAMEN_HAIKU_MODEL,
+        plamen_home,
+    )
 
     iso_path = tmp_dir / "_subprocess_isolation.json"
     try:
@@ -215,7 +216,7 @@ def _build_probe_argv(
         iso_arg = None  # mirror production's overlay-write-failed fallback
     argv = build_claude_pty_argv(
         claude_bin=claude_bin,
-        model="haiku",
+        model=PLAMEN_HAIKU_MODEL,
         session_id=session_id,
         add_dirs=[str(tmp_dir), plamen_home().as_posix()],
         disallow_mcp=True,
@@ -232,11 +233,14 @@ def _probe_shape_hash() -> str:
     `claude_pty_argv_shape` normalizes the volatile session-id / dir / iso
     values away. Mirrors `_build_probe_argv`'s success-case structure: two
     `--add-dir` + the full isolation set."""
-    from plamen_types import plamen_home  # late import: avoid import cycle
+    from plamen_types import (  # late import: avoid import cycle
+        PLAMEN_HAIKU_MODEL,
+        plamen_home,
+    )
 
     canonical = build_claude_pty_argv(
         claude_bin="claude",
-        model="haiku",
+        model=PLAMEN_HAIKU_MODEL,
         session_id="probe",
         add_dirs=["probe-dir", plamen_home().as_posix()],
         disallow_mcp=True,

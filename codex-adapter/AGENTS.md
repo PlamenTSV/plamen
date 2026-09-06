@@ -72,7 +72,7 @@ For new Codex launches, `config.json` must set `"cli_backend": "codex"`.
 Follow the phase graph defined in the V2 driver's `plamen_types.py`:
 
 ```
-Recon (1) -> Breadth (2) -> Inventory (3) -> [Re-scan (4)] -> [Per-contract (5)]
+Recon (1) -> Breadth (2) -> [Re-scan (3)] -> [Per-contract (4)] -> Inventory (5)
 -> [Semantic Invariants (6)] -> Depth Loop (7) -> Chain Analysis (8)
 -> Verification (9) -> Report (10)
 ```

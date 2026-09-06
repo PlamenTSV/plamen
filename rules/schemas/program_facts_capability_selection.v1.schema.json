@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_capability_selection.v1.schema.json",
+  "title": "Program Facts capability selection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "selected_scope_digest",
+    "registry_digest",
+    "selected_capability_ids",
+    "excluded_capability_ids",
+    "unresolved_capability_ids",
+    "unresolved_debt_ids",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_capability_selection.v1"
+    },
+    "status": {
+      "enum": [
+        "SELECTED",
+        "DEGRADED",
+        "UNAVAILABLE",
+        "FAILED",
+        "STALE"
+      ]
+    },
+    "selected_scope_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "registry_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "selected_capability_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "excluded_capability_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "unresolved_capability_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "unresolved_debt_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    }
+  }
+}

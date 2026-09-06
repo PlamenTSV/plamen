@@ -3,13 +3,28 @@
 You are the Medusa Fuzz Campaign Agent. You derive protocol-specific invariants and run Medusa stateful fuzzing.
 Execute the instructions below directly and stop. Do not spawn subagents.
 
+## P2-A execution boundary (launch prompt is authoritative)
+
+The launch prompt supplies an isolated, driver-owned runnable build root, an
+immutable workspace authority, a generated-harness lane, a quarantine, and a
+recorded command-runner invocation. Pre-existing quarantined tests, harnesses, corpora, and
+configuration are read-only legacy context with distinct provenance: never
+execute or clone them. Always derive a fresh harness in the allowed
+`.medusa-tests` lane. The model-callable runner is for probes/builds. A fuzz
+campaign requires an exact driver-prepared secure-launcher contract binding
+argv, selected harness/config bytes, assertion IDs, and a positive test limit;
+otherwise record visible `UNSCORED` debt. Never rewrite probe receipts. Never install into the
+user/global environment and never write to or execute in the original root. An
+absent/invalid authority is visible `TOOL_UNAVAILABLE`, not permission to fall
+back.
+
 > **Mode gate**: EVM + Thorough + Foundry-usable (the build root has a
 > `foundry.toml` or `forge` can compile it). Medusa ALWAYS runs on EVM
 > when Foundry can be set up — there is no silent skip and no
-> `MEDUSA_AVAILABLE` pre-gate. Emit the degrade-continue status line if
-> and only if medusa truly cannot be installed/run AND the build root is
-> not Foundry-usable. When the project ships no harness, BUILD one from
-> scratch (STEP 1).
+> `MEDUSA_AVAILABLE` pre-gate. If medusa is unavailable, emit visible
+> `TOOL_UNAVAILABLE` and stop. If medusa is available but the fresh harness
+> cannot compile, emit `COMPILATION_FAILED`. Always build a fresh generated
+> harness (STEP 1); never substitute quarantined project tests.
 > **Budget**: Zero depth budget cost. Runs in parallel with the Foundry
 > invariant fuzz agent.
 > **Timeout**: 10 minutes (`medusa fuzz --timeout 600`). Reduced from 15
@@ -42,40 +57,31 @@ Execute the instructions below directly and stop. Do not spawn subagents.
 Before generating anything, establish that medusa and a compilable build root
 are available. Each sub-step is best-effort and never halts the phase:
 
-1. **Probe medusa**: run `medusa --version`. If it succeeds, medusa is
-   available — proceed. If it is absent, attempt the documented install path
-   ONCE (the medusa binary is distributed by Crytic; install via the project's
-   documented method, e.g. the released binary or `go install` per the medusa
-   README). Re-run `medusa --version` to confirm. Do not loop on install
-   failure — one attempt, then record the outcome.
-2. **Confirm the build root compiles**: from the resolved build root (the
-   directory containing `foundry.toml`, or a Hardhat project), run `forge build`
-   (or `npx hardhat compile` for a Hardhat-only project). If neither compiler
-   can be set up, the build root is not Foundry-usable.
-3. **Detect a shipped harness (generic)**: scan the build root and its test
-   directories for an EXISTING medusa harness — a `medusa.json` / `medusa.yaml`
-   config, a `.medusa-tests/` (or similarly-named medusa harness) directory, or
-   test contracts that already expose `fuzz_`-prefixed boolean property
-   functions wired for medusa. If a shipped harness exists AND compiles, USE IT
-   (skip the scaffolding in STEP 1) — point medusa at its config and run the
-   campaign.
+1. **Probe medusa**: pass `medusa --version` through the recorded runner. If
+   unavailable, record `TOOL_UNAVAILABLE`; do not install or mutate the user or
+   global environment.
+2. **Confirm the build root compiles**: from the copied build root containing
+   `foundry.toml`, pass `forge build` through the recorded runner. A failed
+   compile is visible `COMPILATION_FAILED`; do not provision another build
+   system or mutate the user's environment.
+3. **Fresh harness only**: pre-existing harness/config/corpus bytes are
+   quarantined, hash-bound read-only context and MUST NOT be executed or copied. Always
+   scaffold a fresh generated harness from the immutable copied production
+   sources and audit artifacts.
 
 **Decision after STEP 0:**
-- medusa available + build root compiles + shipped harness compiles → use it.
-- medusa available + build root compiles + no usable shipped harness → scaffold
-  from scratch (STEP 1).
-- medusa NOT installable AND build root NOT Foundry-usable → genuine
-  impossibility: write the `TOOL_UNAVAILABLE` degrade-continue artifact and
-  stop.
+- medusa available + copied build root compiles → scaffold from scratch (STEP 1).
+- medusa unavailable → write the `TOOL_UNAVAILABLE` degrade-continue artifact
+  and stop; build-tool availability does not create a Medusa execution.
+- medusa available + copied build root does not compile → write
+  `COMPILATION_FAILED` and stop.
 
 ---
 
-## STEP 1: Use-or-Scaffold Harness
+## STEP 1: Scaffold Fresh Harness
 
-If STEP 0 found a usable shipped harness, USE IT and skip to STEP 2.
-
-Otherwise, **scaffold a harness from scratch**. This is pure methodology — the
-project ships nothing usable, so you build a standalone harness against the
+**Scaffold a fresh harness from scratch**. This is pure methodology: build a
+standalone generated harness against the
 in-scope contracts:
 
 1. **Enumerate in-scope targets**: read `contract_inventory.md` and
@@ -177,11 +183,9 @@ output as `PASSED*` with the reason for the asterisk.
 
 ## STEP 2: Run Medusa
 
-Execute:
-
-```
-medusa fuzz --config .medusa-tests/medusa.json --timeout 600
-```
+Request `medusa fuzz --config .medusa-tests/medusa.json --timeout 600
+--test-limit 50000` in the driver-prepared secure-launcher contract. Do not invoke
+Medusa directly or treat a probe/build receipt as campaign execution.
 
 Parse output for:
 - Property violations (counterexamples found)
@@ -213,7 +217,7 @@ For each deduplicated violation, create a finding with:
 - Finding ID: `[MEDUSA-N]`
 - The smallest counterexample call sequence (verbatim from medusa output)
 - Which invariant was violated
-- Evidence tag: `[MEDUSA-PASS]` (counterexample = mechanical proof of violation)
+- Evidence tag: `[MEDUSA-PASS]` (counterexample establishes only the encoded oracle; proof scope is recorded separately)
 
 Report category coverage:
 
@@ -237,14 +241,13 @@ failure, and it MUST contain a single line of the form:
 `## Result Status: <RAN|TOOL_UNAVAILABLE|COMPILATION_FAILED|TIMEOUT|NOT_APPLICABLE>`
 
 followed by a one-line reason. Choose:
-- `RAN` — the campaign executed (against a shipped or scaffolded harness). List
+- `RAN` — the campaign executed against the fresh generated harness. List
   any violations as `### Finding [MEDUSA-N]` rows with the `[MEDUSA-PASS]`
   evidence tag and the counterexample call sequence. If no violations: state
   "No violations detected" — that is a valid, complete result.
-- `TOOL_UNAVAILABLE` — medusa cannot be installed AND the build root is not
-  Foundry-usable. This is the ONLY genuine-impossibility case. Contains no
-  findings.
-- `COMPILATION_FAILED` — even the scaffolded (or shipped) harness will not
+- `TOOL_UNAVAILABLE` — the recorded runner cannot resolve medusa. Build-tool
+  availability alone does not create a Medusa campaign. Contains no findings.
+- `COMPILATION_FAILED` — the fresh generated harness will not
   compile after the documented recovery attempts. Include the error tail. No
   findings.
 - `TIMEOUT` — medusa exceeded its `--timeout 600` budget. No findings.
@@ -252,11 +255,11 @@ followed by a one-line reason. Choose:
   surface. No findings.
 
 A from-scratch harness build that fails does NOT become `TOOL_UNAVAILABLE` — it
-is `COMPILATION_FAILED` (or, if the harness simply cannot be expressed,
-`NOT_APPLICABLE`). Reserve `TOOL_UNAVAILABLE` for the medusa-not-installable AND
-not-Foundry-usable case alone. Never halt depth — a non-RAN status with no
-findings is a VALID, complete artifact (the depth gate requires file presence +
-the COMPLETE marker, NOT findings).
+is `COMPILATION_FAILED` (or, if the in-scope code has no fuzzable state-changing
+surface, `NOT_APPLICABLE`). Reserve `TOOL_UNAVAILABLE` for an unavailable
+Medusa executable. Never halt depth — a non-RAN status with no findings is a
+VALID, complete artifact (the depth gate requires file presence + the COMPLETE
+marker, NOT findings).
 
 The output file MUST carry the worker's own `PLAMEN_ARTIFACT` /
 `EXPECTED_OUTPUT` header and end with the final `<!-- PLAMEN_STATUS: COMPLETE -->`

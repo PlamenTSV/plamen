@@ -31,6 +31,14 @@ from plamen_mechanical import (  # noqa: E402
     _synthesize_components_audited,
     _write_mechanical_report_index,
 )
+from artifact_ledger import (  # noqa: E402
+    record_work_unit_artifacts,
+    record_work_unit_inputs,
+)
+from phase_io_contracts import (  # noqa: E402
+    LaunchSpec,
+    resolve_phase_io_contract,
+)
 
 
 # --------------------------------------------------------------------------
@@ -93,9 +101,9 @@ def _codex_l1_scratchpad(tmp_path: Path) -> Path:
 
 
 # --------------------------------------------------------------------------
-# (a) codex+L1: judge UNRESOLVED over a CONFIRMED verifier demotes + paren stamp
+# (a) codex+L1: judge UNRESOLVED preserves tier and adds an uncertainty stamp
 # --------------------------------------------------------------------------
-def test_fix1_judge_unresolved_demotes_confirmed(tmp_path):
+def test_p0v_judge_unresolved_preserves_confirmed_tier(tmp_path):
     sp = _codex_l1_scratchpad(tmp_path)
     n = _write_mechanical_report_index(sp)
     assert n  # rows written
@@ -105,16 +113,9 @@ def test_fix1_judge_unresolved_demotes_confirmed(tmp_path):
     assert inv_rows, f"INV-004 missing from index:\n{index_text}"
     row = inv_rows[0]
     joined = " | ".join(row)
-    # Demoted once: High -> Medium.
-    assert "Medium" in row, f"expected demotion to Medium, got row: {row}"
-    assert "High" not in [c for c in row if c == "High"], (
-        f"severity column should not still be High: {row}"
-    )
-    # Report ID is in the Medium tier (M-XX), proving the tier moved with sev.
-    assert any(re.fullmatch(r"M-\d+", c) for c in row), (
-        f"expected M-tier report ID after demotion: {row}"
-    )
-    # FIX #2: paren form capturing PRE-demote severity present in Trust Adj.
+    assert "High" in row, f"upstream High tier must be retained: {row}"
+    assert "Medium" not in row, f"proposal-only UNRESOLVED demoted tier: {row}"
+    assert any(re.fullmatch(r"H-\d+", c) for c in row), row
     assert re.search(r"UNRESOLVED\(High\)", joined), (
         f"expected paren-form UNRESOLVED(High) Trust Adj.: {joined}"
     )
@@ -143,8 +144,8 @@ def test_fix1_and_2_index_output_is_body_taggable(tmp_path):
     )
 
 
-def test_fix1_no_double_demotion(tmp_path):
-    """Verifier UNRESOLVED + judge UNRESOLVED demote AT MOST ONCE total."""
+def test_p0v_multiple_unresolved_sources_never_demote(tmp_path):
+    """Verifier and skeptic uncertainty are visibility states, not discounts."""
     sp = tmp_path
     _write(sp / "config.json", '{"cli_backend": "codex"}')
     _write(
@@ -168,10 +169,9 @@ def test_fix1_no_double_demotion(tmp_path):
     index_text = (sp / "report_index.md").read_text(encoding="utf-8")
     rows = _master_index_rows(index_text)
     inv = [r for r in rows if any("INV-009" in c for c in r)][0]
-    # Critical demoted ONCE -> High (not twice -> Medium).
-    assert "High" in inv, f"expected single demotion Critical->High: {inv}"
-    assert "Medium" not in inv, f"double-demotion detected: {inv}"
-    # Only a single UNRESOLVED(...) token, capturing pre-demote Critical.
+    assert "Critical" in inv, f"upstream Critical tier must be retained: {inv}"
+    assert "High" not in inv and "Medium" not in inv, inv
+    # Only a single visibility token, capturing upstream Critical.
     joined = " | ".join(inv)
     assert joined.count("UNRESOLVED(") == 1, f"duplicate UNRESOLVED stamp: {joined}"
     assert "UNRESOLVED(Critical)" in joined, joined
@@ -193,9 +193,50 @@ def _sc_prior_index_scratchpad(tmp_path: Path) -> Path:
         "|-----------|-------|----------|----------|--------------|------------|------------------------|\n"
         "| H-01 | Reorg invariant | High | src/Fork.sol:L120 | VERIFIED | - | H-7 |\n"
     )
-    # The repair reads the latest backup; write the canonical name too.
+    # The repair reads only an authenticated live semantic root.  Bind the
+    # synthetic fixture through a registered zero-input DRIVER work unit so
+    # this unit test does not rely on the retired RAW compatibility path.  The
+    # report-capture suite separately proves this producer cannot claim the
+    # privileged REPORT_INDEX source role.
     _write(sp / "report_index.md.bak", prior)
+    contract = resolve_phase_io_contract(
+        pipeline="sc",
+        mode="thorough",
+        ecosystem="evm",
+        backend="claude",
+        phase="attention_repair",
+        work_unit_id="shard_plan",
+        exact_inputs=(),
+        exact_outputs=("report_index.md",),
+        exact_writer="DRIVER",
+    )
+    launch = LaunchSpec(
+        work_unit_key=contract.key,
+        pipeline=contract.pipeline,
+        mode=contract.mode,
+        ecosystem=contract.ecosystem,
+        backend=contract.backend,
+        model="driver",
+        timeout_s=30,
+        exec_mode="python",
+        tool_policy=("filesystem",),
+    )
+    record_work_unit_inputs(
+        sp,
+        sp.parent,
+        contract,
+        launch,
+        run_id="123e4567-e89b-42d3-a456-426614174000",
+    )
     _write(sp / "report_index.md", prior)
+    record_work_unit_artifacts(
+        sp,
+        sp.parent,
+        contract,
+        launch,
+        run_id="123e4567-e89b-42d3-a456-426614174000",
+        actor="DRIVER",
+    )
     # Judge rules the SAME finding UNRESOLVED.
     _write(
         sp / "skeptic_judge_decisions.md",
@@ -206,7 +247,7 @@ def _sc_prior_index_scratchpad(tmp_path: Path) -> Path:
     return sp
 
 
-def test_fix1_sc_parity_repair_demotes_and_stamps(tmp_path):
+def test_p0v_sc_parity_repair_preserves_and_stamps(tmp_path):
     sp = _sc_prior_index_scratchpad(tmp_path)
     changed = _repair_sc_report_index_from_prior(sp)
     index_text = (sp / "report_index.md").read_text(encoding="utf-8")
@@ -216,22 +257,16 @@ def test_fix1_sc_parity_repair_demotes_and_stamps(tmp_path):
     assert target, f"H-7 row missing after SC repair:\n{index_text}"
     row = target[0]
     joined = " | ".join(row)
-    # Demoted High -> Medium and re-tiered to M-XX.
-    assert "Medium" in row, f"expected SC demotion to Medium: {row}"
-    assert any(re.fullmatch(r"M-\d+", c) for c in row), (
-        f"expected M-tier report ID after SC demotion: {row}"
-    )
+    assert "High" in row, f"SC repair must retain upstream High: {row}"
+    assert "Medium" not in row, row
+    assert any(re.fullmatch(r"H-\d+", c) for c in row), row
     assert re.search(r"UNRESOLVED\(High\)", joined), (
         f"expected SC paren-form UNRESOLVED(High): {joined}"
     )
 
 
-def test_fix1_sc_parity_no_trust_column_does_not_drop_finding(tmp_path):
-    """RECALL-SAFETY: when the prior LLM index has NO Trust Adj. column, a
-    judge-UNRESOLVED ruling must NEVER drop the finding row. The demote may
-    fire un-tokenized (acceptable: finding stays in body, one tier lower), but
-    the row must still be present so the true positive survives to the report.
-    """
+def test_p0v_sc_parity_no_trust_column_preserves_finding_and_tier(tmp_path):
+    """Without a Trust Adj. column, uncertainty cannot drop or demote."""
     sp = tmp_path
     _write(sp / "config.json", '{"cli_backend": "claude", "mode": "thorough"}')
     # Prior index WITHOUT a Trust Adj. column (trust_i resolves to -1).
@@ -258,10 +293,9 @@ def test_fix1_sc_parity_no_trust_column_does_not_drop_finding(tmp_path):
     # The finding MUST still be present (no silent drop).
     target = [r for r in rows if any("H-7" in c for c in r)]
     assert target, f"RECALL VIOLATION: H-7 dropped after SC repair:\n{index_text}"
-    # Demotion is at most one tier (Critical -> High) with the floor honored;
-    # never demoted out of existence or below report severity.
     row = target[0]
-    assert "Medium" not in row, f"unexpected double-demotion: {row}"
+    assert "Critical" in row, f"upstream tier must survive: {row}"
+    assert "High" not in row and "Medium" not in row, row
 
 
 # --------------------------------------------------------------------------
@@ -282,7 +316,7 @@ def _dedup_scratchpad(tmp_path: Path, rows: list[str]) -> Path:
 def _present_inventory(sp: Path, ids: list[str]) -> None:
     lines = ["# Findings Inventory", ""]
     for i in ids:
-        lines.append(f"## Finding [{i}]")
+        lines.append(f"## Finding [{i}]: Synthetic {i}")
         lines.append("")
     _write(sp / "findings_inventory.md", "\n".join(lines))
 
@@ -301,6 +335,27 @@ def test_fix5_exact_location_same_tier_merges(tmp_path):
         sp, "sc_semantic_dedup", supplemental=True
     )
     assert merges == 1, "exact-location + same-tier pair should merge at title>=0.5"
+
+
+def test_fix5_malformed_titleless_inventory_is_conservative_noop(tmp_path):
+    sp = _dedup_scratchpad(
+        tmp_path,
+        [
+            "| INV-001: bug | INV-002: variant | 1.00 | "
+            "location overlap (L10-20 vs L10-20) | yes |",
+        ],
+    )
+    raw = (
+        "# Findings Inventory\n\n"
+        "## Finding [INV-001]\n\n"
+        "## Finding [INV-002]\n"
+    )
+    _write(sp / "findings_inventory.md", raw)
+
+    assert _apply_mechanical_dedup_from_pairs(
+        sp, "sc_semantic_dedup", supplemental=True
+    ) == 0
+    assert (sp / "findings_inventory.md").read_text(encoding="utf-8") == raw
 
 
 def test_fix5_adjacent_lines_do_not_merge(tmp_path):

@@ -17,70 +17,64 @@ and the [README Codex section](../README.md#codex-cli-backend-beta--cost-saving)
 
 ---
 
-## 1. Reduced agent fan-out vs Claude (recall implication)
+## 1. Bounded transactional fan-out on both backends
 
-The Claude backend supervises one PTY worker per output artifact for the
-parallel discovery phases (breadth, depth, rescan). Codex invokes `codex exec`
-directly — depth fans out as one `codex exec` per depth job (which fixes the
-single-subprocess "never-cut-stub" halt), but the PTY worker-pool transport
-itself is Claude-only.
+Codex and headless Claude use the same driver-owned bounded scheduler for the
+parallel discovery phases. Recon, breadth, re-scan, and depth pre-bind every
+worker's exact input/output transaction before the first provider launch, run
+independent rows concurrently within their phase-specific ceiling, join the
+whole wave, and only then perform canonical merge/gate work. Depth preserves
+its producer-before-consumer barriers while parallelizing every ready wave.
 
-Practically: the Claude PTY transport, its per-host transport preflight, and
-the compaction-as-informational heartbeat are Claude-only paths. For the
-broadest agent fan-out and the deepest recall, the Claude backend remains the
-recommended choice — the README says as much: *"If you only have time to
-install one, pick Claude Code."* Treat Codex as the cost-saving alternative,
-not a recall-equivalent substitute.
+The provider transport still differs: Codex invokes isolated `codex exec`
+processes directly, while Claude invokes its authenticated headless provider.
+The older Claude PTY supervision transport, host preflight, and informational
+compaction heartbeat remain Claude-only compatibility paths. Those transport
+differences no longer imply reduced Codex discovery fan-out or a serial Codex
+methodology.
 
-## 2. MCP tools are partially disabled / wrapped on Codex
+## 2. Audit subprocesses intentionally load no MCP on Codex
 
-MCP runs natively on both backends, but two Codex-specific constraints apply
-(`scripts/codex_adapter.py`):
+The installer can place nine optional MCP adapters in the user's Codex config
+for manual interoperability. The audit driver does not inherit them: every
+`codex exec` subprocess is ephemeral and uses `--ignore-user-config`. All
+ordinary audit phases use local files and governed command-line tools directly.
+`rag_sweep` receives filesystem + network authority and uses Web search for
+precedent context; its typed launch receipt does not claim MCP.
 
-- **`evm-chain-data` is disabled on Codex** due to an MCP protocol version
-  mismatch — no on-chain ABI/state queries via that server when running under
-  Codex.
-- **Four Python MCP servers** (`slither-analyzer`, `unified-vuln-db`,
-  `farofino`, `solana-fender`) are launched through
-  `mcp-packages/schema-sanitizer.js`, which strips `oneOf`/`allOf` JSON-schema
-  constructs that Codex rejects.
+Claude differs only in explicit headless mode, where `rag_sweep` may receive a
+receipt-bound singleton `unified-vuln-db` config. The default Claude PTY and all
+Codex audits use the same Web fallback and never inherit ambient MCP servers.
+See [mcp-servers.md](mcp-servers.md) for the exact runtime matrix.
 
-When an MCP-backed lane is unavailable, the affected phases fall back to
-**WebSearch** (e.g. RAG validation searches `site:solodit.xyz`) or to
-grep-based static analysis, exactly as they do on Claude when a key is missing
-— the pipeline degrades gracefully rather than halting, but with less
-historical-precedent and static-analysis coverage. See
-[mcp-servers.md](mcp-servers.md) for the full server matrix.
+## 3. Global Codex MCP permissions do not affect audits
 
-## 3. MCP tool permissions cannot be pre-configured
+Interactive approval may still be required when a user invokes an optional MCP
+adapter manually from Codex. It is not part of a Plamen audit launch, because
+the driver ignores global Codex configuration and supplies its own phase policy.
 
-Codex tool permissions are **interactive on first use** — you must select
-"Always allow" on the first prompt per MCP server. They cannot be merged in
-ahead of time the way Claude Code permissions are
-(`plamen.py:_install_codex_adapter`). Plan for a few interactive approvals at
-the start of your first Codex run.
-
-## 4. Speculative model mapping with silent downgrade
+## 4. Explicit model mapping and opt-in fallback
 
 Plamen's tier aliases (`opus` / `sonnet` / `haiku`) are mapped to Codex models
 in `_CODEX_MODEL_MAP` (`scripts/plamen_types.py`):
 
 | Plamen tier | Default Codex model | Override env var |
 |-------------|--------------------|------------------|
-| `opus` | `gpt-5.5` | `PLAMEN_CODEX_OPUS_MODEL` |
-| `sonnet` | `gpt-5.4` | `PLAMEN_CODEX_SONNET_MODEL` |
-| `haiku` | `gpt-5.4-mini` | `PLAMEN_CODEX_HAIKU_MODEL` |
+| `opus` | `gpt-5.6-sol` | `PLAMEN_CODEX_OPUS_MODEL` |
+| `sonnet` | `gpt-5.6-terra` | `PLAMEN_CODEX_SONNET_MODEL` |
+| `haiku` | `gpt-5.6-luna` | `PLAMEN_CODEX_HAIKU_MODEL` |
 
-Two things to know:
+Three things to know:
 
-- These mappings are **speculative defaults** — if the named OpenAI models
-  change or aren't available to your account, override them with the env vars
+- These are the current OpenAI GPT-5.6 family defaults. If a model is not
+  available to your account, override it with the env vars
   above (or `PLAMEN_CODEX_FALLBACK_MODELS` for the fallback chain).
-- `_resolve_codex_model_alias` **silently downgrades an unknown alias to the
-  sonnet-tier model** rather than erroring. If you pass a model name the
-  resolver doesn't recognize, you will quietly get the `sonnet` mapping instead
-  of a hard failure — double-check the startup banner / model routing if cost
-  or quality looks off.
+- `_resolve_codex_model_alias` fails closed on an unknown tier alias. A typo can
+  no longer silently select the sonnet route.
+- Model-unavailable, capacity, and rejected-`--model` fallbacks are disabled by
+  default. Use `--allow-model-fallback` only when you intentionally authorize a
+  different model route. `plamen plan MODE PATH --codex --explain-routes`
+  resolves every phase route with zero provider calls.
 
 ## 5. ChatGPT-auth / usage-cap behavior
 

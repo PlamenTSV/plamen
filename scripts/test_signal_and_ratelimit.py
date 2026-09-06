@@ -201,13 +201,12 @@ def test_heartbeat_timeout():
 
 def test_run_phase_launches_isolated_process_group():
     """Phase subprocesses must be killable as a tree on halt/timeout."""
-    src = inspect.getsource(D.run_phase)
+    src = inspect.getsource(D._run_phase_once)
     wait_src = inspect.getsource(D._wait_with_heartbeat)
     helper_src = inspect.getsource(D._terminate_process_tree)
 
     assert "CREATE_NEW_PROCESS_GROUP" in src
     assert "start_new_session" in src
-    assert "_terminate_process_tree(proc" in src
     assert "_terminate_process_tree(proc" in wait_src
     assert "taskkill" in helper_src
     assert "killpg" in helper_src
@@ -233,7 +232,7 @@ def test_worker_pool_halt_cancels_pending_futures():
     executor = _Executor()
     D._cancel_pending_worker_futures({fut}, executor)
     fut.cancel.assert_called_once()
-    assert executor.shutdown_args["wait"] is False
+    assert executor.shutdown_args["wait"] is True
     assert executor.shutdown_args["cancel_futures"] is True
 
 
@@ -375,7 +374,7 @@ def test_worker_pool_rate_limit_sentinel_is_structured():
 
 
 def test_all_claude_pty_worker_pools_stamp_rate_limit_sentinel():
-    src = inspect.getsource(D.run_phase)
+    src = inspect.getsource(D._run_phase_once)
     for source in (
         "recon_worker_pool",
         "breadth_worker_pool",
@@ -435,8 +434,8 @@ def test_estimate_no_hint():
     p.unlink()
 
 
-def test_failure_diagnosis_decodes_non_cp1252_stdout(tmp_path):
-    """Diagnosis subprocess output is decoded as bytes, not Windows cp1252 text."""
+def test_failure_diagnosis_paid_claude_opt_in_still_uses_local_result(tmp_path):
+    """A legacy paid opt-in cannot launch the disabled direct Claude path."""
     (tmp_path / "_stdio_breadth.attempt2.log").write_text(
         "timed out after 3600s\n", encoding="utf-8"
     )
@@ -444,35 +443,30 @@ def test_failure_diagnosis_decodes_non_cp1252_stdout(tmp_path):
         "prompt", encoding="utf-8"
     )
 
-    class FakePopen:
-        pid = 12345
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def poll(self):
-            return 0
-
-        def communicate(self, timeout=None):
-            return b"### What Happened\nbad byte: \x90\n### Root Cause\nok", b""
-
-    with patch.object(display, "_find_claude_bin", return_value="claude"), \
-         patch.object(display.subprocess, "Popen", FakePopen):
+    with patch.object(
+        display.subprocess, "Popen",
+        side_effect=AssertionError("direct provider spawn is disabled"),
+    ), patch.object(
+        display, "_find_claude_bin",
+        side_effect=AssertionError("ambient provider discovery is disabled"),
+    ):
         display.print_failure_diagnosis(
             "breadth",
             str(tmp_path),
             ["analysis_token_flow.md"],
-            {"pipeline": "sc", "mode": "thorough", "language": "evm"},
+            {"pipeline": "sc", "mode": "thorough", "language": "evm",
+             "allow_paid_failure_diagnosis": True},
         )
 
     out = (tmp_path / "_diagnosis_breadth.md").read_text(encoding="utf-8")
     assert "### What Happened" in out
-    assert "bad byte:" in out
-    assert "NoneType" not in out
+    assert "deterministic local diagnosis" in out
+    assert "canonical contained provider" in out
+    assert "TIMEOUT" in out
 
 
-def test_failure_diagnosis_extracts_codex_jsonl_agent_message(tmp_path):
-    """Codex --json diagnosis output is rendered as message text, not raw JSONL."""
+def test_failure_diagnosis_paid_codex_opt_in_still_uses_local_result(tmp_path):
+    """A legacy paid opt-in cannot launch the disabled direct Codex path."""
     (tmp_path / "_stdio_depth.attempt2.log").write_text(
         "missing never_cut_checkpoint.md\n", encoding="utf-8"
     )
@@ -480,35 +474,13 @@ def test_failure_diagnosis_extracts_codex_jsonl_agent_message(tmp_path):
         "prompt", encoding="utf-8"
     )
 
-    payload = {
-        "type": "item.completed",
-        "item": {
-            "id": "item_0",
-            "type": "agent_message",
-            "text": "### What Happened\nDepth stopped early.\n\n### Root Cause\nMissing depth_exit.md",
-        },
-    }
-
-    class FakePopen:
-        pid = 12345
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def poll(self):
-            return 0
-
-        def communicate(self, timeout=None):
-            stdout = (
-            b'{"type":"thread.started","thread_id":"t"}\n'
-            + json.dumps(payload).encode("utf-8")
-            + b"\n"
-            b'{"type":"turn.completed","usage":{"input_tokens":1}}\n'
-            )
-            return stdout, b""
-
-    with patch.object(display, "_find_codex_bin", return_value="codex"), \
-         patch.object(display.subprocess, "Popen", FakePopen):
+    with patch.object(
+        display.subprocess, "Popen",
+        side_effect=AssertionError("direct provider spawn is disabled"),
+    ), patch.object(
+        display, "_find_codex_bin",
+        side_effect=AssertionError("ambient provider discovery is disabled"),
+    ):
         display.print_failure_diagnosis(
             "depth",
             str(tmp_path),
@@ -518,64 +490,42 @@ def test_failure_diagnosis_extracts_codex_jsonl_agent_message(tmp_path):
                 "mode": "thorough",
                 "language": "evm",
                 "cli_backend": "codex",
+                "allow_paid_failure_diagnosis": True,
             },
         )
 
     out = (tmp_path / "_diagnosis_depth.md").read_text(encoding="utf-8")
     assert "### What Happened" in out
-    assert "Depth stopped early" in out
-    assert '"thread.started"' not in out
-    assert '"turn.completed"' not in out
+    assert "deterministic local diagnosis" in out
+    assert "canonical contained provider" in out
+    assert "depth_exit.md" in out
 
 
-def test_failure_diagnosis_second_esc_cancels_running_diagnosis(tmp_path):
-    """Esc during advisory diagnosis terminates it instead of waiting for timeout."""
+def test_failure_diagnosis_never_starts_process_for_second_esc_to_cancel(tmp_path):
+    """Local diagnosis has no advisory child process for a second Esc to cancel."""
     (tmp_path / "_stdio_depth.attempt2.log").write_text(
         "missing depth_token_flow_findings.md\n", encoding="utf-8"
     )
     (tmp_path / "_prompt_depth.attempt2.md").write_text("prompt", encoding="utf-8")
 
-    old_requested = display.graceful_stop.requested
-    killed = {"terminated": False}
+    with patch.object(
+        display.subprocess, "Popen",
+        side_effect=AssertionError("direct provider spawn is disabled"),
+    ), patch.object(
+        display, "_find_claude_bin",
+        side_effect=AssertionError("ambient provider discovery is disabled"),
+    ):
+        display.print_failure_diagnosis(
+            "depth",
+            str(tmp_path),
+            ["depth_token_flow_findings.md"],
+            {"pipeline": "sc", "mode": "thorough", "language": "evm",
+             "allow_paid_failure_diagnosis": True},
+        )
 
-    class FakePopen:
-        pid = 12345
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def poll(self):
-            if killed["terminated"]:
-                return -15
-            display.graceful_stop.requested = True
-            return None
-
-        def terminate(self):
-            killed["terminated"] = True
-
-        def wait(self, timeout=None):
-            return -15
-
-        def kill(self):
-            killed["terminated"] = True
-
-    try:
-        display.graceful_stop.requested = False
-        with patch.object(display, "_find_claude_bin", return_value="claude"), \
-             patch.object(display.subprocess, "Popen", FakePopen), \
-             patch.object(display.sys, "platform", "linux"):
-            display.print_failure_diagnosis(
-                "depth",
-                str(tmp_path),
-                ["depth_token_flow_findings.md"],
-                {"pipeline": "sc", "mode": "thorough", "language": "evm"},
-            )
-    finally:
-        display.graceful_stop.requested = old_requested
-
-    assert killed["terminated"] is True
     out = (tmp_path / "_diagnosis_depth.md").read_text(encoding="utf-8")
-    assert "diagnosis cancelled because user requested stop" in out
+    assert "deterministic local diagnosis" in out
+    assert "canonical contained provider" in out
 
 
 def test_estimate_missing_file():
@@ -628,6 +578,29 @@ def test_extract_envelope_valid():
     tail = f"lots of text\n{json.dumps(data)}\n"
     result = D._extract_json_envelope(tail)
     assert result == data
+
+
+def test_extract_envelope_prefers_stream_result_before_trailing_progress():
+    result_event = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "stop_reason": "end_turn",
+        "total_cost_usd": 0.05,
+    }
+    trailing = {
+        "type": "prompt_suggestion",
+        "suggestion": "continue",
+    }
+    tail = "\n".join(
+        (
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps(result_event),
+            json.dumps(trailing),
+            "",
+        )
+    )
+    assert D._extract_json_envelope(tail) == result_event
 
 
 def test_extract_envelope_missing():

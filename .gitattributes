@@ -16,6 +16,13 @@
 *.json      text eol=lf
 *.md        text eol=lf
 
+# Dependency authority inputs are byte-hashed in CI and must materialize
+# identically on Windows, Linux, and macOS.
+requirements*.txt         text eol=lf
+requirements*.in          text eol=lf
+requirements*.lock        text eol=lf
+requirements*.constraints text eol=lf
+
 # Windows-only batch files — CRLF
 *.bat       text eol=crlf
 *.cmd       text eol=crlf

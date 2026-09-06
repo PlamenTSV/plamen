@@ -28,6 +28,7 @@ from plamen_driver import (  # noqa: E402
     _queue_rows_from_inventory,
     _write_queue_subset_manifest,
 )
+from plamen_parsers import parse_verification_queue_rows  # noqa: E402
 
 PASS, FAIL = 0, 0
 
@@ -478,6 +479,12 @@ def test_verify_completion_reports_all_poc_contract_failures():
         + "".join(rows)
     )
     sp = _mkscratch(files)
+    # This fixture invokes the post-routing shard writer directly; seed the
+    # canonical v3 queue authority through the real queue producer first.
+    _write_queue_subset_manifest(
+        sp / "verification_queue.md",
+        parse_verification_queue_rows(sp),
+    )
     # Uniform per-shard target (4) now spreads 8 Medium findings across
     # multiple medium shards instead of one. Validate that EVERY bad ledger is
     # surfaced across all populated shards (the original "not just the first
@@ -498,8 +505,8 @@ def test_verify_completion_reports_all_poc_contract_failures():
 # --------------------------------------------------------------------------
 
 def test_demotions_unit_poc_fail():
-    """Unit-class + POC-FAIL -> cap at Informational."""
-    print("\n--- _apply_poc_fail_demotions: unit demotion ---")
+    """A prose-only unit POC-FAIL has no negative authority."""
+    print("\n--- _apply_poc_fail_demotions: unit proposal requires typed evidence ---")
     sp = _mkscratch({
         "verification_queue.md": (
             "# Verification Queue Manifest\n"
@@ -510,16 +517,14 @@ def test_demotions_unit_poc_fail():
         "verify_F-01.md": "# Verify F-01\nEvidence Tag: [POC-FAIL]\nVerdict: REFUTED\nThe system did not panic.\n",
     })
     result = _apply_poc_fail_demotions(sp, "thorough")
-    check("one demotion", len(result) == 1)
-    check("finding id", result[0]["finding_id"] == "F-01")
-    check("original high", result[0]["original_severity"] == "High")
-    check("capped informational", result[0]["new_severity"] == "Informational")
-    check("file written", (sp / "poc_demotions.md").exists())
+    check("no untyped demotion", result == [])
+    check("legacy cap absent", not (sp / "poc_demotions.md").exists())
+    check("reverification debt written", (sp / "execution_scope_reverification.json").exists())
 
 
 def test_demotions_property_poc_fail():
-    """Property-class + POC-FAIL -> cap at Low."""
-    print("\n--- _apply_poc_fail_demotions: property demotion ---")
+    """A prose-only property POC-FAIL has no negative authority."""
+    print("\n--- _apply_poc_fail_demotions: property proposal requires typed evidence ---")
     sp = _mkscratch({
         "verification_queue.md": (
             "# Verification Queue Manifest\n"
@@ -530,8 +535,8 @@ def test_demotions_property_poc_fail():
         "verify_F-02.md": "# Verify F-02\nEvidence Tag: [POC-FAIL]\nVerdict: REFUTED\nInvariant held after 1000 iterations.\n",
     })
     result = _apply_poc_fail_demotions(sp, "thorough")
-    check("one demotion", len(result) == 1)
-    check("capped low", result[0]["new_severity"] == "Low")
+    check("no untyped demotion", result == [])
+    check("reverification debt written", (sp / "execution_scope_reverification.json").exists())
 
 
 def test_demotions_code_trace_no_demotion():
@@ -841,8 +846,8 @@ def test_demotions_poc_fail_scoped_to_section():
 
 
 def test_demotions_evidence_tag_line_fallback():
-    """POC-FAIL on Evidence Tag line (no PoC Attempt section) -> still demotes."""
-    print("\n--- _apply_poc_fail_demotions: evidence tag line fallback ---")
+    """A bare POC-FAIL evidence tag remains proposal/debt only."""
+    print("\n--- _apply_poc_fail_demotions: evidence tag has no authority ---")
     sp = _mkscratch({
         "verification_queue.md": (
             "# Verification Queue Manifest\n"
@@ -858,7 +863,8 @@ def test_demotions_evidence_tag_line_fallback():
         ),
     })
     result = _apply_poc_fail_demotions(sp, "thorough")
-    check("demotes via evidence-tag fallback", len(result) == 1)
+    check("bare evidence tag does not demote", result == [])
+    check("reverification debt written", (sp / "execution_scope_reverification.json").exists())
 
 
 def test_poc_pass_integrity_fuzz_pass():

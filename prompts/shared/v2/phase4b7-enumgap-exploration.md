@@ -29,6 +29,12 @@ pass skipped, then write down what you found.
 Read from the scratchpad (treat by ROLE, do not assume any single filename is
 the only source):
 
+- `enumgap_worklist.json` — the driver-owned authoritative union and exact
+  denominator. It includes both mechanical enumeration relationships and any
+  residual invalid exploration-clear rows that still require an independent
+  trace. Process every `work_item_id` exactly once and use that exact identity
+  in the Coverage Record. If present, this file is authoritative over the two
+  compatibility projections below.
 - `enumeration_obligations.md` — the human-readable obligation table (each row:
   a finding/function, the symbol it touches, and the co-referencing functions or
   the flagged relationship it must address). This is your worklist.
@@ -40,7 +46,8 @@ the only source):
 - The actual source files referenced by each obligation. You MUST open the
   source — the obligation only names locations; the analysis is yours to perform.
 
-If `enumeration_obligations.md` is absent or empty, there is nothing to explore:
+If the authoritative worklist says `requires_execution: false`, there is
+nothing to explore:
 write a short note to your output artifact saying so and stop. (The pipeline
 degrades to its prior behavior in that case — never an error.)
 
@@ -120,7 +127,8 @@ Write everything to `enumgap_exploration_findings.md`.
    |------------|--------------|-------------|----------|
    ```
 
-   - **Obligation**: the obligation row identifier or the function/symbol pair.
+   - **Obligation**: the exact `work_item_id` from `enumgap_worklist.json` (or
+     the compatibility obligation identity only when no typed worklist exists).
    - **Relationship**: the flagged interaction (shared symbol, asset-move,
      array-uniqueness, unbounded-input, …).
    - **Disposition**: exactly one of `FINDING` (emitted as NEXP-n), `UNRESOLVED`

@@ -181,10 +181,11 @@ Do NOT retry the same workflow more than once. Move down the ladder.
 
 ## Scope Containment
 
-SCOPE: Verify ONLY findings assigned to this shard. Write each finding's file, then continue to
+SCOPE: Verify ONLY findings assigned to this shard. Write each finding's
+`verify_<ID>.md` and matching `verify_<ID>.severity_proposal.json`, then continue to
 the next assigned row. After all assigned rows are written, return and stop.
 
 Do NOT:
 - Read or write other shards' verify files
-- Write artifacts outside the verify_<ID>.md contract
+- Write artifacts outside the verifier Markdown + severity-proposal pair contract
 - Spawn nested subagents

@@ -37,7 +37,6 @@ _THRASH_LINES = [
     "input is too long",
     "this request exceeds the maximum context window",
     "context window exceeded",
-    "Context low, auto-compact may run",
 ]
 
 _BENIGN_LINES = [
@@ -45,6 +44,7 @@ _BENIGN_LINES = [
     "forge build succeeded",
     "Analyzed function liquidate() at L120",
     "All findings mapped to report IDs",
+    "Context low, auto-compact may run",
 ]
 
 
@@ -181,22 +181,29 @@ class _FakeSession:
         return True
 
 
-def test_real_wait_loop_does_not_cut_on_thrash(tmp_path, monkeypatch):
-    """GUTTED (2026-06-10): the thrash fast-fail was removed because it abandoned
-    slow-but-completing workers mid-compaction (it killed rescan/inventory/depth
-    that ran fine for 8 weeks). A sustained thrash/overflow signature must NO
-    LONGER set context_thrash or cut the turn early -- the loop runs to its normal
-    deadline so the worker can compact-then-resume to completion."""
+def test_real_wait_loop_cuts_sustained_explicit_thrash(tmp_path, monkeypatch):
+    """An explicit overflow signature with no productive advance is bounded."""
     import pty_exec as px
     monkeypatch.setattr(px, "_CONTEXT_THRASH_LOOP_S", 0.4, raising=False)
-    sess = _FakeSession(tmp_path, "Autocompact is thrashing")
+
+    class _DelayedExplicitSession(_FakeSession):
+        def __init__(self, root):
+            super().__init__(root, "working")
+            self._t0 = time.monotonic()
+
+        def is_alive(self):
+            if time.monotonic() - self._t0 >= 0.1:
+                with self._recent_output_lock:
+                    self._recent_output = "working\nAutocompact is thrashing"
+            return True
+
+    sess = _DelayedExplicitSession(tmp_path)
     bound = px.ClaudePtySession.wait_for_turn_complete.__get__(sess, _FakeSession)
-    # Short deadline so the test is fast; the loop should run to it, NOT cut early.
-    state = bound(timeout_s=0.6, quiescence_s=8.0, poll_s=0.05,
+    state = bound(timeout_s=2.0, quiescence_s=8.0, poll_s=0.05,
                   transcript_poll_s=0.05)
-    assert not getattr(state, "context_thrash", False), (
-        "thrash fast-fail is GUTTED -- a thrash signature must not set "
-        "context_thrash; the worker runs to its deadline (8-week behavior)"
+    assert getattr(state, "context_thrash", False), (
+        "sustained explicit thrash with a frozen productive count must return "
+        "a bounded recovery signal"
     )
 
 
@@ -216,6 +223,35 @@ def test_real_wait_loop_no_early_exit_without_thrash(tmp_path, monkeypatch):
     state = bound(timeout_s=0.6, quiescence_s=8.0, poll_s=0.05,
                   transcript_poll_s=0.05)
     assert not getattr(state, "context_thrash", False)
+
+
+def test_advisory_low_context_warning_then_silent_long_tool_is_safe(
+    tmp_path, monkeypatch
+):
+    """A may-run warning is not failed-compaction/overflow evidence."""
+
+    import pty_exec as px
+
+    ticks = iter((0.0, 0.0, 601.0, 701.0))
+    monkeypatch.setattr(px.time, "monotonic", lambda: next(ticks, 702.0))
+    monkeypatch.setattr(px.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(px, "_CONTEXT_THRASH_LOOP_S", 600.0, raising=False)
+    sess = _FakeSession(
+        tmp_path,
+        "Context low, auto-compact may run",
+        transcript_text=(
+            '{"type":"assistant","message":{"content":'
+            '[{"type":"tool_use","name":"Bash","input":{}}]}}\n'
+        ),
+    )
+    bound = px.ClaudePtySession.wait_for_turn_complete.__get__(sess, _FakeSession)
+    state = bound(
+        timeout_s=700.0,
+        quiescence_s=8.0,
+        poll_s=0.1,
+        transcript_poll_s=0.1,
+    )
+    assert not state.context_thrash
 
 
 # ── THRASH QUIET-VARIANT regression + slow-progress negative control ───────────
@@ -247,7 +283,7 @@ _QUIET_THRASH_TRANSCRIPT = "".join(
 )
 
 
-def test_quiet_thrash_variant_fast_fails_without_overflow_text(tmp_path, monkeypatch):
+def test_historical_compaction_marker_does_not_arm_new_wait(tmp_path, monkeypatch):
     """ROOT-FIX REGRESSION: the QUIET THRASH variant the loud-only check missed.
 
     No explicit overflow string anywhere (recent output is benign-looking
@@ -270,23 +306,108 @@ def test_quiet_thrash_variant_fast_fails_without_overflow_text(tmp_path, monkeyp
         "repeated 'compact' + 'until auto-compact' must be a compaction signature"
     )
 
-    monkeypatch.setattr(px, "_CONTEXT_THRASH_LOOP_S", 0.4, raising=False)
-    # GUTTED (2026-06-10): the quiet-compaction variant must NO LONGER be cut.
-    # This was the exact pattern (compaction fingerprint, frozen productive
-    # count) that the fast-fail killed on rescan/inventory/depth -- legitimate
-    # slow compaction, not a hang. The worker must run to its deadline.
+    monkeypatch.setattr(px, "_CONTEXT_THRASH_LOOP_S", 0.1, raising=False)
     sess = _FakeSession(
         tmp_path,
         recent_text="reading findings_inventory.md ...",
         transcript_text=_QUIET_THRASH_TRANSCRIPT,
     )
     bound = px.ClaudePtySession.wait_for_turn_complete.__get__(sess, _FakeSession)
-    state = bound(timeout_s=0.6, quiescence_s=8.0, poll_s=0.05,
+    state = bound(timeout_s=0.35, quiescence_s=8.0, poll_s=0.02,
                   transcript_poll_s=0.05)
     assert not getattr(state, "context_thrash", False), (
-        "thrash fast-fail GUTTED -- the quiet compaction variant must NOT be "
-        "cut off; it runs to its deadline (this is what killed rescan/inventory)"
+        "whole-transcript compaction history predating the wait must not arm "
+        "a new zero-progress episode"
     )
+
+
+def test_quiet_repeated_compaction_delta_fast_fails(tmp_path, monkeypatch):
+    """Two post-baseline compaction summaries with no activity are bounded."""
+
+    import pty_exec as px
+    import threading
+
+    monkeypatch.setattr(px, "_CONTEXT_THRASH_LOOP_S", 0.25, raising=False)
+
+    class _AppendingCompactionSession:
+        def __init__(self, root):
+            self.transcript_path = Path(root) / "delta-compaction.jsonl"
+            self.transcript_path.write_text("", encoding="utf-8")
+            self._recent_output = ""
+            self._recent_output_lock = threading.Lock()
+            self._t0 = time.monotonic()
+            self._appended = 0
+
+        def is_alive(self):
+            elapsed = time.monotonic() - self._t0
+            target = 2 if elapsed >= 0.15 else (1 if elapsed >= 0.05 else 0)
+            while self._appended < target:
+                self._appended += 1
+                with self.transcript_path.open("a", encoding="utf-8") as f:
+                    f.write(
+                        '{"type":"assistant","message":{"content":'
+                        f'['
+                        f'{{"type":"text","text":"compacting conversation '
+                        f'until auto-compact {self._appended}"}}]}}}}\n'
+                    )
+            return True
+
+    sess = _AppendingCompactionSession(tmp_path)
+    bound = px.ClaudePtySession.wait_for_turn_complete.__get__(
+        sess, _AppendingCompactionSession
+    )
+    state = bound(
+        timeout_s=1.5,
+        quiescence_s=8.0,
+        poll_s=0.02,
+        transcript_poll_s=0.02,
+    )
+    assert state.context_thrash
+
+
+def test_single_new_compaction_then_slow_tool_longer_than_window_is_safe(
+    tmp_path, monkeypatch
+):
+    """A single compact-before-tool event is not repeated compaction churn."""
+
+    import pty_exec as px
+    import threading
+
+    ticks = iter((0.0, 0.0, 1.0, 700.0, 701.0, 702.0, 703.0))
+    monkeypatch.setattr(px.time, "monotonic", lambda: next(ticks, 704.0))
+    monkeypatch.setattr(px.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(px, "_CONTEXT_THRASH_LOOP_S", 600.0, raising=False)
+
+    class _SingleCompactionSession:
+        def __init__(self, root):
+            self.transcript_path = Path(root) / "single-compaction.jsonl"
+            self.transcript_path.write_text("", encoding="utf-8")
+            self._recent_output = ""
+            self._recent_output_lock = threading.Lock()
+            self._added = False
+
+        def is_alive(self):
+            if not self._added:
+                self._added = True
+                self.transcript_path.write_text(
+                    '{"type":"assistant","message":{"content":'
+                    '[{"type":"text","text":"compacting conversation"}]}}\n',
+                    encoding="utf-8",
+                )
+                return True
+            return False
+
+    sess = _SingleCompactionSession(tmp_path)
+    bound = px.ClaudePtySession.wait_for_turn_complete.__get__(
+        sess, _SingleCompactionSession
+    )
+    state = bound(
+        timeout_s=1000.0,
+        quiescence_s=8.0,
+        poll_s=0.1,
+        transcript_poll_s=0.1,
+    )
+    assert not state.context_thrash
 
 
 class _GrowingTranscriptSession:

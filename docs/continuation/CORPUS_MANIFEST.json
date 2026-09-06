@@ -1,0 +1,135 @@
+{
+  "schema": "plamen.continuation.corpus-manifest.v1",
+  "generated_date": "2026-09-06",
+  "purpose": "Portable provenance and disposition of the local Plamen research and validation corpus without private contents or machine paths",
+  "discovery_denominator": {
+    "selection": "Immediate regular files in the historical download corpus whose names contain Plamen, case-insensitive",
+    "file_count": 127,
+    "total_bytes": 5216964,
+    "semantic_requirements_extracted": false,
+    "nested_paths_enumerated": false,
+    "supersession_inferred_from_filename": false,
+    "group_counts": {
+      "architecture_requirements_design": {"files": 23, "bytes": 679444},
+      "backend_routing": {"files": 54, "bytes": 2101466},
+      "bb_wrapper_provider": {"files": 6, "bytes": 849382},
+      "claude_backend_parity": {"files": 9, "bytes": 439960},
+      "program_facts_attention": {"files": 4, "bytes": 159782},
+      "runbundle": {"files": 27, "bytes": 850872},
+      "runtime_evidence": {"files": 3, "bytes": 135154},
+      "other": {"files": 1, "bytes": 904}
+    }
+  },
+  "governing_sources": [
+    {
+      "identity": "Plamen_Goal_Acceptance_Ledger_2026-07-17.md",
+      "bytes": 22815,
+      "sha256": "0d05542b851609a1b81565bd69f7824ac8c677b2440ff072d50dd79f4ec66060",
+      "role": "Historical acceptance denominator",
+      "portable_disposition": "requirements distilled into REQUIREMENTS.jsonl; raw source remains non-normative historical evidence"
+    },
+    {
+      "identity": "Plamen_Architecture_Supersession_Crosswalk_2026-07-24.md",
+      "bytes": 70357,
+      "sha256": "e485320fb9b71e64bc676b3208f2531ca41c549fbac439c7d7e1d125b84ec926",
+      "role": "No-scope-loss architecture decision and residual map",
+      "portable_disposition": "durable decisions distilled into DECISIONS.md; canonical repository architecture remains normative"
+    },
+    {
+      "identity": "Plamen_Plan_Completion_Audit_2026-07-24.md",
+      "bytes": 13932,
+      "sha256": "357e049c1a738d2e8682f1f2e0c339dad77d876172e7cf0f1ddc8bf6d947a5de",
+      "role": "Historical completion audit and closure order",
+      "portable_disposition": "historical absence claims corrected; surviving work merged into NEXT_ACTIONS.md"
+    },
+    {
+      "identity": "Plamen_Runtime_Acceptance_Addendum_2026-09-06.md",
+      "bytes": 68084,
+      "sha256": "86a67f0128e90c716122f546c57a5c11059180c56ee6d93ee38329648d7d178e",
+      "role": "Mutable historical runtime evidence narrative",
+      "portable_disposition": "non-private scoped evidence distilled into EVIDENCE_INDEX.json"
+    },
+    {
+      "identity": "requirements-reconciliation-status.md",
+      "bytes": 6454,
+      "sha256": "320e0bcf69dec4a8fdb7816df5f6dd5d41b880f9bfca05dfbb5b70a1b4574714",
+      "role": "Current reconciliation status",
+      "portable_disposition": "merged into the current runtime/operational namespace"
+    },
+    {
+      "identity": "worker-lifecycle-acceptance-map.md",
+      "bytes": 7746,
+      "sha256": "c8ad4b8f7daff5a7cecf8d1fbd5d4b06a32208a0a07cdc0e604bfeba11233202",
+      "role": "Twenty-four-case lifecycle denominator",
+      "portable_disposition": "preserved as CUR-012 and WL-01 through WL-24"
+    },
+    {
+      "identity": "cleanup-ledger-retention-contract.md",
+      "bytes": 6039,
+      "sha256": "7ab2eb9d81b238f3ae8e6a80ec841fa28036957e0d3561ac8a6339aeda48e361",
+      "role": "Retention consumer and acceptance constraints",
+      "portable_disposition": "preserved in CUR-009 and durable storage decisions"
+    },
+    {
+      "identity": "downloads-corpus-inventory-2026-09-06.json",
+      "bytes": 25263,
+      "sha256": "e77cfc170913d735f7df23cdd44077824438610c7874dfafb64401750a7aa767",
+      "role": "Historical filename/hash discovery snapshot",
+      "portable_disposition": "denominator summarized here; raw machine-root field is not copied"
+    },
+    {
+      "identity": "architecture/canonical-requirement-ownership.v2.json",
+      "bytes_at_reconciliation": 61064,
+      "sha256_at_reconciliation": "18126a61679d3687db45b0748d0d010945923c5a21185d9708e58fd8c3222662",
+      "role": "Canonical 166-row requirement registry",
+      "portable_disposition": "versioned repository authority; referenced directly by REQUIREMENTS.jsonl"
+    }
+  ],
+  "historical_revision_policy": {
+    "backend_routing": "The R2.5.6 GREEN-preparation package is the latest analyzed design package, but its production bindings were intentionally RED and its interim source manifest was non-evidence pending final source freeze. Earlier routing revisions remain historical, not concurrent authority.",
+    "runbundle": "R10B corrects one R10A field claim; R10B plus R10A plus the original R10 handoff form the successor collateral set, while the exact R10 freeze remains the implementation boundary.",
+    "architecture": "The original SQLite-first physical design is retired; semantic invariants survive through the typed-sidecar/PhaseIO architecture.",
+    "missing_artifacts": "The July claim that seven canonical paths were absent is superseded by current presence. Presence does not close semantic acceptance."
+  },
+  "excluded_from_public_branch": [
+    {
+      "category": "credentials_and_identity",
+      "examples": ["provider credentials", "authentication profiles", "tokens", "machine startup decisions", "private configuration"],
+      "reason": "Secret and machine identity boundary"
+    },
+    {
+      "category": "private_audit_material",
+      "examples": ["target source trees", "audit reports", "findings", "PoCs", "ground truth", "grader inputs", "scratchpads", "worker transcripts"],
+      "reason": "Private target and evaluation boundary"
+    },
+    {
+      "category": "installed_and_generated_state",
+      "examples": ["installed runtime generations", "virtual environments", "package caches", "node_modules", "temporary release roots", "backups", "compiled artifacts", "logs"],
+      "reason": "Reproducible from source or machine-specific; not source authority"
+    },
+    {
+      "category": "neutral_evaluator_and_benchmark_corpora",
+      "examples": ["out-of-tree evaluator control", "benchmark repositories", "held-out corpora"],
+      "reason": "Architectural independence and user-deferred benchmarking"
+    },
+    {
+      "category": "superseded_binary_bundles",
+      "examples": ["historical wrapper ZIPs", "installed wheels", "duplicated runtime snapshots"],
+      "reason": "Avoid binary duplication; retain reviewed source and provenance instead"
+    }
+  ],
+  "privacy_scan": {
+    "scope": "Bounded high-confidence credential-pattern scan of the immediate Plamen-named text corpus",
+    "high_confidence_matches": 0,
+    "limitation": "This is not a guarantee. Authentication-design sources and any artifact considered for publication still require manual review."
+  },
+  "continuation_files": [
+    "docs/continuation/GOAL.md",
+    "docs/continuation/REQUIREMENTS.jsonl",
+    "docs/continuation/DECISIONS.md",
+    "docs/continuation/EVIDENCE_INDEX.json",
+    "docs/continuation/NEXT_ACTIONS.md",
+    "docs/continuation/CORPUS_MANIFEST.json"
+  ],
+  "completion_claim": false
+}

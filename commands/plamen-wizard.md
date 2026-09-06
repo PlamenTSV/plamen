@@ -27,8 +27,9 @@ Then run the toolchain probe:
 ```bash
 export PATH="$HOME/.foundry/bin:$HOME/.local/share/solana/install/active_release/bin:$HOME/.avm/bin:$HOME/.cargo/bin:$HOME/.aptoscli/bin:$HOME/.local/bin:$HOME/go/bin:$PATH" && \
 echo "Toolchain:" && \
-echo -n "  Required: " && \
-(command -v claude >/dev/null 2>&1 && echo -n "claude " || echo -n "MISSING:claude ") && \
+echo -n "  Model CLIs: " && \
+(command -v claude >/dev/null 2>&1 && echo -n "claude " || echo -n "-claude ") && \
+(command -v codex >/dev/null 2>&1 && echo -n "codex " || echo -n "-codex ") && \
 (command -v python >/dev/null 2>&1 && echo -n "python " || (command -v python3 >/dev/null 2>&1 && echo -n "python " || echo -n "MISSING:python ")) && \
 (command -v git >/dev/null 2>&1 && echo -n "git" || echo -n "MISSING:git") && echo "" && \
 echo -n "  EVM:      " && \
@@ -67,15 +68,21 @@ AskUserQuestion(questions=[{
   header: "Existing Audit Found",
   options: [
     { label: "Resume", description: "Continue from last checkpoint ({LAST_PHASE} → next)" },
-    { label: "Fresh restart", description: "Wipe scratchpad and start over" },
-    { label: "New audit", description: "Ignore existing, configure a new target" }
+    { label: "New audit", description: "Preserve this run; configure a distinct clean destination" }
   ]
 }])
 ```
 
-- **Resume**: Skip to Step 3's launch section — use the existing `config.json` path directly. Launch with `run_in_background: true`.
-- **Fresh restart**: Launch with `--fresh` flag. Skip to Step 3's launch section.
-- **New audit**: Fall through to Step 2 (collect config normally).
+- **Resume**: First validate the existing backend/transport without changing the
+  file. A Claude audit is resumable only when it is Smart Contract Thorough and
+  explicitly uses authenticated contained headless. Codex configurations remain
+  resumable for their supported modes. If the stored route is unsupported,
+  preserve it and choose Codex in a distinct clean configuration; never rewrite,
+  auto-migrate, or rebind existing evidence in place. Only a supported unchanged
+  config may proceed to Step 3's launch section.
+- **New audit**: Preserve every existing file, then fall through to Step 2. The
+  selected project and scratchpad MUST be a distinct clean destination; never
+  reuse, delete, move, rename, or overwrite the existing run root.
 
 If no config found, fall through to Step 2.
 
@@ -200,17 +207,28 @@ config = {
     "mode": MODE,           # "light" | "core" | "thorough"
     "pipeline": "sc",
     "language": LANGUAGE,   # "evm" | "solana" | "soroban" | "aptos" | "sui" | "daml"
-    "cli_backend": "claude",
-    "claude_exec_mode": "pty",
     "docs_path": DOCS_PATH or "",
     "scope_file": SCOPE_FILE or "",
     "scope_notes": SCOPE_NOTES or "",
     "proven_only": PROVEN_ONLY or False
 }
+
+# Provider route is explicit. Claude is admitted only for SC Thorough through
+# authenticated contained headless. SC Light/Core use Codex.
+if MODE == "thorough":
+    config["cli_backend"] = "claude-headless"
+    config["claude_exec_mode"] = "headless"
+else:
+    config["cli_backend"] = "codex"
 ```
 ```
 
 Write this JSON to `{PROJECT_PATH}/.scratchpad/config.json` (create .scratchpad/ if needed).
+
+Before writing, require the CLI for the selected route. If contained headless is
+unavailable on this platform, do not fall back to a Claude compatibility route:
+choose Codex or create a distinct clean supported configuration. Never modify an
+existing run's config or evidence to change providers.
 
 > Note: even if the language ends up wrong, the driver **auto-corrects** a wrong
 > `language` at startup from the same mechanical detector (and rewrites
@@ -231,8 +249,8 @@ Check checkpoint:  cat "{PROJECT_PATH}/.scratchpad/_v2_checkpoint.json"
 If the audit is interrupted (usage cap, crash, Ctrl+C), resume with:
   python3 ~/.claude/scripts/plamen_driver.py "{PROJECT_PATH}/.scratchpad/config.json"
 
-Clean restart:
-  python3 ~/.claude/scripts/plamen_driver.py --fresh "{PROJECT_PATH}/.scratchpad/config.json"
+New run in a distinct clean destination only:
+  python3 ~/.claude/scripts/plamen_driver.py --startup-intent START_NEW_RUN "{NEW_PROJECT_PATH}/.scratchpad/config.json"
 ```
 
 Then launch the driver **in the background** so the Claude Code session remains interactive. Use a single Bash tool call with `run_in_background: true`:
@@ -250,6 +268,8 @@ Set `run_in_background: true` on the Bash tool call. Do NOT use `&` or `nohup` �
 The driver runs in the background. When it completes, Claude Code will notify you. At that point, check the exit code:
 
 - **Exit 0**: Pipeline completed. Tell the user: `Report is at {PROJECT_PATH}/AUDIT_REPORT.md`
+- **Exit 3 (degraded)**: Pipeline execution completed in a degraded state. Preserve the scratchpad and inspect its runtime debt and violations before resuming.
+- **Exit 5 (startup decision required)**: The resume attempt stopped during startup without launching a new audit-model generation. Read the typed external startup-decision receipt and follow its exact restore-or-distinct-destination action; do not repeat resume unchanged.
 - **Exit 2 (rate limit / usage exhausted)**: The driver saved a checkpoint. Tell the user:
 
 ```

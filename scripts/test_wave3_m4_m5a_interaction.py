@@ -1,5 +1,5 @@
-"""Wave-3 cross-integration tests — M4 (independent-severity min-cap) x M5a
-(identifier-existence inventory gate) interacting on the SAME finding.
+"""Wave-3 cross-integration tests — independent-severity challenge x
+identifier-existence evidence diagnostic on the same finding.
 
 Both mechanisms are independently recall-safe (see test_independent_severity_cap.py
 and test_identifier_gate.py). This file asks the harder question: what happens
@@ -11,22 +11,21 @@ Scenario under test: a Medium+ finding that
       finding (loc_reason gets an `[IDENTIFIER-UNVERIFIED ...]` note); it
       stays exactly where it was (never appendix-routed, never dropped), AND
   (b) has a verifier-assessed Independent Severity LOWER than its claimed
-      severity -> M4 mechanically caps `final = min(independent, claimed)`
-      and stamps `INDEPENDENT-MIN(<claimed>)` in the report.
+      severity -> the disagreement is recorded as a direction-neutral typed
+      adjudication proposal and cannot mechanically lower the report tier.
 
 Assertions:
   1. The finding keeps a SINGLE coherent disposition — it is not split into
      two rows, not double-counted, not silently overwritten by whichever
      mechanism runs second.
-  2. It stays in the report BODY (Medium, real security consequence — never
+  2. It stays in the report BODY (real security consequence — never
      appendix per the material-harm floor).
-  3. `_report_index_adjustment_reason_present` accepts a Trust Adj. cell that
-     carries BOTH signals (the INDEPENDENT-MIN token from M4 and prose
-     mentioning the M5a human-review flag) — regardless of token order — so
-     the severity-provenance gate does not spuriously halt the run.
+  3. `_report_index_adjustment_reason_present` accepts the M5a human-review
+     signal without treating legacy `INDEPENDENT-MIN` prose as severity
+     authority.
   4. Neither mechanism removes the finding from the active verification queue
-     or the report index; the only artifact-level effect is a severity number
-     and a reason string.
+     or the report index; the proposal remains challenge-only until the typed
+     adjudicator closes it.
 
 All fixtures are synthetic/generic (no protocol/token/contract/function names).
 
@@ -137,7 +136,7 @@ def _write_master_index(sp: Path, *, report_id: str, severity: str, trust_adj: s
 # 1. End-to-end: one finding, both mechanisms fire, single coherent body row
 # ===========================================================================
 
-def test_medium_finding_flagged_and_capped_stays_single_coherent_body_finding(tmp_path):
+def test_medium_finding_flagged_and_challenged_stays_single_coherent_body_finding(tmp_path):
     V = _v()
     root = _mk_project(tmp_path)
     sp = _scratch(tmp_path)
@@ -158,13 +157,16 @@ def test_medium_finding_flagged_and_capped_stays_single_coherent_body_finding(tm
     assert "IDENTIFIER-UNVERIFIED" in recs[fid]["location_reason"]
     assert "ghostFunc4" in recs[fid]["location_reason"]
 
-    # --- M4: verifier's independent assessment (Medium) is LOWER than the
-    # claimed severity (High) -> mechanical cap to Medium.
+    # --- M4: verifier's blind-first disagreement is challenge-only. It must
+    # route to typed adjudication without mutating the report tier.
     _verify(sp, fid, verdict="CONFIRMED", independent="Medium", severity="High")
     cap_result = V._apply_independent_severity_caps(sp, "thorough")
     assert len(cap_result) == 1
     assert cap_result[0]["finding_id"] == fid
-    assert cap_result[0]["final_severity"] == "Medium"
+    assert cap_result[0]["upstream_severity"] == "High"
+    assert cap_result[0]["proposed_severity"] == "Medium"
+    assert cap_result[0]["direction"] == "DOWN"
+    assert cap_result[0]["disposition"] == "REQUIRES_TYPED_ADJUDICATION"
 
     # --- Neither gate removed the finding from the active queue.
     removed = V._filter_verification_queue_by_evidence(sp)
@@ -173,18 +175,16 @@ def test_medium_finding_flagged_and_capped_stays_single_coherent_body_finding(tm
     if excluded_path.exists():
         assert fid not in excluded_path.read_text(encoding="utf-8")
 
-    # --- The driver-computed expected severity reflects ONLY the M4 cap
-    # (M5a never touches severity for a Medium+ flag-only finding).
+    # --- Neither diagnostic has severity authority before the independent
+    # adjudicator closes the challenge.
     expected = V._expected_report_index_severities(sp)
-    assert expected.get(fid) == "Medium"
+    assert expected.get(fid) == "High"
 
     # --- Build the report_index.md row a report-index agent would write:
-    # final severity Medium, Trust Adj. carries the M4 token AND references
-    # the M5a human-review flag (as a real writer might, since loc_reason
-    # was available context). Both signals must coexist without collision.
-    combined_trust_adj = f"INDEPENDENT-MIN(High); flagged by IDENTIFIER-UNVERIFIED human review (`ghostFunc4` unresolved)"
+    # severity stays High; Trust Adj. references the M5a human-review flag.
+    combined_trust_adj = "flagged by IDENTIFIER-UNVERIFIED human review (`ghostFunc4` unresolved)"
     _write_master_index(
-        sp, report_id="M-01", severity="Medium", trust_adj=combined_trust_adj, internal=fid,
+        sp, report_id="H-01", severity="High", trust_adj=combined_trust_adj, internal=fid,
     )
 
     # --- The severity-provenance gate must NOT flag this row: the combined
@@ -194,14 +194,13 @@ def test_medium_finding_flagged_and_capped_stays_single_coherent_body_finding(tm
     assert issues == [], f"combined M4+M5a Trust Adj. must be accepted, got: {issues}"
 
     # --- Single coherent disposition: exactly one row for this finding in
-    # the audited report_index rows, at the capped severity, in the Medium
-    # tier (body — a real security consequence, never appendix per the
-    # material-harm floor).
+    # the audited report_index rows, retaining the High tier while the
+    # independent-severity challenge remains unresolved.
     rows = V._report_index_rows_for_severity_audit(sp)
     matching = [r for r in rows if fid in r["internal"]]
     assert len(matching) == 1, "finding must not be split into multiple report rows"
-    assert matching[0]["report_id"].startswith("M-"), "capped severity must land in the Medium body tier"
-    assert matching[0]["severity"] == "Medium"
+    assert matching[0]["report_id"].startswith("H-"), "challenge-only work must preserve the High body tier"
+    assert matching[0]["severity"] == "High"
 
 
 # ===========================================================================
@@ -217,17 +216,16 @@ def test_independent_min_and_identifier_flag_tokens_coexist_either_order(tmp_pat
     # Each signal ALSO independently satisfies the gate (neither is required
     # to carry the other — this proves they don't need to "cooperate" to be
     # individually recognized, i.e. neither erases the other's meaning).
-    assert V._report_index_adjustment_reason_present("INDEPENDENT-MIN(High)") is True
+    assert V._report_index_adjustment_reason_present("INDEPENDENT-MIN(High)") is False
     assert V._report_index_adjustment_reason_present("IDENTIFIER-UNVERIFIED human review flag") is True
 
 
 # ===========================================================================
-# 3. M4 caps never touch location/queue-membership state
+# 3. Severity challenges never touch location/queue-membership state
 # ===========================================================================
 
-def test_independent_severity_cap_never_removes_finding_from_queue(tmp_path):
-    """M4 is a pure severity transform: applying it must not change queue
-    membership, row count, or any location/identifier gate state."""
+def test_independent_severity_challenge_never_removes_finding_from_queue(tmp_path):
+    """A severity proposal must not change queue membership or location state."""
     V = _v()
     sp = _scratch(tmp_path)
     fid = "H-88"
@@ -274,27 +272,16 @@ def test_low_severity_identifier_unverified_is_appendix_not_deleted_even_with_ca
     V._apply_independent_severity_caps(sp, "thorough")
 
     removed = V._filter_verification_queue_by_evidence(sp)
-    assert low_fid in removed, "Low IDENTIFIER_UNVERIFIED is appendix-routed (ledger, not deleted)"
-    assert capped_fid not in removed, "Medium+/capped finding must remain active"
+    assert removed == [], "location diagnostics cannot remove either finding"
 
-    excluded_path = sp / "verification_queue_evidence_excluded.md"
-    assert excluded_path.exists(), "appendix routing must leave a traceable ledger, never a silent drop"
-    excluded_text = excluded_path.read_text(encoding="utf-8")
-    assert low_fid in excluded_text
+    debt_path = sp / "verification_queue_evidence_debt.md"
+    assert debt_path.exists(), "repair routing must leave a traceable advisory ledger"
+    debt_text = debt_path.read_text(encoding="utf-8")
+    assert low_fid in debt_text
 
     expected = V._expected_report_index_severities(sp)
-    assert expected.get(capped_fid) == "Medium", "unrelated M4 cap must survive the M5a appendix routing"
-    # The appendix-routed Low finding no longer appears in the ACTIVE queue's
-    # expected-severity map (it left active verification), but it is NOT
-    # silently deleted from the run: its original severity is preserved
-    # verbatim in the appendix ledger row (data survives, just relocated).
-    assert low_fid not in expected, (
-        "appendix-routed finding is not part of the active severity map "
-        "(it is not silently re-injected with a fabricated severity either)"
-    )
-    assert f"| {low_fid} | Low |" in excluded_text, (
-        "original severity must be preserved verbatim in the appendix ledger, not dropped"
-    )
+    assert expected.get(capped_fid) == "High", "challenge-only M4 work cannot lower the tier"
+    assert expected.get(low_fid) == "Low", "identifier debt remains active at its original tier"
 
 
 if __name__ == "__main__":

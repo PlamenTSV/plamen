@@ -456,12 +456,12 @@ def test_c_perturbation_with_block_not_flagged():
 #  TIER C / SITE — step-trace citation contract twin alignment
 # ════════════════════════════════════════════════════════════════════════════
 
-def test_c_step_trace_citation_strict_form_accepted(tmp_path):
+def test_c_step_trace_citation_legacy_and_canonical_forms_accepted(tmp_path):
     source = tmp_path / "src/A.sol"
     source.parent.mkdir()
     source.write_text("\n".join("line" for _ in range(42)) + "\n")
     assert V._step_trace_evidence_has_citation("src/A.sol:L42", tmp_path)
-    assert not V._step_trace_evidence_has_citation("src/A.sol:42", tmp_path)
+    assert V._step_trace_evidence_has_citation("src/A.sol:42", tmp_path)
 
 
 def test_c_step_trace_citation_rich_forms_accepted(tmp_path):

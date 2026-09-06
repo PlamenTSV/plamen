@@ -40,6 +40,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from owned_process_runner import run_owned_process
+
 
 # --- Data model -------------------------------------------------------------
 
@@ -374,15 +376,16 @@ def run_forge_test(
 
     t0 = time.time()
     try:
-        result = subprocess.run(
+        result = run_owned_process(
             cmd,
             cwd=str(project),
-            capture_output=True,
-            text=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout_s,
-            shell=False,
+            # This standalone spike is intentionally mutation-capable only
+            # inside the audited project copy. Its result is diagnostic and
+            # cannot authorize a finding.
+            writable_roots=(project,),
         )
         probe.forge_duration_s = time.time() - t0
         stdout = (result.stdout or "") + "\n" + (result.stderr or "")

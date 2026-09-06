@@ -6,7 +6,7 @@ description: "Trigger EXTERNAL_LIB flag detected (protocol uses third-party Move
 # Skill: DEPENDENCY_AUDIT
 
 > **Trigger**: EXTERNAL_LIB flag detected (protocol uses third-party Move dependencies)
-> **Used by**: Breadth agents, depth-external
+> **Inject Into**: Breadth agents, depth-external
 > **Covers**: Third-party library security, upgrade policy risks, critical function correctness, transitive dependency chains
 
 ## Purpose

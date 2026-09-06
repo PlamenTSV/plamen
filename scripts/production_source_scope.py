@@ -24,6 +24,12 @@ PRODUCTION_SOURCE_SKIP_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+PRODUCTION_SOURCE_GENERATED_SUFFIXES = (
+    ".t.sol",       # Foundry test contract, even when misplaced under src/
+    ".s.sol",       # Foundry script contract
+    ".spec.sol",    # verification/spec harness
+)
+
 
 def is_production_source_path(path: Path, root: Path) -> bool:
     """Return whether *path* is eligible for production-source analysis.
@@ -41,6 +47,9 @@ def is_production_source_path(path: Path, root: Path) -> bool:
     if any(part in PRODUCTION_SOURCE_SKIP_PARTS for part in parents):
         return False
     stem = relative.stem.lower()
+    lowered_name = relative.name.lower()
+    if lowered_name.endswith(PRODUCTION_SOURCE_GENERATED_SUFFIXES):
+        return False
     if stem.startswith(("mock", "stub", "fake")):
         return False
     if stem.endswith(("mock", "stub", "fake", "fixture", "test", "spec", "fuzz")):
@@ -52,6 +61,7 @@ def walker_accepts_relative_path(
     raw_path: str,
     *,
     skip_dir_names: AbstractSet[str],
+    root_only_skip_dir_names: AbstractSet[str] = frozenset(),
 ) -> bool:
     """Apply walker pruning plus the canonical production predicate.
 
@@ -67,7 +77,12 @@ def walker_accepts_relative_path(
         return False
     parents = tuple(part.casefold() for part in parts[:-1])
     folded_skips = {str(part).casefold() for part in skip_dir_names}
+    folded_root_skips = {
+        str(part).casefold() for part in root_only_skip_dir_names
+    }
     if any(part.startswith(".") or part in folded_skips for part in parents):
+        return False
+    if parents and parents[0] in folded_root_skips:
         return False
     root = Path.cwd() / "__plamen_production_scope__"
     return is_production_source_path(root.joinpath(*parts), root)
@@ -76,6 +91,7 @@ def walker_accepts_relative_path(
 __all__ = [
     "PRODUCTION_SOURCE_SKIP_NAME_RE",
     "PRODUCTION_SOURCE_SKIP_PARTS",
+    "PRODUCTION_SOURCE_GENERATED_SUFFIXES",
     "is_production_source_path",
     "walker_accepts_relative_path",
 ]

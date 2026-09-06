@@ -1,0 +1,680 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/mechanical_program_facts.v2.schema.json",
+  "title": "Plamen mechanical program facts v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "run_id",
+    "run_generation",
+    "authority_bindings",
+    "analysis_scope",
+    "coverage",
+    "nodes",
+    "occurrences",
+    "facts",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.mechanical_program_facts.v2"
+    },
+    "status": {
+      "$ref": "#/$defs/publicStatus"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "authority_bindings": {
+      "$ref": "#/$defs/authorityBindings"
+    },
+    "analysis_scope": {
+      "$ref": "#/$defs/analysisScope"
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/coverageRow"
+      },
+      "maxItems": 1000000
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "maxItems": 10000000
+    },
+    "occurrences": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/occurrence"
+      },
+      "maxItems": 10000000
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fact"
+      },
+      "maxItems": 10000000
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "portablePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._/-]+$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 10000000,
+      "uniqueItems": true
+    },
+    "publicStatus": {
+      "enum": [
+        "WRITTEN",
+        "DEGRADED",
+        "UNAVAILABLE",
+        "FAILED",
+        "STALE"
+      ]
+    },
+    "activationPermit": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "digest"
+          ],
+          "properties": {
+            "state": {
+              "const": "PRESENT_VALIDATED"
+            },
+            "digest": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "const": "ABSENT_DENIED"
+            }
+          }
+        }
+      ]
+    },
+    "authorityBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_authority_digest",
+        "composition_authority_digest",
+        "methodology_package_digest",
+        "activation_decision_digest",
+        "activation_permit",
+        "build_input_snapshot_digest",
+        "candidate_universe_digest",
+        "selected_scope_digest",
+        "capability_selection_digest",
+        "build_plan_digest",
+        "execution_set_digest"
+      ],
+      "properties": {
+        "execution_authority_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "composition_authority_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "methodology_package_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "activation_decision_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "activation_permit": {
+          "$ref": "#/$defs/activationPermit"
+        },
+        "build_input_snapshot_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "candidate_universe_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "selected_scope_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "capability_selection_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "build_plan_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "execution_set_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "analysisScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim",
+        "detector_policy_id",
+        "detected_candidate_ids",
+        "selected_candidate_ids",
+        "excluded_candidate_ids",
+        "unresolved_candidate_ids",
+        "selected_capability_ids",
+        "excluded_capability_ids",
+        "unresolved_capability_ids",
+        "unresolved_debt_ids"
+      ],
+      "properties": {
+        "claim": {
+          "const": "EXACT_SELECTED_SCOPE_NOT_PROJECT_COMPLETE"
+        },
+        "detector_policy_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "detected_candidate_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "selected_candidate_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "excluded_candidate_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "unresolved_candidate_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "selected_capability_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "excluded_capability_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "unresolved_capability_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "unresolved_debt_ids": {
+          "$ref": "#/$defs/identifierSet"
+        }
+      }
+    },
+    "coverageRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_id",
+        "build_variant_id",
+        "status",
+        "provider_eligible_source_file_ids",
+        "capability_covered_source_file_ids",
+        "exact_empty_proof",
+        "fact_ids",
+        "unresolved_debt_ids"
+      ],
+      "properties": {
+        "capability_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "status": {
+          "enum": [
+            "FULL",
+            "PARTIAL",
+            "FAILED",
+            "STALE",
+            "UNSUPPORTED",
+            "UNKNOWN"
+          ]
+        },
+        "provider_eligible_source_file_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "capability_covered_source_file_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "exact_empty_proof": {
+          "enum": [
+            "PROVEN",
+            "NOT_PROVEN",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "fact_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "unresolved_debt_ids": {
+          "$ref": "#/$defs/identifierSet"
+        }
+      }
+    },
+    "sourceBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_file_id",
+        "path",
+        "start_byte",
+        "end_byte",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column",
+        "statement_sha256"
+      ],
+      "properties": {
+        "source_file_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "start_byte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_byte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_column": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_column": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "statement_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "kind",
+        "qualified_name",
+        "display_name",
+        "build_variant_id",
+        "signature",
+        "attributes"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "enum": [
+            "COMPILATION_UNIT",
+            "PACKAGE",
+            "MODULE",
+            "CONTRACT",
+            "INTERFACE",
+            "LIBRARY",
+            "TRAIT",
+            "IMPL",
+            "FUNCTION",
+            "METHOD",
+            "MODIFIER",
+            "CONSTRUCTOR",
+            "BASIC_BLOCK",
+            "PARAMETER",
+            "LOCAL",
+            "STATE_SYMBOL",
+            "TYPE",
+            "RESOURCE",
+            "OBJECT",
+            "ACCOUNT_FIELD",
+            "AUTH_SUBJECT",
+            "STORAGE_KEY",
+            "EXTERNAL_SYMBOL",
+            "UNKNOWN_TARGET"
+          ]
+        },
+        "qualified_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "display_name": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source_binding": {
+          "$ref": "#/$defs/sourceBinding"
+        },
+        "signature": {
+          "$ref": "#/$defs/signature"
+        },
+        "attributes": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "EXTERNAL_SYMBOL",
+                  "UNKNOWN_TARGET"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          },
+          "else": {
+            "required": [
+              "source_binding"
+            ],
+            "not": {
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical",
+        "language_specific",
+        "signature_fact_ref"
+      ],
+      "properties": {
+        "canonical": {
+          "type": "string",
+          "maxLength": 16384
+        },
+        "language_specific": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 0
+        },
+        "signature_fact_ref": {
+          "type": "string",
+          "maxLength": 512
+        }
+      }
+    },
+    "irBinding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 0
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "compilation_unit_digest",
+            "block_id",
+            "instruction_id",
+            "ir_sha256"
+          ],
+          "properties": {
+            "compilation_unit_digest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "block_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "instruction_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "ir_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "occurrence_id",
+        "kind",
+        "enclosing_node_id",
+        "source_binding",
+        "ir_binding"
+      ],
+      "properties": {
+        "occurrence_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "enum": [
+            "CALL_SITE",
+            "READ_SITE",
+            "WRITE_SITE",
+            "BRANCH_PREDICATE",
+            "RETURN_SITE",
+            "SINK_SITE",
+            "AUTH_SITE",
+            "TRANSFER_SITE",
+            "CREATE_SITE"
+          ]
+        },
+        "enclosing_node_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source_binding": {
+          "$ref": "#/$defs/sourceBinding"
+        },
+        "ir_binding": {
+          "$ref": "#/$defs/irBinding"
+        }
+      }
+    },
+    "factContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call_dispatch",
+        "analysis_algorithm",
+        "root_set_digest",
+        "dominating_predicates",
+        "host_semantic_kind"
+      ],
+      "properties": {
+        "call_dispatch": {
+          "enum": [
+            "INTERNAL",
+            "LIBRARY",
+            "INTERFACE",
+            "HIGH_LEVEL",
+            "LOW_LEVEL",
+            "DELEGATE",
+            "CREATE",
+            "DYNAMIC",
+            "UNKNOWN"
+          ]
+        },
+        "analysis_algorithm": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "root_set_digest": {
+          "oneOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/$defs/sha256"
+            }
+          ]
+        },
+        "dominating_predicates": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "host_semantic_kind": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fact_id",
+        "relation_kind",
+        "subject_id",
+        "object_id",
+        "occurrence_ids",
+        "build_variant_id",
+        "provider_run_id",
+        "capability_id",
+        "provenance_origin",
+        "precision",
+        "coverage_scope",
+        "structural_confidence",
+        "context",
+        "semantic_authority",
+        "attestations"
+      ],
+      "properties": {
+        "fact_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "relation_kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "object_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "occurrence_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "provider_run_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "capability_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "provenance_origin": {
+          "enum": [
+            "COMPILER_IR",
+            "SSA",
+            "AST",
+            "BYTECODE",
+            "SOURCE_PARSE",
+            "INDEX_REFERENCE"
+          ]
+        },
+        "precision": {
+          "enum": [
+            "EXACT",
+            "MAY",
+            "HEURISTIC",
+            "SYNTACTIC"
+          ]
+        },
+        "coverage_scope": {
+          "enum": [
+            "OCCURRENCE",
+            "FUNCTION",
+            "CONTRACT",
+            "PACKAGE",
+            "BUILD_VARIANT"
+          ]
+        },
+        "structural_confidence": {
+          "enum": [
+            "PROVIDER_EXACT",
+            "PROVIDER_MAY",
+            "SOURCE_FALLBACK",
+            "UNKNOWN"
+          ]
+        },
+        "context": {
+          "$ref": "#/$defs/factContext"
+        },
+        "semantic_authority": {
+          "const": "ADDITIVE_PROPOSAL_ONLY"
+        },
+        "attestations": {
+          "$ref": "#/$defs/identifierSet"
+        }
+      }
+    }
+  }
+}

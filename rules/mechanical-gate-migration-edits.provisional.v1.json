@@ -1,0 +1,1236 @@
+{
+  "schema_version": "plamen.mechanical_gate_migration_edits.provisional.v1",
+  "status": "PROVISIONAL_UNWRAPPED_UNREVIEWED",
+  "runtime_authority_granted": false,
+  "authoritative_registry": {
+    "path": "rules/mechanical-gate-registry.json",
+    "sha256": "5acf9a848bae74ab256872600324098e1472bff73fdcb0233923f6c5dac5157e",
+    "schema_version": "plamen.mechanical_gate_registry.v1"
+  },
+  "source_snapshot": {
+    "source_tree_digest_algorithm": "sha256:plamen-source-tree-v1",
+    "source_tree_digest": "605041aff4c9dc4cddf848af9fe71d7e7d5399487f9a89a7e2d624294489c9c6",
+    "digest_stability": "REGENERATE_AT_TREE_FREEZE",
+    "git_head": "67a0f85adc7a8169d79a286908b00bef7adb764a",
+    "files": [
+      {
+        "path": "scripts/audit_snapshot.py",
+        "sha256": "ea80ce08577f68eaad1d1b3c4d06c237d87e3a4d6db5fcda1435bb582561fe53"
+      },
+      {
+        "path": "scripts/enumeration_gate.py",
+        "sha256": "084b5604c8d48a1a321549bd987d66578a6cc86ce088402cd8162c92df14ec7c"
+      },
+      {
+        "path": "scripts/mandatory_reverification.py",
+        "sha256": "a786942c9efbd1e959969091f5ed5bb8def2246adcc042a7085f84de68690bad"
+      },
+      {
+        "path": "scripts/mechanical_verify.py",
+        "sha256": "c083898e011c7cb9a1f224edd3dda4b9fb40ec8f07465d355a64df7524418d2c"
+      },
+      {
+        "path": "scripts/phase_io_contracts.py",
+        "sha256": "ec4d4872f4f217a333fc0a5006b127a715b275bf69a402d9386f4a1ff662b9fd"
+      },
+      {
+        "path": "scripts/plamen_driver.py",
+        "sha256": "45aa2ebe92f85688e52f8886d6e75db17157d7d44bcbfa919cc4381ef51d3c69"
+      },
+      {
+        "path": "scripts/plamen_mechanical.py",
+        "sha256": "d24409338ef4d1a4c2a0b9e026b5f59f4521ec6ca8c2c56027e543e7c8abdf72"
+      },
+      {
+        "path": "scripts/plamen_validators.py",
+        "sha256": "20e4c437670d4e3c7575bcd5c360a59b96070870b7cc95e791901208c0fa7313"
+      },
+      {
+        "path": "scripts/post_verify_lifecycle.py",
+        "sha256": "fbc67412f5ca9a54c5d775bf2d4d2fb2db75985e5e1248e34e27827b7996142f"
+      },
+      {
+        "path": "scripts/recon_prepass.py",
+        "sha256": "86d1adca34a61c22fef34876b21573b854892ef1a7b98076890a3fa9037653c8"
+      },
+      {
+        "path": "scripts/report_disposition_authority.py",
+        "sha256": "46624f1f5f131d0e293c4421c4e3cebc14ccd486a671716ee4997f5052e6fbc2"
+      },
+      {
+        "path": "scripts/supply_chain_gate.py",
+        "sha256": "929c6aa88978907050a2b5e16e8d2c8a6037f15adf58a9d12ffd519b42bb420c"
+      }
+    ]
+  },
+  "independent_review_receipt_sha256": null,
+  "gate_count": 33,
+  "edit_entries": [
+    {
+      "forensic_id": "MG-001",
+      "gate_id": "supply_chain.pre_input_execution",
+      "activation_id": "supply_chain.pre_input_execution.recon_prepass",
+      "runtime_readiness": "TARGET_EXECUTION_CIRCUIT_BREAKER_REQUIRED",
+      "edit_targets": [
+        {
+          "module": "scripts/recon_prepass.py",
+          "symbol": "_prepare_evm_build",
+          "edit_kind": "INLINE_LITERAL_RUNTIME_CIRCUIT_BREAKER",
+          "source_lines": [
+            2134
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "TARGET_EXECUTION_PRESTATE_NOT_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-002",
+      "gate_id": "supply_chain.pre_poc_execution",
+      "activation_id": "supply_chain.pre_poc_execution.mechanical_verify",
+      "runtime_readiness": "TARGET_EXECUTION_CIRCUIT_BREAKER_REQUIRED",
+      "edit_targets": [
+        {
+          "module": "scripts/mechanical_verify.py",
+          "symbol": "run_phase5b_mechanical_verify",
+          "edit_kind": "INLINE_LITERAL_RUNTIME_CIRCUIT_BREAKER",
+          "source_lines": [
+            2101,
+            2216
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "TARGET_EXECUTION_PRESTATE_NOT_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-003",
+      "gate_id": "snapshot.startup_binding",
+      "activation_id": "snapshot.startup_binding.driver",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "main",
+          "edit_kind": "WRAP_CONTEXT_MANAGER_ENTRY_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            66850
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-004",
+      "gate_id": "snapshot.interphase_drift",
+      "activation_id": "snapshot.interphase_drift.driver",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_assert_audit_snapshot_still_bound",
+          "edit_kind": "WRAP_EXISTING_ENTRY_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            61939,
+            65256,
+            67325
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_RUNTIME_PHASE_SELECTOR_UNBOUND",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-005",
+      "gate_id": "enumeration.graph_health",
+      "activation_id": "enumeration.graph_health.accepted_depth",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "_record_graph_health",
+          "edit_kind": "RETURN_TYPED_GRAPH_HEALTH_EVALUATION",
+          "source_lines": [
+            666,
+            769,
+            792,
+            808
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "SHARED_COVERAGE_SHORTFALL_OUTPUT_NOT_GATE_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-006",
+      "gate_id": "enumeration.coreference_obligation",
+      "activation_id": "enumeration.coreference_obligation.accepted_depth",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "run_enumeration_gate",
+          "edit_kind": "INLINE_LITERAL_TYPED_EVALUATION",
+          "source_lines": [
+            5688,
+            5701
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_DENOMINATOR_RECEIPT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-007",
+      "gate_id": "enumeration.coreference_gap",
+      "activation_id": "enumeration.coreference_gap.accepted_depth",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "validate_enumeration_coverage",
+          "edit_kind": "WRAP_EXISTING_ENTRY_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            1348,
+            5706
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_DENOMINATOR_RECEIPT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-008",
+      "gate_id": "enumeration.critical_asset_mover",
+      "activation_id": "enumeration.critical_asset_mover.accepted_depth",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_critical_asset_mover_candidates",
+          "edit_kind": "WRAP_FUNCTION_ENTRY_AVOID_DYNAMIC_DISPATCH_ALIAS",
+          "source_lines": [
+            1885,
+            5721
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "DYNAMIC_DISPATCH_SPLIT_REQUIRED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-009",
+      "gate_id": "enumeration.array_uniqueness",
+      "activation_id": "enumeration.array_uniqueness.accepted_depth",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_array_uniqueness_candidates",
+          "edit_kind": "WRAP_FUNCTION_ENTRY_AVOID_DYNAMIC_DISPATCH_ALIAS",
+          "source_lines": [
+            2010,
+            5721
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "DYNAMIC_DISPATCH_SPLIT_REQUIRED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-010",
+      "gate_id": "enumeration.unbounded_stored_input",
+      "activation_id": "enumeration.unbounded_stored_input.accepted_depth",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_unbounded_input_candidates",
+          "edit_kind": "WRAP_FUNCTION_ENTRY_AVOID_DYNAMIC_DISPATCH_ALIAS",
+          "source_lines": [
+            2098,
+            5721
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "DYNAMIC_DISPATCH_SPLIT_REQUIRED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-011",
+      "gate_id": "enumeration.variant_boundary",
+      "activation_id": "enumeration.variant_boundary.accepted_depth",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_variant_gaps",
+          "edit_kind": "INLINE_LITERAL_TYPED_EVALUATION",
+          "source_lines": [
+            2747,
+            2783
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_DENOMINATOR_RECEIPT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-012",
+      "gate_id": "enumeration.variant_symmetric",
+      "activation_id": "enumeration.variant_symmetric.accepted_depth",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_variant_gaps",
+          "edit_kind": "INLINE_LITERAL_TYPED_EVALUATION",
+          "source_lines": [
+            2747,
+            2799
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_DENOMINATOR_RECEIPT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-013",
+      "gate_id": "enumeration.committed_invariant",
+      "activation_id": "enumeration.committed_invariant.accepted_depth",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "recover_invariant_assertion_candidates",
+          "edit_kind": "WRAP_EXISTING_ENTRY_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            2973,
+            5735
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_DENOMINATOR_RECEIPT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-014",
+      "gate_id": "axis.hot_function_gap_matrix",
+      "activation_id": "axis.hot_function_gap_matrix.thorough",
+      "runtime_readiness": "SUCCESSOR_PHASEIO_EXISTS_NEEDS_GATE_BINDING",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_prepare_axis_disposition_worklist",
+          "edit_kind": "BIND_LITERAL_GATE_RECEIPT_TO_EXISTING_PHASEIO",
+          "source_lines": [
+            54446,
+            54463,
+            69257
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "SUCCESSOR_CONTRACT_ONLY",
+        "phase": "axis_disposition",
+        "work_unit_id": "planning",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [
+          "scratchpad:_hot_function_axes.json",
+          "scratchpad:_hot_function_cap_receipt.json"
+        ],
+        "output_artifact_identities": [
+          "scratchpad:axis_disposition_worklist.json",
+          "scratchpad:axis_execution_evidence_authority.json"
+        ]
+      },
+      "migration_debt_codes": [
+        "GATE_RECEIPT_NOT_BOUND_TO_SUCCESSOR_PHASEIO",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "PROJECT_SOURCE_DENOMINATOR_RUNTIME_BOUND_ONLY"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-015",
+      "gate_id": "enumgap.exploration_delivery",
+      "activation_id": "enumgap.exploration_delivery.inventory_append",
+      "runtime_readiness": "EXACT_PHASEIO_EXISTS_NEEDS_RUNTIME_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_promote_enumgap_exploration_transaction",
+          "edit_kind": "BIND_LITERAL_GATE_RECEIPT_TO_EXISTING_PHASEIO",
+          "source_lines": [
+            42974,
+            43046,
+            62881
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "EXACT_EXISTING_CONTRACT",
+        "phase": "enumgap_delivery",
+        "work_unit_id": "inventory_append",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [
+          "scratchpad:enumgap_disposition_receipt.json",
+          "scratchpad:enumgap_exploration_findings.md",
+          "scratchpad:enumgap_residual_obligations.json"
+        ],
+        "output_artifact_identities": [
+          "scratchpad:enumgap_exploration_promotion_receipt.json",
+          "scratchpad:enumgap_inventory_append_commit.json",
+          "scratchpad:enumgap_inventory_append_plan.json",
+          "scratchpad:findings_inventory.md"
+        ]
+      },
+      "migration_debt_codes": [
+        "GATE_EXECUTION_RECEIPT_NOT_PHASEIO_COMMITTED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-016",
+      "gate_id": "axis.finding_delivery",
+      "activation_id": "axis.finding_delivery.inventory_append",
+      "runtime_readiness": "EXACT_PHASEIO_EXISTS_NEEDS_RUNTIME_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_promote_axis_disposition_actions",
+          "edit_kind": "BIND_LITERAL_GATE_RECEIPT_TO_EXISTING_PHASEIO",
+          "source_lines": [
+            56461,
+            56899,
+            57034
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "EXACT_EXISTING_CONTRACT",
+        "phase": "axis_disposition",
+        "work_unit_id": "promotion",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [
+          "scratchpad:axis_coverage_promotion_plan.json"
+        ],
+        "output_artifact_identities": [
+          "scratchpad:axis_coverage_promotion_receipt.json",
+          "scratchpad:findings_inventory.md"
+        ]
+      },
+      "migration_debt_codes": [
+        "GATE_EXECUTION_RECEIPT_NOT_PHASEIO_COMMITTED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-017",
+      "gate_id": "promotion.orphan_reopen",
+      "activation_id": "promotion.orphan_reopen.preverify_report",
+      "runtime_readiness": "MULTI_STAGE_AUTHORITY_NEEDS_SINGLE_GATE_RECEIPT",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_run_gate_p_with_semantic_invalidation",
+          "edit_kind": "WRAP_MULTI_STAGE_MUTATION_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            27353,
+            27368,
+            27369,
+            27388,
+            27985,
+            68117
+          ]
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "symbol": "route_promotion_orphans",
+          "edit_kind": "RETURN_TYPED_GATE_COUNTS_AND_DEBT",
+          "source_lines": [
+            6183,
+            6602
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_RUNTIME_PHASE_SELECTOR_UNBOUND",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "MULTI_ARTIFACT_MUTATION_RECEIPT_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-018",
+      "gate_id": "inventory.location_exists",
+      "activation_id": "inventory.location_exists.multi_phase",
+      "runtime_readiness": "SHARED_VALIDATOR_SPLIT_REQUIRED",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_validate_inventory_evidence",
+          "edit_kind": "SPLIT_LOCATION_DECISION_AND_TYPED_COUNTS",
+          "source_lines": [
+            22363
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "SUCCESSOR_CONTRACT_ONLY",
+        "phase": "location_recovery",
+        "work_unit_id": "worklist",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [
+          "scratchpad:findings_inventory.md",
+          "scratchpad:inventory_evidence_validation.md"
+        ],
+        "output_artifact_identities": [
+          "scratchpad:_location_recovery_inventory_preimage.md",
+          "scratchpad:_location_recovery_worklist.json"
+        ]
+      },
+      "migration_debt_codes": [
+        "DECISION_DENOMINATORS_NOT_SPLIT",
+        "GATE_RECEIPT_NOT_BOUND_TO_SUCCESSOR_PHASEIO",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "NON_L1_ACTIVATIONS_LACK_PHASEIO"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-019",
+      "gate_id": "inventory.production_scope",
+      "activation_id": "inventory.production_scope.multi_phase",
+      "runtime_readiness": "SHARED_VALIDATOR_SPLIT_REQUIRED",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_validate_inventory_evidence",
+          "edit_kind": "SPLIT_PRODUCTION_SCOPE_DECISION_AND_TYPED_COUNTS",
+          "source_lines": [
+            22363
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "SUCCESSOR_CONTRACT_ONLY",
+        "phase": "location_recovery",
+        "work_unit_id": "worklist",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [
+          "scratchpad:findings_inventory.md",
+          "scratchpad:inventory_evidence_validation.md"
+        ],
+        "output_artifact_identities": [
+          "scratchpad:_location_recovery_inventory_preimage.md",
+          "scratchpad:_location_recovery_worklist.json"
+        ]
+      },
+      "migration_debt_codes": [
+        "DECISION_DENOMINATORS_NOT_SPLIT",
+        "GATE_RECEIPT_NOT_BOUND_TO_SUCCESSOR_PHASEIO",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "NON_L1_ACTIVATIONS_LACK_PHASEIO"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-020",
+      "gate_id": "inventory.identifier_exists",
+      "activation_id": "inventory.identifier_exists.multi_phase",
+      "runtime_readiness": "SHARED_VALIDATOR_SPLIT_REQUIRED",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_validate_inventory_evidence",
+          "edit_kind": "SPLIT_IDENTIFIER_DECISION_AND_TYPED_COUNTS",
+          "source_lines": [
+            22363
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "SUCCESSOR_CONTRACT_ONLY",
+        "phase": "location_recovery",
+        "work_unit_id": "worklist",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [
+          "scratchpad:findings_inventory.md",
+          "scratchpad:inventory_evidence_validation.md"
+        ],
+        "output_artifact_identities": [
+          "scratchpad:_location_recovery_inventory_preimage.md",
+          "scratchpad:_location_recovery_worklist.json"
+        ]
+      },
+      "migration_debt_codes": [
+        "DECISION_DENOMINATORS_NOT_SPLIT",
+        "GATE_RECEIPT_NOT_BOUND_TO_SUCCESSOR_PHASEIO",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "NON_L1_ACTIVATIONS_LACK_PHASEIO"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-021",
+      "gate_id": "poc.force_by_default",
+      "activation_id": "poc.force_by_default.verify_completion",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_validate_poc_contract_for_rows",
+          "edit_kind": "WRAP_EXISTING_ENTRY_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            5318,
+            29434
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_RUNTIME_MODE_SELECTOR_UNBOUND",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-022",
+      "gate_id": "mechanical_poc.execute",
+      "activation_id": "mechanical_poc.execute.phase5b",
+      "runtime_readiness": "TARGET_EXECUTION_CIRCUIT_BREAKER_REQUIRED",
+      "edit_targets": [
+        {
+          "module": "scripts/mechanical_verify.py",
+          "symbol": "run_phase5b_mechanical_verify",
+          "edit_kind": "WRAP_TARGET_EXECUTION_WITH_RUNTIME_STATE_MACHINE",
+          "source_lines": [
+            2101
+          ]
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_route_post_verify_late_candidates",
+          "edit_kind": "BIND_LATE_AND_PRIMARY_CALLERS_TO_SAME_ACTIVATION",
+          "source_lines": [
+            34911,
+            69749
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_TARGET_TEST_DENOMINATOR_UNBOUND",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "TARGET_EXECUTION_PRESTATE_NOT_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-023",
+      "gate_id": "verdict.evidence_integrity",
+      "activation_id": "verdict.evidence_integrity.manifest",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/mechanical_verify.py",
+          "symbol": "_write_verdict_manifest",
+          "edit_kind": "INLINE_LITERAL_TYPED_EVALUATION_AND_RECEIPT",
+          "source_lines": [
+            1797,
+            1912
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "VERDICT_MANIFEST_SUCCESSOR_NOT_GATE_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-024",
+      "gate_id": "external_assumption.assert_cap",
+      "activation_id": "external_assumption.assert_cap.report_index",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_expected_report_index_severities",
+          "edit_kind": "INLINE_DESTRUCTIVE_LITERAL_TYPED_EVALUATION",
+          "source_lines": [
+            24458,
+            24943
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "DESTRUCTIVE_DECISION_RECALL_OPEN_FALLBACK_UNBOUND",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-025",
+      "gate_id": "external_assumption.demotion_veto",
+      "activation_id": "external_assumption.demotion_veto.phase_validator",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_apply_external_assumption_undemotions",
+          "edit_kind": "WRAP_EXISTING_ENTRY_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            30822
+          ]
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_run_phase_validators",
+          "edit_kind": "BIND_RUNTIME_CONTEXT_AND_PHASE_SELECTOR",
+          "source_lines": [
+            62589
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "EXACT_RUNTIME_PHASE_SELECTOR_UNBOUND",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-026",
+      "gate_id": "severity.independent_challenge",
+      "activation_id": "severity.independent_challenge.phase_validator",
+      "runtime_readiness": "EXACT_PHASEIO_EXISTS_NEEDS_RUNTIME_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_write_and_record_independent_severity_phase_io",
+          "edit_kind": "BIND_LITERAL_GATE_RECEIPT_TO_EXISTING_PHASEIO",
+          "source_lines": [
+            61283,
+            61298,
+            61316,
+            62567
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "MULTIPLE_SUCCESSOR_CONTRACTS",
+        "phase": "sc_verify_aggregate|verify_aggregate",
+        "work_unit_id": "independent_severity_reconcile",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [],
+        "output_artifact_identities": [
+          "scratchpad:independent_severity_challenges.json",
+          "scratchpad:independent_severity_challenges.md"
+        ]
+      },
+      "migration_debt_codes": [
+        "GATE_EXECUTION_RECEIPT_NOT_PHASEIO_COMMITTED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "RUNTIME_INPUT_DENOMINATOR_CONTEXT_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-027",
+      "gate_id": "external_research.citation_gap",
+      "activation_id": "external_research.citation_gap.report_index_prework",
+      "runtime_readiness": "EXACT_PHASEIO_EXISTS_NEEDS_RUNTIME_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_check_external_research_citation_gaps",
+          "edit_kind": "BIND_LITERAL_GATE_RECEIPT_TO_REPORT_INDEX_PREWORK",
+          "source_lines": [
+            30284,
+            68747
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "EXACT_EXISTING_CONTRACT",
+        "phase": "report_index",
+        "work_unit_id": "prework",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [],
+        "output_artifact_identities": [
+          "scratchpad:external_research_gaps.md"
+        ]
+      },
+      "migration_debt_codes": [
+        "GATE_EXECUTION_RECEIPT_NOT_PHASEIO_COMMITTED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "RUNTIME_INPUT_DENOMINATOR_CONTEXT_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-028",
+      "gate_id": "postverify.late_candidate_reopen",
+      "activation_id": "postverify.late_candidate_reopen.routing",
+      "runtime_readiness": "MULTI_STAGE_AUTHORITY_NEEDS_SINGLE_GATE_RECEIPT",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_route_post_verify_late_candidates",
+          "edit_kind": "WRAP_PARSE_ROUTE_VERIFY_DELIVERY_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            34742,
+            34750,
+            34911,
+            63206
+          ]
+        },
+        {
+          "module": "scripts/post_verify_lifecycle.py",
+          "symbol": "parse_post_verify_candidate_proposals",
+          "edit_kind": "RETURN_TYPED_EXACT_DENOMINATOR_COUNTS",
+          "source_lines": [
+            82
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "MULTI_STAGE_DELIVERY_RECEIPT_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-029",
+      "gate_id": "report.index_retention_reconcile",
+      "activation_id": "report.index_retention_reconcile.mechanical",
+      "runtime_readiness": "EXACT_PHASEIO_EXISTS_NEEDS_RUNTIME_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "main",
+          "edit_kind": "BIND_LITERAL_GATE_RECEIPT_TO_MECHANICAL_REPORT_INDEX_PHASEIO",
+          "source_lines": [
+            68914
+          ]
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "symbol": "_write_mechanical_report_index",
+          "edit_kind": "RETURN_TYPED_GATE_COUNTS_AND_DEBT",
+          "source_lines": [
+            11536
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "MULTIPLE_SUCCESSOR_CONTRACTS",
+        "phase": "report_index",
+        "work_unit_id": "mechanical",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [],
+        "output_artifact_identities": [
+          "scratchpad:report_coverage.md",
+          "scratchpad:report_index.md",
+          "scratchpad:report_records.json"
+        ]
+      },
+      "migration_debt_codes": [
+        "GATE_EXECUTION_RECEIPT_NOT_PHASEIO_COMMITTED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "PIPELINE_SPECIFIC_OUTPUT_DENOMINATOR_RUNTIME_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-030",
+      "gate_id": "report.dedup_lossless_consolidation",
+      "activation_id": "report.dedup_lossless_consolidation.assembly",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "symbol": "_dedup_report_python",
+          "edit_kind": "WRAP_DEDUP_AND_DATA_LOSS_VETO_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            4572,
+            7038,
+            7273,
+            7546,
+            7640
+          ]
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "main",
+          "edit_kind": "BIND_REPORT_ASSEMBLY_RUNTIME_CONTEXT",
+          "source_lines": [
+            70054
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "DESTRUCTIVE_DECISION_RECALL_OPEN_FALLBACK_UNBOUND",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-031",
+      "gate_id": "report.typed_disposition",
+      "activation_id": "report.typed_disposition.report_floor",
+      "runtime_readiness": "EXACT_PHASEIO_EXISTS_NEEDS_RUNTIME_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_run_report_disposition_phase_io",
+          "edit_kind": "BIND_LITERAL_GATE_RECEIPT_TO_EXISTING_PHASEIO",
+          "source_lines": [
+            61403,
+            61537,
+            70165
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "EXACT_EXISTING_CONTRACT",
+        "phase": "report_floor",
+        "work_unit_id": "disposition_authority",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [],
+        "output_artifact_identities": [
+          "project:AUDIT_REPORT.md",
+          "scratchpad:material_harm_floor.md",
+          "scratchpad:report_appendix_full_content.json",
+          "scratchpad:report_disposition_authority.json",
+          "scratchpad:report_disposition_merge_intent.json"
+        ]
+      },
+      "migration_debt_codes": [
+        "GATE_EXECUTION_RECEIPT_NOT_PHASEIO_COMMITTED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "RUNTIME_INPUT_DENOMINATOR_CONTEXT_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-032",
+      "gate_id": "report.mandatory_reverification",
+      "activation_id": "report.mandatory_reverification.report_floor",
+      "runtime_readiness": "MULTI_STAGE_AUTHORITY_NEEDS_SINGLE_GATE_RECEIPT",
+      "edit_targets": [
+        {
+          "module": "scripts/mandatory_reverification.py",
+          "symbol": "build_mandatory_reverification_denominator",
+          "edit_kind": "BIND_DENOMINATOR_COMPLETION_DELIVERY_TO_GATE_COUNTS",
+          "source_lines": [
+            214,
+            730,
+            1063,
+            2508
+          ]
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_run_mandatory_report_reverification",
+          "edit_kind": "WRAP_MULTI_STAGE_RECOVERY_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            20457,
+            20716,
+            20775,
+            20812,
+            70197
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "MULTIPLE_SUCCESSOR_CONTRACTS",
+        "phase": "verify_recovery",
+        "work_unit_id": "runtime_context_shards",
+        "owner_key_binding": "phase_io_contracts.canonical_work_unit_key(runtime_context)",
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "GATE_EXECUTION_RECEIPT_NOT_PHASEIO_COMMITTED",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "MULTI_STAGE_DELIVERY_RECEIPT_ABSENT",
+        "RUNTIME_SHARD_DENOMINATOR_CONTEXT_BOUND"
+      ],
+      "existing_code_edit_authorized": false
+    },
+    {
+      "forensic_id": "MG-033",
+      "gate_id": "report.integrity_no_ship",
+      "activation_id": "report.integrity_no_ship.finalize",
+      "runtime_readiness": "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+      "edit_targets": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_commit_report_integrity_no_ship",
+          "edit_kind": "WRAP_VETO_SHIP_AUTHORITY_WITH_LITERAL_RUNTIME",
+          "source_lines": [
+            31542,
+            70009,
+            70268,
+            70314,
+            70330,
+            70355,
+            73380,
+            73404,
+            73438
+          ]
+        }
+      ],
+      "phase_io_binding": {
+        "status": "ABSENT_DEDICATED_CONTRACT",
+        "phase": null,
+        "work_unit_id": null,
+        "owner_key_binding": null,
+        "input_artifact_identities": [],
+        "output_artifact_identities": []
+      },
+      "migration_debt_codes": [
+        "DEDICATED_PHASE_IO_CONTRACT_ABSENT",
+        "LITERAL_RUNTIME_REGISTRATION_ABSENT",
+        "SHIP_AUTHORITY_RECEIPT_ABSENT"
+      ],
+      "existing_code_edit_authorized": false
+    }
+  ],
+  "cutover_invariants": [
+    "NO_ACTIVE_BEFORE_INDEPENDENT_REVIEW",
+    "NO_EXISTING_GATE_OR_DRIVER_EDIT_AUTHORIZED_BY_THIS_MANIFEST",
+    "NO_RUNTIME_AUTHORITY_FROM_PROVISIONAL_ARTIFACTS",
+    "REGENERATE_ALL_DIGESTS_AT_TREE_FREEZE"
+  ]
+}

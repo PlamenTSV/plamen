@@ -1,0 +1,67 @@
+{
+  "$id": "https://plamen.local/schemas/program_facts_evm_tool_manifest.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "analysis_release_state": {
+      "const": "DISABLED_PENDING_SEMANTIC_REVIEW"
+    },
+    "authority": {"const": "PINNED_TOOL_IDENTITY_NO_EXECUTION_AUTHORITY"},
+    "helper": {"$ref": "#/$defs/source"},
+    "manifest_sha256": {"$ref": "#/$defs/hex64"},
+    "parser": {"$ref": "#/$defs/source"},
+    "raw_schema": {"$ref": "#/$defs/source"},
+    "schema_version": {"const": "plamen.program_facts_evm_tool_manifest.v1"},
+    "slither_distribution": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {"const": "slither-analyzer"},
+        "sdist_filename": {"minLength": 1, "type": "string"},
+        "sdist_sha256": {"$ref": "#/$defs/hex64"},
+        "version": {"pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "type": "string"},
+        "wheel_filename": {"minLength": 1, "type": "string"},
+        "wheel_sha256": {"$ref": "#/$defs/hex64"}
+      },
+      "required": [
+        "name",
+        "version",
+        "wheel_filename",
+        "wheel_sha256",
+        "sdist_filename",
+        "sdist_sha256"
+      ],
+      "type": "object"
+    },
+    "terminal_negative_authority": {"const": false}
+  },
+  "required": [
+    "schema_version",
+    "authority",
+    "analysis_release_state",
+    "helper",
+    "parser",
+    "raw_schema",
+    "slither_distribution",
+    "terminal_negative_authority",
+    "manifest_sha256"
+  ],
+  "title": "Plamen EVM Program Facts tool manifest v1",
+  "type": "object",
+  "$defs": {
+    "hex64": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {"$ref": "#/$defs/hex64"},
+        "size_bytes": {"minimum": 1, "type": "integer"},
+        "source_identity": {
+          "minLength": 1,
+          "pattern": "^(scripts|rules/schemas)/[A-Za-z0-9_.\\-/]+$",
+          "type": "string"
+        }
+      },
+      "required": ["source_identity", "sha256", "size_bytes"],
+      "type": "object"
+    }
+  }
+}

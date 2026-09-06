@@ -1,6 +1,13 @@
 # Phase 5: Mandatory PoC Execution
 
-> **Core principle**: A PoC that is written but never executed provides ZERO mechanical evidence. Only executed tests produce ground truth.
+External precedent is governed by
+`~/.claude/rules/precedent-evidence-policy.md`. Generic methodology literature
+supplies context only. RAG may suggest test cases, but may never clear or
+demote, force `CONTESTED`, change severity, satisfy proof, or reduce the
+required execution depth. Exact precedent still requires matching mechanism
+class and matching preconditions and remains context/priority only.
+
+> **Core principle**: A PoC that is written but never executed provides ZERO mechanical evidence. Execution authenticates the observed result; typed oracle provenance and scope determine what that result proves.
 
 ---
 
@@ -8,12 +15,12 @@
 
 | Tag | Meaning |
 |-----|---------|
-| `[POC-PASS]` | Compiled, executed, assertions PASSED - mechanical proof |
-| `[POC-FAIL]` | Compiled, executed, assertions FAILED - attack does not work as described |
+| `[POC-PASS]` | Compiled execution established the encoded assertion; proof scope is recorded separately |
+| `[POC-FAIL]` | Compiled execution did not establish the encoded assertion; this is not a candidate-wide refutation without exhaustive typed scope |
 | `[CODE-TRACE]` | Manual trace with concrete values, no execution - fallible |
-| `[MEDUSA-PASS]` | Medusa fuzzer found a counterexample - mechanical proof (same weight as `[POC-PASS]`) |
+| `[MEDUSA-PASS]` | Medusa found a counterexample to the encoded oracle; execution is authentic, while mechanism/reachability/harm scope remains separate |
 
-**Rules**: `[POC-PASS]` is the only tag that supports CONFIRMED as ground truth. `[POC-FAIL]` defaults to the attack not working - to override, demonstrate the failure is test setup error, not a defense. `[CODE-TRACE]` caps at CONTESTED unless the trace is complete with real constants.
+**Rules**: Tags are display labels, not proof authority. Confirmation or demotion requires a candidate-bound typed assessment of oracle provenance, reachability/environment fidelity, precondition coverage, external-premise state, and proof scope. A negative result cannot dispose of a candidate beyond its independently established exhaustive scope. `[CODE-TRACE]` caps at CONTESTED unless the trace is complete with real constants.
 
 ---
 
@@ -48,10 +55,45 @@ tag is finalized:
 - Command: <command or N/A>
 ```
 
+### Grouped PoC constituent scope (conditional, mandatory for grouped rows)
+
+When the assigned queue row represents two or more constituent findings, an
+executed `[POC-FAIL]` is not group-wide evidence by default. Add this exact
+table after `### Execution Result`:
+
+```markdown
+### PoC Constituent Evidence Scope
+
+| Constituent ID | Harm Premise ID | Assertion ID | Proof Scope | Binding Kind |
+|---|---|---|---|---|
+| <exact mapped ID> | <stable local harm-premise ID> | <executed assertion ID> | HARM / MECHANISM_ONLY | EXACT / SHARED |
+```
+
+- `EXACT` binds only that constituent. Unlisted constituents remain at their
+  prior severity and require separate verification.
+- `SHARED` is valid only when every mapped constituent has a row with the same
+  harm-premise and assertion IDs. Otherwise it is ambiguous and demotes none.
+- `MECHANISM_ONLY` never authorizes a severity reduction.
+- Title similarity, shared vocabulary, and a hypothesis-level result are
+  routing hints only; they are not proof scope.
+
+The driver hashes the verifier bytes and execution ledger into the evidence
+receipt. Missing/malformed scope fails recall-safe: no grouped constituent is
+demoted and the driver emits bounded re-verification/human-review debt.
+
 For `unit` and `property` findings, a local executable attempt is mandatory
 when a project build/test harness exists. `Compiled: N/A`, `Result: N/A`, "no
 test written", and direct `[CODE-TRACE]` fallback are invalid unless the ledger
-names a real environmental blocker. `STRUCTURAL_NO_EXECUTABLE_HARM_ASSERTION`
+names a real environmental blocker. In **Thorough** mode this attempt mandate
+applies to **every severity**, including Low and Informational; Light and Core
+retain their mode-specific severity threshold. A blank `Attempted` field or
+verifier-authored blocker prose does not waive the mandate. Non-execution is
+valid only when a separately produced typed blocker binds concrete evidence and
+is independently validated by an authority other than its proposer. A typed
+blocker cannot waive a locally testable row while its build/test harness is
+available; bounded repair and execution remain required. Truly infeasible rows
+remain `UNPROVEN` and may skip only under that independently validated typed
+blocker. `STRUCTURAL_NO_EXECUTABLE_HARM_ASSERTION`
 is not an allowed skip reason for `unit` or `property` rows; reclassify the row
 or attempt the test.
 
@@ -152,7 +194,7 @@ If execution was not attempted, explain why (no build environment, no test frame
 ```
 
    **Rules for fix generation**:
-   - Only for `[POC-PASS]` findings. `[CODE-TRACE]` and `[POC-FAIL]` findings do NOT get fixes.
+   - Only when the candidate-bound typed assessment establishes HARM scope. A bare `[POC-PASS]` tag is insufficient. `[CODE-TRACE]` and negative execution results do NOT get fixes.
    - Keep fixes minimal — the smallest change that eliminates the vulnerability. Do not refactor surrounding code.
    - If the fix is non-trivial (architectural change, multi-file, or could introduce new issues): write `**Fix**: Architectural change required — {1-sentence description}. No inline diff provided.`
    - If time permits, re-run the PoC with the fix applied to verify it no longer triggers. Tag as `Verified: YES/NO`.
@@ -180,8 +222,11 @@ If execution was not attempted, explain why (no build environment, no test frame
    ```
 
    Assert the CLAIMED HARM directly (funds drained / misrouted / over-paid), not
-   merely that a function is callable. A passing fork run is `[PROD-FORK]`
-   (proof-grade); its harm-assertion failing is `[POC-FAIL]`.
+   merely that a function is callable. A passing fork run is `[PROD-FORK]` and
+   authenticates the encoded result; HARM authority still requires a bound
+   oracle, faithful environment/preconditions, and resolved external premises.
+   A harm-assertion not being established is `[POC-FAIL]` and is limited to its
+   typed negative scope.
 
 2. **Cross-chain relay / message-passing harm** (the external leg is a
    destination chain's consumer that no single-node fork can execute) →

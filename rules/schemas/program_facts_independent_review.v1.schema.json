@@ -1,0 +1,2264 @@
+{
+  "$defs": {
+    "authority_ceiling": {
+      "additionalProperties": false,
+      "properties": {
+        "clean_certification": {
+          "const": false,
+          "type": "boolean"
+        },
+        "confidence": {
+          "const": false,
+          "type": "boolean"
+        },
+        "consumer": {
+          "const": false,
+          "type": "boolean"
+        },
+        "finding": {
+          "const": false,
+          "type": "boolean"
+        },
+        "phase": {
+          "const": false,
+          "type": "boolean"
+        },
+        "refutation": {
+          "const": false,
+          "type": "boolean"
+        },
+        "severity": {
+          "const": false,
+          "type": "boolean"
+        },
+        "suppression": {
+          "const": false,
+          "type": "boolean"
+        },
+        "terminal_negative": {
+          "const": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "consumer",
+        "finding",
+        "severity",
+        "confidence",
+        "phase",
+        "clean_certification",
+        "refutation",
+        "suppression",
+        "terminal_negative"
+      ],
+      "type": "object"
+    },
+    "file_identity": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "size_bytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "g3_00_admission_manifest_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "admission_body_sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "authority_ceiling": {
+          "additionalProperties": false,
+          "properties": {
+            "active_head_update": {
+              "const": false,
+              "type": "boolean"
+            },
+            "clean_certification": {
+              "const": false,
+              "type": "boolean"
+            },
+            "confidence": {
+              "const": false,
+              "type": "boolean"
+            },
+            "consumer": {
+              "const": false,
+              "type": "boolean"
+            },
+            "cutover": {
+              "const": false,
+              "type": "boolean"
+            },
+            "finding": {
+              "const": false,
+              "type": "boolean"
+            },
+            "package": {
+              "const": false,
+              "type": "boolean"
+            },
+            "production_publication": {
+              "const": false,
+              "type": "boolean"
+            },
+            "provider_launch": {
+              "const": false,
+              "type": "boolean"
+            },
+            "refutation": {
+              "const": false,
+              "type": "boolean"
+            },
+            "release": {
+              "const": false,
+              "type": "boolean"
+            },
+            "replay": {
+              "const": false,
+              "type": "boolean"
+            },
+            "runner": {
+              "const": false,
+              "type": "boolean"
+            },
+            "runtime": {
+              "const": false,
+              "type": "boolean"
+            },
+            "severity": {
+              "const": false,
+              "type": "boolean"
+            },
+            "suppression": {
+              "const": false,
+              "type": "boolean"
+            },
+            "terminal_negative": {
+              "const": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime",
+            "runner",
+            "replay",
+            "provider_launch",
+            "package",
+            "production_publication",
+            "active_head_update",
+            "release",
+            "cutover",
+            "consumer",
+            "finding",
+            "severity",
+            "confidence",
+            "refutation",
+            "suppression",
+            "terminal_negative",
+            "clean_certification"
+          ],
+          "type": "object"
+        },
+        "carrier_template": {
+          "additionalProperties": false,
+          "properties": {
+            "normalization_id": {
+              "const": "plamen.program_facts_gate3_schema_carrier_template.v1",
+              "type": "string"
+            },
+            "template_body_sha256": {
+              "$ref": "#/$defs/hex64"
+            }
+          },
+          "required": [
+            "normalization_id",
+            "template_body_sha256"
+          ],
+          "type": "object"
+        },
+        "phase_io_contracts": {
+          "items": {
+            "$ref": "#/$defs/file_identity"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "predecessors": {
+          "additionalProperties": false,
+          "properties": {
+            "compact_seed_admission": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "external_seed_acceptance": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "graph_v2": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "ownership_v2": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "public_v3_architecture_review": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "schema_closure_amendment": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "schema_closure_amendment_review": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "seed_admission_review": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "source_identity_census": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "specification": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "specification_review": {
+              "$ref": "#/$defs/file_identity"
+            }
+          },
+          "required": [
+            "compact_seed_admission",
+            "external_seed_acceptance",
+            "seed_admission_review",
+            "specification",
+            "specification_review",
+            "source_identity_census",
+            "graph_v2",
+            "ownership_v2",
+            "public_v3_architecture_review",
+            "schema_closure_amendment",
+            "schema_closure_amendment_review"
+          ],
+          "type": "object"
+        },
+        "provider_registry": {
+          "additionalProperties": false,
+          "properties": {
+            "registry": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "schema": {
+              "$ref": "#/$defs/file_identity"
+            }
+          },
+          "required": [
+            "schema",
+            "registry"
+          ],
+          "type": "object"
+        },
+        "public_v3_schemas": {
+          "items": {
+            "$ref": "#/$defs/file_identity"
+          },
+          "maxItems": 6,
+          "minItems": 6,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "schema_contract_count": {
+          "const": 12,
+          "type": "integer"
+        },
+        "schema_contracts": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "accepted_stage": {
+                "const": "G3_00",
+                "type": "string"
+              },
+              "coverage_atom_count": {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "independent_review": {
+                "$ref": "#/$defs/file_identity"
+              },
+              "keyword_occurrence_count": {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "schema": {
+                "$ref": "#/$defs/file_identity"
+              },
+              "schema_id": {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "^https://plamen\\.local/schemas/[A-Za-z0-9._-]+\\.schema\\.json$",
+                "type": "string"
+              },
+              "vector_count": {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "vectors": {
+                "$ref": "#/$defs/file_identity"
+              }
+            },
+            "required": [
+              "schema",
+              "schema_id",
+              "vectors",
+              "independent_review",
+              "accepted_stage",
+              "keyword_occurrence_count",
+              "coverage_atom_count",
+              "vector_count"
+            ],
+            "type": "object"
+          },
+          "maxItems": 12,
+          "minItems": 12,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_g3_00_admission_manifest.v1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "predecessors",
+        "carrier_template",
+        "provider_registry",
+        "phase_io_contracts",
+        "public_v3_schemas",
+        "schema_contracts",
+        "schema_contract_count",
+        "authority_ceiling",
+        "admission_body_sha256"
+      ],
+      "type": "object"
+    },
+    "g3_00_aggregate_review_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "authority_ceiling": {
+          "additionalProperties": false,
+          "properties": {
+            "active_head_update": {
+              "const": false,
+              "type": "boolean"
+            },
+            "clean_certification": {
+              "const": false,
+              "type": "boolean"
+            },
+            "confidence": {
+              "const": false,
+              "type": "boolean"
+            },
+            "consumer": {
+              "const": false,
+              "type": "boolean"
+            },
+            "cutover": {
+              "const": false,
+              "type": "boolean"
+            },
+            "finding": {
+              "const": false,
+              "type": "boolean"
+            },
+            "package": {
+              "const": false,
+              "type": "boolean"
+            },
+            "production_publication": {
+              "const": false,
+              "type": "boolean"
+            },
+            "provider_launch": {
+              "const": false,
+              "type": "boolean"
+            },
+            "refutation": {
+              "const": false,
+              "type": "boolean"
+            },
+            "release": {
+              "const": false,
+              "type": "boolean"
+            },
+            "replay": {
+              "const": false,
+              "type": "boolean"
+            },
+            "runner": {
+              "const": false,
+              "type": "boolean"
+            },
+            "runtime": {
+              "const": false,
+              "type": "boolean"
+            },
+            "severity": {
+              "const": false,
+              "type": "boolean"
+            },
+            "suppression": {
+              "const": false,
+              "type": "boolean"
+            },
+            "terminal_negative": {
+              "const": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime",
+            "runner",
+            "replay",
+            "provider_launch",
+            "package",
+            "production_publication",
+            "active_head_update",
+            "release",
+            "cutover",
+            "consumer",
+            "finding",
+            "severity",
+            "confidence",
+            "refutation",
+            "suppression",
+            "terminal_negative",
+            "clean_certification"
+          ],
+          "type": "object"
+        },
+        "checks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "check_id": {
+                "enum": [
+                  "G3A-01-PREDECESSOR-LINEAGE",
+                  "G3A-02-CARRIER-TEMPLATE-EQUALITY",
+                  "G3A-03-SCHEMA-DENOMINATOR-12",
+                  "G3A-04-PROVIDER-REGISTRY-V2",
+                  "G3A-05-PHASE-IO-RACI-OPERATION-ORDER",
+                  "G3A-06-SCHEMA-DRAFT-VOCABULARY-CLOSURE",
+                  "G3A-07-VECTOR-RESULT-REPLAY",
+                  "G3A-08-BIDIRECTIONAL-KEYWORD-ATOM-COVERAGE",
+                  "G3A-09-PER-SCHEMA-REVIEW-INDEPENDENCE",
+                  "G3A-10-AUTHORITY-CEILING",
+                  "G3A-11-REVIEWER-INDEPENDENCE"
+                ],
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "$ref": "#/$defs/file_identity"
+                },
+                "maxItems": 10000000,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "check_id",
+              "result",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 11,
+          "minItems": 11,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "disposition": {
+          "enum": [
+            "PASS_G3_00_ADMISSION_FOR_G3_01_AMENDMENT_REVIEW_ONLY",
+            "REJECTED"
+          ],
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "$ref": "#/$defs/file_identity"
+                },
+                "maxItems": 10000000,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "finding_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "severity": {
+                "enum": [
+                  "BLOCKING",
+                  "NONBLOCKING"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "OPEN",
+                  "CLOSED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "finding_id",
+              "severity",
+              "status",
+              "description",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "independence": {
+          "additionalProperties": false,
+          "properties": {
+            "aggregate_subject_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "crosscheck_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "evaluator_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "no_self_generated_evidence": {
+              "const": true,
+              "type": "boolean"
+            },
+            "per_schema_reviewers_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "production_implementer_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "schema_authors_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "vector_generator_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "workspace_clean": {
+              "const": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "aggregate_subject_author_separate",
+            "schema_authors_separate",
+            "vector_generator_separate",
+            "evaluator_author_separate",
+            "crosscheck_author_separate",
+            "per_schema_reviewers_separate",
+            "production_implementer_separate",
+            "workspace_clean",
+            "no_self_generated_evidence"
+          ],
+          "type": "object"
+        },
+        "open_findings": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "review_body_sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "review_id": {
+          "maxLength": 39,
+          "minLength": 39,
+          "pattern": "^pfg3ar-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "reviewer": {
+          "additionalProperties": false,
+          "properties": {
+            "organization": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "principal_id": {
+              "maxLength": 256,
+              "minLength": 12,
+              "pattern": "^reviewer:[a-z0-9-]+/[a-z0-9-]+$",
+              "type": "string"
+            },
+            "role": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "principal_id",
+            "organization",
+            "role"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_g3_00_aggregate_review.v1",
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/$defs/file_identity"
+        }
+      },
+      "required": [
+        "schema_version",
+        "review_id",
+        "subject",
+        "reviewer",
+        "independence",
+        "checks",
+        "findings",
+        "open_findings",
+        "disposition",
+        "authority_ceiling",
+        "review_body_sha256"
+      ],
+      "type": "object"
+    },
+    "g3_00_schema_closure_amendment_review_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_scope": {
+          "const": [
+            "G3_00_SCHEMA_CONSTRUCTION"
+          ],
+          "type": "array"
+        },
+        "authority_ceiling": {
+          "additionalProperties": false,
+          "properties": {
+            "active_head_update": {
+              "const": false,
+              "type": "boolean"
+            },
+            "clean_certification": {
+              "const": false,
+              "type": "boolean"
+            },
+            "confidence": {
+              "const": false,
+              "type": "boolean"
+            },
+            "consumer": {
+              "const": false,
+              "type": "boolean"
+            },
+            "cutover": {
+              "const": false,
+              "type": "boolean"
+            },
+            "finding": {
+              "const": false,
+              "type": "boolean"
+            },
+            "package": {
+              "const": false,
+              "type": "boolean"
+            },
+            "production_publication": {
+              "const": false,
+              "type": "boolean"
+            },
+            "provider_launch": {
+              "const": false,
+              "type": "boolean"
+            },
+            "refutation": {
+              "const": false,
+              "type": "boolean"
+            },
+            "release": {
+              "const": false,
+              "type": "boolean"
+            },
+            "replay": {
+              "const": false,
+              "type": "boolean"
+            },
+            "runner": {
+              "const": false,
+              "type": "boolean"
+            },
+            "runtime": {
+              "const": false,
+              "type": "boolean"
+            },
+            "severity": {
+              "const": false,
+              "type": "boolean"
+            },
+            "suppression": {
+              "const": false,
+              "type": "boolean"
+            },
+            "terminal_negative": {
+              "const": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime",
+            "runner",
+            "replay",
+            "provider_launch",
+            "package",
+            "production_publication",
+            "active_head_update",
+            "release",
+            "cutover",
+            "consumer",
+            "finding",
+            "severity",
+            "confidence",
+            "refutation",
+            "suppression",
+            "terminal_negative",
+            "clean_certification"
+          ],
+          "type": "object"
+        },
+        "checks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "check_id": {
+                "enum": [
+                  "G3C-01-PARENT-PINS",
+                  "G3C-02-DENOMINATOR-12",
+                  "G3C-03-LITERAL-CARRIER-TEMPLATES",
+                  "G3C-04-COMMON-FRAGMENTS",
+                  "G3C-05-IDENTITY-POINTER-RULES",
+                  "G3C-06-KEYWORD-ORDER-IMPOSSIBLE-NEGATIVES",
+                  "G3C-07-PROVIDER-REGISTRY-V2",
+                  "G3C-08-PATHS-GENERATOR-EVALUATOR",
+                  "G3C-09-AGGREGATE-ADMISSION",
+                  "G3C-10-INVALIDATION-DAG",
+                  "G3C-11-AUTHORITY-CEILING",
+                  "G3C-12-INDEPENDENCE"
+                ],
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "$ref": "#/$defs/file_identity"
+                },
+                "maxItems": 10000000,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "check_id",
+              "result",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 12,
+          "minItems": 12,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "disposition": {
+          "enum": [
+            "PASS_G3_00_SCHEMA_CLOSURE_FOR_CONSTRUCTION_ONLY",
+            "REJECTED"
+          ],
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "$ref": "#/$defs/file_identity"
+                },
+                "maxItems": 10000000,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "finding_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "severity": {
+                "enum": [
+                  "BLOCKING",
+                  "NONBLOCKING"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "OPEN",
+                  "CLOSED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "finding_id",
+              "severity",
+              "status",
+              "description",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "independence": {
+          "additionalProperties": false,
+          "properties": {
+            "no_self_generated_evidence": {
+              "const": true,
+              "type": "boolean"
+            },
+            "production_implementer_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "schema_builder_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "subject_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "vector_generator_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "workspace_clean": {
+              "const": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "subject_author_separate",
+            "schema_builder_separate",
+            "vector_generator_separate",
+            "production_implementer_separate",
+            "workspace_clean",
+            "no_self_generated_evidence"
+          ],
+          "type": "object"
+        },
+        "normative_parents": {
+          "items": {
+            "$ref": "#/$defs/file_identity"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "open_findings": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "review_body_sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "review_id": {
+          "maxLength": 39,
+          "minLength": 39,
+          "pattern": "^pfg3cr-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "reviewer": {
+          "additionalProperties": false,
+          "properties": {
+            "organization": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "principal_id": {
+              "maxLength": 256,
+              "minLength": 12,
+              "pattern": "^reviewer:[a-z0-9-]+/[a-z0-9-]+$",
+              "type": "string"
+            },
+            "role": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "principal_id",
+            "organization",
+            "role"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_g3_00_schema_closure_amendment_review.v1",
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/$defs/file_identity"
+        }
+      },
+      "required": [
+        "schema_version",
+        "review_id",
+        "subject",
+        "normative_parents",
+        "reviewer",
+        "independence",
+        "checks",
+        "findings",
+        "open_findings",
+        "disposition",
+        "accepted_scope",
+        "authority_ceiling",
+        "review_body_sha256"
+      ],
+      "type": "object"
+    },
+    "g3_01_construction_amendment_review_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "authority_ceiling": {
+          "additionalProperties": false,
+          "properties": {
+            "active_head_update": {
+              "const": false,
+              "type": "boolean"
+            },
+            "clean_certification": {
+              "const": false,
+              "type": "boolean"
+            },
+            "confidence": {
+              "const": false,
+              "type": "boolean"
+            },
+            "consumer": {
+              "const": false,
+              "type": "boolean"
+            },
+            "cutover": {
+              "const": false,
+              "type": "boolean"
+            },
+            "finding": {
+              "const": false,
+              "type": "boolean"
+            },
+            "package": {
+              "const": false,
+              "type": "boolean"
+            },
+            "production_publication": {
+              "const": false,
+              "type": "boolean"
+            },
+            "provider_launch": {
+              "const": false,
+              "type": "boolean"
+            },
+            "refutation": {
+              "const": false,
+              "type": "boolean"
+            },
+            "release": {
+              "const": false,
+              "type": "boolean"
+            },
+            "replay": {
+              "const": false,
+              "type": "boolean"
+            },
+            "runner": {
+              "const": false,
+              "type": "boolean"
+            },
+            "runtime": {
+              "const": false,
+              "type": "boolean"
+            },
+            "severity": {
+              "const": false,
+              "type": "boolean"
+            },
+            "suppression": {
+              "const": false,
+              "type": "boolean"
+            },
+            "terminal_negative": {
+              "const": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime",
+            "runner",
+            "replay",
+            "provider_launch",
+            "package",
+            "production_publication",
+            "active_head_update",
+            "release",
+            "cutover",
+            "consumer",
+            "finding",
+            "severity",
+            "confidence",
+            "refutation",
+            "suppression",
+            "terminal_negative",
+            "clean_certification"
+          ],
+          "type": "object"
+        },
+        "checks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "check_id": {
+                "enum": [
+                  "PFG301-01-PARENT-PIN",
+                  "PFG301-02-LITERAL-MUTATIONS",
+                  "PFG301-03-SCHEMA-REVIEWS",
+                  "PFG301-04-PROTOCOL-PINS",
+                  "PFG301-05-ORACLE-INVOCATION",
+                  "PFG301-06-ACYCLIC-AUTHORITY",
+                  "PFG301-07-INDEPENDENCE"
+                ],
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "$ref": "#/$defs/file_identity"
+                },
+                "maxItems": 10000000,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "check_id",
+              "result",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 7,
+          "minItems": 7,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "disposition": {
+          "enum": [
+            "PASS_G3_01_CONSTRUCTION_AMENDMENT_FOR_PREIMPLEMENTATION_ONLY",
+            "REJECTED"
+          ],
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "$ref": "#/$defs/file_identity"
+                },
+                "maxItems": 10000000,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "finding_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "severity": {
+                "enum": [
+                  "BLOCKING",
+                  "NONBLOCKING"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "OPEN",
+                  "CLOSED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "finding_id",
+              "severity",
+              "status",
+              "description",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "g3_00_admission": {
+          "additionalProperties": false,
+          "properties": {
+            "independent_review": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "manifest": {
+              "$ref": "#/$defs/file_identity"
+            }
+          },
+          "required": [
+            "manifest",
+            "independent_review"
+          ],
+          "type": "object"
+        },
+        "independence": {
+          "additionalProperties": false,
+          "properties": {
+            "amendment_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "g3_00_subject_authors_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "no_self_generated_evidence": {
+              "const": true,
+              "type": "boolean"
+            },
+            "oracle_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "production_implementer_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "workspace_clean": {
+              "const": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "amendment_author_separate",
+            "g3_00_subject_authors_separate",
+            "production_implementer_separate",
+            "oracle_author_separate",
+            "workspace_clean",
+            "no_self_generated_evidence"
+          ],
+          "type": "object"
+        },
+        "normative_parent": {
+          "$ref": "#/$defs/file_identity"
+        },
+        "open_findings": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "review_body_sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "review_id": {
+          "maxLength": 40,
+          "minLength": 40,
+          "pattern": "^pfg301r-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "reviewer": {
+          "additionalProperties": false,
+          "properties": {
+            "organization": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "principal_id": {
+              "maxLength": 256,
+              "minLength": 12,
+              "pattern": "^reviewer:[a-z0-9-]+/[a-z0-9-]+$",
+              "type": "string"
+            },
+            "role": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "principal_id",
+            "organization",
+            "role"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_g3_01_construction_amendment_review.v1",
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/$defs/file_identity"
+        }
+      },
+      "required": [
+        "schema_version",
+        "review_id",
+        "subject",
+        "normative_parent",
+        "g3_00_admission",
+        "reviewer",
+        "independence",
+        "checks",
+        "findings",
+        "open_findings",
+        "disposition",
+        "authority_ceiling",
+        "review_body_sha256"
+      ],
+      "type": "object"
+    },
+    "gate3_schema_conformance_review_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "check_id": {
+                "enum": [
+                  "SCHEMA-DRAFT",
+                  "VOCABULARY-KEYWORDS",
+                  "CLOSED-OBJECTS",
+                  "REF-CLOSURE",
+                  "VECTOR-CARRIER",
+                  "KEYWORD-OCCURRENCE-COVERAGE",
+                  "POSITIVE-REPLAY",
+                  "NEGATIVE-REPLAY",
+                  "IDENTITY-STABLE-READ"
+                ],
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "maxLength": 64,
+                      "minLength": 64,
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "size_bytes": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size_bytes",
+                    "sha256"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "check_id",
+              "result",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 9,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "disposition": {
+          "enum": [
+            "PASS_SCHEMA_CONTRACT_FOR_GATE3_PREIMPLEMENTATION_ONLY",
+            "REJECTED"
+          ],
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "maxLength": 64,
+                      "minLength": 64,
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "size_bytes": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size_bytes",
+                    "sha256"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "finding_id": {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+                "type": "string"
+              },
+              "severity": {
+                "enum": [
+                  "BLOCKING",
+                  "NONBLOCKING"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "OPEN",
+                  "CLOSED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "finding_id",
+              "severity",
+              "status",
+              "description",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "independence": {
+          "additionalProperties": false,
+          "properties": {
+            "no_self_generated_evidence": {
+              "const": true,
+              "type": "boolean"
+            },
+            "oracle_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "production_implementer_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "subject_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "vector_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "workspace_clean": {
+              "const": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "subject_author_separate",
+            "vector_author_separate",
+            "production_implementer_separate",
+            "oracle_author_separate",
+            "workspace_clean",
+            "no_self_generated_evidence"
+          ],
+          "type": "object"
+        },
+        "open_findings": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+            "type": "string"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "review_body_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "review_id": {
+          "maxLength": 37,
+          "minLength": 37,
+          "pattern": "^pfsr-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "reviewer": {
+          "additionalProperties": false,
+          "properties": {
+            "organization": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "principal_id": {
+              "maxLength": 256,
+              "minLength": 12,
+              "pattern": "^reviewer:[a-z0-9-]+/[a-z0-9-]+$",
+              "type": "string"
+            },
+            "role": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "principal_id",
+            "organization",
+            "role"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_schema_conformance_review.v1",
+          "type": "string"
+        },
+        "subject": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+              "type": "string"
+            },
+            "sha256": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size_bytes": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size_bytes",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "vectors": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+              "type": "string"
+            },
+            "sha256": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size_bytes": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size_bytes",
+            "sha256"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "review_id",
+        "subject",
+        "vectors",
+        "reviewer",
+        "independence",
+        "checks",
+        "findings",
+        "open_findings",
+        "disposition",
+        "review_body_sha256"
+      ],
+      "type": "object"
+    },
+    "gate3_schema_conformance_vectors_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "body_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "keyword_occurrences": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "keyword": {
+                "enum": [
+                  "$ref",
+                  "type",
+                  "const",
+                  "enum",
+                  "required",
+                  "additionalProperties",
+                  "propertyNames",
+                  "properties",
+                  "dependentRequired",
+                  "prefixItems",
+                  "items",
+                  "contains",
+                  "minContains",
+                  "maxContains",
+                  "minProperties",
+                  "maxProperties",
+                  "minItems",
+                  "maxItems",
+                  "uniqueItems",
+                  "minLength",
+                  "maxLength",
+                  "pattern",
+                  "minimum",
+                  "maximum",
+                  "multipleOf",
+                  "allOf",
+                  "anyOf",
+                  "oneOf",
+                  "not",
+                  "if",
+                  "then",
+                  "else"
+                ],
+                "type": "string"
+              },
+              "negative_vector_ids": {
+                "items": {
+                  "maxLength": 37,
+                  "minLength": 37,
+                  "pattern": "^pfsv-[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "positive_vector_ids": {
+                "items": {
+                  "maxLength": 37,
+                  "minLength": 37,
+                  "pattern": "^pfsv-[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "schema_pointer": {
+                "maxLength": 16384,
+                "minLength": 0,
+                "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema_pointer",
+              "keyword",
+              "positive_vector_ids",
+              "negative_vector_ids"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_schema_conformance_vectors.v1",
+          "type": "string"
+        },
+        "subject": {
+          "additionalProperties": false,
+          "properties": {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                  "type": "string"
+                },
+                "sha256": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size_bytes",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            "schema_id": {
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^https://plamen\\.local/schemas/[A-Za-z0-9._-]+\\.schema\\.json$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema",
+            "schema_id"
+          ],
+          "type": "object"
+        },
+        "vector_count": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vectors": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "covers": {
+                "items": {
+                  "maxLength": 16384,
+                  "minLength": 0,
+                  "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "expected": {
+                "enum": [
+                  "VALID",
+                  "INVALID"
+                ],
+                "type": "string"
+              },
+              "instance": {},
+              "target_schema_pointer": {
+                "maxLength": 16384,
+                "minLength": 0,
+                "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                "type": "string"
+              },
+              "vector_id": {
+                "maxLength": 37,
+                "minLength": 37,
+                "pattern": "^pfsv-[0-9a-f]{32}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "vector_id",
+              "target_schema_pointer",
+              "instance",
+              "expected",
+              "covers"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "schema_version",
+        "subject",
+        "vectors",
+        "keyword_occurrences",
+        "vector_count",
+        "body_sha256"
+      ],
+      "type": "object"
+    },
+    "hex64": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "identifier": {
+      "maxLength": 512,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+      "type": "string"
+    },
+    "portable_path": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+      "type": "string"
+    },
+    "schema_contract_index_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "index_body_sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "schema_count": {
+          "const": 51,
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_schema_contract_index.v1",
+          "type": "string"
+        },
+        "schemas": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "accepted_stage": {
+                "enum": [
+                  "G3_00",
+                  "G3_01"
+                ],
+                "type": "string"
+              },
+              "independent_review": {
+                "$ref": "#/$defs/file_identity"
+              },
+              "schema": {
+                "$ref": "#/$defs/file_identity"
+              },
+              "vectors": {
+                "$ref": "#/$defs/file_identity"
+              }
+            },
+            "required": [
+              "schema",
+              "vectors",
+              "independent_review",
+              "accepted_stage"
+            ],
+            "type": "object"
+          },
+          "maxItems": 51,
+          "minItems": 51,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "schema_version",
+        "schemas",
+        "schema_count",
+        "index_body_sha256"
+      ],
+      "type": "object"
+    },
+    "source_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "end_byte": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "end_column": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "end_line": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+          "type": "string"
+        },
+        "root_token": {
+          "maxLength": 69,
+          "minLength": 69,
+          "pattern": "^pfrt-[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source_file_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfs-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "start_byte": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_column": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "start_line": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_file_id",
+        "root_token",
+        "path",
+        "start_byte",
+        "end_byte",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://plamen.local/schemas/program_facts_independent_review.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$vocabulary": {
+    "https://json-schema.org/draft/2020-12/vocab/applicator": true,
+    "https://json-schema.org/draft/2020-12/vocab/core": true,
+    "https://json-schema.org/draft/2020-12/vocab/validation": true
+  },
+  "additionalProperties": false,
+  "properties": {
+    "disposition": {
+      "enum": [
+        "PASS_R19_SEED_ADMISSION_FOR_CONTRACT_FREEZE_ONLY",
+        "PASS_FOR_RED_FIXTURE_AND_IMPLEMENTATION_ONLY",
+        "PASS_PUBLIC_V3_SHADOW_CONTRACT_ONLY",
+        "PASS_PRE_FREEZE_SYNTHETIC_GOVERNANCE_FOR_EXPECTED_BYTES_ONLY",
+        "PASS_PRE_RELEASE_FIXTURE_EXECUTION_AUTHORITY_FOR_G3_09_ONLY",
+        "PASS_MUTATION_UNION_V1_CONTRACT_ONLY",
+        "PASS_ORACLE_V1_FOR_RED_FIXTURES_ONLY",
+        "PASS_GATE3_CONTRACT_FREEZE_FOR_IMPLEMENTATION_ONLY",
+        "PASS_LINUX_AMD64_GATE3_CONTAINMENT_ONLY",
+        "PASS_WINDOWS_AMD64_GATE3_CONTAINMENT_ONLY",
+        "PASS_GATE3_RELEASE_FREEZE_FOR_CUTOVER_REVIEW_ONLY",
+        "PASS_GATE3_V3_SHADOW_PRODUCER_SELECTOR_ONLY",
+        "REJECTED"
+      ],
+      "type": "string"
+    },
+    "findings": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "maxItems": 10000000,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "finding_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "BLOCKING",
+              "NONBLOCKING"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "OPEN",
+              "CLOSED"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "severity",
+          "status",
+          "description",
+          "evidence"
+        ],
+        "type": "object"
+      },
+      "maxItems": 10000000,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "independence": {
+      "additionalProperties": false,
+      "properties": {
+        "no_self_generated_evidence": {
+          "const": true,
+          "type": "boolean"
+        },
+        "oracle_author_separate": {
+          "const": true,
+          "type": "boolean"
+        },
+        "production_implementer_separate": {
+          "const": true,
+          "type": "boolean"
+        },
+        "subject_author_separate": {
+          "const": true,
+          "type": "boolean"
+        },
+        "workspace_clean": {
+          "const": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "subject_author_separate",
+        "production_implementer_separate",
+        "oracle_author_separate",
+        "workspace_clean",
+        "no_self_generated_evidence"
+      ],
+      "type": "object"
+    },
+    "input_artifacts": {
+      "items": {
+        "$ref": "#/$defs/file_identity"
+      },
+      "maxItems": 10000000,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "open_findings": {
+      "items": {
+        "maxLength": 512,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+        "type": "string"
+      },
+      "maxItems": 10000000,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "review_body_sha256": {
+      "$ref": "#/$defs/hex64"
+    },
+    "review_id": {
+      "maxLength": 37,
+      "minLength": 37,
+      "pattern": "^pfir-[0-9a-f]{32}$",
+      "type": "string"
+    },
+    "reviewer": {
+      "additionalProperties": false,
+      "properties": {
+        "organization": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "principal_id": {
+          "maxLength": 256,
+          "minLength": 12,
+          "pattern": "^reviewer:[a-z0-9-]+/[a-z0-9-]+$",
+          "type": "string"
+        },
+        "role": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "principal_id",
+        "organization",
+        "role"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "plamen.program_facts_independent_review.v1",
+      "type": "string"
+    },
+    "subject_kind": {
+      "enum": [
+        "SEED_ADMISSION",
+        "SPECIFICATION",
+        "ARCHITECTURE",
+        "PRE_FREEZE_FIXTURE_GOVERNANCE",
+        "PRE_RELEASE_FIXTURE_EXECUTION_AUTHORITY",
+        "ORACLE",
+        "MUTATION",
+        "CONTRACT_FREEZE",
+        "HOST_CONTAINMENT",
+        "RELEASE_FREEZE",
+        "CUTOVER"
+      ],
+      "type": "string"
+    },
+    "subjects": {
+      "items": {
+        "$ref": "#/$defs/file_identity"
+      },
+      "maxItems": 10000000,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "vectors": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "maxItems": 10000000,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "result": {
+            "enum": [
+              "PASS",
+              "FAIL"
+            ],
+            "type": "string"
+          },
+          "vector_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vector_id",
+          "result",
+          "evidence"
+        ],
+        "type": "object"
+      },
+      "maxItems": 10000000,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "review_id",
+    "subject_kind",
+    "subjects",
+    "input_artifacts",
+    "reviewer",
+    "independence",
+    "vectors",
+    "findings",
+    "open_findings",
+    "disposition",
+    "review_body_sha256"
+  ],
+  "type": "object"
+}

@@ -69,6 +69,14 @@ def _graph(sp: Path, source: str, suffix: str, *, include_unresolved: bool = Fal
                     f"target (src/Target{suffix}:L10)",
                     f"sibling (src/Target{suffix}:L40)",
                 ],
+                # This suite tests graph-health accounting, not anchor
+                # approximation.  Supply exact statement facts so the local
+                # anchor contract is satisfied independently of provider.
+                "reference_sites": [
+                    f"src/Target{suffix}:L12",
+                    f"src/Target{suffix}:L42",
+                ],
+                "confidence": "REFERENCE_SITE_NO_POLARITY",
             },
         },
         "functions": functions,
@@ -290,20 +298,28 @@ def test_exact_relative_path_wins_and_duplicate_basename_fallback_is_ambiguous(
     payload = {
         "source": "slither",
         "var_refs": {
-            "A.left_state": {
-                "bare": "left_state",
-                "refs": [
-                    "left (pkg/a/Target.sol:L10)",
-                    "left_sibling (pkg/a/Target.sol:L40)",
-                ],
-            },
-            "B.right_state": {
-                "bare": "right_state",
-                "refs": [
-                    "right (pkg/b/Target.sol:L10)",
-                    "right_sibling (pkg/b/Target.sol:L40)",
-                ],
-            },
+                "A.left_state": {
+                    "bare": "left_state",
+                    "refs": [
+                        "left (pkg/a/Target.sol:L10)",
+                        "left_sibling (pkg/a/Target.sol:L40)",
+                    ],
+                    "reference_sites": [
+                        "pkg/a/Target.sol:L12", "pkg/a/Target.sol:L42",
+                    ],
+                    "confidence": "REFERENCE_SITE_NO_POLARITY",
+                },
+                "B.right_state": {
+                    "bare": "right_state",
+                    "refs": [
+                        "right (pkg/b/Target.sol:L10)",
+                        "right_sibling (pkg/b/Target.sol:L40)",
+                    ],
+                    "reference_sites": [
+                        "pkg/b/Target.sol:L12", "pkg/b/Target.sol:L42",
+                    ],
+                    "confidence": "REFERENCE_SITE_NO_POLARITY",
+                },
         },
         "functions": {
             "A.left": {"bare": "left", "loc": "pkg/a/Target.sol:L10"},
@@ -340,11 +356,15 @@ def test_scip_path_location_descriptors_resolve_to_function_names(tmp_path: Path
     payload = {
         "source": "scip",
         "var_refs": {
-            "state": {
-                "bare": "state",
-                # SCIP emits reference locations without function names.
-                "refs": ["src/Target.rs:L12", "src/Target.rs:L42"],
-            },
+                "state": {
+                    "bare": "state",
+                    # SCIP emits reference locations without function names.
+                    "refs": ["src/Target.rs:L12", "src/Target.rs:L42"],
+                    "reference_sites": [
+                        "src/Target.rs:L12", "src/Target.rs:L42",
+                    ],
+                    "confidence": "SCIP_REFERENCE_SITE",
+                },
         },
         "functions": {
             "Module.target": {"bare": "target", "loc": "src/Target.rs:L10"},
@@ -404,6 +424,7 @@ def test_health_production_predicate_matches_graph_producer(tmp_path: Path):
     rels = (
         "src/Target.sol",
         "examples/Example.sol",
+        "contracts/lib/SolvencyMath.sol",
         "tests/TestTarget.sol",
         "lib/Dependency.sol",
         ".hidden/Hidden.sol",
@@ -424,6 +445,9 @@ def test_health_production_predicate_matches_graph_producer(tmp_path: Path):
         if EG._production_source_locations(f"{rel}:L1")
     }
     assert health == producer
+    assert "contracts/lib/SolvencyMath.sol" in producer
+    assert "lib/Dependency.sol" not in producer
+    assert "src/Target.t.sol" not in producer
 
 
 def test_nonproduction_descriptor_cannot_reenter_through_bare_name_fallback(
@@ -432,14 +456,20 @@ def test_nonproduction_descriptor_cannot_reenter_through_bare_name_fallback(
     payload = {
         "source": "slither",
         "var_refs": {
-            "state": {
-                "bare": "state",
-                "refs": [
-                    "target (src/Target.sol:L10)",
-                    "sibling (src/Target.sol:L40)",
-                    "poc_helper (tests/Target.t.sol:L10)",
-                ],
-            },
+                "state": {
+                    "bare": "state",
+                    "refs": [
+                        "target (src/Target.sol:L10)",
+                        "sibling (src/Target.sol:L40)",
+                        "poc_helper (tests/Target.t.sol:L10)",
+                    ],
+                    "reference_sites": [
+                        "src/Target.sol:L12",
+                        "src/Target.sol:L42",
+                        "tests/Target.t.sol:L12",
+                    ],
+                    "confidence": "REFERENCE_SITE_NO_POLARITY",
+                },
         },
         "functions": {
             "Module.target": {"bare": "target", "loc": "src/Target.sol:L10"},

@@ -380,7 +380,9 @@ def test_e_triage_allows_contentless_marker_for_medium_plus_exclusion():
             "| PCRE-1 | Medium | content-less stub | APPENDIX_ONLY CONTENT_LESS no concrete location |\n",
             encoding="utf-8",
         )
-        assert _validate_report_index_triage_safety(sp) == []
+        assert _validate_report_index_triage_safety(sp), (
+            "CONTENT_LESS prose is not independent non-body authority"
+        )
 
         # NEGATIVE CONTROL: a real Medium finding excluded with a non-evidence
         # "not client worthy" reason must STILL be flagged (no rubber-stamp).

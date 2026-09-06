@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_disagreement.v1.schema.json",
+  "title": "Plamen Program Facts disagreement v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "disagreement_id",
+    "canonical_obligation_id",
+    "providers",
+    "fact_ids",
+    "conflict_kind",
+    "required_action",
+    "resolution",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {"const": "plamen.program_facts_disagreement.v1"},
+    "disagreement_id": {"type": "string", "pattern": "^PFDG-[0-9a-f]{24}$"},
+    "canonical_obligation_id": {"type": "string", "pattern": "^PFOB-[0-9a-f]{24}$"},
+    "providers": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+      }
+    },
+    "fact_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^PFF-[0-9a-f]{24}$"}
+    },
+    "conflict_kind": {
+      "enum": ["TARGET", "PRECISION", "SOURCE_BINDING", "DISPATCH", "COVERAGE", "HOST_SEMANTICS"]
+    },
+    "required_action": {"const": "ADD_REVIEW_OBLIGATION"},
+    "resolution": {"const": "UNRESOLVED"},
+    "terminal_negative_authority": {"const": false}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"conflict_kind": {"const": "COVERAGE"}},
+        "required": ["conflict_kind"]
+      },
+      "else": {"properties": {"fact_ids": {"minItems": 2}}}
+    }
+  ]
+}

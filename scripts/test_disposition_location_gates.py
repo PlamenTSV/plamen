@@ -1,12 +1,10 @@
-"""Phase 1 — mechanical disposition gates: location-existence + non-production.
+"""Mechanical location and non-production evidence diagnostics.
 
-Gate 1 (anti-hallucination): a finding citing a file that does not exist, or a
-line beyond EOF, is dropped on its own (mechanical ground truth) — not only when
-its Source ID is also bad. Catches the StrategyFactory.sol-class hallucination.
-
-Gate 2 (non-production scope): a finding resolved to test/fuzz/mock/harness code
-is routed out of the body. A merely unparseable/prose location stays soft.
-Everything dropped is ledgered, never silent.
+Invalid, missing, or non-production locations are evidence-quality signals,
+not finding-disposition authority. Every candidate stays in the active
+verification denominator and the driver emits explicit evidence debt for
+independent verification/report retention. A merely unparseable prose
+location remains soft as well.
 """
 from __future__ import annotations
 
@@ -139,22 +137,20 @@ def test_filter_drops_hard_invalid_alone_keeps_soft(tmp_path: Path):
     (scratch / "verification_queue.md").write_text(_QUEUE, encoding="utf-8")
 
     removed = v._filter_verification_queue_by_evidence(scratch)
-    rem = {r for r in removed}
-    # HARD drop on its own (mechanical ground truth): non-production path.
-    assert "M-02" in rem   # resolved to a test/harness file -> out of scope
-    # CONSERVATIVE both-bad drop:
-    assert "M-07" in rem   # file not found AND bad source
-    assert "M-06" in rem   # ambiguous location AND bad source
-    # SOFT (kept) — lenient policy: a wrong/recoverable location with GOOD source
-    # is a real finding, recoverable from provenance (NOT hard-dropped here). The
-    # downstream tier-writer location-corruption case is handled at report-assembly.
-    assert "M-01" not in rem   # real production location
-    assert "M-03" not in rem, "file-not-found with GOOD source is recoverable (lenient policy), not dropped at inventory"
-    assert "M-04" not in rem, "bad LINE in a real file with good source is recoverable"
-    assert "M-05" not in rem, "prose location with good source must NOT be hard-dropped"
+    assert removed == []
+    rows = v.parse_verification_queue_rows(scratch)
+    assert {row["finding id"] for row in rows} == {
+        "M-01", "M-02", "M-03", "M-04", "M-05", "M-06", "M-07"
+    }
 
-    # ledger of removals written (paper trail, not silent)
-    assert (scratch / "verification_queue_evidence_excluded.md").exists()
+    # Location defects are repair evidence, not proof that a candidate is
+    # safe. Non-production and jointly-invalid rows remain active and acquire
+    # an explicit advisory debt record.
+    debt_path = scratch / "verification_queue_evidence_debt.md"
+    assert debt_path.exists()
+    debt = debt_path.read_text(encoding="utf-8")
+    assert all(fid in debt for fid in ("M-02", "M-06", "M-07"))
+    assert "never exclusion authority" in debt
 
 
 if __name__ == "__main__":

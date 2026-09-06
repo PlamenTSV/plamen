@@ -12,9 +12,13 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
+import re
 
 import pytest
 
+import claude_worker_prompt_consistency as prompt_consistency
+import headless_worker_runtime as headless_runtime
+import plamen_driver as driver
 import plamen_prompt as p
 import plamen_validators as v
 from plamen_types import SC_PHASES
@@ -166,6 +170,90 @@ class TestAttempt1Unchanged:
         prompt = p.build_phase_prompt(v1, phase, _config(scratch, project))
         assert not prompt.startswith("# RETRY ATTEMPT")
         assert "RETRY HINT (injected by driver" not in prompt
+
+
+@pytest.mark.parametrize("retry", (False, True))
+def test_instantiate_render_is_restricted_claude_phaseio_consistent(
+    scratch_and_project,
+    retry: bool,
+):
+    scratch, project, v1 = scratch_and_project
+    (project / "contracts").mkdir()
+    exact_inputs = (
+        "attack_surface.md",
+        "contract_inventory.md",
+        "design_context.md",
+        "detected_patterns.md",
+        "external_dependency_research.md",
+        "function_list.md",
+        "recon_signal_transform_receipt.json",
+        "recon_summary.md",
+        "skill_selection_catalog.json",
+        "state_variables.md",
+        "template_recommendations.md",
+    )
+    for name in exact_inputs:
+        (scratch / name).write_text(f"# {name}\n", encoding="utf-8")
+    if retry:
+        v._write_retry_hint(
+            scratch,
+            "instantiate",
+            "spawn_manifest_proposal.md is missing",
+        )
+    phase = next(ph for ph in SC_PHASES if ph.name == "instantiate")
+    rendered = driver._compile_instantiate_model_prompt(
+        p.build_phase_prompt(v1, phase, _config(scratch, project))
+    )
+    attempt_name = "attempt-retry-private" if retry else "attempt-1-private"
+    private_output = (
+        Path(".scratchpad")
+        / ".worker_transactions"
+        / "instantiate"
+        / "instantiate-orchestrator"
+        / "attempts"
+        / attempt_name
+        / "output"
+    )
+    provider_prompt = headless_runtime._route_prompt(
+        rendered,
+        output_directory=private_output,
+        output_paths=("spawn_manifest_proposal.md",),
+    ).decode("utf-8")
+    private_destination = (
+        private_output / "spawn_manifest_proposal.md"
+    ).as_posix()
+
+    assert "{template-name}/SKILL.md" not in rendered
+    assert "Use the Task tool only" not in rendered
+    assert "**Write spawn manifest** to" not in provider_prompt
+    assert "Write only `spawn_manifest_proposal.md`" not in provider_prompt
+    canonical_proposal = scratch / "spawn_manifest_proposal.md"
+    assert canonical_proposal.as_posix() not in provider_prompt
+    assert str(canonical_proposal) not in provider_prompt
+    assert provider_prompt.count("## Runtime output routing") == 1
+    assert (
+        f"`spawn_manifest_proposal.md` -> `{private_destination}`"
+        in provider_prompt
+    )
+    assert "Write it only to the exact attempt-owned destination" in provider_prompt
+    if not retry:
+        assert re.search(
+            r"(?i)before the final Write, confirm in memory",
+            rendered,
+        )
+    assert not re.search(
+        r"(?i)(?:re-?read|read again).{0,100}(?:manifest|spawn_manifest)",
+        rendered,
+    )
+    prompt_consistency.require_claude_worker_prompt_consistency(
+        provider_prompt,
+        phase_io_inputs=tuple(scratch / name for name in exact_inputs),
+        phase_io_outputs=(scratch / "spawn_manifest_proposal.md",),
+        policy_tools=("Read", "Write", "Edit", "Glob", "Grep"),
+        safe_search_roots=(project / "contracts",),
+        project_root=str(project),
+        scratchpad_root=str(scratch),
+    )
 
 
 # --- Accumulate phases set integrity check ----------------------------------

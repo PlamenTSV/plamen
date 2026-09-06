@@ -8,6 +8,7 @@ description: "Trigger Protocol has privileged roles (admin, owner, operator, gov
 > **Trigger**: Protocol has privileged roles (admin, owner, operator, governance, multisig)
 > **Covers**: Single points of failure, privilege escalation, external governance dependencies
 > **Required**: NO (optional -- recommended when protocol has 3+ distinct privileged roles)
+> **Inject Into**: Breadth agents
 
 ## Trigger Patterns
 
@@ -19,7 +20,8 @@ onlyOwner|onlyAdmin|onlyGovernance|DEFAULT_ADMIN_ROLE|OPERATOR_ROLE|timelock|mul
 
 ### Step 1: Privilege Inventory
 
-Enumerate ALL privileged functions using Slither (`list_functions` + `analyze_modifiers`):
+Enumerate ALL privileged functions from the provided function and modifier
+inventories, cross-checking them against the assigned source scope:
 
 | # | Function | Contract | Modifier/Role | What It Controls | Impact If Abused |
 |---|----------|----------|---------------|------------------|-----------------|
@@ -109,7 +111,7 @@ Document emergency/pause capabilities:
 
 ## Step Execution Checklist
 
-- [ ] Step 1: ALL privileged functions enumerated (via Slither, not manual scan)
+- [ ] Step 1: ALL privileged functions enumerated from the provided inventories and cross-checked against source
 - [ ] Step 2: Role hierarchy mapped with separation analysis
 - [ ] Step 3: Single points of failure identified for each role
 - [ ] Step 4: External governance dependencies documented

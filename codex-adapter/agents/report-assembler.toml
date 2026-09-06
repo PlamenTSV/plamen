@@ -1,6 +1,6 @@
 name = "report-assembler"
 description = "Report assembler: merge tier sections into final AUDIT_REPORT.md with quality checks"
-model = "gpt-5.4-mini"
+model = "gpt-5.6-luna"
 
 developer_instructions = """
             You are the Report Assembler. Read your full methodology from:

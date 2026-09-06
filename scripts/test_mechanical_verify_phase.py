@@ -296,8 +296,26 @@ def test_run_phase_no_test_file_marks_skip(tmp_path, monkeypatch):
         tmp_path, tmp_path, "evm",
         per_test_timeout_s=10, phase_budget_s=10,
     )
-    assert summary["status"] == "ok"
+    # Execution classification succeeded, but the fixture intentionally has
+    # no AG1 identity/receipt/proposal authority.  Haltless operation must be
+    # loud DEGRADED debt, never a clean phase result.
+    assert summary["status"] == "degraded"
     assert summary["counts"].get("NO_TEST_FILE") == 1
+    assert summary["authority_rejections"] == 1
+    debt = json.loads(
+        (tmp_path / "mechanical_successor_authority.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert debt["status"] == "DEGRADED"
+    assert summary["p1e_execution_scope"]["status"] == "DEGRADED"
+    scope = json.loads(
+        (tmp_path / "verify_H-1.execution_scope_assessment.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert scope["candidate_state"] == "VISIBLE_EVIDENCE_DEBT"
+    assert scope["negative_disposition_eligible"] is False
 
 
 def test_run_phase_toolchain_unavailable_short_circuit(tmp_path, monkeypatch):
@@ -318,6 +336,15 @@ def test_run_phase_toolchain_unavailable_short_circuit(tmp_path, monkeypatch):
         per_test_timeout_s=10, phase_budget_s=10,
     )
     assert summary["status"] == "toolchain_unavailable"
+    assert summary["p1e_execution_scope"]["status"] == "DEGRADED"
+    scope = json.loads(
+        (tmp_path / "verify_H-1.execution_scope_assessment.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert scope["execution_authenticity"] == "UNPROVEN_METADATA"
+    assert scope["harm_evidence_eligible"] is False
+    assert scope["negative_disposition_eligible"] is False
     manifest = (tmp_path / "mechanical_verify_manifest.md").read_text(encoding="utf-8")
     assert "TOOLCHAIN_UNAVAILABLE" in manifest
 

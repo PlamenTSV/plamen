@@ -230,17 +230,21 @@ Use breadth findings as building blocks. For each pair of findings in your domai
 2. Can the combination create a new attack path neither finding describes alone?
 3. Document any chain with: A -> enables -> B -> impact
 
-## PART 3: SECOND OPINION ON REFUTED (BRIEF)
+## PART 3: SECOND OPINION ON REFUTED (INDEPENDENT PROPOSAL ONLY)
 
 For findings marked REFUTED in your domain:
 1. Check: does another finding CREATE the missing precondition? If so -> upgrade to PARTIAL
 2. Check: was the REFUTED verdict based on [MOCK]/[EXT-UNV] evidence? If so -> upgrade to CONTESTED
-3. Otherwise: confirm REFUTED (no need to re-analyze at length)
+3. Otherwise: emit `REFUTATION_PROPOSAL` with the exact premise, guard locus,
+   paths checked, and evidence tags. Do not confirm terminal `REFUTED`; an
+   independent discriminator must bind premise to evidence before closure.
 
-## RAG Validation (MANDATORY)
-For each NEW finding or combination discovered, call:
-- validate_hypothesis(hypothesis='<finding description>')
-- If local results < 5: search_solodit_live(keywords='<pattern>', language='Move', quality_score=3, max_results=20)
+## External Precedent Boundary (MANDATORY)
+Do not call vulnerability-database, RAG, WebSearch, or WebFetch tools in this
+worker. Seal findings, clears, combinations, and depth evidence from the
+current code first. The driver runs a separate post-freeze precedent proposer;
+external similarity can add later investigation paths but cannot validate,
+refute, demote, score, or severity-rate this worker's code-derived result.
 
 ## Severity / Disposition Contract (MANDATORY)
 
@@ -306,9 +310,8 @@ For EACH question:
 1. Read the referenced code location YOURSELF
 2. Apply at least 2 depth techniques (BOUNDARY, VARIATION, TRACE)
 3. If you find a defense mechanism (cap, bound, min/max, guard): trace each INPUT to the defense - can any input be externally manipulated to weaken it?
-4. Make your OWN MCP tool calls:
-   - validate_hypothesis() for RAG validation
-   - search_solodit_live() if local results < 5
+4. Do not call external precedent/RAG tools. Answer from current source and
+   explicit execution evidence; the post-freeze precedent phase is separate.
 
 ## Output
 Write to {SCRATCHPAD}/depth_{type}_injectable_findings.md:

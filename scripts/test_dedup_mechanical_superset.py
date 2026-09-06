@@ -241,18 +241,18 @@ def test_fallback_keep_separate_when_no_superset():
 
 # ─── L1 supplemental row coupling ─────────────────────────────────
 
-def test_supplemental_l1_row_coupling():
-    """L1 supplemental merge: survivor row gets union location + strongest
-    evidence + higher severity before absorbed row dropped."""
+def test_supplemental_l1_row_merge_is_field_complete_receipted():
+    """The absorbed row is retained exactly in an out-of-table member card."""
     with tempfile.TemporaryDirectory() as td:
         sp = Path(td)
-        queue = (
+        inventory = (
+            "# Findings Inventory\n\n"
             "| Finding ID | Severity | Location | Preferred Tag |\n"
             "|------------|----------|----------|---------------|\n"
             "| INV-3 | Medium | block_pool.rs:151 | [CODE-TRACE] |\n"
             "| INV-7 | Medium | block_pool.rs:151 | [POC-PASS] |\n"
         )
-        (sp / "verification_queue.md").write_text(queue, encoding="utf-8")
+        (sp / "findings_inventory.md").write_text(inventory, encoding="utf-8")
         # live file (already-evaluated set) — empty so this pair is eligible
         (sp / "dedup_candidate_pairs.md").write_text(
             "| Finding A | Finding B | Score | Signal | Same Sev? |\n|---|---|---|---|---|\n",
@@ -266,15 +266,13 @@ def test_supplemental_l1_row_coupling():
         (sp / "dedup_candidate_pairs_full.md").write_text(full, encoding="utf-8")
 
         n = _apply_mechanical_dedup_from_pairs(sp, "semantic_dedup", supplemental=True)
-        assert n == 1, f"expected 1 supplemental merge, got {n}"
-        out = (sp / "verification_queue.md").read_text(encoding="utf-8")
-        # survivor must be the superset side; both have same range so the
-        # proposed (lower-INV INV-3) is kept. POC-PASS from INV-7 must survive.
-        assert "POC-PASS" in out, "strongest evidence must be carried into survivor"
-        # absorbed row removed (only one data row remains)
+        assert n == 1
+        out = (sp / "findings_inventory.md").read_text(encoding="utf-8")
+        assert "POC-PASS" in out
         data_rows = [l for l in out.splitlines() if l.strip().startswith("|")
                      and "INV-" in l]
-        assert len(data_rows) == 1, f"absorbed row not removed: {data_rows}"
+        assert len(data_rows) == 1
+        assert "PLAMEN_DEDUP_PRESERVED_MEMBER_BEGIN id=INV-7" in out
 
 
 if __name__ == "__main__":

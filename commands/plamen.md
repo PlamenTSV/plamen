@@ -555,7 +555,7 @@ This file survives compaction (read from disk). After any compaction event, the 
 |-------|----------|--------|-------|------|----------|
 | **Phase 1** | Recon Agent(s) | Artifacts + templates | 2 sonnet (no RAG/fork) | 4 agents | 4 agents |
 | **Phase 2** | Orchestrator | Instantiated prompts | All | All | All |
-| **Phase 3** | Breadth Agents | Findings files | 3-4 sonnet | 5-9 claude-opus-4-8 | 5-9 claude-opus-4-8 |
+| **Phase 3** | Breadth Agents | Findings files | 3-4 sonnet | 5-9 claude-opus-5 | 5-9 claude-opus-5 |
 | **Phase 3b** | Re-Scan + Per-Contract | Masked findings | Skip | Skip | Thorough only |
 | **Phase 4a** | Inventory Agent | Findings inventory | 1 sonnet | 1 sonnet | 1 sonnet |
 | **Phase 4a.5** | Semantic Invariant Agent | Write-sites + invariants | Skip | Pass 1 | Pass 1+2 |
@@ -572,7 +572,7 @@ When `MODE == light`, the orchestrator applies these overrides:
 
 1. **All agents use Sonnet or Haiku** " no Opus spawns. Use `model="sonnet"` for all analysis/verification agents, `model="haiku"` for assembler only.
 2. **Recon**: Spawn 2 sonnet agents (not 4). Agent L1 = build + static analysis + tests (Tasks 1,2,8,9). Agent L2 = docs + patterns + surface + templates (Tasks 3,4,5,6,7,10). Skip RAG meta-buffer (Task 0) and fork ancestry entirely.
-3. **Breadth**: Cap at 3-4 sonnet agents (not 5-9 claude-opus-4-8). Use same merge hierarchy.
+3. **Breadth**: Cap at 3-4 sonnet agents (not 5-9 claude-opus-5). Use same merge hierarchy.
 4. **Semantic Invariants**: Skip entirely. Depth agents read `state_variables.md` directly.
 5. **Depth Loop**: Spawn 4 merged sonnet agents " (a) combined token-flow + state-trace, (b) combined edge-case + external, (c) combined scanner A+B+C, (d) validation sweep. No niche agents, no injectable investigation agents. Iteration 1 only, no confidence scoring. **Note**: Merges (a) and (c) are deliberate exceptions to the standard merge hierarchy " token-flow + state-trace and 3-scanner compression reduce agent count at the cost of per-domain attention depth. This is a known tradeoff accepted for Pro plan rate limit compliance.
 6. **Chain Analysis**: Single sonnet agent performs both enabler enumeration and chain matching in one pass.
@@ -606,9 +606,9 @@ Replace placeholders: `{path}`, `{scratchpad}`, `{docs_path_or_url_if_provided}`
 | Agent | Spawn | Model | Await? |
 |-------|-------|-------|--------|
 | **1A (RAG)** | `run_in_background: true` | sonnet | **NO** " fire-and-forget |
-| **1B (Docs + External)** | foreground | claude-opus-4-8 (Core/Thorough) or sonnet (Light) | YES |
+| **1B (Docs + External)** | foreground | claude-opus-5 (Core/Thorough) or sonnet (Light) | YES |
 | **2 (Build + Slither)** | foreground | sonnet | YES |
-| **3 (Patterns + Surface)** | foreground | claude-opus-4-8 (Core/Thorough) or sonnet (Light) | YES |
+| **3 (Patterns + Surface)** | foreground | claude-opus-5 (Core/Thorough) or sonnet (Light) | YES |
 
 **Agent 1A is FIRE-AND-FORGET**: spawn in background, never block on it. If it hasn't returned when 1B/2/3 finish, write fallback `meta_buffer.md` and proceed.
 
@@ -637,6 +637,14 @@ Replace placeholders: `{path}`, `{scratchpad}`, `{docs_path_or_url_if_provided}`
 ## Phase 2: Orchestrator Instantiation
 
 ### Step 2a: Determine Agent Count
+
+**Mode precedence**: the Light override above is binding: Light always emits
+3-4 breadth AGENT rows, even for a Complex codebase. The size table below and
+its floors govern Core/Thorough. If Light has more triggered skills than fit
+under the breadth merge/cap rules, preserve them as explicit compatible
+`depth-*` rows in `## Skill Bindings`; never drop or mark a triggered skill
+optional merely to satisfy the 3-4 worker cap.
+
 | Condition | Agent Count |
 |-----------|-------------|
 | Simple (<5 deps, <2000 lines) | 3 agents |
@@ -733,13 +741,18 @@ Use finding IDs: [{PREFIX}-1], [{PREFIX}-2]...
 SCOPE: Write ONLY to your assigned output file. Do NOT read or write other agents' output files. Do NOT proceed to subsequent pipeline phases (re-scan, per-contract, inventory, semantic invariants, depth, RAG, chain analysis, verification, report). Return your findings and stop.
 ```
 
-### Step 2c.1: MCP Timeout Directive (MANDATORY " Rule 11)
+### Step 2c.1: MCP Timeout Directive (Claude headless RAG only)
 
-Every agent prompt that makes MCP tool calls (recon agents, depth agents, chain agents, verifiers, RAG sweep) MUST include this directive at the end of its prompt:
+Only a transport receipt that explicitly grants MCP may make an MCP call. In
+the V2 audit runtime this is limited to Claude headless `rag_sweep`, with the
+singleton `unified-vuln-db` server. Claude PTY and Codex receive no MCP server;
+recon, depth, chain, verification, and report phases use direct local tools and
+their phase-specific Web policy. An MCP-enabled RAG prompt MUST include:
 
 *"When an MCP tool call returns a timeout error or fails, do NOT retry the same call. Record [MCP: TIMEOUT] and skip ALL remaining calls to that provider " switch immediately to fallback (code analysis, grep, WebSearch). Claude Code's tool timeout is set to 300s (5 min) via MCP_TOOL_TIMEOUT in settings.json to accommodate ChromaDB cold start. You cannot cancel a pending call " but you control what happens after the error returns."*
 
-The orchestrator MUST append this text when composing prompts for MCP-calling agents. Agents that do not make MCP calls (pure code analysis breadth agents, report writers) do not need it.
+Do not append this directive to phases whose typed launch receipt does not
+grant MCP; describing an unavailable tool is a transport-contract violation.
 
 ### Step 2d: Spawn Verification Gate (MANDATORY)
 
@@ -984,9 +997,15 @@ The orchestrator runs the full loop autonomously:
    - **Timeout split-and-retry**: If any agent times out, split its findings into 2 "lite" agents (max 3 findings each, no static analyzer, max 5 files). 2 lite agents = 1 budget unit.
    - **§STEP-TRACE injection (Thorough only " MANDATORY)**: Each of the 4 depth-agent prompts (token-flow, state-trace, edge-case, external) MUST include the §STEP-TRACE directive verbatim (see top of this file). Without it, the agent will not emit `step_execution_trace_{role}.md` and the driver's `_check_step_execution_traces` gate will hard-fail the depth phase. Light/Core mode depth spawns SKIP §STEP-TRACE " the gate is mode-gated to Thorough only. Scanners and niche agents do NOT need §STEP-TRACE (different agent class; gate operates on `depth_*_findings.md` only).
 
-2. **Score all findings** (MANDATORY for Core/Thorough " Light mode skips scoring). Orchestrator MUST spawn the scoring agent and await `confidence_scores.md` before deciding whether to proceed to iteration 2. Skipping scoring to "go straight to chain analysis" is a VIOLATION. Spawn sonnet scoring agent â†’ `confidence_scores.md`
+2. **Build a transient routing proposal** (MANDATORY for Core/Thorough;
+   Light skips it). Ask the sonnet-class routing helper to return its compact
+   table to the coordinator. It has no scratchpad write authority. The
+   deterministic driver publishes `confidence_scores.md` only after the depth
+   wave returns. If the helper is unavailable or incomplete, treat every
+   unresolved Medium+ candidate as UNCERTAIN; never skip depth because routing
+   telemetry is missing.
    - **Core mode**: 2-axis scoring (Evidence x 0.5 + Analysis Quality x 0.5)
-   - **Thorough mode**: 4-axis scoring (Evidence x 0.25 + Consensus x 0.25 + Analysis Quality x 0.3 + RAG Match x 0.2)
+   - **Thorough mode**: 3 code-derived axes (Evidence x 0.25 + Consensus x 0.25 + Analysis Quality x 0.3). Precedent is separate, decision-neutral context.
    - CONFIDENT (>= 0.7): no more depth needed
    - UNCERTAIN (0.4-0.7): targeted depth
    - LOW CONFIDENCE (< 0.4): targeted depth + production verification + RAG deep search
@@ -996,10 +1015,11 @@ The orchestrator runs the full loop autonomously:
    - **Thorough mode**: Spawn targeted Devil's Advocate depth agents per domain for ALL uncertain findings. Hard DA role: agents are structurally adversarial. Severity-weighted budget: spawn_priority = (1 - confidence) * severity_weight.
    - Anti-dilution: evidence-only finding cards, max 5 per agent
    - Re-score with new-evidence-only rule
-   - **Loop dynamics detection**: Classify as CONTRACTIVE/OSCILLATORY/EXPLORATORY. If OSCILLATORY â†’ force CONTESTED, exit.
+   - **Loop dynamics detection**: Classify as CONTRACTIVE/OSCILLATORY/EXPLORATORY. If OSCILLATORY, retain unresolved candidates, record routing debt, and exit.
 
 4. **Iteration 3 (Thorough mode only, if still uncertain and progress was made)**: Final targeted pass
-   - Force remaining < 0.4 to CONTESTED verdict
+   - Retain remaining low-confidence candidates for mandatory verification or
+     visible human-review debt; routing telemetry cannot change a verdict
    - Write `adaptive_loop_log.md`
 
 5. **Post-verification error trace feedback** (Core/Thorough only): After Phase 5, if verifiers returned CONTESTED with error traces AND budget remains, spawn targeted depth with error traces as investigation questions (AD-6).
@@ -1023,8 +1043,10 @@ The orchestrator runs the full loop autonomously:
 ```
 // STEP 0: Mode gate " this check is Thorough-only
 if MODE != THOROUGH:
-    // Core/Light: only assert confidence_scores.md + adaptive_loop_log.md exist, then proceed
-    ASSERT: confidence_scores.md exists (Core) OR skip scoring (Light)
+    // Core/Light: assert routing completion/fallback + loop log, then proceed.
+    // The driver publishes canonical confidence after this model wave returns.
+    ASSERT: transient routing proposal exists in coordinator state (Core)
+            OR recall-safe all-Medium+-UNCERTAIN fallback was used
     ASSERT: adaptive_loop_log.md exists
     LOG to {SCRATCHPAD}/checkpoint_postdepth.md
     goto Phase 4c
@@ -1035,6 +1057,8 @@ manifest = Read("~/.claude/prompts/{LANGUAGE}/phase4b-required-artifacts.md")
 // STEP 2: Check EVERY required artifact exists
 missing = []
 for each file in manifest.required_artifacts_table:
+    if producer == "Deterministic driver confidence transaction":
+        continue  // post-wave PhaseIO output; never spawn a MODEL repair
     if not exists({SCRATCHPAD}/{file}):
         missing.append({file, producer})
 
@@ -1052,7 +1076,7 @@ if len(missing) > 0:
     ASSERT len(missing) == 0 " HARD GATE, cannot proceed to Phase 4c
 
 // STEP 5: Standard assertions
-ASSERT: confidence_scores.md is non-empty
+ASSERT: routing proposal OR recall-safe fallback was applied
 ASSERT: IF uncertain Medium+ findings exist after iter 1 â†’ adaptive_loop_log shows iter >= 2
 
 LOG checkpoint result to {SCRATCHPAD}/checkpoint_postdepth.md
@@ -1128,10 +1152,17 @@ verification, or report.
 
 Read: `~/.claude/rules/phase4-confidence-scoring.md` â†’ "Phase 4b.5" section.
 Spawn sonnet RAG sweep agent. This is NOT optional.
-If MCP tools fail â†’ agent falls back to WebSearch â†’ if that fails â†’ floor scores (0.3).
-The sweep MUST be attempted. Writing floor scores without attempting is a VIOLATION.
+Claude headless may query the receipt-bound `unified-vuln-db` and then fall
+back to WebSearch. Claude PTY and Codex start with governed Web research. If no
+precedent source is available, write typed `UNAVAILABLE` context. Precedent is
+decision-neutral: it never supplies a numeric floor or changes confidence,
+verdict, severity, proof, or remaining depth.
 
-> **If RAG is not built**: The unified-vuln-db MCP server may not be running. The sweep agent will detect this on the first tool call and fall back to WebSearch automatically. The pipeline continues with reduced historical context. To enable RAG, the user should run `plamen rag` in their terminal before the next audit.
+> **If local RAG is not built**: Claude headless provider preparation may mark
+> the local route unavailable; PTY/Codex use Web directly. The pipeline emits
+> explicit precedent-source debt and continues without letting missing
+> precedent alter a code-derived finding. Run `plamen rag` to enable the local
+> historical corpus for a later Claude headless audit.
 
 ### Phase 5: Verification (Batched Spawning)
 
@@ -1144,8 +1175,8 @@ Read `{SCRATCHPAD}/hypotheses.md` (first 100 lines ONLY " hypothesis table). Cou
 | Mode | Scope |
 |------|-------|
 | Light | ALL Medium+ (all sonnet) |
-| Core | ALL Medium+ (claude-opus-4-8 for High/Chain, sonnet for Medium) |
-| Thorough | ALL severities (claude-opus-4-8 for High/Chain, sonnet for Medium, sonnet for Low/Info) + fuzz variants |
+| Core | ALL Medium+ (claude-opus-5 for High/Chain, sonnet for Medium) |
+| Thorough | ALL severities (claude-opus-5 for High/Chain, sonnet for Medium, sonnet for Low/Info) + fuzz variants |
 
 **Step 5.0.1: Crash resume " skip already-verified hypotheses**
 
@@ -1159,12 +1190,12 @@ If total verifiers to spawn **> 8**: split into severity-tier batches. Spawn eac
 
 | Batch | Contains | Model | Max parallel agents |
 |-------|----------|-------|---------------------|
-| A | Chain hypotheses (CH-*) + High standalone | claude-opus-4-8 | all (typically 7-10) |
+| A | Chain hypotheses (CH-*) + High standalone | claude-opus-5 | all (typically 7-10) |
 | B | Medium (first half, up to 6) | sonnet | 6 |
 | C | Medium (second half) | sonnet | 6 |
 | D | Low + Info (single agent covering ALL) | sonnet | 1 |
 
-> **Batch sizing**: If a tier has â‰¤ 6 hypotheses, it fits in one batch. If > 6, split into sub-batches of â‰¤ 6. Chains + High are always in the same batch (both claude-opus-4-8, rarely > 10 combined).
+> **Batch sizing**: If a tier has â‰¤ 6 hypotheses, it fits in one batch. If > 6, split into sub-batches of â‰¤ 6. Chains + High are always in the same batch (both claude-opus-5, rarely > 10 combined).
 
 > **Between batches**: Do NOT read the `verify_*.md` files written by the completed batch. Only note the short return message from each agent. Detailed output lives on disk " the orchestrator does not need it until Phase 5.5/6.
 
@@ -1305,4 +1336,3 @@ After report assembly, the V2 driver (`plamen_driver.py`) runs artifact gate
 checks and quality validation automatically. Treat `{SCRATCHPAD}/audit_validation.md`
 as mandatory end-of-run evidence. If validation fails, the run is not clean
 enough to claim mode correctness.
-

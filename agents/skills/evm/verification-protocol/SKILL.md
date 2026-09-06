@@ -6,6 +6,7 @@ description: "How to prove a hypothesis is TRUE or FALSE using Foundry tests."
 # Verification Protocol
 
 > How to prove a hypothesis is TRUE or FALSE using Foundry tests.
+> **Inject Into**: security-verifier agents (Phase 5)
 
 ---
 
@@ -392,4 +393,4 @@ If found, the finding will be escalated to CONTESTED and combined into a chain h
 
 ---
 
-> **Advanced Protocol Reference**: See [`advanced.md`](references/advanced.md) for RAG queries before PoC, exchange rate finding severity, design flaw escalation, bidirectional role analysis, RAG confidence override, chain hypothesis protection, fork testing, and Foundry PoC methodology.
+> **Advanced Protocol Reference**: See [`advanced.md`](references/advanced.md) for precedent-informed test ideas under the shared no-decision-authority policy, exchange rate finding severity, design flaw escalation, bidirectional role analysis, chain hypothesis protection, fork testing, and Foundry PoC methodology.

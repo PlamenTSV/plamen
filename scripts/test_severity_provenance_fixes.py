@@ -201,10 +201,8 @@ def test_partial_verdict_with_explicit_severity_not_demoted(tmp_path: Path):
     )
 
 
-def test_partial_verdict_without_explicit_severity_still_demotes(tmp_path: Path):
-    """Sanity: when verifier did NOT assign explicit Severity, the
-    PARTIAL/UNRESOLVED demotion logic should STILL fire (we only
-    suppressed it when verifier was explicit)."""
+def test_partial_verdict_without_explicit_severity_retains_matrix_tier(tmp_path: Path):
+    """P0-V: an evidence-status label cannot self-author a tier reduction."""
     import plamen_validators as V
 
     sp = tmp_path / ".scratchpad"
@@ -220,12 +218,13 @@ def test_partial_verdict_without_explicit_severity_still_demotes(tmp_path: Path)
         "**Impact**: MEDIUM\n"
         "**Likelihood**: MEDIUM\n\n"
         "No explicit Severity field — driver must compute one. PARTIAL "
-        "verdict warrants demotion in this branch.\n",
+        "remains an evidence state pending separate typed tier authority.\n",
         encoding="utf-8",
     )
     expected = V._expected_report_index_severities(sp)
-    # Matrix: MEDIUM × MEDIUM = Medium. PARTIAL → demote to Low.
-    assert expected.get("INV-Y") == "Low", (
-        f"PARTIAL auto-demotion regressed: got "
-        f"{expected.get('INV-Y')!r}, expected Low"
+    # Matrix: MEDIUM × MEDIUM = Medium. PARTIAL is challenge-only and cannot
+    # silently lower the retained tier.
+    assert expected.get("INV-Y") == "Medium", (
+        f"PARTIAL retention regressed: got "
+        f"{expected.get('INV-Y')!r}, expected Medium"
     )

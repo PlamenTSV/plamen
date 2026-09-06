@@ -205,12 +205,16 @@ def generate_agents_md(out_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def generate_config_toml(out_dir: Path) -> None:
-    """Generate codex-adapter/config.toml -- Codex main config with MCP server mappings."""
+    """Generate base Codex config; the installed front injects signed MCP routes."""
     # SECURITY: NEVER write real API keys into generated files.
     # Generated config.toml uses PLACEHOLDERS only. Users fill in their own keys
     # after install. This file is gitignored to prevent accidental key leaks.
     example_mcp = load_json(PLAMEN_HOME / "mcp.json.example")
     servers = example_mcp.get("mcpServers", {})
+    # Generation digests do not exist while source assets are rendered. Never
+    # bake mutable checkout/node_modules paths into this base file; plamen.py's
+    # post-commit merger injects the authenticated current-selection block.
+    servers = {}
 
     codex_shared_root = Path.home() / ".codex" / "plamen"
     codex_shared_root_str = str(codex_shared_root).replace("\\", "/")
@@ -218,12 +222,12 @@ def generate_config_toml(out_dir: Path) -> None:
     lines = [
         '# Model for the orchestrator and agents that inherit from global config.',
         '# Change to match your Codex account:',
-        '#   ChatGPT Plus/Pro/Team: use an ENTITLED base model (gpt-5.5 / gpt-5.4).',
+        '#   ChatGPT Plus/Pro/Team: use an ENTITLED GPT-5.6 family model.',
         '#     `-codex`/preview suffixes (e.g. gpt-5.3-codex) are REJECTED on ChatGPT',
         '#     auth with HTTP 400 "model is not supported when using Codex with a',
         '#     ChatGPT account" (openai/codex #14735). Run `codex --available-models`.',
         '#   API key (OPENAI_API_KEY): any model, incl. larger-context variants.',
-        'model = "gpt-5.4"',
+        'model = "gpt-5.6-terra"',
         '# DO NOT set model_context_window: codex bug #16068 corrupts the token',
         '# counter when it is set, producing a bogus "context window exceeded',
         '# (~N tokens)" PERMANENT failure even on small prompts. Use server defaults',
@@ -264,7 +268,8 @@ def generate_config_toml(out_dir: Path) -> None:
         "evm-chain-data": "@mcpdotdirect/evm-mcp-server/build/index.js",
         "foundry-suite": "@pranesh.asp/foundry-mcp-server/dist/index.js",
         "tavily-search": "tavily-mcp/build/index.js",
-        "helius": "@mcp-dockmaster/mcp-server-helius/build/index.js",
+        "helius": "helius-mcp/dist/index.js",
+        "memory": "@modelcontextprotocol/server-memory/dist/index.js",
     }
     sanitized_npm_servers = {"evm-chain-data"}
     wrapped_python_servers = {
@@ -437,9 +442,9 @@ except ImportError:
     # import failure is a true no-op, not a silent tier drift (the old values
     # reintroduced the documented 7x-cost sonnet drift).
     CODEX_MODEL_TIERS: dict[str, str] = {
-        "opus": os.environ.get("PLAMEN_CODEX_OPUS_MODEL", "gpt-5.5"),
-        "sonnet": os.environ.get("PLAMEN_CODEX_SONNET_MODEL", "gpt-5.4"),
-        "haiku": os.environ.get("PLAMEN_CODEX_HAIKU_MODEL", "gpt-5.4-mini"),
+        "opus": os.environ.get("PLAMEN_CODEX_OPUS_MODEL", "gpt-5.6-sol"),
+        "sonnet": os.environ.get("PLAMEN_CODEX_SONNET_MODEL", "gpt-5.6-terra"),
+        "haiku": os.environ.get("PLAMEN_CODEX_HAIKU_MODEL", "gpt-5.6-luna"),
     }
 
 # Role definitions: (filename, name, description, developer_instructions)
@@ -706,39 +711,38 @@ AGENT_ROLES = [
         "filename": "scoring.toml",
         "name": "scoring",
         "model": CODEX_MODEL_TIERS["haiku"],
-        "description": "Confidence scoring: mechanical 4-axis formula application per finding",
+        "description": "Transient confidence-routing proposal; no canonical file authority",
         "instructions": textwrap.dedent("""\
-            You are the Confidence Scoring Agent. Read your full methodology from:
+            You are the transient confidence-routing helper. Read:
             ~/.codex/plamen/rules/phase4-confidence-scoring.md
+            and:
+            ~/.codex/plamen/prompts/shared/v2/phase4b-scoring.md
 
-            For each finding, compute 4-axis scores (Evidence, Consensus,
-            Analysis Quality, RAG Match) using the formulas in the methodology.
-            This is a MECHANICAL task -- apply formulas, do not reason about
-            finding validity.
-
-            Read: findings_inventory.md, consensus_map.md, rag_validation.md
-            Write to {SCRATCHPAD}/confidence_scores.md
+            Return the compact routing table to the parent coordinator. The
+            deterministic driver owns the canonical confidence artifacts.
+            Do not write scratchpad files.
 
             """ + PLATFORM_DIRECTIVE + """
 
-            SCOPE: Write ONLY to your assigned output file. Return scores and stop."""),
+            SCOPE: Read only the assigned evidence. Return the transient
+            proposal and stop."""),
     },
     {
         "filename": "rag-sweep.toml",
         "name": "rag-sweep",
         "model": CODEX_MODEL_TIERS["sonnet"],
-        "description": "RAG validation sweep: validate every finding against historical vulnerability databases",
+        "description": "External precedent research: propose bounded context for typed reconciliation",
         "instructions": textwrap.dedent("""\
-            You are the RAG Validation Sweep Agent. Read your full methodology from:
-            ~/.codex/plamen/rules/phase4-confidence-scoring.md (Phase 4b.5 section)
+            You are the External Precedent Research Agent. Read your full methodology from:
+            ~/.codex/plamen/prompts/shared/v2/phase4b5-rag-sweep.md
+            and ~/.codex/plamen/rules/precedent-evidence-policy.md
 
-            For EVERY finding in findings_inventory.md:
-            1. Call validate_hypothesis with the finding's root cause
-            2. Call search_solodit_live with the vulnerability class
-            3. Record the result
+            For EVERY finding in findings_inventory.md, propose source kind,
+            relation, mechanism class, and precondition classes in the bounded
+            typed block. Do not score the finding.
 
-            Fallback chain: If MCP tools fail, use WebSearch. If WebSearch fails,
-            record floor score (0.3).
+            If MCP tools fail, use WebSearch once. If WebSearch fails, record
+            UNAVAILABLE. Never invent a numeric floor.
 
             Write to {SCRATCHPAD}/rag_validation.md
 
@@ -909,7 +913,10 @@ def generate_agent_tomls(out_dir: Path) -> None:
 
 def generate_skill_md(out_dir: Path) -> None:
     """Generate codex-adapter/skills/plamen/SKILL.md -- the /plamen orchestrator skill for Codex."""
-    scripts_dir = str(Path.home() / ".codex" / "plamen" / "scripts").replace("\\", "\\\\")
+    # Markdown code blocks need executable Windows paths, not Python-string
+    # escaping.  Doubling separators here rendered copy/paste commands with
+    # literal `\\` path components in installed skills.
+    scripts_dir = str(Path.home() / ".codex" / "plamen" / "scripts")
     content = textwrap.dedent(f"""\
     ---
     name: plamen
@@ -955,7 +962,7 @@ def generate_skill_md(out_dir: Path) -> None:
     ## Invocation Syntax
 
     ```text
-    $plamen [l1] [light|core|thorough] [path] [docs:<path-or-url>] [scope:<path>] [notes:<text>] [--fresh]
+    $plamen [l1] [light|core|thorough] [path] [docs:<path-or-url>] [scope:<path>] [notes:<text>]
     $plamen resume [path-or-config]
     ```
 
@@ -977,10 +984,11 @@ def generate_skill_md(out_dir: Path) -> None:
     python {scripts_dir}\\plamen_driver.py "{{CONFIG_PATH}}"
     ```
 
-    Fresh restart:
+    New run (only with a new config pointing at a distinct clean destination;
+    never reuse or modify an existing run root):
 
     ```
-    python {scripts_dir}\\plamen_driver.py --fresh "{{CONFIG_PATH}}"
+    python {scripts_dir}\\plamen_driver.py --startup-intent START_NEW_RUN "{{NEW_CONFIG_PATH}}"
     ```
     """)
 
@@ -988,6 +996,68 @@ def generate_skill_md(out_dir: Path) -> None:
     skills_dir.mkdir(parents=True, exist_ok=True)
     with open(skills_dir / "SKILL.md", "w", encoding="utf-8") as f:
         f.write(content)
+
+    # These are runtime resources of the base skill, not slash-command
+    # aliases.  Keep them beside SKILL.md because Codex resolves relative
+    # skill references inside the installed skill directory.  Prior adapter
+    # versions referenced these files without generating/installing them,
+    # leaving an otherwise healthy driver unreachable from `$plamen`.
+    wizard_common = textwrap.dedent(f"""\
+    # Codex-native deterministic-driver wizard
+
+    1. Resolve the target to an absolute path and inspect it read-only for an
+       existing `.scratchpad/config.json` and `_v2_checkpoint.json`.
+    2. If an existing config is present, never rewrite it. Resume it with:
+
+       ```text
+       python {scripts_dir}\\plamen_driver.py "{{CONFIG_PATH}}"
+       ```
+
+    3. A new audit requires a distinct clean destination. Never delete, move,
+       rename, archive, or overwrite an existing scratchpad to make room.
+    4. Collect only missing values: mode (`light`, `core`, `thorough`), target,
+       optional docs, optional scope, and `proven_only` (default false).
+    5. Write valid JSON to `{{PROJECT_ROOT}}/.scratchpad/config.json`, then
+       launch exactly one shared driver process. Do not orchestrate phases or
+       spawn audit agents yourself.
+    6. For a new run launch with explicit intent:
+
+       ```text
+       python {scripts_dir}\\plamen_driver.py --startup-intent START_NEW_RUN "{{CONFIG_PATH}}"
+       ```
+
+    On completion, report `AUDIT_REPORT.md`; on interruption, preserve all
+    artifacts and provide the ordinary resume command above.
+    """)
+    sc_wizard = wizard_common + textwrap.dedent(f"""\
+
+    ## Smart-contract config
+
+    Use the driver's detector before writing a new config:
+
+    ```text
+    python {scripts_dir}\\plamen_driver.py --detect-language "{{PROJECT_ROOT}}"
+    ```
+
+    Accept a high/medium-confidence result; ask only when it reports `none`.
+    The JSON keys are `project_root`, `scratchpad`, `mode`, `pipeline: "sc"`,
+    `language`, `cli_backend: "codex"`, `docs_path`, `scope_file`,
+    `scope_notes`, and `proven_only`.
+    """)
+    l1_wizard = wizard_common + textwrap.dedent("""\
+
+    ## L1 config
+
+    Detect `go` versus `rust` from source files/manifests and ask if ambiguous.
+    Collect the explicit tier (`t0`..`t3`) and optional subsystem/fork scope.
+    The JSON keys are `project_root`, `scratchpad`, `mode`, `pipeline: "l1"`,
+    `language`, `cli_backend: "codex"`, `tier`, `subsystem_scope`, `fork_mode`,
+    `docs_path`, and `proven_only`.
+    """)
+    with open(skills_dir / "plamen-wizard.md", "w", encoding="utf-8") as f:
+        f.write(sc_wizard)
+    with open(skills_dir / "plamen-l1-wizard.md", "w", encoding="utf-8") as f:
+        f.write(l1_wizard)
 
     aliases = {
         "plamen-l1": (
@@ -1025,7 +1095,10 @@ def generate_skill_md(out_dir: Path) -> None:
         with open(alias_dir / "SKILL.md", "w", encoding="utf-8") as f:
             f.write(alias)
 
-    print(f"  Generated {skills_dir.relative_to(PLAMEN_HOME)}/SKILL.md and Plamen skill aliases")
+    print(
+        f"  Generated {skills_dir.relative_to(PLAMEN_HOME)}/SKILL.md, "
+        "wizard resources, and Plamen skill aliases"
+    )
     return
 
     content = textwrap.dedent("""\
@@ -1186,7 +1259,8 @@ def generate_skill_md(out_dir: Path) -> None:
     Wait for all to complete.
 
     For Thorough mode:
-    - Run confidence scoring via `scoring.toml` agent
+    - Obtain transient depth-routing advice via `scoring.toml`; the driver
+      independently publishes canonical confidence artifacts
     - Run iterations 2-3 with DA (Devil's Advocate) role
     - Run RAG sweep via `rag-sweep.toml` agent
     Read `~/.codex/plamen/rules/phase4-confidence-scoring.md` for the full process.
@@ -1236,7 +1310,7 @@ def generate_skill_md(out_dir: Path) -> None:
     | Depth Loop iter 1 | Supported | Supported | Supported | |
     | Depth Loop iter 2-3 | N/A | N/A | Experimental | DA role + anti-dilution untested |
     | Niche Agents | N/A | Supported | Supported | |
-    | Confidence Scoring | N/A | Supported | Experimental | 4-axis scoring untested |
+    | Confidence Scoring | N/A | Supported | Experimental | typed consensus + precedent separation untested |
     | RAG Sweep | N/A | Supported | Supported | Fallback chain may differ |
     | Chain Analysis | Supported | Supported | Supported | |
     | Verification + PoC | Supported | Supported | Experimental | No fuzz variant support |
@@ -1254,7 +1328,7 @@ def generate_skill_md(out_dir: Path) -> None:
     | Re-scan (3b/3c) | Skip | Skip | Full |
     | Semantic invariants | Skip | Yes | Yes |
     | Depth iterations | 1 | 1 | Up to 3 |
-    | Confidence scoring | Skip | 2-axis | 4-axis |
+    | Confidence scoring | Skip | 2-axis | 3 code-derived axes + separate precedent context |
     | Niche agents | Skip | Flag-triggered | Flag-triggered |
     | RAG sweep | Skip | 1 agent | 1 agent |
     | Verification scope | Chains + Medium+ | Chains + Medium+ | ALL severities |
@@ -1276,13 +1350,13 @@ def generate_commands(out_dir: Path) -> None:
     """Generate codex-adapter/commands/plamen*.md for Codex slash-command discovery."""
     commands_dir = out_dir / "commands"
     commands_dir.mkdir(parents=True, exist_ok=True)
-    driver_path = str(Path.home() / ".codex" / "plamen" / "scripts" / "plamen_driver.py").replace("\\", "\\\\")
+    driver_path = str(Path.home() / ".codex" / "plamen" / "scripts" / "plamen_driver.py")
 
 
     commands = {
         "plamen.md": (
             "Launch or resume a Plamen smart-contract audit through the deterministic driver.",
-            "[light|core|thorough|resume|--fresh] [project-or-config]",
+            "[light|core|thorough|resume] [project-or-config]",
             "Follow `~/.codex/skills/plamen/SKILL.md` with the smart-contract wizard reference. "
             "New configs must set `cli_backend = codex`."
         ),
@@ -1293,7 +1367,7 @@ def generate_commands(out_dir: Path) -> None:
         ),
         "plamen-l1.md": (
             "Launch or resume a Plamen L1 infrastructure audit through the deterministic driver.",
-            "[light|core|thorough|resume|--fresh] [project-or-config]",
+            "[light|core|thorough|resume] [project-or-config]",
             "Follow `~/.codex/skills/plamen/SKILL.md` with the L1 wizard reference. "
             "New configs must set `pipeline = l1` and `cli_backend = codex`."
         ),
@@ -1324,10 +1398,11 @@ def generate_commands(out_dir: Path) -> None:
         python {driver_path} "{{CONFIG_PATH}}"
         ```
 
-        Fresh restart:
+        New run (only with a new config pointing at a distinct clean destination;
+        never reuse or modify an existing run root):
 
         ```
-        python {driver_path} --fresh "{{CONFIG_PATH}}"
+        python {driver_path} --startup-intent START_NEW_RUN "{{NEW_CONFIG_PATH}}"
         ```
         """)
         with open(commands_dir / filename, "w", encoding="utf-8") as f:

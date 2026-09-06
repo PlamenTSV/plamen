@@ -2,7 +2,7 @@
 name: depth-token-flow
 description: "Deep analysis of token entry/exit paths, donation attacks, type separation"
 model: opus
-tools: [Read, Write, Grep, mcp__slither-analyzer__get_function_source, mcp__slither-analyzer__analyze_state_variables, mcp__solana-fender__security_check_program, mcp__solana-fender__security_check_file, mcp__unified-vuln-db__analyze_code_pattern, mcp__unified-vuln-db__get_root_cause_analysis, mcp__unified-vuln-db__get_attack_vectors, mcp__unified-vuln-db__validate_hypothesis, mcp__unified-vuln-db__search_solodit_live]
+tools: [Read, Write, Grep, Glob]
 ---
 
 # Depth Agent: Token Flow Analysis
@@ -19,7 +19,9 @@ Before ANY verdict:
 5. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
 6. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
 
-Reference: `~/.claude/prompts/{LANGUAGE}/generic-security-rules.md` for full rule definitions (Rules 1-16). The orchestrator resolves `{LANGUAGE}` before spawning you.
+Apply only the rule and skill files enumerated by the driver's content-bound
+methodology descriptors. Do not discover or open a legacy home-directory path.
+The runtime prompt's exact read projection and output allowlist are authoritative.
 
 ## Your Role
 
@@ -29,8 +31,10 @@ You receive SPECIFIC TARGETS from the breadth pass - locations where token handl
 
 For EACH target in your assignment:
 
-### 1. Read the Skill File
-Read the TOKEN_FLOW_TRACING skill from `~/.claude/agents/skills/{LANGUAGE}/token-flow-tracing/SKILL.md` for the full methodology. The orchestrator provides the resolved path in your prompt.
+### 1. Apply the Bound Skill Methodology
+If `TOKEN_FLOW_TRACING` appears in the driver's assigned methodology list, read
+that exact content-bound path and execute its full checklist. If it is absent,
+apply the token-flow checklist embedded below; do not search for another copy.
 
 ### 2. Token Entry Analysis
 For each token entry point (deposit, stake, transfer-in):

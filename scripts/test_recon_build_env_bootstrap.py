@@ -122,14 +122,14 @@ def test_bootstrap_success_path_sets_build_env(tmp_path, monkeypatch):
     # in _write_build_status's normal path) also succeeds.
     monkeypatch.setattr(RP, "_run_forge", lambda args, cwd, timeout: (0, "ok"))
 
-    def _fake_run(cmd, **kwargs):
-        class _P:
-            returncode = 0
-            stdout = "Compiling ...\nCompiler run successful"
-            stderr = ""
-        return _P()
-
-    monkeypatch.setattr(RP.subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        RP,
+        "_run_hardened",
+        lambda cmd, *args, **kwargs: (
+            0,
+            "Compiling ...\nCompiler run successful",
+        ),
+    )
 
     status = RP._write_build_status(scratch, proj, "evm")
 
@@ -140,25 +140,73 @@ def test_bootstrap_success_path_sets_build_env(tmp_path, monkeypatch):
     # A foundry.toml was scaffolded with the detected solc version.
     ft = (proj / "foundry.toml").read_text(encoding="utf-8")
     assert 'solc = "0.8.20"' in ft
-    # OpenZeppelin remapping detected and written.
-    remap = (proj / "remappings.txt").read_text(encoding="utf-8")
-    assert "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/" in remap
+    # A manifest-less bundle has no version authority: never fetch package HEAD
+    # or manufacture a remapping to guessed third-party code.
+    assert not (proj / "remappings.txt").exists()
+    assert "unpinned dependency installation skipped" in text
 
 
-def test_detect_solc_version_picks_most_common(tmp_path):
+def test_bare_bootstrap_never_fetches_unpinned_third_party_dependencies(
+    tmp_path, monkeypatch,
+):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _write_sol(
+        proj,
+        "Vault.sol",
+        "pragma solidity 0.8.21;\n"
+        "import 'openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol';\n"
+        "contract Vault {}\n",
+    )
+    calls = []
+    monkeypatch.setattr(RP.shutil, "which", lambda name: "/usr/bin/forge")
+    monkeypatch.setattr(
+        RP,
+        "_run_forge",
+        lambda args, cwd, timeout: (calls.append(list(args)) or (1, "missing deps")),
+    )
+
+    ok, reason = RP._bootstrap_evm_foundry_env(
+        proj, [proj / "Vault.sol"]
+    )
+
+    assert ok is False
+    assert not any(call and call[0] == "install" for call in calls)
+    assert "unpinned dependency installation skipped" in reason
+
+
+def test_detect_solc_version_does_not_pin_incompatible_exact_pragmas(tmp_path):
     f1 = tmp_path / "A.sol"
     f2 = tmp_path / "B.sol"
     f3 = tmp_path / "C.sol"
     f1.write_text("pragma solidity 0.8.19;\n", encoding="utf-8")
     f2.write_text("pragma solidity 0.8.19;\n", encoding="utf-8")
     f3.write_text("pragma solidity 0.8.13;\n", encoding="utf-8")
-    assert RP._detect_solc_version([f1, f2, f3]) == "0.8.19"
+    # A single generated Foundry ``solc`` pin must satisfy every audited
+    # source. Popularity is not authority: pinning 0.8.19 would make C.sol
+    # uncompilable and contaminate build/PoC evidence.
+    assert RP._detect_solc_version([f1, f2, f3]) is None
 
 
 def test_detect_solc_version_caret(tmp_path):
     f = tmp_path / "A.sol"
     f.write_text("pragma solidity ^0.8.20;\n", encoding="utf-8")
     assert RP._detect_solc_version([f]) == "0.8.20"
+
+
+def test_detect_solc_version_prefers_exact_pins_over_range_lower_bounds(tmp_path):
+    """A common permissive interface floor must not override implementation pins."""
+    sources = []
+    for i in range(8):
+        f = tmp_path / f"Interface{i}.sol"
+        f.write_text("pragma solidity >=0.5.0;\n", encoding="utf-8")
+        sources.append(f)
+    for i in range(3):
+        f = tmp_path / f"Implementation{i}.sol"
+        f.write_text("pragma solidity 0.8.21;\n", encoding="utf-8")
+        sources.append(f)
+
+    assert RP._detect_solc_version(sources) == "0.8.21"
 
 
 def test_detect_import_libs_dedup_and_order(tmp_path):
@@ -234,6 +282,23 @@ def test_compile_unit_count_includes_lib_deps(tmp_path):
     # ...but still excludes build-output dirs.
     assert not any(rp.startswith("out/") for rp in comp_rel)
     assert not any(rp.startswith("cache/") for rp in comp_rel)
+
+
+def test_production_scope_keeps_nested_protocol_lib_but_skips_root_dependency_lib(
+    tmp_path,
+):
+    """`contracts/lib` is often first-party; only the Foundry-root `lib` is deps."""
+    _mk_sol(tmp_path / "contracts" / "Vault.sol")
+    _mk_sol(tmp_path / "contracts" / "lib" / "SolvencyMath.sol")
+    _mk_sol(tmp_path / "lib" / "openzeppelin-contracts" / "ERC20.sol")
+
+    rels = {
+        path.relative_to(tmp_path).as_posix()
+        for path in RP._production_source_files(tmp_path, (".sol",))
+    }
+    assert "contracts/Vault.sol" in rels
+    assert "contracts/lib/SolvencyMath.sol" in rels
+    assert "lib/openzeppelin-contracts/ERC20.sol" not in rels
 
 
 def test_compile_unit_sizing_beats_undercount_timeout(tmp_path):

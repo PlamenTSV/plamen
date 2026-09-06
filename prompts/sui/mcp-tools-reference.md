@@ -4,9 +4,13 @@
 >
 > **Solana tools are NOT applicable**: `mcp__solana-fender__*` tools target Solana/Anchor programs and MUST NOT be used for Sui Move analysis.
 >
-> **No Sui-specific MCP servers available.** Use `sui move build` via Bash for static checks, and `Read` + `Grep` tools for all source analysis. The only available MCP tools are the language-agnostic ones: `mcp__unified-vuln-db__*` (vulnerability database) and `mcp__tavily-search__*` (web research).
+> **No Sui-specific MCP servers are used by the V2 audit runtime.** Use
+> `sui move build` directly for static checks and `Read` + `Grep` for source
+> analysis. External precedent is isolated to post-freeze `rag_sweep`.
 >
-> **MCP tools (`mcp__unified-vuln-db__*`) are available directly.** The servers are configured globally in `~/.claude.json` and load automatically at session start. Call them directly -- no ToolSearch or loading step needed.
+> **Do not assume ambient MCP.** Claude PTY and Codex load no audit MCP
+> servers. Only Claude headless `rag_sweep` may receive the receipt-bound
+> singleton `unified-vuln-db`; otherwise the phase uses governed Web research.
 >
 > **If a tool call fails with "No such tool available"**, it means the MCP server failed to start. Check with `claude mcp list` and restart the session.
 
@@ -174,7 +178,7 @@ SOLANA_FENDER_AVAILABLE = N/A       # Not applicable to Sui Move
 |------|----------|--------|
 | `sui move build` | Build errors | All analysis via Read + Grep. Document errors for context. |
 | Sui Move Prover | Not available or specs missing | Skip formal verification. Note in build_status.md. |
-| `mcp__unified-vuln-db__*` | MCP server down | Proceed without RAG. Set `RAG_AVAILABLE = false`. Floor RAG axis at 0.3 in scoring. |
+| `mcp__unified-vuln-db__*` | Selected local route unavailable | Record typed `UNAVAILABLE` precedent context; never invent a numeric score or change confidence/severity. |
 | `mcp__tavily-search__*` | MCP server down | Skip web research. Document gap. Use codebase-only analysis. |
 
 ---

@@ -16,7 +16,9 @@ Execute the instructions below directly and stop. Do not spawn subagents.
 Read:
 - `{SCRATCHPAD}/obligation_ledger.json` (OPTIONAL but authoritative when present - typed driver-generated retention obligations. Active Medium+ `exact_value_binding` and `chain_upgrade_retention` rows must map to a report ID, be absorbed by a named report ID with no semantic loss, or be explicitly refuted.)
 - `{SCRATCHPAD}/verify_core.md` - **OPTIONAL but primary when present**. Both current SC and L1 pipelines normally produce this via the verification aggregate phase. When absent, enumerate `verify_*.md` files directly and derive the per-hypothesis verdicts from them. Do NOT fail the phase on its absence.
-- `{SCRATCHPAD}/rag_validation.md` (historical support / contradiction)
+- `{SCRATCHPAD}/precedent_report_context.md` (OPTIONAL, eligible-only driver projection of typed
+  precedent authority; labelled context only under
+  `precedent-evidence-policy.md`, never confidence/verdict/severity authority)
 - `{SCRATCHPAD}/finding_mapping.md` (hypothesis -> agent finding mapping)
 - `{SCRATCHPAD}/contract_inventory.md` (SC component list for report header, if present)
 - `{SCRATCHPAD}/subsystem_map.md` (L1 component/subsystem list for report header, if present)
@@ -34,9 +36,12 @@ Read:
 - `{SCRATCHPAD}/validation_sweep_findings.md` or `{SCRATCHPAD}/scanner_validation_findings.md` (validation findings)
 - `{SCRATCHPAD}/dedup_candidate_pairs.md` (OPTIONAL — pre-computed same-file finding pairs with high title overlap or shared code identifiers, produced by the depth promotion pipeline. Use as HINTS for Step 1.5 consolidation.)
 - `{SCRATCHPAD}/dedup_cluster_map.md` (OPTIONAL — pre-computed transitive-closure CLUSTERS of co-referent survivors (`CLUSTER: A, B, C` lines) that share the same file+function+fix-pattern AND the same tier, each with a ready-made consolidated Location table. These are the STRONGEST Step 1.5 hint: consolidate each cluster's members into ONE report finding and reuse its location table. Recall-safe (same-tier, same-mechanism only); still apply the consolidation test before merging.)
-- `{SCRATCHPAD}/poc_demotions.md` (OPTIONAL — mechanically-computed severity caps for findings where PoC execution disproved the claimed harm. If present, apply caps in STEP 1 rule 7.)
+- `{SCRATCHPAD}/poc_demotion_proposals.json` and `{SCRATCHPAD}/poc_demotion_proposals.md` (OPTIONAL — non-authoritative negative-review proposals. They MUST NOT lower severity, exclude, refute, merge, or otherwise dispose of a finding.)
+- `{SCRATCHPAD}/poc_demotion_scope_receipt.json` and `{SCRATCHPAD}/poc_demotion_scope_recovery_status.json` (OPTIONAL — exact grouped-PoC proposal scope and driver-validated repair state. These are scope/reverification evidence only; every constituent retains its pre-proposal severity.)
 
 Forbidden inputs:
+- Do NOT read raw `{SCRATCHPAD}/rag_validation.md`; only the deterministic
+  `precedent_report_context.md` projection may supply external-source context.
 - Do NOT read `{SCRATCHPAD}/report_index.md`, `{SCRATCHPAD}/report_coverage.md`,
   or any `*.attempt*` file when a retry hint is present. Previous report-index
   outputs are known-bad artifacts, not evidence.
@@ -47,8 +52,31 @@ Verification verdicts: Read from `{SCRATCHPAD}/verify_core.md` (summary index of
 all per-ID verifier results) and individual `{SCRATCHPAD}/verify_*.md` files when
 needed. For Thorough mode, also read `{SCRATCHPAD}/skeptic_findings.md` and
 `{SCRATCHPAD}/skeptic_judge_decisions.md` when present. If the run produced
-legacy shard outputs, also read `{SCRATCHPAD}/judge_*.md`. These artifacts are
-the authority for HIGH/CRIT severity overrides and UNRESOLVED/PARTIAL demotions.
+legacy shard outputs, also read `{SCRATCHPAD}/judge_*.md`. These are challenge
+and presentation inputs only. They are not severity or disposition authority.
+Only a report-authoritative, driver-validated typed severity decision ledger may
+authorize a tier change; otherwise preserve the upstream supported severity.
+
+## Disposition Authority Contract (READ BEFORE EXCLUDING OR MERGING)
+
+This agent accounts for identities and proposes presentation; it does not
+authorize a finding to leave the body. An Excluded Findings, Consolidation Map,
+`report_coverage.md`, `REFUTED`, `LOW_CONFIDENCE`, `CONTESTED`, `DUPLICATE`,
+`CONSOLIDATED`, `APPENDIX_ONLY`, or `DEFERRED` string is never authority by
+itself. Every non-body proposal must cite one exact event for the same identity
+and full claim scope:
+
+- an independently executed/refereed typed refutation;
+- an independent typed zero-security-consequence decision with no contradicting
+  mechanism, impact, or unresolved premise; or
+- an already-applied, hash-bound semantic alias naming the delivered survivor.
+
+If that exact authority is missing, stale, mismatched, partial, contested, or
+unresolved, assign a body report ID at upstream severity and mark it
+`UNRESOLVED-DISPOSITION` for human review. Coverage-only `DEFERRED` is visible
+debt, not delivery. The driver enforces this distinction between
+`identity_accounted` and `disposition_authorized`; lexical prose can only
+propose or veto, never establish a non-body state.
 
 ---
 
@@ -102,11 +130,12 @@ For every Master Finding Index row:
 4. If final severity differs from upstream, the `Trust Adj.` column MUST
    contain one canonical reason with the original severity:
    - `TRUSTED-ACTOR(original_sev)`
-   - `UNRESOLVED(original_sev)` or `PARTIAL(original_sev)`
-   - `POC-FAIL(original_sev)`
+   - `POC-FAIL-PROPOSAL(no-tier-change)` only for visible review context
    - `PROVEN(original_sev)` only when `PROVEN_ONLY: true`
    - `CHAIN-UPGRADE(original_sev)` / `CHAIN-DOWNGRADE(original_sev)` with the
      chain ID and enabling relation
+   `UNRESOLVED(original_sev)` and `PARTIAL(original_sev)` are visibility
+   statuses only and are never reasons for a tier difference.
 5. A bare `-` / `—` Trust Adj. is valid only when final severity equals
    upstream severity.
 6. If no canonical adjustment applies, restore the upstream severity and
@@ -120,14 +149,36 @@ For each hypothesis, apply this priority order:
 1. If a verifier returned a verdict -> use verifier's final severity
 2. If chain analysis upgraded severity -> use upgraded severity
 3. Otherwise -> use the severity from hypotheses.md
-4. **Apply trust assumption downgrades**: Check `{SCRATCHPAD}/findings_inventory.md` for `[ASSUMPTION-DEP: TRUSTED-ACTOR]` tags. For tagged findings, apply -1 tier severity downgrade (floor: Informational). Note the original severity and downgrade reason in the Master Finding Index under a "Trust Adj." column. For `[ASSUMPTION-DEP: WITHIN-BOUNDS]` tags: do NOT change severity, but note the flag in the index for tier writers to include as context. **Mechanical enforcement**: The Index Agent MUST NOT override, remove, or selectively skip Inventory Agent tags. If a finding has the `TRUSTED-ACTOR` tag, apply the downgrade. If it does not have the tag, do not downgrade. No exceptions for chain upgrades, verification results, or analytical reasoning — the Inventory Agent is the sole authority on trust tagging.
+4. **Trust claims are not severity authority**: An inventory trust classification is a claim;
+   `[ASSUMPTION-DEP: TRUSTED-ACTOR]` tag records a producer claim only. Preserve
+   the upstream severity unless the typed severity decision ledger contains an
+   independent `FULLY_TRUSTED_ACTOR` modifier for the exact finding/constituents,
+   bound to the named actor/capability, an explicit project scope/trust source,
+   the concrete action required for harm, and a modifier-applicability evidence
+   receipt. A generic admin/governance/multisig label, a semi-trusted role, or
+   missing/conflicting evidence never authorizes a downgrade. Render unresolved
+   trust context visibly without changing severity. `WITHIN-BOUNDS` remains
+   context only. The report index is a projection consumer and cannot invent,
+   remove, or override the severity decision ledger.
 5. **Proven-only demotion** (ONLY if the resolved configuration says `PROVEN_ONLY: true`): For each finding whose BEST evidence tag is `[CODE-TRACE]` (no `[POC-PASS]`, `[MEDUSA-PASS]`, `[PROD-ONCHAIN]`, `[PROD-SOURCE]`, or `[PROD-FORK]`), cap severity at Low. Record the original severity in the "Trust Adj." column as `PROVEN(original_sev)`. Count total demotions for the report header note: *"Proven-only mode enabled: {N} findings capped at Low from {severities} due to unproven evidence ([CODE-TRACE] only)."* If `PROVEN_ONLY: false`, this rule is disabled and `[CODE-TRACE]` does not change severity.
 
    **v2.0.8 (P3) — evidence source authority**: "BEST evidence tag" means the value from `{SCRATCHPAD}/verdict_manifest.json` `effective_tag` field, NOT the verifier's prose `Evidence Tag` field. The verdict manifest is the canonical machine-readable record written by the driver after mechanical PoC execution. A verifier file that prose-claims `[POC-PASS]` but whose mechanical execution returned `NO_TEST_FILE` / `FAIL` is flagged `integrity_state: INFLATED_PROSE` and has `effective_tag` downgraded to `[CODE-TRACE] [INTEGRITY-DOWNGRADE]`. Use the effective_tag in all evidence-comparison logic. Do NOT inflate findings back to `[POC-PASS]` based on prose alone.
-6. **UNRESOLVED demotion + body retention** : For any finding where the Skeptic-Judge phase returned `UNRESOLVED` **OR `PARTIAL`** (both tokens carry identical semantics — verifier and skeptic disagree, no clean resolution) in any `skeptic_*.md` or `judge_*.md` artifact in the scratchpad, apply -1 tier severity downgrade (floor: Low). Record the original severity in the Trust Adj. column as `UNRESOLVED(original_sev)`. **The finding REMAINS in the report body** — it is NOT routed to Appendix A. The tier writer flags it as `[UNRESOLVED — needs human review]` per the report-template.md format. **Hard rule**: an UNRESOLVED finding in the Excluded Findings table is a workflow violation.
+6. **UNRESOLVED visibility + body retention**: `UNRESOLVED` and `PARTIAL`
+   are evidence/disagreement states, not severity discounts. Preserve the
+   highest still-supported upstream Impact x Likelihood tier unless the shared
+   typed severity ledger contains a distinct-worker, premise/evidence-bound,
+   report-authoritative decision for the exact identity/constituents. Record
+   `UNRESOLVED(original_sev)` in Trust Adj. as a visibility status without
+   changing severity. The finding remains in the report body and the tier
+   writer flags `[UNRESOLVED - needs human review]`. Adjudicator failure or
+   missing evidence retains this same upstream tier and body placement.
 
-   **CONTESTED is NOT UNRESOLVED — do not conflate them.** A verifier verdict of `CONTESTED` (found in `verify_*.md` / `verify_core.md`) is a *verifier* outcome; it is NOT a Skeptic-Judge ruling. Do NOT stamp `UNRESOLVED(...)` on a finding merely because its verifier verdict is `CONTESTED`. A `CONTESTED` finding keeps its upstream verifier severity, stays in the report body, and is written with the `[CONTESTED]` status header per report-template.md's `[VERIFIED/UNVERIFIED/CONTESTED]` format — **no tier demotion, no `UNRESOLVED` Trust Adj.** The `UNRESOLVED(original_sev)` stamp is valid ONLY when a literal `UNRESOLVED` or `PARTIAL` ruling token for that finding appears in `skeptic_judge_decisions.md`, a `skeptic_*.md`, or a `judge_*.md` file. If the run produced no Skeptic-Judge artifact at all (Light and Core modes do not run Skeptic-Judge), then `UNRESOLVED(...)` MUST NOT appear anywhere in the Master Finding Index. The driver mechanically rejects phantom `UNRESOLVED(...)` stamps and will retry this phase.
-7. **PoC-fail demotion** : If `{SCRATCHPAD}/poc_demotions.md` exists, read it. For each finding listed, apply the severity cap from the table. Record the original severity in the Trust Adj. column as `POC-FAIL(original_sev)`. These findings REMAIN in the report body at their capped severity (not excluded). The tier writer includes: *"PoC execution disproved the claimed harm — test executed but the system behaved correctly. Capped from {original} to {capped}."* **Mechanical enforcement**: The driver computes these demotions from `[POC-FAIL]` evidence tags in verify files. The Index Agent MUST NOT override, remove, or selectively skip entries in `poc_demotions.md`.
+   **CONTESTED is not UNRESOLVED.** Keep its upstream severity and body status.
+   An `UNRESOLVED(original_sev)` marker requires a literal challenge proposal
+   or typed unresolved decision for the exact identity. It never authorizes a
+   demotion. If no skeptic/adjudication artifact exists, do not invent the
+   marker.
+7. **PoC-fail proposal boundary**: If `{SCRATCHPAD}/poc_demotion_proposals.json` exists, keep every listed finding at its highest supported pre-proposal severity and in the report body. A failed/non-established execution describes the encoded attempt; it MUST NOT lower severity, exclude, refute, merge, or close the candidate. Record `POC-FAIL-PROPOSAL(no-tier-change)` only as visible review context. Grouped scope rows identify the exact constituents needing review; a missing/invalid/unresolved recovery status preserves all of them. `P0-O REVERIFIED SUPPLEMENT` is additive evidence, never negative lifecycle authority.
 
 8. **Speculative-Critical cap (T2-c)** : `Critical` is the highest-impact tier and must not be assigned to unproven speculation. A `Critical` severity assigned to a **chain / compound hypothesis** (`CH-*`, or any finding whose claimed impact depends on combining multiple sub-findings that are not each independently confirmed) MUST be capped at `High` UNLESS the chain itself has verifier confirmation — i.e. a `verify_*.md` for the chain (or all its constituents) with `[POC-PASS]` / `[MEDUSA-PASS]` evidence and a `VERIFIED` disposition. An unverified speculative chain is `High` at most. Critical requires EITHER (a) verifier-confirmed exploitation, OR (b) a single, directly-demonstrated fund-loss / permanent-lock mechanism in one finding. When you apply this cap, record `CHAIN-DOWNGRADE(Critical)` in the Trust Adj. column with the chain ID. The driver logs any surviving unverified Critical chain for review. **When the cap does NOT apply because all constituents are independently confirmed (`[POC-PASS]`/`[MEDUSA-PASS]` in each constituent `verify_*.md`), keep the `Critical` severity and set the Verification column to `VERIFIED (constituents)` — do NOT leave it as `UNVERIFIED`, which mislabels a constituent-backed chain as speculative and trips the driver's review log.**
 
@@ -138,7 +189,8 @@ For each hypothesis, apply this priority order:
 This step reduces client-report bloat without deleting traceability. It is a
 triage decision for presentation, not a new vulnerability-analysis phase.
 
-For each verified or mapped candidate, assign exactly one triage status:
+For each verified or mapped candidate, propose exactly one triage status. Only
+the authority contract above can make a non-body proposal effective:
 
 - `REPORTABLE`: client-facing report body section.
 - `MERGE_INTO:<report-or-internal-id>`: same root cause, same fix, no semantic
@@ -160,20 +212,22 @@ Safety rules:
 
 1. Never silently delete a candidate. Non-`REPORTABLE` candidates MUST appear in
    `report_coverage.md` and either the Consolidation Map or Excluded Findings.
-2. Medium+ verified candidates default to `REPORTABLE`. They may be moved out
-   of the body only when the verifier/judge evidence explicitly supports
-   `DROP_FALSE_POSITIVE`, `DROP_NON_SECURITY`, `MERGE_INTO`, or
-   `UNRESOLVED_EVIDENCE` with a reason that names the missing reproducible
-   path, trace, proof, support, or sufficient evidence.
-3. Low/Informational candidates may be `APPENDIX_ONLY` when true but minor,
-   repetitive, non-exploitable, or primarily operational/documentation quality.
+2. Every severity defaults to `REPORTABLE`. A non-body proposal is effective
+   only with the exact independent typed full-claim decision or applied-alias
+   event defined above. Verifier/judge/report prose and low confidence are not
+   substitutes for that event.
+3. Low/Informational candidates may be proposed `APPENDIX_ONLY` only when an
+   independent typed material-harm decision concludes zero security consequence
+   and no mechanism/impact/premise record contradicts it. Unsupported
+   High/Medium quality labels remain body findings at upstream severity.
 4. Design confirmations, positive properties, safe invariants, and
    "works as intended" rows are not report-body findings. Use
    `DROP_DESIGN_CONFIRMATION` unless they are needed as context for a real
    reportable issue.
-5. Do not use triage to hide uncertainty. If a candidate has credible loss or
-   safety impact and is not refuted, keep it `REPORTABLE` or `APPENDIX_ONLY`
-   with a clear reason.
+5. Do not use triage to hide uncertainty. `PARTIAL`, `CONTESTED`, `UNRESOLVED`,
+   missing proof, and external-premise uncertainty remain `REPORTABLE` at the
+   upstream severity with a visible human-review marker unless an exact later
+   full-claim decision resolves them.
 6. A report that is structurally complete but contains dozens of weak,
    repetitive, design-confirmation, or non-security body sections is a quality
    failure. Prefer a smaller client body plus complete traceability.
@@ -181,14 +235,14 @@ Safety rules:
    vulnerability MECHANISM (how the bug is triggered — the specific call,
    state, or sequence) NOR a concrete IMPACT (what is lost, corrupted, or
    locked, and who is harmed) is a stub. Assign it
-   `DROP_UNACTIONABLE_SPECULATION`. Do NOT emit a report-body section for a
-   finding that cannot state both a mechanism and an impact — a body section
-   that only restates a function name with no triggerable path and no loss is
-   noise, not a finding.
+   `DROP_UNACTIONABLE_SPECULATION` only as a proposal. Without an exact typed
+   full-claim zero-harm/refutation decision, retain it in the body or the
+   hash-bound delivered-human-review projection as unresolved debt.
 
-Use the existing `Excluded Findings` table for `APPENDIX_ONLY` and `DROP_*`
-statuses. The Exclusion Reason MUST begin with the exact triage status token
-above, followed by a concise evidence-based reason.
+Use the existing `Excluded Findings` table to record authorized `APPENDIX_ONLY`
+and `DROP_*` outcomes. The Exclusion Reason MUST begin with the exact triage
+status token, cite the structured authority event ID, and name the surviving
+report ID for an alias. A prose-only row will be rejected and restored to body.
 
 ---
 

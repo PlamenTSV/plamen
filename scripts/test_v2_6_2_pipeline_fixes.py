@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import plamen_driver as D
+from typed_test_authority import bind_verifier_outputs
 
 
 def _seed_queue_and_verify(
@@ -38,6 +39,7 @@ def _seed_queue_and_verify(
 """,
         encoding="utf-8",
     )
+    bind_verifier_outputs(sp)
 
 
 def test_contested_is_not_unresolved_demotion(tmp_path: Path):
@@ -54,10 +56,13 @@ def test_contested_is_not_unresolved_demotion(tmp_path: Path):
 
     assert records["active"][0]["verdict"] == "CONTESTED"
     assert records["active"][0]["severity"] == "High"
+    # CONTESTED is already an explicit visible evidence state. It remains
+    # active at the original severity without acquiring an extra UNRESOLVED
+    # demotion marker.
     assert records["active"][0]["unresolved"] is False
 
 
-def test_consolidation_map_absorbed_ids_satisfy_index_completeness(tmp_path: Path):
+def test_proposal_only_consolidation_map_preserves_index_completeness(tmp_path: Path):
     for n in range(1, 4):
         _seed_queue_and_verify(
             tmp_path,
@@ -74,9 +79,15 @@ def test_consolidation_map_absorbed_ids_satisfy_index_completeness(tmp_path: Pat
     idx = (tmp_path / "report_index.md").read_text(encoding="utf-8")
     records = json.loads((tmp_path / "report_records.json").read_text(encoding="utf-8"))
 
-    assert len(records["active"]) == 1
+    # Mechanical similarity is nomination-only.  All identities remain live
+    # until an applied lossless-equivalence receipt authorizes a merge.
+    assert len(records["active"]) == 3
     assert records["active"][0]["finding_id"] == "INV-001"
-    assert records["active"][0]["absorbed_finding_ids"] == ["INV-001", "INV-002", "INV-003"]
+    assert all(not row["absorbed_finding_ids"] for row in records["active"])
+    assert records["consolidation_map"][0]["absorbed_finding_ids"] == [
+        "INV-001", "INV-002", "INV-003"
+    ]
+    assert records["consolidation_map"][0]["authority_state"] == "PROPOSAL_ONLY"
     assert "INV-001, INV-002, INV-003" in idx
     assert D._check_index_completeness(tmp_path) == []
 
@@ -193,4 +204,4 @@ def test_stale_verify_none_does_not_mask_malformed_nonempty_queue(tmp_path: Path
     issues = D._validate_report_index_inputs(tmp_path)
 
     assert issues
-    assert "schema invalid" in issues[0]
+    assert any("schema invalid" in issue for issue in issues)

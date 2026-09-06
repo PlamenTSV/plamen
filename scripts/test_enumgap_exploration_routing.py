@@ -82,7 +82,7 @@ def test_driver_dispatches_skip_validator_and_promotion():
     # soft validator dispatch
     assert "_validate_enumgap_exploration(scratchpad" in src
     # inventory promotion (the seam that makes the explored finding reach verify)
-    assert "promote_enumgap_exploration_to_inventory(scratchpad)" in src
+    assert "_promote_enumgap_exploration_transaction(" in src
 
 
 def test_validator_in_all_and_soft():
@@ -133,8 +133,13 @@ def test_promotion_noop_without_artifact(tmp_path):
 
 # -------- Recall-safe: explored finding flows into the inventory --------------
 
-def test_promotion_appends_explored_finding_to_inventory(tmp_path):
+def test_promotion_appends_explored_finding_to_inventory(
+    tmp_path, monkeypatch
+):
     import enumeration_gate as eg
+    # This unit fixture exercises only structural append rendering. Exact
+    # MODEL->reconcile authority is covered by the integration/adversarial lane.
+    monkeypatch.setattr(eg, "_promotion_phaseio_issues", lambda _root: [])
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
     (sp / "findings_inventory.md").write_text(

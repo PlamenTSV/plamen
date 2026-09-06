@@ -153,7 +153,10 @@ def _validate_row(row: dict) -> dict:
     for key in ("receipt_id", "producer", "scope", "kind", "cap", "detail"):
         if not isinstance(row[key], str) or not row[key].strip():
             raise CoverageShortfallError(f"coverage row {key} must be a non-empty string")
-    if row["count_semantics"] not in {"EXACT", "LOWER_BOUND", "UNKNOWN"}:
+    semantics = row["count_semantics"]
+    if type(semantics) is not str or semantics not in (
+        "EXACT", "LOWER_BOUND", "UNKNOWN"
+    ):
         raise CoverageShortfallError("invalid coverage count semantics")
     if row["disposition"] != "FLAGGED_FOR_HUMAN_REVIEW":
         raise CoverageShortfallError("invalid coverage disposition")

@@ -1,0 +1,1814 @@
+{
+  "$defs": {
+    "authority_ceiling": {
+      "additionalProperties": false,
+      "properties": {
+        "clean_certification": {
+          "const": false,
+          "type": "boolean"
+        },
+        "confidence": {
+          "const": false,
+          "type": "boolean"
+        },
+        "consumer": {
+          "const": false,
+          "type": "boolean"
+        },
+        "finding": {
+          "const": false,
+          "type": "boolean"
+        },
+        "phase": {
+          "const": false,
+          "type": "boolean"
+        },
+        "refutation": {
+          "const": false,
+          "type": "boolean"
+        },
+        "severity": {
+          "const": false,
+          "type": "boolean"
+        },
+        "suppression": {
+          "const": false,
+          "type": "boolean"
+        },
+        "terminal_negative": {
+          "const": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "consumer",
+        "finding",
+        "severity",
+        "confidence",
+        "phase",
+        "clean_certification",
+        "refutation",
+        "suppression",
+        "terminal_negative"
+      ],
+      "type": "object"
+    },
+    "completeness_scope": {
+      "additionalProperties": false,
+      "properties": {
+        "build_variant_id_or_null": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capability_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "disposition": {
+          "enum": [
+            "COMPLETE_FOR_DECLARED_SCOPE",
+            "PARTIAL",
+            "UNAVAILABLE",
+            "NOT_IMPLEMENTED"
+          ],
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "maxLength": 37,
+            "minLength": 37,
+            "pattern": "^pfse-[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scope_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source_file_ids": {
+          "items": {
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^pfs-[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "scope_id",
+        "capability_id",
+        "build_variant_id_or_null",
+        "source_file_ids",
+        "disposition",
+        "evidence_ids"
+      ],
+      "type": "object"
+    },
+    "debt": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "code": {
+          "enum": [
+            "PROVIDER_NOT_IMPLEMENTED",
+            "PLATFORM_ARCH_NOT_ACCEPTED",
+            "PLATFORM_PROCESS_SCOPE_UNPROVEN",
+            "PLATFORM_PROFILE_UNKNOWN",
+            "TOOL_UNAVAILABLE",
+            "RAW_OUTPUT_MALFORMED",
+            "PROVIDER_DISAGREEMENT",
+            "NETWORK_BOUNDARY_DENIED",
+            "RESOURCE_LIMIT",
+            "PROVIDER_FAILURE",
+            "OPTIONAL_SOURCE_UNREADABLE",
+            "ROLLBACK_ACTIVE"
+          ],
+          "type": "string"
+        },
+        "completeness_effect": {
+          "enum": [
+            "NONE",
+            "PARTIAL",
+            "UNAVAILABLE",
+            "NOT_IMPLEMENTED"
+          ],
+          "type": "string"
+        },
+        "debt_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfd-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "ecosystem": {
+          "enum": [
+            "EVM",
+            "GO",
+            "RUST",
+            "SOLANA",
+            "SOROBAN",
+            "APTOS",
+            "SUI",
+            "DAML"
+          ],
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/debt_evidence"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "message_code": {
+          "enum": [
+            "PROVIDER_NOT_IMPLEMENTED",
+            "PLATFORM_ARCH_NOT_ACCEPTED",
+            "PLATFORM_PROCESS_SCOPE_UNPROVEN",
+            "PLATFORM_PROFILE_UNKNOWN",
+            "TOOL_UNAVAILABLE",
+            "RAW_OUTPUT_MALFORMED",
+            "PROVIDER_DISAGREEMENT",
+            "NETWORK_BOUNDARY_DENIED",
+            "RESOURCE_LIMIT",
+            "PROVIDER_FAILURE",
+            "OPTIONAL_SOURCE_UNREADABLE",
+            "ROLLBACK_ACTIVE"
+          ],
+          "type": "string"
+        },
+        "provider_id_or_null": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "reuse_blocking": {
+          "type": "boolean"
+        },
+        "scope_ids": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maxItems": 10000000,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scope_kind": {
+          "enum": [
+            "RUN",
+            "BUILD_VARIANT",
+            "CAPABILITY",
+            "SOURCE_FILE",
+            "WORK_UNIT",
+            "GENERATION",
+            "PLATFORM"
+          ],
+          "type": "string"
+        },
+        "terminal_negative_authority": {
+          "const": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "debt_id",
+        "code",
+        "scope_kind",
+        "scope_ids",
+        "ecosystem",
+        "provider_id_or_null",
+        "capability_id",
+        "evidence",
+        "retryable",
+        "reuse_blocking",
+        "completeness_effect",
+        "message_code",
+        "terminal_negative_authority"
+      ],
+      "type": "object"
+    },
+    "debt_evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "kind": {
+          "enum": [
+            "EVIDENCE_FILE",
+            "CONTROL_RECEIPT",
+            "PROVIDER_RAW",
+            "PROCESS_EVIDENCE"
+          ],
+          "type": "string"
+        },
+        "semantic_evidence_id": {
+          "maxLength": 37,
+          "minLength": 37,
+          "pattern": "^pfse-[0-9a-f]{32}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "semantic_evidence_id",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "disagreement": {
+      "additionalProperties": false,
+      "properties": {
+        "build_variant_ids": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maxItems": 10000000,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "capability_ids": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maxItems": 10000000,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "contribution_ids": {
+          "items": {
+            "maxLength": 37,
+            "minLength": 37,
+            "pattern": "^pfcs-[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "maxItems": 10000000,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "debt_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfd-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "disagreement_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "disposition": {
+          "const": "PRESERVED_NO_TRUTH_SELECTION",
+          "type": "string"
+        },
+        "provider_ids": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maxItems": 10000000,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "semantic_key_sha256": {
+          "$ref": "#/$defs/hex64"
+        }
+      },
+      "required": [
+        "disagreement_id",
+        "semantic_key_sha256",
+        "contribution_ids",
+        "build_variant_ids",
+        "provider_ids",
+        "capability_ids",
+        "disposition",
+        "debt_id"
+      ],
+      "type": "object"
+    },
+    "fact": {
+      "additionalProperties": false,
+      "properties": {
+        "attestation_ids": {
+          "items": {
+            "maxLength": 37,
+            "minLength": 37,
+            "pattern": "^pfse-[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "capability_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "context": {
+          "$ref": "#/$defs/fact_context"
+        },
+        "coverage_scope": {
+          "enum": [
+            "OCCURRENCE",
+            "FUNCTION",
+            "CONTRACT",
+            "PACKAGE",
+            "BUILD_VARIANT"
+          ],
+          "type": "string"
+        },
+        "fact_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pff-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "object_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfn-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "occurrence_ids": {
+          "items": {
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^pfo-[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "precision": {
+          "enum": [
+            "EXACT",
+            "MAY",
+            "HEURISTIC",
+            "SYNTACTIC"
+          ],
+          "type": "string"
+        },
+        "provenance_origin": {
+          "enum": [
+            "COMPILER_IR",
+            "SSA",
+            "AST",
+            "BYTECODE",
+            "SOURCE_PARSE",
+            "INDEX_REFERENCE"
+          ],
+          "type": "string"
+        },
+        "provider_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "relation_kind": {
+          "enum": [
+            "MAY_REACH_CHA",
+            "MAY_REACH_RTA",
+            "MAY_REACH_VTA",
+            "RESOLVED_STATIC_CALL",
+            "UNRESOLVED_DYNAMIC_CALL",
+            "EXACT_CFG_DOMINATES",
+            "EXACT_CFG_EDGE",
+            "EXACT_CFG_POST_DOMINATES",
+            "MAY_DEPENDENCY_CONTRACT",
+            "MAY_DEPENDENCY_FUNCTION",
+            "AUTH_CHECK_OCCURRENCE",
+            "CREATE_OCCURRENCE",
+            "SYNTACTIC_SINK",
+            "VALUE_TRANSFER_OCCURRENCE",
+            "READS_STATE",
+            "WRITES_STATE",
+            "CONTAINS",
+            "DECLARES",
+            "INHERITS_OR_IMPLEMENTS"
+          ],
+          "type": "string"
+        },
+        "semantic_authority": {
+          "const": "ADDITIVE_PROPOSAL_ONLY",
+          "type": "string"
+        },
+        "structural_confidence": {
+          "enum": [
+            "PROVIDER_EXACT",
+            "PROVIDER_MAY",
+            "SOURCE_FALLBACK",
+            "UNKNOWN"
+          ],
+          "type": "string"
+        },
+        "subject_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfn-[0-9a-f]{32}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fact_id",
+        "relation_kind",
+        "subject_id",
+        "object_id",
+        "occurrence_ids",
+        "build_variant_id",
+        "provider_id",
+        "capability_id",
+        "provenance_origin",
+        "precision",
+        "coverage_scope",
+        "structural_confidence",
+        "context",
+        "semantic_authority",
+        "attestation_ids"
+      ],
+      "type": "object"
+    },
+    "fact_context": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_algorithm": {
+          "maxLength": 1024,
+          "minLength": 0,
+          "type": "string"
+        },
+        "call_dispatch": {
+          "enum": [
+            "INTERNAL",
+            "LIBRARY",
+            "INTERFACE",
+            "HIGH_LEVEL",
+            "LOW_LEVEL",
+            "DELEGATE",
+            "CREATE",
+            "DYNAMIC",
+            "UNKNOWN"
+          ],
+          "type": "string"
+        },
+        "dominating_predicate_ids": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "host_semantic_kind": {
+          "maxLength": 1024,
+          "minLength": 0,
+          "type": "string"
+        },
+        "root_set_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/hex64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "call_dispatch",
+        "analysis_algorithm",
+        "root_set_sha256",
+        "dominating_predicate_ids",
+        "host_semantic_kind"
+      ],
+      "type": "object"
+    },
+    "file_identity": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+          "type": "string"
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "gate3_schema_conformance_review_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "check_id": {
+                "enum": [
+                  "SCHEMA-DRAFT",
+                  "VOCABULARY-KEYWORDS",
+                  "CLOSED-OBJECTS",
+                  "REF-CLOSURE",
+                  "VECTOR-CARRIER",
+                  "KEYWORD-OCCURRENCE-COVERAGE",
+                  "POSITIVE-REPLAY",
+                  "NEGATIVE-REPLAY",
+                  "IDENTITY-STABLE-READ"
+                ],
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "maxLength": 64,
+                      "minLength": 64,
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "size_bytes": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size_bytes",
+                    "sha256"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "check_id",
+              "result",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 9,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "disposition": {
+          "enum": [
+            "PASS_SCHEMA_CONTRACT_FOR_GATE3_PREIMPLEMENTATION_ONLY",
+            "REJECTED"
+          ],
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "maxLength": 64,
+                      "minLength": 64,
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "size_bytes": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size_bytes",
+                    "sha256"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "finding_id": {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+                "type": "string"
+              },
+              "severity": {
+                "enum": [
+                  "BLOCKING",
+                  "NONBLOCKING"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "OPEN",
+                  "CLOSED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "finding_id",
+              "severity",
+              "status",
+              "description",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "independence": {
+          "additionalProperties": false,
+          "properties": {
+            "no_self_generated_evidence": {
+              "const": true,
+              "type": "boolean"
+            },
+            "oracle_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "production_implementer_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "subject_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "vector_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "workspace_clean": {
+              "const": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "subject_author_separate",
+            "vector_author_separate",
+            "production_implementer_separate",
+            "oracle_author_separate",
+            "workspace_clean",
+            "no_self_generated_evidence"
+          ],
+          "type": "object"
+        },
+        "open_findings": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+            "type": "string"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "review_body_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "review_id": {
+          "maxLength": 37,
+          "minLength": 37,
+          "pattern": "^pfsr-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "reviewer": {
+          "additionalProperties": false,
+          "properties": {
+            "organization": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "principal_id": {
+              "maxLength": 256,
+              "minLength": 12,
+              "pattern": "^reviewer:[a-z0-9-]+/[a-z0-9-]+$",
+              "type": "string"
+            },
+            "role": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "principal_id",
+            "organization",
+            "role"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_schema_conformance_review.v1",
+          "type": "string"
+        },
+        "subject": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+              "type": "string"
+            },
+            "sha256": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size_bytes": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size_bytes",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "vectors": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+              "type": "string"
+            },
+            "sha256": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size_bytes": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size_bytes",
+            "sha256"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "review_id",
+        "subject",
+        "vectors",
+        "reviewer",
+        "independence",
+        "checks",
+        "findings",
+        "open_findings",
+        "disposition",
+        "review_body_sha256"
+      ],
+      "type": "object"
+    },
+    "gate3_schema_conformance_vectors_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "body_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "keyword_occurrences": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "keyword": {
+                "enum": [
+                  "$ref",
+                  "type",
+                  "const",
+                  "enum",
+                  "required",
+                  "additionalProperties",
+                  "propertyNames",
+                  "properties",
+                  "dependentRequired",
+                  "prefixItems",
+                  "items",
+                  "contains",
+                  "minContains",
+                  "maxContains",
+                  "minProperties",
+                  "maxProperties",
+                  "minItems",
+                  "maxItems",
+                  "uniqueItems",
+                  "minLength",
+                  "maxLength",
+                  "pattern",
+                  "minimum",
+                  "maximum",
+                  "multipleOf",
+                  "allOf",
+                  "anyOf",
+                  "oneOf",
+                  "not",
+                  "if",
+                  "then",
+                  "else"
+                ],
+                "type": "string"
+              },
+              "negative_vector_ids": {
+                "items": {
+                  "maxLength": 37,
+                  "minLength": 37,
+                  "pattern": "^pfsv-[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "positive_vector_ids": {
+                "items": {
+                  "maxLength": 37,
+                  "minLength": 37,
+                  "pattern": "^pfsv-[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "schema_pointer": {
+                "maxLength": 16384,
+                "minLength": 0,
+                "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema_pointer",
+              "keyword",
+              "positive_vector_ids",
+              "negative_vector_ids"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_schema_conformance_vectors.v1",
+          "type": "string"
+        },
+        "subject": {
+          "additionalProperties": false,
+          "properties": {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                  "type": "string"
+                },
+                "sha256": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size_bytes",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            "schema_id": {
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^https://plamen\\.local/schemas/[A-Za-z0-9._-]+\\.schema\\.json$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema",
+            "schema_id"
+          ],
+          "type": "object"
+        },
+        "vector_count": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vectors": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "covers": {
+                "items": {
+                  "maxLength": 16384,
+                  "minLength": 0,
+                  "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "expected": {
+                "enum": [
+                  "VALID",
+                  "INVALID"
+                ],
+                "type": "string"
+              },
+              "instance": {},
+              "target_schema_pointer": {
+                "maxLength": 16384,
+                "minLength": 0,
+                "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                "type": "string"
+              },
+              "vector_id": {
+                "maxLength": 37,
+                "minLength": 37,
+                "pattern": "^pfsv-[0-9a-f]{32}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "vector_id",
+              "target_schema_pointer",
+              "instance",
+              "expected",
+              "covers"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "schema_version",
+        "subject",
+        "vectors",
+        "keyword_occurrences",
+        "vector_count",
+        "body_sha256"
+      ],
+      "type": "object"
+    },
+    "hex64": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "identifier": {
+      "maxLength": 512,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+      "type": "string"
+    },
+    "node": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "display_name": {
+          "maxLength": 4096,
+          "minLength": 0,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "CONTRACT",
+            "FUNCTION",
+            "MODIFIER",
+            "STATE_VARIABLE",
+            "LOCAL_VARIABLE",
+            "PARAMETER",
+            "RETURN_VALUE",
+            "TYPE",
+            "EXTERNAL_SYMBOL",
+            "UNKNOWN_TARGET"
+          ],
+          "type": "string"
+        },
+        "node_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfn-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "qualified_name": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "signature": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical": {
+              "maxLength": 16384,
+              "minLength": 0,
+              "type": "string"
+            },
+            "language_specific": {
+              "additionalProperties": false,
+              "properties": {},
+              "required": [],
+              "type": "object"
+            },
+            "signature_fact_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/identifier"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "canonical",
+            "language_specific",
+            "signature_fact_ref"
+          ],
+          "type": "object"
+        },
+        "source_binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/source_binding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "node_id",
+        "kind",
+        "qualified_name",
+        "display_name",
+        "build_variant_id",
+        "source_binding",
+        "signature",
+        "attributes"
+      ],
+      "type": "object"
+    },
+    "occurrence": {
+      "additionalProperties": false,
+      "properties": {
+        "enclosing_node_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfn-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "ir_binding": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "block_id": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "compilation_unit_sha256": {
+                  "$ref": "#/$defs/hex64"
+                },
+                "instruction_id": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "ir_sha256": {
+                  "$ref": "#/$defs/hex64"
+                }
+              },
+              "required": [
+                "compilation_unit_sha256",
+                "block_id",
+                "instruction_id",
+                "ir_sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "CALL_SITE",
+            "READ_SITE",
+            "WRITE_SITE",
+            "BRANCH_PREDICATE",
+            "RETURN_SITE",
+            "SINK_SITE",
+            "AUTH_SITE",
+            "TRANSFER_SITE",
+            "CREATE_SITE"
+          ],
+          "type": "string"
+        },
+        "occurrence_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfo-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "source_binding": {
+          "$ref": "#/$defs/source_binding"
+        }
+      },
+      "required": [
+        "occurrence_id",
+        "kind",
+        "enclosing_node_id",
+        "source_binding",
+        "ir_binding"
+      ],
+      "type": "object"
+    },
+    "portable_path": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+      "type": "string"
+    },
+    "source_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "end_byte": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "end_column": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "end_line": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+          "type": "string"
+        },
+        "root_token": {
+          "maxLength": 69,
+          "minLength": 69,
+          "pattern": "^pfrt-[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source_file_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfs-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "start_byte": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_column": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "start_line": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_file_id",
+        "root_token",
+        "path",
+        "start_byte",
+        "end_byte",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://plamen.local/schemas/program_facts_active_selection.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$vocabulary": {
+    "https://json-schema.org/draft/2020-12/vocab/applicator": true,
+    "https://json-schema.org/draft/2020-12/vocab/core": true,
+    "https://json-schema.org/draft/2020-12/vocab/validation": true
+  },
+  "additionalProperties": false,
+  "properties": {
+    "head_payload": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arm": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "composition_provenance_digest": {
+              "$ref": "#/$defs/hex64"
+            },
+            "composition_semantic_digest": {
+              "$ref": "#/$defs/hex64"
+            },
+            "debt_semantic_id": {
+              "maxLength": 37,
+              "minLength": 37,
+              "pattern": "^pfds-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "expanded_input_set_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "generation_id": {
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^pfg-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "generation_manifest": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "kind": {
+              "const": "ACTIVE_V3",
+              "type": "string"
+            },
+            "logical_outputs": {
+              "items": false,
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_sha256": {
+                      "$ref": "#/$defs/hex64"
+                    },
+                    "file_identity": {
+                      "$ref": "#/$defs/file_identity"
+                    },
+                    "logical_identity": {
+                      "const": "mechanical_program_facts.v3.json",
+                      "type": "string"
+                    },
+                    "physical_path": {
+                      "$ref": "#/$defs/portable_path"
+                    },
+                    "semantic_artifact_id": {
+                      "maxLength": 37,
+                      "minLength": 37,
+                      "pattern": "^pfps-[0-9a-f]{32}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "logical_identity",
+                    "semantic_artifact_id",
+                    "physical_path",
+                    "file_identity",
+                    "document_sha256"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_sha256": {
+                      "$ref": "#/$defs/hex64"
+                    },
+                    "file_identity": {
+                      "$ref": "#/$defs/file_identity"
+                    },
+                    "logical_identity": {
+                      "const": "mechanical_program_facts_receipt.v3.json",
+                      "type": "string"
+                    },
+                    "physical_path": {
+                      "$ref": "#/$defs/portable_path"
+                    },
+                    "semantic_artifact_id": {
+                      "maxLength": 37,
+                      "minLength": 37,
+                      "pattern": "^pfrs-[0-9a-f]{32}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "logical_identity",
+                    "semantic_artifact_id",
+                    "physical_path",
+                    "file_identity",
+                    "document_sha256"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_sha256": {
+                      "$ref": "#/$defs/hex64"
+                    },
+                    "file_identity": {
+                      "$ref": "#/$defs/file_identity"
+                    },
+                    "logical_identity": {
+                      "const": "mechanical_program_facts_debt.v3.json",
+                      "type": "string"
+                    },
+                    "physical_path": {
+                      "$ref": "#/$defs/portable_path"
+                    },
+                    "semantic_artifact_id": {
+                      "maxLength": 37,
+                      "minLength": 37,
+                      "pattern": "^pfds-[0-9a-f]{32}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "logical_identity",
+                    "semantic_artifact_id",
+                    "physical_path",
+                    "file_identity",
+                    "document_sha256"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "array"
+            },
+            "payload_semantic_id": {
+              "maxLength": 37,
+              "minLength": 37,
+              "pattern": "^pfps-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "phase_io_contract_profile_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "phase_io_launch_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "receipt_semantic_id": {
+              "maxLength": 37,
+              "minLength": 37,
+              "pattern": "^pfrs-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "resolved_phase_io_contract_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "selected_provenance_envelope": {
+              "$ref": "#/$defs/file_identity"
+            },
+            "selected_provenance_event_id": {
+              "maxLength": 37,
+              "minLength": 37,
+              "pattern": "^pfpv-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "transaction_id": {
+              "maxLength": 37,
+              "minLength": 37,
+              "pattern": "^pftx-[0-9a-f]{32}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "composition_semantic_digest",
+            "generation_id",
+            "transaction_id",
+            "payload_semantic_id",
+            "debt_semantic_id",
+            "receipt_semantic_id",
+            "selected_provenance_event_id",
+            "selected_provenance_envelope",
+            "composition_provenance_digest",
+            "arm",
+            "generation_manifest",
+            "logical_outputs",
+            "phase_io_contract_profile_sha256",
+            "resolved_phase_io_contract_sha256",
+            "phase_io_launch_sha256",
+            "expanded_input_set_sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "disabled_transition_id": {
+              "maxLength": 37,
+              "minLength": 37,
+              "pattern": "^pfdt-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "expanded_input_set_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "governance": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "contract_freeze": {
+                      "$ref": "#/$defs/file_identity"
+                    },
+                    "flag_contract": {
+                      "$ref": "#/$defs/file_identity"
+                    },
+                    "kind": {
+                      "const": "RUNTIME",
+                      "type": "string"
+                    },
+                    "release_freeze": {
+                      "$ref": "#/$defs/file_identity"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "flag_contract",
+                    "contract_freeze",
+                    "release_freeze"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "fixture_execution_authority": {
+                      "$ref": "#/$defs/file_identity"
+                    },
+                    "flag_contract": {
+                      "$ref": "#/$defs/file_identity"
+                    },
+                    "kind": {
+                      "const": "FIXTURE_PRE_RELEASE",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "flag_contract",
+                    "fixture_execution_authority"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "kind": {
+              "const": "DISABLED_LEGACY",
+              "type": "string"
+            },
+            "logical_outputs": {
+              "items": false,
+              "maxItems": 0,
+              "type": "array"
+            },
+            "phase_io_contract_profile_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "phase_io_launch_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "reason_code": {
+              "enum": [
+                "ROLLBACK_TRIGGER",
+                "OPERATOR_REQUEST",
+                "CUTOVER_REVOKED"
+              ],
+              "type": "string"
+            },
+            "resolved_phase_io_contract_sha256": {
+              "$ref": "#/$defs/hex64"
+            }
+          },
+          "required": [
+            "kind",
+            "disabled_transition_id",
+            "reason_code",
+            "governance",
+            "phase_io_contract_profile_sha256",
+            "resolved_phase_io_contract_sha256",
+            "phase_io_launch_sha256",
+            "expanded_input_set_sha256",
+            "logical_outputs"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "head_revision": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "prior_head": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "head_revision": {
+              "const": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "ABSENT",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "head_revision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "generation_id": {
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^pfg-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "head_body_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "head_revision": {
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "PRESENT_ACTIVE",
+              "type": "string"
+            },
+            "transaction_id": {
+              "maxLength": 37,
+              "minLength": 37,
+              "pattern": "^pftx-[0-9a-f]{32}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "head_revision",
+            "head_body_sha256",
+            "generation_id",
+            "transaction_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "disabled_transition_id": {
+              "maxLength": 37,
+              "minLength": 37,
+              "pattern": "^pfdt-[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "head_body_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "head_revision": {
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "PRESENT_DISABLED",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "head_revision",
+            "head_body_sha256",
+            "disabled_transition_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "run_generation": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "schema_version": {
+      "const": "plamen.program_facts_active_selection.v1",
+      "type": "string"
+    },
+    "selector_body_sha256": {
+      "$ref": "#/$defs/hex64"
+    },
+    "state": {
+      "enum": [
+        "ACTIVE_V3",
+        "DISABLED_LEGACY"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "head_revision",
+    "run_id",
+    "run_generation",
+    "state",
+    "head_payload",
+    "prior_head",
+    "selector_body_sha256"
+  ],
+  "type": "object"
+}

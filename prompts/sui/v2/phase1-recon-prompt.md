@@ -125,7 +125,7 @@ Write to `{SCRATCHPAD}/meta_buffer.md`:
 ## RAG: DEFERRED to Phase 4b.5
 
 Recon does not perform RAG queries in the V2 driver. Phase 4b.5 RAG
-Validation Sweep will populate this file with per-finding RAG scores
+External precedent research will later populate typed context proposals; it never supplies finding scores
 after depth analysis completes.
 ```
 
@@ -210,7 +210,6 @@ Write to {SCRATCHPAD}/build_status.md:
 - **Dependencies**: {list from Move.toml}
 - **Named Addresses**: {list}
 - **Compilation Warnings**: {list or none}
-- **AST_GREP_AVAILABLE**: {true/false} (probe `ast-grep --version`. If true, TASK 2 supplements grep extraction with structural pattern matching for AST-aware queries that pure regex misses.)
 ```
 
 **MANDATORY — Chosen build root**: the audit scope dir is often source-only;
@@ -225,20 +224,6 @@ exists at all, emit `` **Chosen build root**: `(none)` ``.
 ## TASK 2: Static Analysis Artifacts
 
 Sui Move does not have a Slither equivalent. Extract program structure using grep as the PRIMARY method.
-
-**AST-aware supplement** (when `AST_GREP_AVAILABLE = true`): ast-grep
-(`sg`) supports Move via tree-sitter. Use it when a structural query
-gives more precision than a regex — for example, finding every call to
-`transfer::public_transfer` whose first argument is the result of
-`coin::from_balance`, or every `let mut` binding shadowed inside a
-loop. Suggested invocation pattern:
-```
-ast-grep --lang move --pattern 'transfer::public_transfer($COIN, $ADDR)' sources/
-```
-Append AST-grep findings (if any) to `{SCRATCHPAD}/static_analysis.md`
-under `## AST-Grep Patterns`. This is best-effort enrichment — grep
-remains the primary method and a missing/failing ast-grep is not a
-hard error.
 
 ### Function inventory
 Grep in .move files (exclude build/, tests/ directories):

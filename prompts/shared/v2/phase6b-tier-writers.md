@@ -22,6 +22,23 @@ All tier writers MUST follow these rules without exception:
 7. **Per-section structural completeness**: Every `### [X-NN]` section body MUST contain `Severity`, `Location`, and a `Description` of at least 3 sentences (Critical/High/Medium also need `Impact`). Do NOT pad prose to hit a length target. If a Low/Informational finding is a genuine one-liner with no security nuance, route it to the `## Quality Observations` megasection instead of inflating it. (A length floor may still flag obvious stubs, but any retry will name the specific short sections and tell you to add concrete detail or move them to the megasection — it will never re-issue an identical prompt, since that cannot converge.)
 8. **Chunk scoping (driver-imposed)**: If the driver's prefix to your prompt lists a specific subset of finding IDs under "## Findings assigned to THIS chunk", you MUST write ONLY those IDs, in the order listed. Do NOT write any finding NOT in that list — another tier-writer agent owns those.
 9. **Minimal-input override (driver-imposed)**: If the driver's prefix tells you to use a minimal read set, obey that instead of the broad-input list below. In minimal-input mode, prefer your assigned manifest (`body_manifests/<shard>.json`), assigned `verify_*.md` files, `findings_inventory.md`, and cited source files. Do NOT bulk-read `report_index.md`, `hypotheses.md`, `chain_hypotheses.md`, `synthesis_full.md`, or unrelated `verify_*.md` files unless a required assigned finding is otherwise missing.
+10. **Typed evidence boundary (mandatory when present)**: Before rendering, read
+    `report_evidence_manifests/<shard>.json` matching the assigned body manifest.
+    Its embedded `report_evidence` record is authoritative for verdict,
+    evidence authenticity/result, proof scope, capabilities, source digests,
+    limitations, mechanism, preconditions, impact, locations, and
+    recommendation. The legacy body manifest remains the assignment/recovery
+    input, but `[CONFIRMED]`, `[POC-*]`, `[FUZZ-*]`, or similar prose tags can
+    never upgrade the typed evidence authority. Only
+    `presentation_assurance=PROOF_GRADE_HARM` may be described as executed
+    proof of harm. `CONFIRMED_MECHANISM` means the mechanism is supported but
+    executed harm is not established. Preserve every assigned finding.
+11. **Bounded semantic-repair result**: If the typed record still contains
+    `REPORT_FIELD_MISSING:*` after the one exact repair delta, do not invent the
+    missing content and do not omit the section. Render an `Evidence and report
+    limitation` note naming the incomplete client field(s). Copy other typed
+    fields faithfully. The deterministic projection binds the final section to
+    the record digest and rejects hidden debt.
 
 ---
 
@@ -33,6 +50,7 @@ All tier writers MUST follow these rules without exception:
 **Severity**: Critical/High/Medium/Low/Informational
 **Location**: `SourceFile:L123-L145`
 **Confidence**: HIGH/MEDIUM/LOW (N agents confirmed, Static Analysis: Y/N, PoC: PASS/FAIL/SKIPPED)
+**Evidence assurance**: Proof-grade harm evidence / Confirmed mechanism; harm proof not established / Evidence limited
 
 **Description**:
 [Clear explanation of what's wrong. Include relevant code snippet. Do NOT reference any internal audit IDs - describe the bug directly.]
@@ -54,31 +72,39 @@ All tier writers MUST follow these rules without exception:
 - **Confidence**: Derive from agent consensus count, static analysis availability, and PoC execution result.
 - **Description**: Minimum 3-5 sentences. Include the actual problematic code snippet, not just a line reference. For chain findings (multiple bugs combining): describe the full attack sequence from start to finish — the reader must understand the complete attack path without reading other findings.
 - **Impact**: Quantify where possible (dollar amounts, percentage loss, permanent vs temporary). For root-cause consolidation, list each sub-impact as a bullet.
-- **PoC Result**: Summarize test output. For `[POC-PASS]`: include key assertion results. For `[POC-FAIL]`: include the failure reason and note that the system behaved correctly. For skipped: state why.
+- **PoC Result**: Summarize test output within the typed proof scope. A
+  `[POC-PASS]` or `[FUZZ-PASS]` label without a candidate-bound authenticated
+  execution assessment is not proof-grade. For an authenticated established
+  result, include key assertions without widening beyond the typed scope. For
+  an authenticated negative result, state only the maximum negative scope in
+  the typed record. For skipped/unbound execution, state the limitation.
 - **Recommendation**: Actionable fix guidance. If a verifier-generated diff exists in verify_{id}.md, paste it verbatim. Low findings: Recommendation field is optional. Informational findings: PoC Result field is optional.
 
 ### Verification Status Tags (header)
 
 | Tag | Meaning |
 |-----|---------|
-| `[VERIFIED]` | PoC executed and passed (`[POC-PASS]` or `[MEDUSA-PASS]`) |
+| `[VERIFIED]` | Typed evidence record says `PROOF_GRADE_HARM`; a PoC/fuzzer label alone is insufficient |
 | `[UNVERIFIED]` | No PoC execution attempted or PoC skipped |
 | `[CONTESTED]` | Evidence is conflicting or confidence is low |
 | `[FALSE_POSITIVE]` | Verified NOT exploitable (appears only if retained in report for context) |
 | `[VERIFICATION NOT EXECUTED]` | verify_*.md file missing for this finding |
 | `[REPORT-BLOCKED]` | Manifest flagged this finding as report-blocked (e.g. severity demotion, dedup absorption); writer must keep the finding body but mark the tag. Body validator at `_validate_report_body` accepts this tag in addition to `[UNVERIFIED]` / `[VERIFICATION NOT EXECUTED]` when the manifest entry has `report_blocked=true`. |
-| `[UNRESOLVED — needs human review]` | Skeptic-Judge disagreement, demoted severity |
+| `[UNRESOLVED — needs human review]` | Independent skeptic/adjudication disagreement; severity is preserved unless the typed severity ledger authorizes a distinct change |
 
 ---
 
 ## UNRESOLVED Finding Format
 
-When the Skeptic-Judge phase returns `UNRESOLVED` (or `PARTIAL` — treated as synonym) for a finding, it stays in the **report body** — NOT Appendix A. Use this format:
+When independent skeptic/adjudication artifacts record `UNRESOLVED` (or
+`PARTIAL`) for a finding, it stays in the **report body** at the highest
+still-supported upstream or typed-adjudicated tier. These are
+evidence/disagreement states, not severity discounts. Use this format:
 
 ```markdown
 ### [X-NN] Title [UNRESOLVED — needs human review]
 
-**Severity**: {demoted by 1 tier from original} (was {original}; demoted under skeptic disagreement)
+**Severity**: {highest still-supported upstream or typed-adjudicated tier}
 **Location**: `SourceFile:L123-L145`
 **Confidence**: CONTESTED — verifier and skeptic disagree
 
@@ -98,19 +124,18 @@ When the Skeptic-Judge phase returns `UNRESOLVED` (or `PARTIAL` — treated as s
 Human reviewer: confirm deployment-context assumption {X} before triage. If verifier is correct, treat as {original_severity}. If skeptic is correct, treat as informational/false-positive.
 ```
 
-**Severity demotion rule**:
-- Critical UNRESOLVED → **High** with `[UNRESOLVED]` flag
-- High UNRESOLVED → **Medium**
-- Medium UNRESOLVED → **Low**
-- Low / Informational UNRESOLVED → unchanged (floor)
+`UNRESOLVED(original_sev)` is a visibility marker only. A tier change requires
+an exact-identity, premise/evidence-bound, distinct-worker decision in the typed
+severity ledger. Missing, stale, incomplete, or ambiguous authority preserves
+the upstream tier and adds human-review debt.
 
 **Why body and not Appendix A**: in security audits, the cost of missing a real exploit (false negative) exceeds the cost of an extra body section flagged for human triage (false positive). Burying UNRESOLVED in Appendix A historically caused real findings to disappear from human attention.
 
 ---
 
-## PoC-Fail Finding Context (v2.4.0)
+## PoC-Fail Review Context
 
-When report_index.md marks a finding with `POC-FAIL(original_sev)` in the Trust Adj. column, the tier writer includes in Description: *"PoC execution disproved the claimed harm — test executed but the system behaved correctly. Capped from {original} to {capped}."* The finding remains in the report body at its capped severity.
+When report_index.md marks a finding with `POC-FAIL-PROPOSAL(no-tier-change)` (derived from the non-authoritative `poc_demotion_proposals` projection), explain only that the encoded execution did not establish its assertion and requires independent review. It MUST NOT lower severity, imply candidate-wide refutation, or remove the finding from the body. Preserve the highest supported pre-proposal severity.
 
 ---
 
@@ -195,4 +220,4 @@ filename from severity; the driver-owned manifest is the only authority.
 
 ---
 
-SCOPE: Write ONLY the exact driver-assigned tier output file named in the phase override. If the driver provided a `body_manifests/<shard>.json`, that manifest is your SINGLE SOURCE OF TRUTH — do NOT read `report_index.md` (it lists ALL findings across all shards and causes scope violations). Read ONLY the manifest and the `verify_*.md` files it references. If NO manifest was provided, fall back to `report_index.md` for your tier assignments. Do NOT read or write other tier files or the final report. Do NOT proceed to assembly or any subsequent phase. Return and stop.
+SCOPE: Write ONLY the exact driver-assigned tier output file named in the phase override. If the driver provided a `body_manifests/<shard>.json`, that manifest plus its matching `report_evidence_manifests/<shard>.json` typed authority are your SINGLE SOURCE OF TRUTH — do NOT read `report_index.md` (it lists ALL findings across all shards and causes scope violations). Read ONLY those manifests and the `verify_*.md` files they reference. If NO manifest was provided, fall back to `report_index.md` for your tier assignments. Do NOT read or write other tier files or the final report. Do NOT proceed to assembly or any subsequent phase. Return and stop.

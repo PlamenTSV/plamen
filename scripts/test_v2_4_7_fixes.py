@@ -20,6 +20,12 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 import plamen_mechanical as M
 import plamen_validators as V
 import plamen_parsers as P
+from queue_work_items import (
+    QueueWorkItem,
+    VerifierOutputIdentity,
+    VerifierOutputReceipt,
+    build_queue_work_plan,
+)
 
 import tempfile
 import shutil
@@ -76,18 +82,106 @@ def _write_verify_file(sp: Path, finding_id: str, title: str = "Test finding",
 **Recommendation**: Fix the issue by adding validation.
 """
     (sp / f"verify_{finding_id}.md").write_text(content, encoding="utf-8")
+    _bind_existing_verifiers(sp)
+
+
+def _proposal_bytes(item: QueueWorkItem) -> bytes:
+    constituents = [item.work_item_id, *item.constituents]
+    payload = {
+        "schema_version": "plamen.severity_proposal.v1",
+        "candidate_id": item.work_item_id,
+        "constituent_ids": constituents,
+        "impact": {
+            "class": "High",
+            "harmed_asset": "protected asset",
+            "harmed_capability": "asset integrity",
+            "premise_id": f"PREM-{item.work_item_id}-IMPACT",
+            "premise_kind": "INTERNAL",
+            "evidence_ids": [f"EVID-{item.work_item_id}-IMPACT"],
+            "proof_scope": "IN_SCOPE_SOURCE",
+        },
+        "likelihood": {
+            "class": "Medium",
+            "actor": "unprivileged actor",
+            "preconditions": ["reachable state"],
+            "premise_id": f"PREM-{item.work_item_id}-LIKELIHOOD",
+            "premise_kind": "INTERNAL",
+            "evidence_ids": [f"EVID-{item.work_item_id}-LIKELIHOOD"],
+            "proof_scope": "IN_SCOPE_SOURCE",
+        },
+        "modifiers": [],
+        "proposed_severity": "High",
+        "adjustment": None,
+        "constituent_premise_outcomes": {
+            value: {"impact": "SUPPORTED", "likelihood": "SUPPORTED"}
+            for value in constituents
+        },
+    }
+    return json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
+def _bind_existing_verifiers(sp: Path) -> None:
+    queue = sp / "verification_queue.md"
+    if not queue.is_file() or not P._typed_queue_sidecar_path(queue).is_file():
+        return
+    items = P._read_typed_queue_work_items(queue)
+    if not items:
+        return
+    shard = "sc_verify_crithigh"
+    plan = build_queue_work_plan(
+        items,
+        {shard: tuple(item.work_item_id for item in items)},
+        planner_version="test.sc-body.v1",
+    )
+    (sp / "verification_queue.work_plan.json").write_text(
+        plan.to_json(), encoding="utf-8"
+    )
+    for item in items:
+        output_path = sp / item.expected_output_file
+        if not output_path.is_file():
+            continue
+        proposal = _proposal_bytes(item)
+        proposal_path = sp / f"verify_{item.work_item_id}.severity_proposal.json"
+        proposal_path.write_bytes(proposal)
+        identity = VerifierOutputIdentity.for_assignment(item, plan, shard)
+        receipt = VerifierOutputReceipt.bind(
+            identity,
+            output_path.read_bytes(),
+            severity_proposal=proposal,
+            launch_digest="a" * 64,
+            verifier_backend="claude",
+        )
+        (sp / f"verify_{item.work_item_id}.identity.json").write_text(
+            json.dumps(identity.to_dict(), sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        (sp / f"verify_{item.work_item_id}.receipt.json").write_text(
+            receipt.to_json(), encoding="utf-8"
+        )
 
 
 def _write_verification_queue(sp: Path, ids: list[tuple[str, str]]):
     """Write verification_queue.md. ids: list of (finding_id, severity_letter)."""
-    lines = [
-        "# Verification Queue\n",
-        "| # | Hypothesis ID | Severity | Status |",
-        "|---|---------------|----------|--------|",
+    severity = {
+        "C": "Critical", "H": "High", "M": "Medium",
+        "L": "Low", "I": "Informational",
+    }
+    rows = [
+        {
+            "queue #": str(index),
+            "finding id": fid,
+            "severity": severity.get(sev.upper(), sev),
+            "title": f"Fixture {fid}",
+            "bug class": "structural",
+            "preferred tag": "[POC-PASS]",
+            "location": "",
+            "primary artifact": "findings_inventory.md",
+            "poc class": "structural",
+        }
+        for index, (fid, sev) in enumerate(ids, 1)
     ]
-    for i, (fid, sev) in enumerate(ids, 1):
-        lines.append(f"| {i} | {fid} | {sev} | PENDING |")
-    (sp / "verification_queue.md").write_text("\n".join(lines), encoding="utf-8")
+    P._write_queue_subset_manifest(sp / "verification_queue.md", rows)
+    _bind_existing_verifiers(sp)
 
 
 def test_sc_manifests_basic():
@@ -159,11 +253,23 @@ def test_sc_manifests_enrichment():
 
 
 def test_sc_manifests_empty_index():
-    """SC manifest builder returns empty dict when no report_index.md exists."""
+    """SC manifest builder emits an explicit typed empty denominator."""
     sp = _make_scratchpad()
     try:
         result = M._build_sc_body_writer_manifests(sp)
-        assert result == {}
+        assert result == {
+            "report_empty": {
+                "schema_version": "plamen.empty_report_denominator.v1",
+                "denominator_state": "EMPTY",
+                "shard": "report_empty",
+                "findings": [],
+            }
+        }
+        assert json.loads(
+            (sp / "body_manifests" / "report_empty.json").read_text(
+                encoding="utf-8"
+            )
+        ) == result["report_empty"]
     finally:
         _cleanup(sp)
 
@@ -384,8 +490,8 @@ def test_sc_report_index_tier_assignment_tables_do_not_duplicate_body_manifests(
         _cleanup(sp)
 
 
-def test_sc_report_e2e_preserves_consolidated_true_positives_through_quality_gate():
-    """SC report path keeps every verified ID while delivering one clean report section."""
+def test_sc_report_e2e_rejects_untyped_consolidation_as_delivery_authority():
+    """Raw consolidation prose cannot account for a second verified identity."""
     sp = _make_scratchpad()
     try:
         project = sp / "project"
@@ -422,6 +528,7 @@ def test_sc_report_e2e_preserves_consolidated_true_positives_through_quality_gat
             "**Recommendation**: Re-check oracle bounds at the vault boundary and reject stale conversion inputs.\n",
             encoding="utf-8",
         )
+        _write_verification_queue(sp, [("H-1", "C"), ("H-3", "C")])
         (sp / "report_index.md").write_text(
             "# Report Index\n\n"
             "## Summary Counts\n"
@@ -481,8 +588,16 @@ def test_sc_report_e2e_preserves_consolidated_true_positives_through_quality_gat
 
         assert V._validate_tier_body_against_manifest(sp, "report_critical_high") == []
         assert M._assemble_report_python(sp, str(project)) is True
-        assert V._run_report_quality_gate(sp, str(project)) == []
-        assert V._check_promotion_symmetry(sp, str(project)) == []
+        quality_issues = V._run_report_quality_gate(sp, str(project))
+        assert any(
+            "promotion dropout" in issue and "H-3" in issue
+            for issue in quality_issues
+        )
+        symmetry_issues = V._check_promotion_symmetry(sp, str(project))
+        assert any(
+            "promotion dropout" in issue and "H-3" in issue
+            for issue in symmetry_issues
+        )
         report = (project / "AUDIT_REPORT.md").read_text(encoding="utf-8")
         assert "contracts/Oracle.sol:L88" in report
         assert "contracts/Vault.sol:L144" in report

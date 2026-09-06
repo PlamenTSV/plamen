@@ -3,10 +3,18 @@ from pathlib import Path
 import json
 import re
 
+from jsonschema import Draft202012Validator
+
+from mechanical_gate_registry import (
+    load_mechanical_gate_registry,
+    validate_seam_budget_equations,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = ROOT / "rules" / "post-audit-improvement-protocol.md"
 REGISTRY = ROOT / "rules" / "mechanical-gate-registry.json"
+SCHEMA = ROOT / "rules" / "mechanical-gate-registry.schema.v2.json"
 SEAMS = {
     "STARTUP_RESUME", "PRE_DISCOVERY", "POST_DISCOVERY", "PRE_VERIFY",
     "POST_VERIFY", "REPORT_ASSEMBLY",
@@ -33,9 +41,8 @@ def test_authoritative_record_has_closed_seam_and_balanced_numeric_budget():
         text, "## Mechanical-Gate Registry Record", "## Anti-Bloat Gates"
     )
 
-    lifecycle_seams = set(re.findall(r"`([A-Z_]+)`", lifecycle))
-    assert lifecycle_seams & SEAMS == SEAMS
-    assert not {name for name in lifecycle_seams if "_" in name} - SEAMS
+    lifecycle_seams = set(re.findall(r"`([A-Z_]+)`", lifecycle)) & SEAMS
+    assert lifecycle_seams == SEAMS
     template_seams = set(re.findall(r"\b[A-Z]+(?:_[A-Z]+)+\b", template)) & SEAMS
     assert template_seams == SEAMS
     for field in (
@@ -52,17 +59,41 @@ def test_authoritative_record_has_closed_seam_and_balanced_numeric_budget():
     assert "authoritative record" in template
     assert "Gate-inventory baseline artifact / SHA-256 / committed revision" in template
 
+    payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    for budget in payload["seam_budgets"]:
+        baseline = set(budget["baseline_gate_ids"])
+        additions = set(budget["addition_gate_ids"])
+        releases = set(budget["release_gate_ids"])
+        assert releases <= baseline
+        assert not additions & baseline
+        assert not additions & releases
+        assert budget["active_gate_count"] == len(baseline)
+        assert budget["activated_or_shadow_additions"] == len(additions)
+        assert budget["approved_slot_releases"] == len(releases)
+        assert budget["post_change_gate_count"] == len(
+            (baseline - releases) | additions
+        )
+
 
 def test_registry_is_persistent_closed_and_blocks_uninventoried_activation():
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    Draft202012Validator(schema).validate(payload)
     assert set(payload) == {
-        "schema_version", "migration_status", "seam_taxonomy",
+        "schema_version", "registry_revision", "registry_scope",
+        "migration_status", "migration", "activation_inventory",
+        "seam_taxonomy", "decision_class_taxonomy", "direction_taxonomy",
         "seam_budgets", "gate_records",
     }
-    assert payload["schema_version"] == "plamen.mechanical_gate_registry.v1"
-    assert payload["migration_status"] == "BLOCK_NEW_ACTIVATIONS_PENDING_BASELINE"
+    assert payload["schema_version"] == "plamen.mechanical_gate_registry.v2"
+    assert payload["migration_status"] == "BASELINING_EXISTING_ACTIVATIONS"
+    assert payload["migration"]["new_runtime_transitions_blocked"] is True
     assert set(payload["seam_taxonomy"]) == SEAMS
-    assert payload["seam_budgets"] == [] and payload["gate_records"] == []
+    assert len(payload["seam_budgets"]) == len(SEAMS)
+    assert payload["gate_records"]
+    registry = load_mechanical_gate_registry(REGISTRY, installed_root=ROOT)
+    validate_seam_budget_equations(registry)
     text = PROTOCOL.read_text(encoding="utf-8")
     assert "rules/mechanical-gate-registry.json" in text
     assert "allowed persistent methodology artifact" in _flat(text)
@@ -111,8 +142,8 @@ def test_exception_has_distinct_hard_expiry_and_runtime_disable():
         text, "## Mechanical-Gate Registry Record", "## Anti-Bloat Gates"
     )
     for field in (
-        "exception_approver", "temporary_ceiling_delta", "exception_rationale",
-        "review_by", "expires_on",
+        "exception_approver", "temporary_ceiling_delta",
+        "exception_rationale_code", "review_by", "expires_on",
     ):
         assert f"`{field}`" in lifecycle
     assert "automatically returns to a non-runtime state" in _flat(lifecycle)
@@ -136,13 +167,19 @@ def test_identity_sets_reconcile_counts_and_mechanizable_rc_is_encodable():
     )
     assert "Counts MUST equal the cardinality of those sets" in lifecycle
     assert "all counts are non-negative integers" in lifecycle
-    assert "the sets are pairwise disjoint" in lifecycle
-    assert "release_gate_ids` MUST be a subset" in lifecycle
+    for equation in (
+        "addition_gate_ids ∩ baseline_gate_ids = empty",
+        "addition_gate_ids ∩ release_gate_ids = empty",
+        "release_gate_ids ⊆ baseline_gate_ids",
+    ):
+        assert equation in lifecycle
     assert "approved_slot_releases <= active_gate_count" in lifecycle
     for field in ("baseline_gate_ids", "addition_gate_ids", "release_gate_ids"):
         assert f"**{field}**" in template
     source = _section(text, "## Source", "## Proposed Change")
     assert "RC-AGENT-MECHANIZABLE (M1-M4 PASS)" in source
+    registry = load_mechanical_gate_registry(REGISTRY, installed_root=ROOT)
+    validate_seam_budget_equations(registry)
 
 
 def test_file_size_appendix_defers_to_gate_count_budget():

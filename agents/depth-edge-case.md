@@ -2,7 +2,7 @@
 name: depth-edge-case
 description: "Zero-state return, dust analysis, boundary conditions with real constants"
 model: opus
-tools: [Read, Write, Grep, mcp__slither-analyzer__get_function_source, mcp__solana-fender__security_check_program, mcp__solana-fender__security_check_file, mcp__unified-vuln-db__analyze_code_pattern, mcp__unified-vuln-db__get_root_cause_analysis, mcp__unified-vuln-db__get_attack_vectors, mcp__unified-vuln-db__validate_hypothesis, mcp__unified-vuln-db__search_solodit_live]
+tools: [Read, Write, Grep, Glob]
 ---
 
 # Depth Agent: Edge Case Analysis
@@ -19,7 +19,9 @@ Before ANY verdict:
 5. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
 6. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
 
-Reference: `~/.claude/prompts/{LANGUAGE}/generic-security-rules.md` for full rule definitions (Rules 1-16). The orchestrator resolves `{LANGUAGE}` before spawning you.
+Apply only the rule and skill files enumerated by the driver's content-bound
+methodology descriptors. Do not discover or open a legacy home-directory path.
+The runtime prompt's exact read projection and output allowlist are authoritative.
 
 ## Your Role
 
@@ -29,8 +31,10 @@ You receive SPECIFIC TARGETS from the breadth pass - exchange rate calculations,
 
 For EACH target in your assignment:
 
-### 1. Read the Skill File
-Read the ZERO_STATE_RETURN skill from `~/.claude/agents/skills/{LANGUAGE}/zero-state-return/SKILL.md` for the full methodology. The orchestrator provides the resolved path in your prompt.
+### 1. Apply the Bound Skill Methodology
+If `ZERO_STATE_RETURN` appears in the driver's assigned methodology list, read
+that exact content-bound path and execute its full checklist. If it is absent,
+apply the zero-state checklist embedded below; do not search for another copy.
 
 ### 2. Zero-State Analysis
 For share/LP minting with exchange rate calculations:

@@ -6,6 +6,8 @@ import time
 import threading
 from pathlib import Path
 
+import pytest
+
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -29,6 +31,19 @@ def _fresh(sp: Path) -> None:
     (sp / "_audit_started_with_markers.json").write_text("{}", encoding="utf-8")
     (sp / "findings_inventory.md").write_text(
         "# Inventory\n\nNo prior findings.\n", encoding="utf-8"
+    )
+    # The production phase loop creates the three driver-owned security
+    # obligation inputs before invoking the lower-level worker pool.
+    (sp / "security_feature_facts.json").write_text(
+        '{"schema":"fixture.security-feature-facts.v1","facts":[]}\n',
+        encoding="utf-8",
+    )
+    (sp / "security_obligation_authority.json").write_text(
+        '{"schema":"fixture.security-obligations.v1","obligations":[]}\n',
+        encoding="utf-8",
+    )
+    (sp / "security_obligations.md").write_text(
+        "# Security Obligations\n\nNo obligations.\n", encoding="utf-8"
     )
 
 
@@ -215,6 +230,139 @@ def test_depth_worker_retry_prompt_repairs_all_perturbation_blocks(tmp_path: Pat
     assert "Repair ALL Medium/Critical/High CONFIRMED findings" in prompt
     assert "If you rename, split, merge, or add" in prompt
     assert "Do not mark the file COMPLETE" in prompt
+
+
+def test_depth_worker_retry_prompt_keeps_exact_structural_reason_bounded(
+    tmp_path: Path,
+):
+    sp = tmp_path / ".scratchpad"
+    _fresh(sp)
+    job = D._depth_worker_jobs(sp, {"pipeline": "sc", "mode": "light"})[2]
+    exact_reason = (
+        "no '## Finding [' / '### Finding [' blocks (and no "
+        "'## Findings' section) and no '## No Findings' / "
+        "'## Negative Result' rationale -- artifact is empty/incomplete"
+    )
+    oversized_tail = "Z" * 5000
+
+    prompt = D._build_depth_worker_prompt(
+        job=job,
+        scratchpad=sp,
+        project_root=str(tmp_path),
+        config={"language": "evm", "mode": "light", "pipeline": "sc"},
+        attempt=2,
+        retry_reasons=["status=structural_fail", exact_reason, oversized_tail],
+    )
+
+    assert exact_reason in prompt
+    assert oversized_tail not in prompt
+    retry_section = prompt.split("## Previous Gate Failure", 1)[1].split(
+        "## Methodology", 1
+    )[0]
+    assert len(retry_section) <= D._WORKER_RETRY_TOTAL_MAX_CHARS + 256
+
+
+def test_depth_worker_validation_result_preserves_structural_gate_reason(
+    tmp_path: Path,
+):
+    sp = tmp_path / ".scratchpad"
+    _fresh(sp)
+    job = D._depth_worker_jobs(sp, {"pipeline": "sc", "mode": "light"})[2]
+    output = job["output"]
+    (sp / "_depth_worker_pool_contract.json").write_text(
+        json.dumps({
+            "phase": "depth",
+            "canonical_outputs": [output],
+            "jobs": [job],
+        }),
+        encoding="utf-8",
+    )
+    (sp / output).write_text(
+        f"<!-- PLAMEN_ARTIFACT: {output} -->\n"
+        f"<!-- PLAMEN_OWNER: {job['agent_id']} -->\n"
+        "<!-- PLAMEN_STATUS: IN_PROGRESS -->\n"
+        "<!-- PLAMEN_PHASE: depth -->\n"
+        "<!-- PLAMEN_VERSION: 1 -->\n"
+        f"<!-- AGENT_ROW: {job['agent_id']} -->\n"
+        f"<!-- EXPECTED_OUTPUT: {output} -->\n\n"
+        "# Edge-case analysis\n\n"
+        + ("Substantive boundary analysis without a disposition block. " * 20)
+        + "\n\n<!-- PLAMEN_STATUS: COMPLETE -->\n",
+        encoding="utf-8",
+    )
+
+    status, reasons = D._depth_worker_validation_result(
+        sp, _phase(), job, final_turn_complete=True
+    )
+
+    assert status == "structural_fail"
+    assert any("artifact is empty/incomplete" in reason for reason in reasons)
+
+
+def test_depth_worker_pool_feeds_structural_reason_to_next_attempt(
+    tmp_path: Path, monkeypatch
+):
+    sp = tmp_path / ".scratchpad"
+    _fresh(sp)
+    jobs = D._depth_worker_jobs(sp, {"pipeline": "sc", "mode": "light"})
+    target = jobs[2]
+    for job in jobs:
+        if job is not target:
+            _complete(sp, job["output"], job["agent_id"])
+    retry_feedback: list[list[str]] = []
+
+    def _fake_worker(**kwargs):
+        job = kwargs["job"]
+        reasons = list(kwargs.get("retry_reasons") or [])
+        retry_feedback.append(reasons)
+        if len(retry_feedback) == 1:
+            output = job["output"]
+            (sp / output).write_text(
+                f"<!-- PLAMEN_ARTIFACT: {output} -->\n"
+                f"<!-- PLAMEN_OWNER: {job['agent_id']} -->\n"
+                "<!-- PLAMEN_STATUS: IN_PROGRESS -->\n"
+                "<!-- PLAMEN_PHASE: depth -->\n"
+                "<!-- PLAMEN_VERSION: 1 -->\n"
+                f"<!-- AGENT_ROW: {job['agent_id']} -->\n"
+                f"<!-- EXPECTED_OUTPUT: {output} -->\n\n"
+                "# Edge-case analysis\n\n"
+                + ("Substantive analysis without a disposition block. " * 20)
+                + "\n\n<!-- PLAMEN_STATUS: COMPLETE -->\n",
+                encoding="utf-8",
+            )
+        else:
+            _complete(sp, job["output"], job["agent_id"])
+        status, gate_reasons = D._depth_worker_validation_result(
+            sp, kwargs["phase"], job, final_turn_complete=True
+        )
+        return {
+            "output": job["output"],
+            "rc": 0 if status == "complete" else -2,
+            "status": status,
+            "reasons": gate_reasons,
+        }
+
+    monkeypatch.setattr(D, "_run_single_depth_worker_pty", _fake_worker)
+
+    rc = D._run_depth_worker_pool_pty(
+        scratchpad=sp,
+        project_root=str(tmp_path),
+        config={"mode": "light", "language": "evm", "pipeline": "sc"},
+        phase=_phase(),
+        base_cmd=["claude", "--session-id", "base"],
+        env={},
+        timeout=1.0,
+        quiescence_s=0.0,
+        attempt=1,
+    )
+
+    assert rc == 0
+    assert retry_feedback[0] == []
+    assert "status=structural_fail" in retry_feedback[1]
+    assert any(
+        "artifact is empty/incomplete" in reason
+        for reason in retry_feedback[1]
+    )
 
 
 def test_depth_worker_contract_rejects_cross_row_owner(tmp_path: Path):
@@ -404,6 +552,58 @@ def test_depth_worker_jobs_l1_light_excludes_scanner_and_sibling(tmp_path: Path)
     outputs = {job["output"] for job in jobs}
     for name in (*_L1_SCANNER_OUTPUTS, "sibling_propagation_findings.md"):
         assert name not in outputs, f"unexpected {name} in L1 light jobs: {outputs}"
+
+
+@pytest.mark.parametrize(
+    ("pipeline", "language"),
+    (("sc", "evm"), ("l1", "go")),
+)
+def test_sibling_propagation_waits_for_complete_producer_barrier(
+    tmp_path: Path,
+    monkeypatch,
+    pipeline: str,
+    language: str,
+):
+    sp = tmp_path / ".scratchpad"
+    _fresh(sp)
+    jobs = D._depth_worker_jobs(
+        sp,
+        {"pipeline": pipeline, "language": language, "mode": "core"},
+    )
+    sibling = next(job for job in jobs if job["role"] == "sibling_propagation")
+    producers = [
+        job
+        for job in jobs
+        if job["category"] in D._DEPTH_PRODUCER_CATEGORIES
+    ]
+    assert producers
+    assert sibling["role"] in D._DEPTH_POST_PRODUCER_ROLES
+
+    complete_outputs: set[str] = set()
+    monkeypatch.setattr(
+        D,
+        "_depth_worker_output_complete",
+        lambda _sp, _phase, job, **_kwargs: job["output"] in complete_outputs,
+    )
+
+    ready = D._depth_jobs_ready_after_producer_barrier(
+        sp, _phase(), jobs, jobs
+    )
+    assert sibling not in ready
+
+    complete_outputs.update(job["output"] for job in producers)
+    ready = D._depth_jobs_ready_after_producer_barrier(
+        sp, _phase(), jobs, jobs
+    )
+    assert sibling in ready
+
+    # A missing or quarantined/incomplete predecessor is absent from the
+    # complete set and must close the aggregate-consumer barrier again.
+    complete_outputs.remove(producers[0]["output"])
+    ready = D._depth_jobs_ready_after_producer_barrier(
+        sp, _phase(), jobs, jobs
+    )
+    assert sibling not in ready
 
 
 def test_depth_worker_prompt_scanner_points_to_l1_heading(tmp_path: Path):

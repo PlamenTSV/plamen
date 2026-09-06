@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_execution_set.v1.schema.json",
+  "title": "Program Facts EVM execution set v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "run_id",
+    "run_generation",
+    "build_plan_digest",
+    "execution_authority_digest",
+    "expected_terminal_wtx_roster_digest",
+    "executions",
+    "evidence_pack",
+    "unresolved_debt_ids",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_execution_set.v1"
+    },
+    "status": {
+      "enum": [
+        "COMPLETE",
+        "DEGRADED",
+        "UNAVAILABLE",
+        "FAILED",
+        "STALE"
+      ]
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "build_plan_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "execution_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "expected_terminal_wtx_roster_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "executions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/execution"
+      },
+      "maxItems": 100000
+    },
+    "evidence_pack": {
+      "$ref": "#/$defs/evidencePack"
+    },
+    "unresolved_debt_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    },
+    "terminalState": {
+      "enum": [
+        "OK",
+        "USAGE_INVALID",
+        "REQUEST_MALFORMED",
+        "REQUEST_OVERSIZED",
+        "INPUT_DRIFT",
+        "WORKSPACE_INVALID",
+        "BUILD_BLOCKED",
+        "BUILD_FAILED",
+        "TOOL_UNAVAILABLE",
+        "TOOL_DRIFT",
+        "READ_BOUNDARY_DENIED",
+        "NETWORK_BOUNDARY_DENIED",
+        "MEMORY_LIMIT",
+        "PROCESS_LIMIT",
+        "WORKSPACE_QUOTA",
+        "TIMEOUT",
+        "CANCELLED",
+        "RAW_LIMIT_EXCEEDED",
+        "INTERNAL_FAILURE"
+      ]
+    },
+    "rawMember": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "digest",
+        "size_bytes"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "program-facts-raw"
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build_variant_id",
+        "capability_ids",
+        "terminal_state",
+        "work_plan_digest",
+        "completion_digest",
+        "raw_member",
+        "incorporation_digest"
+      ],
+      "properties": {
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "capability_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "terminal_state": {
+          "$ref": "#/$defs/terminalState"
+        },
+        "work_plan_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "completion_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "raw_member": {
+          "$ref": "#/$defs/rawMember"
+        },
+        "incorporation_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "evidencePack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "digest",
+        "size_bytes"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "program-facts-execution-evidence"
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        }
+      }
+    }
+  }
+}

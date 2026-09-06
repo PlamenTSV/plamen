@@ -366,9 +366,11 @@ Model BOTH attack types:
 | Confidence interval | Pyth `price.conf` checked; collateral priced at `price - conf`, debt at `price + conf` | Borrow/liquidate at inaccurate price within confidence band |
 | Chained feed deviation | Multi-feed derived prices: sum individual deviations; compare total vs LTV buffer | Phantom solvency, wrongful borrowing within compounded deviation |
 | Hardcoded stablecoin price | No asset priced as a hardcoded constant (1e8, 1e18); all assets use oracle | Depeg event → protocol uses wrong price, bad debt |
+| Authentication armed | For signed/attested inputs, the signer/committee/root is registered and non-empty before use; empty proof and zero-derived identity are rejected independently of anchor comparison | Degenerate proof can satisfy an unset trust anchor and authorize an untrusted value |
 
 **Action**: For every oracle data consumption point, verify ALL applicable checks from the table above. Missing checks → FINDING at severity based on impact. See ORACLE_ANALYSIS skill for full methodology.
 - For every oracle configuration setter (window size, max deviation, heartbeat), check: can the parameter be set to a value that effectively disables the oracle validation? If yes → FINDING (Rule 14 setter regression applies).
+- If authentication is implemented outside the audited scope, record the armed-anchor and degenerate-input properties as an `[EXTERNAL-ASSUMPTION]` and route missing evidence to dependency research; do not assume the verifier is armed or demote on that assumption.
 
 ---
 

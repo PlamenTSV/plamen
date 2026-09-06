@@ -1,0 +1,1472 @@
+{
+  "catalog_version": "1.0.0",
+  "integration": {
+    "debt": [
+      "bind_catalog_digest_to_run_manifest_phaseio_and_workplan",
+      "compile_graph_targets_and_relations_into_obligations",
+      "render_or_reference_catalog_methods_from_consumer_prompts",
+      "retire_duplicate_normative_method_content_after_parity"
+    ],
+    "runtime_authority": false,
+    "status": "SUBSTRATE_ONLY"
+  },
+  "methods": [
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "identity_domains": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "state_transitions": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "choice",
+          "entrypoint",
+          "function",
+          "governance_action",
+          "instruction"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "identity_domains",
+          "state_transitions"
+        ],
+        "required_capabilities": [
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "authority.capability.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "derive who can cause each transition, directly or transitively, and whether authority can be delegated, retained, forged, or bypassed.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "authorizes",
+        "calls",
+        "delegates_to"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate every principal and path that can directly or transitively cause each selected transition.",
+          "step_id": "enumerate-causers"
+        },
+        {
+          "instruction": "Trace acquisition, delegation, retention, revocation, and boundary checks for each capability.",
+          "step_id": "trace-capability"
+        },
+        {
+          "instruction": "Compare source-backed intended authority with reachable authority and record unresolved evidence without a safe conclusion.",
+          "step_id": "challenge-authority"
+        }
+      ],
+      "semantic_operator": "authority_capability",
+      "target_selector": {
+        "boundaries_any": [],
+        "effects_any": [
+          "authorization",
+          "configuration_change",
+          "governance_change",
+          "state_write"
+        ],
+        "entity_properties_any": [
+          "authority"
+        ]
+      },
+      "title": "Authority and capability"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "reads": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "storage_layout": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "value_flow": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "writes": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "account",
+          "contract",
+          "entrypoint",
+          "function",
+          "instruction",
+          "shared_state",
+          "storage"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "storage_layout",
+          "value_flow"
+        ],
+        "required_capabilities": [
+          "reads",
+          "source_locations",
+          "symbols",
+          "writes"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "value.accounting-conservation.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "enumerate sources, sinks, accruals, obligations, and backing; derive local and aggregate conservation relations across success and failure paths.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "calls",
+        "flows_value_to",
+        "reads_same_state",
+        "writes_same_state"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate value sources, sinks, accruals, obligations, backing, and every state location that represents them.",
+          "step_id": "enumerate-value-components"
+        },
+        {
+          "instruction": "Derive local and aggregate conservation relations across success, failure, retry, and partial-completion paths.",
+          "step_id": "derive-conservation-relations"
+        },
+        {
+          "instruction": "Compare paired operations and boundary cases, then preserve any unclosed accounting premise as unresolved.",
+          "step_id": "challenge-accounting"
+        }
+      ],
+      "semantic_operator": "value_accounting",
+      "target_selector": {
+        "boundaries_any": [],
+        "effects_any": [
+          "asset_transfer",
+          "balance_write",
+          "debt_write",
+          "supply_write"
+        ],
+        "entity_properties_any": [
+          "accounting"
+        ]
+      },
+      "title": "Value and accounting conservation"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "control_flow": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "reads": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "state_transitions": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "writes": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "choice",
+          "contract",
+          "entrypoint",
+          "function",
+          "instruction",
+          "state",
+          "transaction"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "reads",
+          "writes"
+        ],
+        "required_capabilities": [
+          "control_flow",
+          "source_locations",
+          "state_transitions",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "state.transition-legality.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "construct reachable states and transitions, then test required, forbidden, skipped, repeated, and partially completed transitions.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "before_after",
+        "calls",
+        "transitions_to"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate source-backed states, guards, transition effects, and invariants that must hold at each boundary.",
+          "step_id": "enumerate-states"
+        },
+        {
+          "instruction": "Construct reachable transition paths, including their callers and the state they read and write.",
+          "step_id": "construct-transitions"
+        },
+        {
+          "instruction": "Challenge required, forbidden, skipped, repeated, reordered, and partially completed transitions.",
+          "step_id": "challenge-transition-legality"
+        }
+      ],
+      "semantic_operator": "state_transition",
+      "target_selector": {
+        "boundaries_any": [
+          "initial"
+        ],
+        "effects_any": [
+          "state_write"
+        ],
+        "entity_properties_any": [
+          "state_legality"
+        ]
+      },
+      "title": "State-transition legality"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "configuration": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "lifecycle": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "state_transitions": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "configuration",
+          "contract",
+          "entrypoint",
+          "function",
+          "lifecycle_resource",
+          "module"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "configuration",
+          "state_transitions"
+        ],
+        "required_capabilities": [
+          "lifecycle",
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "lifecycle.ordering.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "examine behavior before initialization, during reconfiguration, after closure, and when individually valid actions are reordered.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "before_after",
+        "calls",
+        "transitions_to"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate creation, initialization, ordinary operation, reconfiguration, closure, cleanup, and upgrade states.",
+          "step_id": "enumerate-lifecycle"
+        },
+        {
+          "instruction": "Reorder individually valid actions and trace behavior before initialization, during change, and after closure.",
+          "step_id": "vary-ordering"
+        },
+        {
+          "instruction": "Check that cleanup and terminal transitions remain reachable and preserve required safety properties.",
+          "step_id": "challenge-lifecycle"
+        }
+      ],
+      "semantic_operator": "lifecycle_ordering",
+      "target_selector": {
+        "boundaries_any": [
+          "initial"
+        ],
+        "effects_any": [
+          "cleanup",
+          "configuration_change",
+          "initialization",
+          "upgrade"
+        ],
+        "entity_properties_any": [
+          "lifecycle",
+          "ordering"
+        ]
+      },
+      "title": "Lifecycle and ordering"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "boundary_values": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "control_flow": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "reads": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "writes": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "choice",
+          "entrypoint",
+          "function",
+          "instruction",
+          "state",
+          "storage",
+          "transaction"
+        ],
+        "optional_capabilities": [
+          "control_flow",
+          "reads",
+          "writes"
+        ],
+        "required_capabilities": [
+          "boundary_values",
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "boundary.numerical.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "instantiate zero, one, extrema, thresholds, discontinuities, rounding directions, truncation, precision changes, and arithmetic-domain edges.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "reads_same_state",
+        "writes_same_state"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Instantiate zero, one, extrema, thresholds, empty states, discontinuities, and arithmetic-domain edges for each selected target.",
+          "step_id": "instantiate-boundaries"
+        },
+        {
+          "instruction": "Trace rounding direction, truncation, precision conversion, and state changes on both sides of each boundary.",
+          "step_id": "trace-numerical-effects"
+        },
+        {
+          "instruction": "Compare boundary outcomes with neighboring values and source-backed invariants without generalizing from one convenient value.",
+          "step_id": "challenge-boundaries"
+        }
+      ],
+      "semantic_operator": "boundary_numerical",
+      "target_selector": {
+        "boundaries_any": [
+          "discontinuity",
+          "empty",
+          "epoch",
+          "initial",
+          "maximum",
+          "minimum",
+          "one",
+          "overflow_domain",
+          "precision_change",
+          "rounding",
+          "threshold",
+          "truncation",
+          "zero"
+        ],
+        "effects_any": [
+          "balance_write",
+          "debt_write",
+          "state_write",
+          "supply_write"
+        ],
+        "entity_properties_any": [
+          "accounting",
+          "state_legality"
+        ]
+      },
+      "title": "Boundary and numerical behavior"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "paired_operations": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "reads": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "value_flow": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "writes": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "choice",
+          "entrypoint",
+          "function",
+          "instruction",
+          "transaction"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "reads",
+          "value_flow",
+          "writes"
+        ],
+        "required_capabilities": [
+          "paired_operations",
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "symmetry.reversibility.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "pair mirrored branches and inverse operations; compare their preconditions, effects, failure handling, and conservation properties.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "calls",
+        "inverse_of",
+        "paired_with",
+        "reads_same_state",
+        "writes_same_state"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate mirrored branches, paired operations, and intended inverse transitions from source structure and effects.",
+          "step_id": "enumerate-pairs"
+        },
+        {
+          "instruction": "Compare preconditions, authority, state and value effects, failure handling, and cleanup for every pair.",
+          "step_id": "compare-pairs"
+        },
+        {
+          "instruction": "Derive whether asymmetries preserve equivalent safety properties or leave an unresolved deviation.",
+          "step_id": "challenge-symmetry"
+        }
+      ],
+      "semantic_operator": "symmetry_reversibility",
+      "target_selector": {
+        "boundaries_any": [],
+        "effects_any": [
+          "asset_transfer",
+          "balance_write",
+          "cleanup",
+          "state_write"
+        ],
+        "entity_properties_any": [
+          "accounting",
+          "reversibility",
+          "state_legality"
+        ]
+      },
+      "title": "Symmetry and reversibility"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "identity_domains": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "reads": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "serialization": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "writes": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "account",
+          "entrypoint",
+          "function",
+          "instruction",
+          "message",
+          "module",
+          "transaction"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "reads",
+          "serialization",
+          "writes"
+        ],
+        "required_capabilities": [
+          "identity_domains",
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "identity.domain-separation.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "trace how subjects, assets, modules, environments, epochs, nonces, and messages are bound and distinguished at every boundary.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "calls",
+        "crosses_domain",
+        "replay_of"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate subjects, assets, modules, environments, epochs, nonces, messages, and the domains that distinguish them.",
+          "step_id": "enumerate-identities"
+        },
+        {
+          "instruction": "Trace identity construction, validation, serialization, propagation, and use across every selected boundary.",
+          "step_id": "trace-domain-binding"
+        },
+        {
+          "instruction": "Challenge substitution, aliasing, reuse, truncation, and cross-domain interpretation while preserving uncertain bindings as unresolved.",
+          "step_id": "challenge-identity"
+        }
+      ],
+      "semantic_operator": "identity_domain",
+      "target_selector": {
+        "boundaries_any": [
+          "epoch"
+        ],
+        "effects_any": [
+          "authorization",
+          "external_call",
+          "identity_binding",
+          "message_processing"
+        ],
+        "entity_properties_any": [
+          "authority",
+          "domain_separation",
+          "replay"
+        ]
+      },
+      "title": "Identity and domain separation"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "external_interactions": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "identity_domains": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "serialization": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "value_flow": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "entrypoint",
+          "external_dependency",
+          "function",
+          "instruction",
+          "message"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "identity_domains",
+          "serialization",
+          "value_flow"
+        ],
+        "required_capabilities": [
+          "external_interactions",
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "external.interaction-assumption.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "enumerate trusted behavior across calls, runtimes, and services; test delay, failure, malformed results, adversarial behavior, and valid-but-different behavior.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "calls",
+        "crosses_domain",
+        "shares_dependency"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Inventory each external call, runtime, service, callback, message boundary, and behavior trusted across it.",
+          "step_id": "inventory-external-interactions"
+        },
+        {
+          "instruction": "Vary delay, failure, malformed results, adversarial behavior, reentry, and valid-but-different behavior.",
+          "step_id": "challenge-external-behavior"
+        },
+        {
+          "instruction": "Bind every safety conclusion to in-scope evidence or record the external premise and its research state as unresolved.",
+          "step_id": "resolve-external-assumptions"
+        }
+      ],
+      "semantic_operator": "external_assumption",
+      "target_selector": {
+        "boundaries_any": [],
+        "effects_any": [
+          "callback",
+          "external_call",
+          "message_processing"
+        ],
+        "entity_properties_any": [
+          "availability",
+          "domain_separation",
+          "external_assumption"
+        ]
+      },
+      "title": "External interaction and assumption"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "control_flow": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "external_interactions": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "resource_usage": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "shared_state": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "contract",
+          "entrypoint",
+          "external_dependency",
+          "function",
+          "instruction",
+          "lifecycle_resource",
+          "shared_state",
+          "transaction"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "control_flow",
+          "external_interactions",
+          "shared_state"
+        ],
+        "required_capabilities": [
+          "resource_usage",
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "availability.resource-control.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "determine whether progress, cleanup, execution, storage, or coordination can be blocked, starved, amplified, or made uneconomic.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "calls",
+        "shares_dependency"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate progress, cleanup, execution, storage, and coordination obligations together with their bounded resources.",
+          "step_id": "enumerate-progress-resources"
+        },
+        {
+          "instruction": "Identify who controls admission, iteration size, retries, dependencies, and costs for each selected obligation.",
+          "step_id": "trace-resource-control"
+        },
+        {
+          "instruction": "Challenge blocking, starvation, amplification, uneconomic execution, and failure to recover after exhaustion.",
+          "step_id": "challenge-availability"
+        }
+      ],
+      "semantic_operator": "availability_resources",
+      "target_selector": {
+        "boundaries_any": [
+          "maximum"
+        ],
+        "effects_any": [
+          "cleanup",
+          "external_call",
+          "progress",
+          "resource_consumption"
+        ],
+        "entity_properties_any": [
+          "availability",
+          "lifecycle"
+        ]
+      },
+      "title": "Availability and resource control"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "configuration": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "governance": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "state_transitions": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "upgrade_paths": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "configuration",
+          "contract",
+          "entrypoint",
+          "function",
+          "governance_action",
+          "module"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "governance",
+          "state_transitions",
+          "upgrade_paths"
+        ],
+        "required_capabilities": [
+          "configuration",
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "configuration.governance-upgrade.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "trace every mutable policy and code transition into the ordinary safety properties it can weaken, invalidate, or bypass.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "authorizes",
+        "before_after",
+        "calls",
+        "transitions_to"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate every mutable policy, privileged configuration, governance transition, and code or data upgrade path.",
+          "step_id": "enumerate-mutable-policy"
+        },
+        {
+          "instruction": "Trace each change into the ordinary authority, accounting, lifecycle, identity, and availability properties it can alter.",
+          "step_id": "trace-policy-effects"
+        },
+        {
+          "instruction": "Challenge pending, partial, reordered, adversarial, and stale configuration states without assuming governance is benevolent.",
+          "step_id": "challenge-configuration"
+        }
+      ],
+      "semantic_operator": "configuration_governance_upgrade",
+      "target_selector": {
+        "boundaries_any": [
+          "initial"
+        ],
+        "effects_any": [
+          "configuration_change",
+          "governance_change",
+          "upgrade"
+        ],
+        "entity_properties_any": [
+          "authority",
+          "lifecycle",
+          "state_legality"
+        ]
+      },
+      "title": "Configuration, governance, and upgrade"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "call_graph": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "reads": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "shared_state": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "value_flow": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "writes": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "contract",
+          "entrypoint",
+          "function",
+          "instruction",
+          "module",
+          "shared_state",
+          "transaction"
+        ],
+        "optional_capabilities": [
+          "call_graph",
+          "reads",
+          "value_flow",
+          "writes"
+        ],
+        "required_capabilities": [
+          "shared_state",
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "composition.shared-state.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "cross products of individually valid operations that share state, dependencies, callbacks, accounting, or authorization.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "calls",
+        "reads_same_state",
+        "shares_dependency",
+        "writes_same_state"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate shared state, dependency paths, callbacks, accounting domains, and authorization state touched by selected operations.",
+          "step_id": "enumerate-shared-state"
+        },
+        {
+          "instruction": "Construct bounded cross-products of individually valid operations that share those relations.",
+          "step_id": "compose-valid-operations"
+        },
+        {
+          "instruction": "Trace interference across operation boundaries and compare the composed result with each local safety property.",
+          "step_id": "challenge-composition"
+        }
+      ],
+      "semantic_operator": "composition_shared_state",
+      "target_selector": {
+        "boundaries_any": [],
+        "effects_any": [
+          "asset_transfer",
+          "callback",
+          "external_call",
+          "state_write"
+        ],
+        "entity_properties_any": [
+          "accounting",
+          "authority",
+          "composition"
+        ]
+      },
+      "title": "Composition and shared-state interference"
+    },
+    {
+      "applies_to": {
+        "accepted_fidelity": {
+          "concurrency": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "finality": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "replay": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "shared_state": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "source_locations": [
+            "EXACT",
+            "SYNTACTIC"
+          ],
+          "state_transitions": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ],
+          "symbols": [
+            "EXACT",
+            "HEURISTIC",
+            "MAY",
+            "SYNTACTIC"
+          ]
+        },
+        "node_kinds": [
+          "entrypoint",
+          "function",
+          "instruction",
+          "message",
+          "shared_state",
+          "transaction"
+        ],
+        "optional_capabilities": [
+          "finality",
+          "replay",
+          "shared_state",
+          "state_transitions"
+        ],
+        "required_capabilities": [
+          "concurrency",
+          "source_locations",
+          "symbols"
+        ]
+      },
+      "completion_policy": {
+        "allow_not_applicable": true,
+        "material_unresolved_requires_human_review": true,
+        "valid_not_applicable_reasons": [
+          "NO_TARGET_MATCH"
+        ]
+      },
+      "method_id": "concurrency.finality-replay.v1",
+      "method_version": "1.0.0",
+      "operator_instruction": "vary concurrent execution, retries, forks, reordering, replay, rollback, duplicate delivery, and partial completion.",
+      "prompt_fragment": {
+        "path": "prompts/shared/v2/breadth-semantic-operator-kernel.md",
+        "sha256": "974ccd9354d580a9bebd2cdfb89c0e170ca4c38e33c4da1d497f8db75e70ca3b"
+      },
+      "relation_selectors": [
+        "before_after",
+        "concurrent_with",
+        "replay_of",
+        "transitions_to"
+      ],
+      "required_receipts": [
+        "targets_examined",
+        "relation_coverage",
+        "steps_completed",
+        "evidence_locations",
+        "outcomes",
+        "unresolved_assumptions"
+      ],
+      "required_steps": [
+        {
+          "instruction": "Enumerate shared state, synchronization, finality boundaries, replay identities, retries, forks, and partial-completion states.",
+          "step_id": "enumerate-schedules"
+        },
+        {
+          "instruction": "Vary admissible concurrent execution, reordering, duplicate delivery, rollback, retry, replay, and finality transitions.",
+          "step_id": "vary-concurrency"
+        },
+        {
+          "instruction": "Trace the smallest schedule that changes a safety property and preserve uncertainty about admissibility as unresolved.",
+          "step_id": "challenge-finality-replay"
+        }
+      ],
+      "semantic_operator": "concurrency_finality_replay",
+      "target_selector": {
+        "boundaries_any": [
+          "epoch"
+        ],
+        "effects_any": [
+          "message_processing",
+          "progress",
+          "state_write"
+        ],
+        "entity_properties_any": [
+          "concurrency",
+          "finality",
+          "ordering",
+          "replay"
+        ]
+      },
+      "title": "Concurrency, finality, and replay"
+    }
+  ],
+  "schema_version": "plamen.method_card_catalog.v1"
+}

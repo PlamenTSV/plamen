@@ -1,7 +1,116 @@
 from pathlib import Path
 
+import pytest
+
 import plamen_driver as D
+from plamen_parsers import extract_unambiguous_internal_ids
 from plamen_types import plamen_home
+
+
+def _write_single_high_report(project: Path, scratch: Path, description: str) -> None:
+    (project / "AUDIT_REPORT.md").write_text(
+        "# Audit Report\n\n"
+        "## Summary\n"
+        "| Severity | Count |\n|---|---:|\n| High | 1 |\n\n"
+        "## High Findings\n"
+        "### [H-01] Report-safe title\n"
+        "**Severity**: High\n"
+        "**Location**: src/F.sol:1\n"
+        f"**Description**: {description} This section contains sufficient "
+        "client-facing explanation to keep the privacy fixture independent "
+        "from the report thinness telemetry and other structural checks.\n"
+        "**Impact**: Funds can be affected under the described condition.\n"
+        "**PoC Result**: Code trace reviewed.\n"
+        "**Recommendation**: Apply validation before state mutation.\n",
+        encoding="utf-8",
+    )
+    (scratch / "report_index.md").write_text(
+        "## Master Finding Index\n"
+        "| Report ID | Title | Severity | Internal Hypothesis |\n"
+        "|-----------|-------|----------|---------------------|\n"
+        "| H-01 | Report-safe title | High | INV-001 |\n",
+        encoding="utf-8",
+    )
+
+
+def test_quality_gate_does_not_match_internal_id_inside_hyphenated_prose(
+    tmp_path: Path,
+):
+    """P0-AL red fixture from the frozen Claude report.
+
+    ``\bOF-1\b`` incorrectly matched the ``of-1`` suffix in ``price-of-1``.
+    Ordinary hyphenated prose must not be reinterpreted as a pipeline identity.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    scratch = project / ".scratchpad"
+    scratch.mkdir()
+    _write_single_high_report(
+        project,
+        scratch,
+        "The price-of-1 unit and proof-of-2 cases are ordinary domain prose.",
+    )
+
+    issues = D._run_report_quality_gate(scratch, str(project))
+
+    assert not any("internal IDs leaked" in issue for issue in issues)
+    quality = (scratch / "report_quality.md").read_text(encoding="utf-8")
+    assert "| internal_id_leak | PASS |" in quality
+
+
+def test_quality_gate_still_matches_exact_niche_id_with_ascii_boundaries(
+    tmp_path: Path,
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    scratch = project / ".scratchpad"
+    scratch.mkdir()
+    _write_single_high_report(
+        project,
+        scratch,
+        "The private token `of-1` leaked through a client-facing code name.",
+    )
+
+    issues = D._run_report_quality_gate(scratch, str(project))
+
+    assert any("internal IDs leaked" in issue and "of-1" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "price-of-1",
+        "proof-of-2",
+        "out-of-3",
+        "state-of-4",
+        "prefixof-1",
+        "of-1suffix",
+        "of-1-extra",
+    ],
+)
+def test_internal_id_boundary_rejects_embedded_ascii_tokens(text: str):
+    assert extract_unambiguous_internal_ids(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "OF-1",
+        "of-1",
+        "`OF-1`",
+        "[OF-1]",
+        "/OF-1",
+        "_OF-1_",
+        "name_OF-1_test",
+        "\N{EN DASH}OF-1\N{EN DASH}",
+    ],
+)
+def test_internal_id_boundary_accepts_exact_identity_at_nonhyphen_delimiters(
+    text: str,
+):
+    assert [item.upper() for item in extract_unambiguous_internal_ids(text)] == [
+        "OF-1"
+    ]
 
 
 def test_client_sanitizers_remove_mixed_case_internal_ids():
@@ -343,7 +452,7 @@ def test_report_coverage_gate_blocks_unaccounted_prompt_ledger_shape(tmp_path: P
     assert any("UNACCOUNTED" in issue and "INV-404" in issue for issue in issues)
 
 
-def test_mechanical_report_index_respects_poc_demotion_caps(tmp_path: Path):
+def test_mechanical_report_index_rejects_legacy_poc_demotion_caps(tmp_path: Path):
     scratch = tmp_path / ".scratchpad"
     scratch.mkdir()
     (scratch / "verification_queue.md").write_text(
@@ -378,9 +487,9 @@ def test_mechanical_report_index_respects_poc_demotion_caps(tmp_path: Path):
     assert D._write_mechanical_report_index(scratch) == 1
     index = (scratch / "report_index.md").read_text(encoding="utf-8")
 
-    assert "| L-01 |" in index
-    assert "| Low |" in index
-    assert "POC_FAIL_CAP:Low" in index
+    assert "| H-01 |" in index
+    assert "| High |" in index
+    assert "POC_FAIL_CAP" not in index
 
 
 def test_promotion_receipts_accept_lowercase_confirmed_verdict(tmp_path: Path):

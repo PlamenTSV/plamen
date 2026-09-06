@@ -5,10 +5,24 @@ invariants from the audit artifacts, translate them into Trident fuzz tests, run
 them, and report violations.
 Execute the instructions below directly and stop. Do not spawn subagents.
 
+## P2-A execution boundary (launch prompt is authoritative)
+
+Use only the isolated driver-owned copied build root and generated
+`trident-tests` lane supplied by the launch prompt. Pre-existing quarantined tests and
+configuration are read-only legacy context with distinct provenance: never
+execute or clone them. Use the model-callable runner only for probes/builds.
+Campaign execution requires an exact driver-prepared secure-launcher contract
+binding argv, selected harness bytes, assertion IDs, and a positive case budget;
+otherwise record visible `UNSCORED` debt. Never promote a probe receipt. Read
+bound raw logs instead of piping output. Never install globally
+or write/execute in the original project root. Invalid workspace authority is
+visible `TOOL_UNAVAILABLE`, never a fallback permission.
+
 > **Purpose**: LLM-generated Trident invariant tests targeting protocol-specific
 > economic invariants, lifecycle correctness, finding-derived fuzz targets, and
 > structural consistency — derived from the audited codebase's actual design.
-> **Primary tool**: Trident (`trident_available: true` in build_status.md).
+> **Primary tool**: Trident, detected only by a recorded `trident --version`
+> probe inside the copied workspace.
 > **Fallback**: proptest with bounded inputs → boundary-value parameterized
 > tests, when Trident is unavailable or the program has no Anchor IDL.
 > **Execution cost**: Zero token cost regardless of invariant/handler count.
@@ -29,12 +43,15 @@ Execute the instructions below directly and stop. Do not spawn subagents.
 
 ## STEP 0: Tool Selection
 
-Read `trident_available` from `{SCRATCHPAD}/build_status.md`.
-- `trident_available: true` → use Trident (primary path, STEPs 1–4 below).
-- `trident_available: false` / absent → use the FALLBACK chain: proptest with
-  bounded inputs (works on stable Rust), or boundary-value parameterized tests
-  (3–5 concrete values covering 0, 1, typical, u64::MAX) when proptest is
-  unavailable. State which path you took in the results artifact.
+Pass `trident --version` through the recorded runner.
+- Successful probe → use Trident (primary path, STEPs 1–4 below).
+- Unavailable/failed probe → generate a fresh Rust fallback crate under the
+  allowed `trident-tests` lane, then use proptest with bounded inputs (stable
+  Rust), or boundary-value parameterized tests (3–5 concrete values covering
+  0, 1, typical, u64::MAX) when proptest is unavailable. Pass `cargo test`
+  through the recorded runner with `--cwd-relative trident-tests`. State which
+  path you took in the results artifact. Do not infer availability from a stale
+  build-status flag.
 
 ## STEP 1: Derive Invariants (NO CAP — test everything meaningful)
 
@@ -99,18 +116,10 @@ zero confidence.
 ## STEP 4: Initialize and Run Campaign
 
 ```bash
-# Windows: auto-detect OpenSSL (required for Trident compilation)
-if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] && [ -z "$OPENSSL_DIR" ]; then
-  for base in "/c/Program Files/OpenSSL-Win64" "/c/Program Files/OpenSSL"; do
-    if [ -d "$base/include/openssl" ]; then
-      export OPENSSL_DIR="$base" OPENSSL_LIB_DIR="$base/lib/VC/x64/MD" OPENSSL_INCLUDE_DIR="$base/include"
-      break
-    fi
-  done
-fi
-# cd to the build root (dir owning Cargo.toml / Anchor.toml — granted via --add-dir)
-pushd <BUILD_ROOT> && trident init --skip-build 2>&1 | tail -10
-pushd <BUILD_ROOT>/trident-tests && timeout 300 trident fuzz run fuzz_0 2>&1 | tail -50
+# Conceptual argv; pass each through the recorded runner from the copied root.
+# On Windows the runner records any inherited/deterministically detected OpenSSL paths.
+trident init --skip-build
+trident fuzz run fuzz_0  # driver-prepared contract: --cwd-relative trident-tests
 ```
 
 If compilation or init fails: read error, apply a targeted fix, retry ONCE. If
@@ -151,7 +160,7 @@ For each violation, use standard finding format with `[FUZZ-N]` IDs:
 - counterexample call sequence from the crash file
 - map to existing findings where applicable
 - Severity: standard matrix (invariant violations on core accounting = High likelihood)
-- Evidence tag: [FUZZ-PASS] (mechanical proof, same weight as [POC-PASS])
+- Evidence tag: [FUZZ-PASS] (authenticated counterexample to the encoded oracle; proof scope is recorded separately)
 ```
 
 A non-RAN status with NO findings is a valid, complete artifact. RAN with no

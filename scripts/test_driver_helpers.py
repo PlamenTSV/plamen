@@ -29,6 +29,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from plamen_types import plamen_home  # noqa: E402
 
 import plamen_driver as D  # noqa: E402
+import inventory_reemit_authority as R  # noqa: E402
 
 
 PASS, FAIL = 0, 0
@@ -55,45 +56,97 @@ def _mkscratch(files: dict[str, str]) -> Path:
     return sp
 
 
+def _h1_finding(fid: str, title: str, location: str) -> str:
+    """Render one deterministic, materially complete reconciliation block."""
+    return (
+        f"### Finding [{fid}]: {title}\n"
+        "**Severity**: Medium\n"
+        f"**Location**: {location}\n"
+        f"**Root Cause**: exact mechanism for {title}\n"
+        f"**Description**: exact description for {title}\n"
+        f"**Impact**: exact impact for {title}\n"
+        "**Verdict**: NEEDS_VERIFICATION\n\n"
+    )
+
+
+def _apply_h1_test_repair(
+    sp: Path,
+    expected_source_ids: set[str],
+) -> dict[str, object]:
+    """Exercise the private compatibility repair and its exact replay."""
+    receipt = R._apply_inventory_reemit_repair_for_tests(sp)
+    rows = receipt["rows"]
+    assert receipt["status"] == "APPLIED"
+    assert {row["source_finding_id"] for row in rows} == expected_source_ids
+    assert len(rows) == len(expected_source_ids)
+    assert all(row["effect"] == "ADDITIVE_REEMIT" for row in rows)
+    assert all(
+        row["delivery_state"] == "INDEPENDENT_VERIFICATION_REQUIRED"
+        for row in rows
+    )
+    materialized = {
+        name: (sp / name).read_bytes()
+        for name in R.MATERIALIZATION_FILES
+    }
+    assert D._validate_inventory_parity(sp) == []
+    assert R._apply_inventory_reemit_repair_for_tests(sp) == receipt
+    assert materialized == {
+        name: (sp / name).read_bytes()
+        for name in R.MATERIALIZATION_FILES
+    }
+    return receipt
+
+
 def test_H1_truncated_inventory_detected():
-    """Inventory has 2 IDs, upstream has 10. Below 60% -> flag."""
-    upstream = "\n".join(
-        f"## Finding [CS-{i}]: example\n**Location**: src/a.sol:L{i}"
+    """Inventory truncation is repaired by exact additive re-emission."""
+    upstream = "".join(
+        _h1_finding(f"CS-{i}", f"example {i}", f"src/a.sol:L{i}")
         for i in range(1, 11)
     )
-    inv = (
-        "# Findings Inventory\n"
-        "## Finding [CS-1]: example\n"
-        "**Location**: src/a.sol:L1\n"
-        "## Finding [CS-2]: example\n"
-        "**Location**: src/a.sol:L2\n"
+    inv = "# Findings Inventory\n\n" + "".join(
+        _h1_finding(f"CS-{i}", f"example {i}", f"src/a.sol:L{i}")
+        for i in range(1, 3)
     )
     sp = _mkscratch({
         "analysis_breadth1.md": upstream,
         "findings_inventory.md": inv,
     })
+    before = {path.name: path.read_bytes() for path in sp.iterdir()}
     issues = D._validate_inventory_parity(sp)
-    check("H1 truncated inventory flagged",
-          any("coverage" in s and "truncation" in s for s in issues),
-          repr(issues))
+    expected = {f"CS-{i}" for i in range(3, 11)}
+    assert any("8/10 raw discovery identity(s)" in issue for issue in issues)
+    assert before == {path.name: path.read_bytes() for path in sp.iterdir()}
+    assert not (sp / R.INTENT_FILE).exists()
+    assert not (sp / "inventory_reemit_receipt.json").exists()
+    receipt = _apply_h1_test_repair(sp, expected)
+    reemitted = {row["source_finding_id"] for row in receipt["rows"]}
+    check("H1 truncated inventory repaired without source loss",
+          reemitted == expected
+          and all(
+              f"analysis_breadth1.md:CS-{i}" in
+              (sp / "findings_inventory.md").read_text(encoding="utf-8")
+              for i in range(3, 11)
+          ),
+          f"issues={issues!r} reemitted={sorted(reemitted)!r}")
 
 
 def test_H1_full_coverage_passes():
-    ids = [f"[CS-{i}]" for i in range(1, 11)]
-    upstream = "\n".join(
-        f"## Finding {i}: title" for i in ids
+    upstream = "".join(
+        _h1_finding(f"CS-{i}", f"title {i}", f"src/x.sol:L{i}")
+        for i in range(1, 11)
     )
-    inv = "# Inventory\n" + "\n".join(
-        f"## Finding {i}: title\n**Location**: src/x.sol:L1"
-        for i in ids
-    )
+    inv = "# Inventory\n\n" + upstream
     sp = _mkscratch({
         "analysis_breadth1.md": upstream,
         "findings_inventory.md": inv,
     })
+    before = {path.name: path.read_bytes() for path in sp.iterdir()}
     issues = D._validate_inventory_parity(sp)
     check("H1 full-coverage inventory passes",
-          issues == [],
+          issues == []
+          and before == {path.name: path.read_bytes() for path in sp.iterdir()}
+          and not (sp / R.INTENT_FILE).exists()
+          and not (sp / "inventory_reemit_receipt.json").exists(),
           repr(issues))
 
 
@@ -205,33 +258,45 @@ def test_AP_HF_1_zero_blocks_still_halts():
 
 
 def test_H1_block_count_retention_gate():
-    """IDs align but heading-block count drops >60%. Flag retention."""
-    upstream = "\n".join(
-        f"## Finding [CS-{i}]: t\n**Location**: a.sol:L{i}\nbody"
+    """Collapsed headings cannot absorb distinct source blocks."""
+    upstream = "".join(
+        _h1_finding(f"CS-{i}", f"finding {i}", f"a.sol:L{i}")
         for i in range(1, 11)
     )
-    # Inventory keeps all IDs but collapses into 2 blocks (below 40%).
+    # Only CS-1 and CS-10 are retained blocks. Body mentions grant no authority.
     inv = (
-        "# Inventory\n"
-        "## Finding [CS-1]: consolidated\n"
-        + " ".join(f"[CS-{i}]" for i in range(2, 11)) + "\n"
-        "## Finding [CS-10]: consolidated\n"
+        "# Inventory\n\n"
+        + _h1_finding("CS-1", "finding 1", "a.sol:L1")
+        + "Consolidated prose mentions: "
+        + " ".join(f"[CS-{i}]" for i in range(2, 10))
+        + "\n\n"
+        + _h1_finding("CS-10", "finding 10", "a.sol:L10")
     )
     sp = _mkscratch({
         "analysis_breadth1.md": upstream,
         "findings_inventory.md": inv,
     })
+    before = {path.name: path.read_bytes() for path in sp.iterdir()}
     issues = D._validate_inventory_parity(sp)
-    check("H1 block-retention drop flagged",
-          any("retention" in s or "finding blocks" in s for s in issues),
-          repr(issues))
+    expected = {f"CS-{i}" for i in range(2, 10)}
+    assert any("8/10 raw discovery identity(s)" in issue for issue in issues)
+    assert before == {path.name: path.read_bytes() for path in sp.iterdir()}
+    assert not (sp / "inventory_reemit_receipt.json").exists()
+    receipt = _apply_h1_test_repair(sp, expected)
+    reemitted = {row["source_finding_id"] for row in receipt["rows"]}
+    check("H1 block-retention drop repaired additively",
+          reemitted == expected,
+          f"issues={issues!r} reemitted={sorted(reemitted)!r}")
 
 
-def test_H1_inventory_shard_merge_allows_dedup_against_chunks():
-    """Shard mode compares final inventory to chunks, not raw pre-shard bloat."""
-    raw = "\n".join(
-        f"## Finding [A{i:02d}-1]: duplicate raw candidate\n"
-        f"**Location**: src/raw{i}.rs:L1"
+def test_H1_unmanifested_shard_merge_cannot_dispose_raw_candidates_by_threshold():
+    """Raw candidates need exact shard/merge lineage, even when called duplicates."""
+    raw = "".join(
+        _h1_finding(
+            f"A{i:02d}-1",
+            f"duplicate raw candidate {i}",
+            f"src/raw{i}.rs:L1",
+        )
         for i in range(1, 31)
     )
     chunk_a = "\n".join(
@@ -258,10 +323,24 @@ def test_H1_inventory_shard_merge_allows_dedup_against_chunks():
         "findings_inventory_chunk_b.md": chunk_b,
         "findings_inventory.md": inv,
     })
+    before = {path.name: path.read_bytes() for path in sp.iterdir()}
     issues = D._validate_inventory_parity(sp)
-    check("H1 shard-mode inventory parity allows dedup against chunks",
-          issues == [],
-          repr(issues))
+    expected = {f"A{i:02d}-1" for i in range(1, 31)}
+    assert any("30/30 raw discovery identity(s)" in issue for issue in issues)
+    assert before == {path.name: path.read_bytes() for path in sp.iterdir()}
+    assert not (sp / "inventory_reemit_receipt.json").exists()
+    receipt = _apply_h1_test_repair(sp, expected)
+    reemitted = {row["source_finding_id"] for row in receipt["rows"]}
+    repaired_inventory = (sp / "findings_inventory.md").read_text(encoding="utf-8")
+    check("H1 unmanifested shard merge re-emits every raw candidate",
+          reemitted == expected
+          and all(row["effect"] == "ADDITIVE_REEMIT" for row in receipt["rows"]),
+          f"issues={issues!r} count={len(reemitted)}")
+    assert all(
+        f"analysis_01.md:A{i:02d}-1" in repaired_inventory
+        and f"exact impact for duplicate raw candidate {i}" in repaired_inventory
+        for i in range(1, 31)
+    )
 
 
 # --------------------------------------------------------------------------
@@ -295,7 +374,7 @@ def test_A1b_ai_model_summary_lists_unique_codex_models():
     ]
     summary = D._format_ai_model_summary({"cli_backend": "codex"}, phases, "thorough")
     check("A1b AI model summary lists unique Codex models",
-          summary == "Codex CLI / gpt-5.4, gpt-5.5, gpt-5.4-mini",
+          summary == "Codex CLI / gpt-5.6-terra, gpt-5.6-sol, gpt-5.6-luna",
           repr(summary))
 
 
@@ -305,8 +384,8 @@ def test_A1c_ai_model_summary_light_mode_collapses_to_sonnet():
         D.Phase("report", [], [], 60, model="haiku"),
     ]
     summary = D._format_ai_model_summary({"cli_backend": "claude"}, phases, "light")
-    check("A1c AI model summary light mode uses only sonnet",
-          summary == "Claude Code / sonnet",
+    check("A1c AI model summary light mode uses only pinned Sonnet 5",
+          summary == "Claude Code / claude-sonnet-5",
           repr(summary))
 
 
@@ -792,7 +871,7 @@ def test_R6_complete_report_index_does_not_merge_stale_queue_rows():
           f"source={source}; rows={rows!r}; counts={counts!r}; issues={issues!r}")
 
 
-def test_R7_verify_schema_drift_is_normalized_to_preferred_tag():
+def test_R7_verify_schema_alias_is_accepted_without_mutating_owned_bytes():
     sp = _mkscratch({
         "verification_queue.md": (
             "| Queue # | Finding ID | Severity | Title |\n"
@@ -806,10 +885,12 @@ def test_R7_verify_schema_drift_is_normalized_to_preferred_tag():
             "**Location**: crates/a/src/lib.rs:L10\n"
         ),
     })
+    before = (sp / "verify_INV-49.md").read_bytes()
     issues = D._validate_verify_completion(sp, "verify_medium_a")
+    after = (sp / "verify_INV-49.md").read_bytes()
     text = (sp / "verify_INV-49.md").read_text(encoding="utf-8")
-    check("R7 Evidence Tag only verifier output gets canonical Preferred Tag",
-          issues == [] and "**Preferred Tag**: CODE-TRACE" in text,
+    check("R7 Evidence Tag alias is accepted and verifier bytes stay immutable",
+          issues == [] and before == after and "**Evidence Tag**: CODE-TRACE" in text,
           f"issues={issues!r}; text={text!r}")
 
 
@@ -965,7 +1046,7 @@ def test_R11_sc_feeder_findings_promote_into_inventory_before_verify_queue():
           f"promoted={promoted!r}; issues={issues!r}; text={text!r}")
 
 
-def test_R12_sc_fuzzer_refuted_finding_excluded_not_body():
+def test_R12_sc_fuzzer_refuted_proposal_stays_visible_pending_closure():
     sp = _mkscratch({
         "verification_queue.md": (
             "| Queue # | Finding ID | Severity | Title | Bug Class | Preferred Tag | Location | Primary Artifact |\n"
@@ -987,12 +1068,13 @@ def test_R12_sc_fuzzer_refuted_finding_excluded_not_body():
     D._write_mechanical_report_tier(sp, "report_critical_high")
     body_path = sp / "report_critical_high.md"
     body = body_path.read_text(encoding="utf-8") if body_path.exists() else ""
-    check("R12 SC FUZZ refuted finding is excluded and not written to body",
-          count == 0
-          and len(records["active"]) == 0
-          and len(records["excluded"]) == 1
-          and "FUZZ-1" not in body
-          and "invariant violation" not in body,
+    check("R12 SC FUZZ refutation is non-authoritative and remains visible",
+          count == 1
+          and len(records["active"]) == 1
+          and len(records["excluded"]) == 0
+          and len(records["negative_disposition_proposals"]) == 1
+          and "invariant violation" in body
+          and "UNRESOLVED - needs human review" in body,
           f"count={count}; records={records!r}; body={body!r}")
 
 
@@ -1156,10 +1238,29 @@ def test_R19_skeptic_requires_all_critical_high():
         "verify_INV-003.md": "**Verdict**: CONFIRMED\n",
         "skeptic_judge_decisions.md": "## INV-001\nVerdict: ORIGINAL VERDICT\n",
     })
+    expected_rows = D._skeptic_expected_findings(sp)
+    expected = {row["finding_id"]: row for row in expected_rows}
+    check(
+        "R19 skeptic trigger manifest includes every independently selected tier",
+        set(expected) == {"INV-001", "INV-002", "INV-003"}
+        and "HIGH_RISK_ADVERSARIAL_REVIEW"
+        in expected["INV-001"]["challenge_triggers"]
+        and "HIGH_RISK_ADVERSARIAL_REVIEW"
+        in expected["INV-002"]["challenge_triggers"]
+        and "HIGH_RISK_ADVERSARIAL_REVIEW"
+        not in expected["INV-003"]["challenge_triggers"]
+        and bool(expected["INV-003"]["challenge_triggers"]),
+        expected_rows,
+    )
     issues = D._validate_skeptic_scope(sp)
-    check("R19 skeptic requires all Critical/High",
-          any("1/2" in s and "INV-002" in s for s in issues),
-          issues)
+    check(
+        "R19 skeptic requires every manifest-triggered challenge",
+        issues == [
+            "skeptic scope: reviewed 1/3 manifest-triggered skeptic challenge "
+            "finding(s); missing INV-002, INV-003"
+        ],
+        issues,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1557,6 +1658,20 @@ def test_G9_codex_model_not_available_detection():
         check("G9g missing log returns False for model detector",
               D._detect_codex_model_not_available(missing) is False, "")
 
+        # Model/command output is untrusted audited data, not provider-routing
+        # evidence.  A phrase inside a successful JSONL command event must not
+        # manufacture a model-unavailable halt.
+        log.write_text(json.dumps({
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "aggregated_output": "The dependency model is not available here",
+                "exit_code": 0,
+            },
+        }), encoding="utf-8")
+        check("G9h command output cannot spoof model unavailability",
+              D._detect_codex_model_not_available(log) is False, "")
+
 
 def test_G10_codex_model_unavailable_downgrade():
     """_codex_model_unavailable downgrades only matching phases."""
@@ -1567,17 +1682,17 @@ def test_G10_codex_model_unavailable_downgrade():
                     base_timeout_s=3600, model="sonnet")
     # Without unavailable: opus → gpt-5.5, sonnet → gpt-5.4
     cfg = {"cli_backend": "codex", "mode": "core"}
-    check("G10a opus maps to gpt-5.5",
-          phase_model(depth, "core", cfg) == "gpt-5.5", "")
-    check("G10b sonnet maps to gpt-5.4",
-          phase_model(breadth, "core", cfg) == "gpt-5.4", "")
+    check("G10a opus maps to gpt-5.6-sol",
+          phase_model(depth, "core", cfg) == "gpt-5.6-sol", "")
+    check("G10b sonnet maps to gpt-5.6-terra",
+          phase_model(breadth, "core", cfg) == "gpt-5.6-terra", "")
     # Mark gpt-5.5 unavailable: opus phases downgrade, sonnet stays
-    cfg["_codex_model_unavailable"] = "gpt-5.5"
-    cfg["_codex_model_fallback"] = "gpt-5.4"
-    check("G10c opus downgraded to gpt-5.4",
-          phase_model(depth, "core", cfg) == "gpt-5.4", "")
-    check("G10d sonnet unaffected (still gpt-5.4)",
-          phase_model(breadth, "core", cfg) == "gpt-5.4", "")
+    cfg["_codex_model_unavailable"] = "gpt-5.6-sol"
+    cfg["_codex_model_fallback"] = "gpt-5.6-terra"
+    check("G10c opus downgraded to gpt-5.6-terra",
+          phase_model(depth, "core", cfg) == "gpt-5.6-terra", "")
+    check("G10d sonnet unaffected (still gpt-5.6-terra)",
+          phase_model(breadth, "core", cfg) == "gpt-5.6-terra", "")
 
 
 def test_Q1_no_sleep_override_clears_hibernation_marker():
@@ -1974,18 +2089,22 @@ def test_A3_semantic_dedup_prompt_is_fail_open_and_bounded():
         plamen_home() / "prompts" / "shared" / "v2" /
         "phase4e-semantic-dedup.md"
     ).read_text(encoding="utf-8")
-    # D1: the SC agent emits decisions-only and the driver builds the deduped
-    # inventory. The crash-safety stub the agent writes FIRST is now the
-    # decisions stub (IN_PROGRESS_PASSTHROUGH_WRITTEN); the L1 queue copy
-    # remains. The SC `findings_inventory.md` -> deduped copy moved to the
-    # driver (pre-run passthrough safety net), so the agent no longer performs
-    # it (avoiding the full-inventory read/rewrite context bomb).
-    check("A3 semantic dedup prompt writes decisions stub first",
-          "Mandatory First Action" in prompt
-          and "IN_PROGRESS_PASSTHROUGH_WRITTEN" in prompt
-          and "copy `{SCRATCHPAD}/verification_queue.md`" in prompt
-          and "do NOT read `{SCRATCHPAD}/findings_inventory.md`" in prompt,
-          prompt[:1200])
+    # D1: SC and L1 emit only the decisions stub. The driver owns both the
+    # crash-safety passthrough and the post-dedup inventory; L1 semantic dedup
+    # is prequeue and must neither read nor copy a verification queue.
+    check(
+        "A3 semantic dedup prompt writes decisions stub before driver materialization",
+        "Mandatory First Action" in prompt
+        and "IN_PROGRESS_PASSTHROUGH_WRITTEN" in prompt
+        and "do NOT read `{SCRATCHPAD}/findings_inventory.md`" in prompt
+        and "L1: do NOT read `{SCRATCHPAD}/verification_queue.md`; it does not exist yet"
+        in prompt
+        and "do NOT copy or edit a verification queue" in prompt
+        and "driver owns and (re)builds that artifact mechanically" in prompt
+        and "copy `{SCRATCHPAD}/verification_queue.md`" not in prompt
+        and "`verification_queue_deduped.md`" not in prompt,
+        prompt[:1800],
+    )
     check("A3 semantic dedup prompt forbids global expansion",
           "Do NOT read or expand" in prompt
           and "Evaluate ONLY the candidate rows" in prompt
@@ -2006,31 +2125,31 @@ def test_A3_sc_phase_order_has_attention_repair_before_rag_and_chain():
           repr(names))
 
 
-def test_M1_opus_alias_pins_to_48():
+def test_M1_opus_alias_pins_to_5():
     phase = D.Phase("depth", [], [], base_timeout_s=1, model="opus")
-    check("M1 bare opus resolves to claude-opus-4-8",
-          D.phase_model(phase, "thorough") == "claude-opus-4-8",
+    check("M1 bare opus resolves to claude-opus-5",
+          D.phase_model(phase, "thorough") == "claude-opus-5",
           D.phase_model(phase, "thorough"))
 
 
 def test_M2_light_mode_still_forces_sonnet():
     phase = D.Phase("depth", [], [], base_timeout_s=1, model="opus")
-    check("M2 light mode forces sonnet despite opus phase",
-          D.phase_model(phase, "light") == "sonnet",
+    check("M2 light mode forces pinned Sonnet 5 despite opus phase",
+          D.phase_model(phase, "light") == "claude-sonnet-5",
           D.phase_model(phase, "light"))
 
 
 def test_M3_l1_verify_shards_are_cost_capped():
     phases = {p.name: p for p in D.L1_PHASES}
     for name in D.L1_VERIFY_PHASE_NAMES:
-        check(f"M3 L1 {name} uses sonnet",
-              D.phase_model(phases[name], "thorough") == "sonnet",
+        check(f"M3 L1 {name} uses pinned Sonnet 5",
+              D.phase_model(phases[name], "thorough") == "claude-sonnet-5",
               D.phase_model(phases[name], "thorough"))
-    check("M3 L1 verify_queue stays haiku",
-          D.phase_model(phases["verify_queue"], "thorough") == "haiku",
+    check("M3 L1 verify_queue is promoted to pinned Sonnet 5",
+          D.phase_model(phases["verify_queue"], "thorough") == "claude-sonnet-5",
           D.phase_model(phases["verify_queue"], "thorough"))
-    check("M3 L1 verify_aggregate stays haiku",
-          D.phase_model(phases["verify_aggregate"], "thorough") == "haiku",
+    check("M3 L1 verify_aggregate is promoted to pinned Sonnet 5",
+          D.phase_model(phases["verify_aggregate"], "thorough") == "claude-sonnet-5",
           D.phase_model(phases["verify_aggregate"], "thorough"))
 
 
@@ -2425,14 +2544,17 @@ def test_M6_inventory_evidence_validation_and_queue_filter():
           records["INV-001"]["location_status"] == "RECOVERED_BASENAME"
           and "crates/real/src/lib.rs:L2" in inv,
           f"records={records}, inv={inv}")
-    check("M6 queue filter removes only invalid-location invalid-source rows",
-          removed == ["INV-002"]
+    debt = (sp / "verification_queue_evidence_debt.md").read_text(encoding="utf-8")
+    check("M6 queue filter retains invalid evidence as explicit repair debt",
+          removed == []
           and "INV-001" in queue
-          and "INV-002" not in queue,
+          and "INV-002" in queue
+          and "LOCATION_INVALID" in queue
+          and "INV-002" in debt,
           f"removed={removed}, queue={queue}")
 
 
-def test_M7_mechanical_report_index_excludes_refuted():
+def test_M7_mechanical_report_index_keeps_unproven_negative_visible():
     sp = _mkscratch({
         "verification_queue.md": (
             "| Queue # | Finding ID | Severity | Title | Bug Class | Preferred Tag | Location | Primary Artifact |\n"
@@ -2460,15 +2582,17 @@ def test_M7_mechanical_report_index_excludes_refuted():
     idx = (sp / "report_index.md").read_text(encoding="utf-8")
     count = D._write_mechanical_report_tier(sp, "report_critical_high")
     tier = (sp / "report_critical_high.md").read_text(encoding="utf-8")
-    check("M7 mechanical report index keeps only reportable verifier rows",
-          active == 1
+    check("M7 verifier negative is a proposal, not report-removal authority",
+          active == 2
           and any(a.get("finding_id") == "INV-001" for a in assignments)
-          and not any(a.get("finding_id") == "INV-002" for a in assignments)
-          and "INV-002 | High | fake bug | FALSE_POSITIVE" in idx,
+          and any(a.get("finding_id") == "INV-002" for a in assignments)
+          and "UNPROVEN_NEGATIVE(FALSE_POSITIVE)" in idx
+          and "Proposed Negative Dispositions (Non-authoritative)" in idx,
           f"active={active}, assignments={assignments}, idx={idx}")
-    check("M7 mechanical tier writer does not leak false positives",
-          count == 1 and "real bug" in tier and "fake bug" not in tier
-          and "FALSE_POSITIVE" not in tier,
+    check("M7 mechanical tier writer visibly retains disputed candidate",
+          count == 2 and "real bug" in tier and "fake bug" in tier
+          and "FALSE_POSITIVE" in tier
+          and "UNRESOLVED - needs human review" in tier,
           tier)
 
 
@@ -2519,10 +2643,11 @@ def test_M8_messy_formats_are_tolerated_without_dropping_leads():
           and records["INV-001"]["location_status"] == "OK"
           and records["INV-002"]["source_status"] == "SOURCE_UNVERIFIED",
           f"removed={removed}, records={records}")
-    check("M8 status/final-verdict aliases classify reportability",
-          active == 1
+    check("M8 status/final-verdict aliases preserve negative proposals",
+          active == 2
           and "INV-001" in idx
-          and "INV-002 | Medium | freeform | FALSE_POSITIVE" in idx,
+          and "INV-002" in idx
+          and "UNPROVEN_NEGATIVE(FALSE_POSITIVE)" in idx,
           idx)
 
 
@@ -2548,11 +2673,23 @@ def test_M9_mechanical_inventory_merge_preserves_chunk_source_ids():
     parsed, merged = D._write_mechanical_inventory_from_chunks(sp)
     issues = D._validate_inventory_parity(sp)
     inv = (sp / "findings_inventory.md").read_text(encoding="utf-8")
-    check("M9 mechanical inventory merge passes parity",
-          parsed == 2 and merged == 2 and issues == [],
+    review = D._reconcile_exact_inventory(sp, persist=False)
+    debt = {
+        row["source_finding_id"]
+        for row in review["candidates"]
+        if row["disposition"] == "HUMAN_REVIEW_DEBT"
+    }
+    check("M9 mechanical inventory merge retains exact review debt",
+          parsed == 2
+          and merged == 2
+          and debt == {"CA-01", "CB-02"}
+          and any("2/2 raw discovery identity(s)" in issue for issue in issues),
           f"parsed={parsed}, merged={merged}, issues={issues}, inv={inv}")
     check("M9 mechanical inventory preserves source IDs",
-          all(tok in inv for tok in ("CF1-1", "PA1-2", "CF2-7")),
+          all(
+              tok in inv
+              for tok in ("CF1-1", "PA1-2", "CA-01", "CF2-7", "CB-02")
+          ),
           inv)
 
 
@@ -2642,9 +2779,12 @@ def test_M11_verify_queue_parity_flags_dropped_inventory_ids():
 
 
 def test_M12_verify_queue_parity_hypothesis_aware_expansion():
-    """M12: After _dedup_queue_by_hypothesis collapses INV-NNN rows into H-N
-    representative rows, the parity validator must expand H-N back to its
-    constituent INV-NNN IDs so that all inventory entries are acknowledged."""
+    """M12: proposal-only grouping cannot replace independent queue work.
+
+    P0-W deliberately removed Markdown grouping as coverage authority.  A
+    multi-member H-N proposal must not acknowledge its INV-NNN constituents;
+    only independently routed member rows close queue parity.
+    """
     sp = _mkscratch({
         "findings_inventory.md": (
             "# Inventory\n\n"
@@ -2676,24 +2816,36 @@ def test_M12_verify_queue_parity_hypothesis_aware_expansion():
         ),
     })
     issues = D._validate_verification_queue_inventory_parity(sp)
-    check("M12a parity passes when H-N covers all INV-NNN constituents",
-          len(issues) == 0, repr(issues))
+    check("M12a proposal-only H-N grouping cannot acknowledge constituents",
+          any("INV-001" in issue and "dropout" in issue for issue in issues)
+          and any("H-1" in issue and "not present in inventory" in issue for issue in issues),
+          repr(issues))
 
-    # Now test the partial-coverage case: remove H-2 from queue so INV-003 is uncovered
+    # P0-W active identity is every exact member.  Once the independent rows
+    # are routed, parity is exact and does not depend on the proposal aliases.
     (sp / "verification_queue.md").write_text(
         "| Queue # | Finding ID | Severity | Title | Bug Class | Preferred Tag | Location | Primary Artifact |\n"
         "|---------|------------|----------|-------|-----------|---------------|----------|------------------|\n"
-        "| 1 | H-1 | High | reentrancy in withdraw | reentrancy | CODE-TRACE | src/vault.sol:L45 | findings_inventory.md |\n",
+        "| 1 | INV-001 | High | reentrancy in withdraw | reentrancy | CODE-TRACE | src/vault.sol:L45 | findings_inventory.md |\n"
+        "| 2 | INV-002 | Medium | missing access control | access | CODE-TRACE | src/vault.sol:L80 | findings_inventory.md |\n"
+        "| 3 | INV-003 | High | unchecked return | unchecked-return | CODE-TRACE | src/router.sol:L20 | findings_inventory.md |\n",
+        encoding="utf-8",
+    )
+    issues_independent = D._validate_verification_queue_inventory_parity(sp)
+    check("M12b independent member routing closes exact parity",
+          issues_independent == [], repr(issues_independent))
+
+    # Now test the partial-coverage case: remove one independent member.
+    (sp / "verification_queue.md").write_text(
+        "| Queue # | Finding ID | Severity | Title | Bug Class | Preferred Tag | Location | Primary Artifact |\n"
+        "|---------|------------|----------|-------|-----------|---------------|----------|------------------|\n"
+        "| 1 | INV-001 | High | reentrancy in withdraw | reentrancy | CODE-TRACE | src/vault.sol:L45 | findings_inventory.md |\n"
+        "| 2 | INV-002 | Medium | missing access control | access | CODE-TRACE | src/vault.sol:L80 | findings_inventory.md |\n",
         encoding="utf-8",
     )
     issues2 = D._validate_verification_queue_inventory_parity(sp)
-    check("M12b parity flags INV-003 when H-2 is missing from queue",
+    check("M12c parity flags an independently missing INV-003",
           any("INV-003" in i and "dropout" in i for i in issues2),
-          repr(issues2))
-
-    # H-N IDs that map to known inventory IDs should NOT appear as "extra"
-    check("M12c mapped H-1 is not flagged as extra",
-          not any("H-1" in i and "not present in inventory" in i for i in issues2),
           repr(issues2))
 
 
@@ -2723,13 +2875,23 @@ def test_V249_P51_index_completeness_retry_hint_uses_norm_indexed():
     # Should have flagged H-2 as dropped
     check("V249-P51a completeness detects dropped H-2",
           any("H-2" in i for i in issues), repr(issues))
-    # The retry hint should be written without NameError
     hint = sp / "report_index_retry_hint.md"
-    check("V249-P51b retry hint file was written",
+    check("V249-P51b observational validation writes no retry hint",
+          not hint.exists(), "observational validator wrote a retry hint")
+
+    published_issues = V._check_index_completeness(
+        sp,
+        str(sp),
+        write_retry_hint=True,
+    )
+    check("V249-P51c explicit retry publication preserves the dropout",
+          published_issues == issues and any("H-2" in i for i in published_issues),
+          repr(published_issues))
+    check("V249-P51d explicit retry publication writes the hint",
           hint.exists(), "hint file missing")
     if hint.exists():
         body = hint.read_text(encoding="utf-8")
-        check("V249-P51c hint references norm_indexed count (1)",
+        check("V249-P51e hint references norm_indexed count (1)",
               "indexed 1 hypothesis" in body, body[:200])
 
 
@@ -3007,7 +3169,7 @@ def main():
         test_R10_depth_findings_promote_into_inventory_before_verify_queue,
         test_R10b_confirmed_depth_tail_ids_promote_without_confidence_allowlist,
         test_R11_sc_feeder_findings_promote_into_inventory_before_verify_queue,
-        test_R12_sc_fuzzer_refuted_finding_excluded_not_body,
+        test_R12_sc_fuzzer_refuted_proposal_stays_visible_pending_closure,
         test_R13_sc_slither_confirmed_promotes_through_report_index,
         test_R14_consolidation_map_acknowledges_confirmed_source_ids,
         test_R15_client_title_sanitizer_removes_internal_ids,
@@ -3057,7 +3219,7 @@ def main():
         test_M4h_report_index_prompt_examples_use_non_copyable_placeholder_ids,
         test_M5_report_index_recovery_promotes_missing_confirmed,
         test_M6_inventory_evidence_validation_and_queue_filter,
-        test_M7_mechanical_report_index_excludes_refuted,
+        test_M7_mechanical_report_index_keeps_unproven_negative_visible,
         test_M8_messy_formats_are_tolerated_without_dropping_leads,
         test_M9_mechanical_inventory_merge_preserves_chunk_source_ids,
         test_M9b_inventory_merge_does_not_overcut_same_location_sibling_bugs,

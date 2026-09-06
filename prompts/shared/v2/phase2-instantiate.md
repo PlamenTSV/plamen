@@ -9,6 +9,21 @@
 
 ## Step 2a: Determine Agent Count
 
+**Mode policy is authoritative and evaluated first**:
+
+| Mode | Breadth worker contract | Size-tier rule |
+|------|-------------------------|----------------|
+| Light | **3-4 Sonnet breadth AGENT rows** | Simple/Medium/Complex tiers do not raise this cap |
+| Core / Thorough | 5-9 breadth AGENT rows | Apply the size tiers below, including their floors |
+
+For Light mode, preserve every `Required=YES` methodology even when more than
+four skills are triggered: bind the highest-value compatible skills to the 3-4
+breadth workers under the normal merge/cap rules, then record every overflow
+skill in `## Skill Bindings` with an explicit compatible `depth-*` role. The
+driver injects those bindings into the depth worker. A skill absent from both a
+breadth `Template` cell and an explicit depth binding is a hard schema error.
+This is a delivery deferral, not permission to mark a triggered skill optional.
+
 | Condition | Agent Count |
 |-----------|-------------|
 | Simple (<5 deps, <2000 lines) | 3 agents |
@@ -17,7 +32,7 @@
 
 **Minimum always**: 1 core state, 1 access control, 1 per major external dep (overrides Simple tier if needed)
 
-**Tier floor (HARD)**: the Merge Hierarchy (Step 2a.1) reduces toward the tier's agent count but **NEVER below its lower bound** — **Complex never below 7**, Medium never below 5. If merges would drop the AGENT-row count below the floor, keep skills in **separate** AGENT rows instead (the 300-line cap is an upper bound on per-agent payload, NOT a license to collapse below the tier floor). Merging away whole lenses on a large codebase is a recall loss. The driver **mechanically enforces the Complex floor (>=7)** and will reject a sub-floor manifest, so produce >=7 AGENT rows up front for any Complex codebase.
+**Core/Thorough tier floor (HARD)**: the Merge Hierarchy (Step 2a.1) reduces toward the tier's agent count but **NEVER below its lower bound** — **Complex never below 7**, Medium never below 5. If merges would drop the AGENT-row count below the floor, keep skills in **separate** AGENT rows instead (the 300-line cap is an upper bound on per-agent payload, NOT a license to collapse below the tier floor). Merging away whole lenses on a large codebase is a recall loss. The driver mechanically enforces the Complex floor (>=7) for Core/Thorough. **It does not apply that floor in Light mode; Light remains 3-4 and uses explicit depth-role carryover for overflow skills.**
 
 **Breadth-to-depth redirect**: When actual breadth agent count is below the Medium baseline (5), the saved slots increase the depth budget floor: `depth_floor = 12 + (5 - actual_breadth_count)`.
 
@@ -52,14 +67,19 @@ The Move-Safety Agent prompt: load all 4 always-required SKILLs into a single ag
 
 ## Step 2a.3: Breadth Floor-Fill — NEVER invent skill templates
 
-The Complex tier requires >=7 breadth agents (Step 2a). When the recon-recommended REAL skills yield FEWER agents than the floor, you MUST reach the floor **without inventing skill names**. The `Template` column of every AGENT row must contain ONLY:
-- a **real** skill/template name that exists at `~/.claude/agents/skills/{LANGUAGE|injectable|niche}/<lowercase-hyphenated-name>/SKILL.md` (the names in `skill-index.md` and your `template_recommendations.md`), a baseline focus (`CORE_STATE`, `ACCESS_CONTROL`), **or**
+In Core/Thorough, the Complex tier requires >=7 breadth agents (Step 2a). When the recon-recommended REAL skills yield FEWER agents than the floor, you MUST reach the floor **without inventing skill names**. This floor-fill section does not apply to Light mode. The `Template` column of every AGENT row must contain ONLY:
+- a **real breadth-eligible** skill/template name that exists at `~/.claude/agents/skills/{LANGUAGE|injectable|niche}/<lowercase-hyphenated-name>/SKILL.md` (the names in `skill-index.md` and your `template_recommendations.md`) and declares a compatible breadth consumer in `skill_selection_catalog.json`, a baseline focus (`CORE_STATE`, `ACCESS_CONTROL`), **or**
 - the literal sentinel `GENERAL` — a focus-only breadth pass with no skill methodology (the driver runs it as a general agent over that focus area; this is expected, not an error).
 
 To fill extra agents up to the floor, **in this order**:
-1. **Split a broad real skill's scope** across multiple agents by file/subsystem (e.g. `ORACLE_ANALYSIS` on RNG contracts as one agent, on price contracts as another) — same real `Template`, different `Focus Area` + file scope.
-2. **Bind the closest applicable real skill** to an under-covered domain. Examples: reward/payout accounting -> `ECONOMIC_DESIGN_AUDIT` or `SHARE_ALLOCATION_FAIRNESS`; game/round/RNG outcome logic -> `OUTCOME_DETERMINISM`; auxiliary swap/pricing -> the relevant real skill (`ORACLE_ANALYSIS`, `TOKEN_FLOW_TRACING`, ...).
+1. **Split a broad real breadth-eligible skill's scope** across multiple agents by file/subsystem (e.g. `ORACLE_ANALYSIS` on RNG contracts as one agent, on price contracts as another) — same real `Template`, different `Focus Area` + file scope.
+2. **Bind the closest applicable real breadth-eligible skill** to an under-covered domain. Examples: reward/payout accounting -> `ECONOMIC_DESIGN_AUDIT` or `SHARE_ALLOCATION_FAIRNESS`; game/round/RNG outcome logic -> `OUTCOME_DETERMINISM`; auxiliary swap/pricing -> the relevant real skill (`ORACLE_ANALYSIS`, `TOKEN_FLOW_TRACING`, ...). Never use a depth-only skill for breadth floor-fill.
 3. **Only if no real skill applies**, create a focus-only agent with `Template = GENERAL`.
+
+**Retry floor repair is narrower:** when the driver reports that an otherwise
+typed proposal missed only the breadth-row floor, add `GENERAL` rows for the
+deficit. The retry predicate is conjunctive with consumer compatibility:
+depth-only skills are forbidden in breadth `Template` cells and `B#` bindings.
 
 **PROHIBITED**: inventing a skill-like `Template` name that has no `SKILL.md` (e.g. `REWARD_ACCOUNTING`, `GAME_LOGIC_CORRECTNESS`, `MINIGAME_AUXILIARY`). A fabricated `Template` silently drops methodology and emits a binding-loss warning. The manifest schema gate rejects fabricated templates and you will be asked to retry — bind a real skill (split scope or closest-fit) or use `GENERAL`.
 
@@ -67,8 +87,33 @@ To fill extra agents up to the floor, **in this order**:
 
 ## Step 2b: Instantiate Templates
 
+The driver reconciles positive recon recommendation prose/signals into the
+`BINDING MANIFEST` table before this phase. Treat the resulting Required column
+as canonical; do not override it from a second prose interpretation.
+
 For each template marked `Required? = YES` in `template_recommendations.md`:
-1. Read template from `~/.claude/agents/skills/{LANGUAGE}/{template-name}/SKILL.md` (folder name is lowercase-hyphenated version of the template name, e.g., ORACLE_ANALYSIS -> oracle-analysis)
+1. Read that skill's `index_consumers` from `skill_selection_catalog.json` and
+   assign the canonical template identifier only to a compatible declared
+   consumer. A breadth `Template` cell or `B#` binding is permitted only when
+   the skill declares a `breadth:*` consumer (including the specific
+   cross-chain/encoding breadth declaration). A depth-only skill MUST appear
+   only in `## Skill Bindings`, bound to every scheduled declared `depth-*`
+   role, and MUST NOT appear in a breadth `Template` cell or `B#` binding.
+   Methodology loading and path resolution are driver-owned at worker launch.
+
+   Convert catalog consumer roles to manifest destinations exactly as follows;
+   the catalog spelling itself is not a valid `Inject Into` destination:
+
+   | Catalog `index_consumers` role | Manifest `Inject Into` destination |
+   |---|---|
+   | `depth:token_flow` | `depth-token-flow` |
+   | `depth:state_trace` | `depth-state-trace` |
+   | `depth:edge_case` | `depth-edge-case` |
+   | `depth:external` | `depth-external` |
+
+   Never write `depth_state_trace`, `depth_edge_case`, or another `depth_*`
+   token. The manifest destination denominator is exactly the four hyphenated
+   values above.
 2. For Aptos/Sui breadth agents: load `move-safety-core-directives/SKILL.md` instead of the 4 individual always-required skills. The full skills go to the Move-Safety Agent only.
 3. Replace `{PLACEHOLDERS}` with instantiation parameters
 4. **Conditional loading**: Strip sections wrapped in `<!-- LOAD_IF: FLAG -->...<!-- END_LOAD_IF: FLAG -->` when the flag was NOT detected
@@ -80,8 +125,11 @@ For each template marked `Required? = YES` in `template_recommendations.md`:
 
 1. Read protocol type from `{scratchpad}/template_recommendations.md` -> `## Injectable Skills`
 2. For each recommended injectable: Read from `~/.claude/agents/skills/injectable/{skill-name}/SKILL.md`
-3. **Breadth agents**: Extract ONLY section headers + key questions (1-line per section, ~200 tokens max)
-4. **Depth agents (Phase 4b)**: Append the relevant skill methodology to the existing assigned depth-agent prompt.
+3. **Breadth agents**: Only when the injectable declares a compatible breadth
+   consumer, extract section headers + key questions (1-line per section,
+   ~200 tokens max). Never route a depth-only injectable to breadth.
+4. **Depth agents (Phase 4b)**: Append the relevant skill methodology to every
+   scheduled compatible declared depth-agent prompt.
 5. Injectable skills do NOT spawn dedicated agents. The spawn manifest must record which existing agent received each injectable skill.
 
 ---
@@ -131,7 +179,7 @@ Instead, for each vulnerability class in your methodology:
 {list scratchpad files}
 
 ## Output Requirements
-Write to {SCRATCHPAD}/analysis_{focus_area}.md
+Expected output: {SCRATCHPAD}/analysis_{focus_area}.md
 Use finding IDs: [{PREFIX}-1], [{PREFIX}-2]...
 
 SCOPE: Write ONLY to your assigned output file. Do NOT read or write other agents' output files. Do NOT spawn additional Task subagents. Return your findings and stop.
@@ -192,8 +240,9 @@ Rules:
   `CROSS_VM_SERIALIZATION_CONFORMANCE` is REQUIRED and MUST appear in
   `## Skill Bindings` twice: once injected into the cross-chain/encoding
   breadth agent by `B#`, and once injected into `depth-external`.
-- Before returning, re-read the manifest and confirm the number of AGENT
-  rows equals the number of first-pass breadth output files the breadth phase
-  must produce.
+- Before the final Write, confirm in memory that the number of AGENT rows
+  equals the number of first-pass breadth output files the breadth phase must
+  produce. Write the complete proposal once; the supervisor validates the
+  exact staged bytes, so no output re-read is required.
 
 If the gate check is NO, do NOT proceed to Phase 3. Add the missing agent and re-verify.

@@ -32,14 +32,15 @@ class TestFix1_SCSemanticDedup:
         names = [p.name for p in T.SC_PHASES]
         assert "sc_semantic_dedup" in names
 
-    def test_sc_semantic_dedup_between_rag_sweep_and_chain(self):
+    def test_sc_semantic_dedup_precedes_context_only_rag_and_chain(self):
+        """Freeze identities before precedent enrichment, then compose chains."""
         names = [p.name for p in T.SC_PHASES]
         rag_idx = names.index("rag_sweep")
         chain_idx = names.index("chain")
         dedup_idx = names.index("sc_semantic_dedup")
-        assert rag_idx < dedup_idx < chain_idx, (
-            f"sc_semantic_dedup at {dedup_idx} must be between "
-            f"rag_sweep ({rag_idx}) and chain ({chain_idx})"
+        assert dedup_idx < rag_idx < chain_idx, (
+            f"candidate freeze/dedup ({dedup_idx}) must precede context-only "
+            f"rag_sweep ({rag_idx}), and both must precede chain ({chain_idx})"
         )
 
     def test_sc_semantic_dedup_expected_artifacts(self):
@@ -74,24 +75,23 @@ class TestFix1_SCSemanticDedup:
         finally:
             v1.unlink(missing_ok=True)
 
-    def test_l1_dedup_prompt_mentions_queue(self):
+    def test_l1_dedup_prompt_is_inventory_proposal_only(self):
         phase = next(p for p in T.L1_PHASES if p.name == "semantic_dedup")
-        config = {
-            "pipeline": "l1",
-            "scratchpad": "/tmp/sp",
-            "project_root": "/tmp/proj",
-            "language": "rust",
-            "mode": "thorough",
-            "proven_only": False,
-        }
-        v1 = Path(tempfile.mktemp(suffix=".md"))
-        v1.write_text("# L1\n\n## Step 4e: Semantic Dedup\n\nDo dedup.\n", encoding="utf-8")
-        try:
-            prompt = D.build_phase_prompt(v1, phase, config)
-            assert "verification_queue_deduped.md" in prompt
-            assert "findings_inventory_deduped.md" not in prompt
-        finally:
-            v1.unlink(missing_ok=True)
+        assert phase.expected_artifacts == ["dedup_decisions.md"]
+        prompt = (
+            Path(__file__).parents[1]
+            / "prompts"
+            / "shared"
+            / "v2"
+            / "phase4e-semantic-dedup.md"
+        ).read_text(encoding="utf-8")
+        assert "findings_inventory.md" in prompt
+        assert "dedup_decisions.md" in prompt
+        assert (
+            "L1: do NOT read `{SCRATCHPAD}/verification_queue.md`"
+            in prompt
+        )
+        assert "You do NOT write or edit `findings_inventory_deduped.md`." in prompt
 
     def test_sc_post_phase_handler_swaps_inventory(self, tmp_path):
         scratchpad = tmp_path / ".scratchpad"
@@ -259,7 +259,7 @@ def test_invariants_fallback_materializes_gate_artifact(tmp_path):
     assert "state_variables.md" in body
 
 
-def test_rag_floor_materializes_all_inventory_ids(tmp_path):
+def test_precedent_unavailable_fallback_materializes_all_inventory_ids(tmp_path):
     scratchpad = tmp_path / ".scratchpad"
     scratchpad.mkdir()
     (scratchpad / "findings_inventory.md").write_text(
@@ -280,8 +280,10 @@ def test_rag_floor_materializes_all_inventory_ids(tmp_path):
     assert passed, missing
     assert "| INV-001 |" in body
     assert "| INV-002 |" in body
-    assert "0.3" in body
-    assert "[RAG: DRIVER_FLOOR]" in body
+    assert "0.3" not in body
+    assert "UNSCORED" in body
+    assert "[RAG: DRIVER_UNAVAILABLE]" in body
+    assert "PLAMEN_PRECEDENT_PROPOSALS_JSON_BEGIN" in body
 
 
 def test_quality_helper_prompts_have_bounded_transition_contracts():

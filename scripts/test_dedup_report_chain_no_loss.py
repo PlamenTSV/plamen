@@ -27,6 +27,7 @@ INV-118) yields TWO distinct findings — neither absorbed.
 """
 
 from pathlib import Path
+import shutil
 
 import plamen_driver as d
 import plamen_mechanical as m
@@ -123,8 +124,24 @@ _VERIFY_INV118 = """# Verification: INV-118
 def _setup(tmp_path: Path) -> Path:
     sp = tmp_path / "scratchpad"
     sp.mkdir()
-    (sp / "findings_inventory.md").write_text(_DEDUPED_INVENTORY, encoding="utf-8")
+    absorbed = """
+### Finding [INV-013]: Consensus config-hash mismatch inbound variant
+**Severity**: Medium
+**Location**: peer_network_service.rs:990-1000
+**Source IDs**: CI-1, NS-2
+**Root Cause**: The config hash is logged but not enforced.
+**Description**: The inbound path accepts the mismatched peer.
+**Impact**: A mismatched peer can enter the gossip set.
+**Recommendation**: Reject mismatched peers on every path.
+**Evidence Scope**: The inbound handshake path.
+[CODE-TRACE]
+"""
+    (sp / "findings_inventory.md").write_text(
+        _DEDUPED_INVENTORY + absorbed, encoding="utf-8"
+    )
     (sp / "dedup_decisions.md").write_text(_DEDUP_DECISIONS, encoding="utf-8")
+    assert m.apply_llm_dedup_decisions(sp, "sc_semantic_dedup") == 1
+    shutil.copy2(sp / "findings_inventory_deduped.md", sp / "findings_inventory.md")
     (sp / "verification_queue.md").write_text(_VERIFICATION_QUEUE, encoding="utf-8")
     (sp / "verify_INV-014.md").write_text(_VERIFY_INV014, encoding="utf-8")
     (sp / "verify_INV-127.md").write_text(_VERIFY_INV127, encoding="utf-8")
@@ -144,7 +161,7 @@ def test_dedup_report_chain_no_data_loss(tmp_path: Path):
     # (e) absorbed map sidecar records INV-013 -> INV-014 with coupled content
     sidecar = (sp / "dedup_absorbed_map.md").read_text(encoding="utf-8")
     assert "INV-013" in sidecar and "INV-014" in sidecar
-    assert "peer_network_service.rs:1041-1048" in sidecar  # distinct path kept
+    assert "field-complete-preserved" in sidecar
 
     # finding_mapping did not exist at dedup time (normal ordering); now build
     # the mechanical chain baseline (which is what the real pipeline does next).

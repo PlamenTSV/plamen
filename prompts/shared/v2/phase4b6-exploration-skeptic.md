@@ -225,6 +225,21 @@ mechanically harvested downstream into falsifiable candidates and handed to the
 fuzz/PoC gates; a survived assertion sharpens the spec, a triggered one is a real
 bug.
 
+For every `NO-GAP` or source-locus `ASSESSED` row, also add one exact row under
+the separate H2 below. Copy Finding, Axis, and Instance exactly from the
+coverage row. `Commitment` is either `CI:<CI-id>` or
+`NOT_REQUIRED_NON_VALUE_BEARING`; the latter requires a specific non-empty
+Reason. Each CI ID is unique to one clear, and its Provenance repeats the exact
+Finding and Instance. Missing, duplicate, malformed, or cross-bound entries do
+not close the instance: the driver re-opens it as an exploration obligation.
+
+```
+## Invariant Commitment Record
+
+| Finding | Axis | Instance | Commitment | Reason |
+|---------|------|----------|------------|--------|
+```
+
 ---
 
 ## Output Requirements

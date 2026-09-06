@@ -36,6 +36,10 @@ already substantive and can be skipped.
 
 ### EXCLUSION SOURCE RULE (MANDATORY — recall-safe, no belief-based drops)
 
+**RS-X — Referent-bound exclusion preservation.** Apply this step to every
+rescan/per-contract row. An exclusion is valid only with the provided concrete
+referent and the excluded candidate's own location, mechanism, and harm.
+
 You may mark a candidate as a duplicate and exclude it from your output ONLY
 when you can cite a CONCRETE entry that already exists in the provided
 exclusion universe — i.e. a real finding ID (e.g. `[B1-2]`, `[RS1-3]`) or a
@@ -75,21 +79,35 @@ human review (downgraded, never dropped).
 
 ## Work Plan
 
+### RS-0 — Under-explored-surface selection
+
+Use recon plus first-pass outputs to select a concrete weakly represented
+surface within the assigned focus. Record the evidence for that selection;
+the output filename or worker number is not itself a focus.
+
 Spawn 2-3 additional breadth agents in bounded parallel calls. Each agent gets
 one broad non-overlapping or intentionally cross-checking scope, depending on
 the gaps visible from first-pass breadth and recon artifacts.
 
-Focus areas that usually reveal attention-saturation misses:
+Focus areas that usually reveal attention-saturation misses (the driver assigns
+these typed steps across independent workers):
 
-1. Cross-function state inconsistencies.
-2. Asymmetric operations.
-3. Parameter encoding mismatches between paired functions.
-4. Economic assumptions violated under edge conditions.
-5. Time-dependent state that goes stale under specific operation sequences.
+1. **RS-1 — Cross-function state:** cross-function state inconsistencies.
+2. **RS-2 — Asymmetric operations:** asymmetric operations and branches.
+3. **RS-3 — Paired encoding:** parameter/encoding mismatches between paired functions.
+4. **RS-4 — Economic edges:** economic assumptions violated under edge conditions.
+5. **RS-5 — Time/lifecycle:** time-dependent state that goes stale under operation sequences.
 
 In Thorough mode, a focused per-contract/cluster pass is mandatory. Keep it in
 this same subprocess unless the phase graph launches a separate per-contract
 producer. Write it under this phase's owned additional-analysis output family.
+
+### RS-PC — Localized per-contract/cluster pass
+
+For the exact assigned contract or cluster, enumerate its externally reachable
+state transitions and boundaries, apply RS-1 through RS-5 where relevant, and
+record which were applicable. This is one localized operator; it does not
+authorize reading or writing another worker's output.
 
 ---
 
@@ -174,7 +192,7 @@ clustered per-contract analysis is not applicable and what files were checked.
 
 ## Orchestrator Termination Contract (HARD STOP)
 
-<!-- BUILD-STRIP: raw contract tokens for standalone contract tests only: findings_inventory.md depth_*.md -->
+<!-- BUILD-STRIP: raw contract tokens for standalone contract tests only: depth_*.md -->
 
 As soon as every filename declared in `rescan_manifest.md` is on disk and
 substantive (not a reservation stub, not a placeholder, and large enough for

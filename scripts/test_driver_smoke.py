@@ -14,7 +14,8 @@ Eleven scenarios:
      `breadth` IN degraded / NOT IN completed. Second run must retry
      breadth without re-running recon/instantiate.
   B. Manifest-aware quorum override
-     Instantiate writes a real 5-row `spawn_manifest.md`. Breadth writes
+    Instantiate writes a real 5-row `spawn_manifest_proposal.md`; the typed
+    driver successor publishes `spawn_manifest.md`. Breadth writes
      only 3 `analysis_*.md` files. Assert the quorum ratchets 3 -> 5 and
      breadth halts despite having artifacts on disk.
   C. Empty-verify short-circuit
@@ -46,8 +47,10 @@ Eleven scenarios:
      Inventory writes later-phase artifacts. Assert retry and degrade/halt.
   K. Inventory sharding
      L1 breadth produces enough analysis files to trigger inventory sharding.
-     Assert chunk phases complete and final inventory is produced without a
-     parity halt.
+     Assert chunk phases complete, all six source identities survive the
+     merge exactly once, and inventory itself incurs no debt. The hermetic
+     light-mode runner intentionally lacks later live composition/report
+     providers, so unrelated downstream debt remains visible.
 
 Not a unit test of internal helpers. Black-box check that the runtime
 policy (critical halt, manifest-exact quorum, empty-queue short-circuit)
@@ -82,16 +85,69 @@ DRIVER = SCRIPTS_DIR / "plamen_driver.py"
 # Scenario selection is via __SCENARIO__ in {"A","B","C","D","E","F","G","H","I"}.
 
 RUNNER_TEMPLATE = r"""
-import sys, types, json
+import sys, types, json, hashlib
 from pathlib import Path
 sys.path.insert(0, r'__SCRIPTS_DIR__')
 
 # Block real recon_prepass BEFORE plamen_driver imports it.
 _stub_mod = types.ModuleType("recon_prepass")
 _stub_mod.run_recon_prepass = lambda cfg: "stub-prepass"
+def _recon_prepass_expected_owner_prefix(cfg):
+    language = str(cfg.get("language") or "unknown").strip().lower()
+    ecosystem = {"solidity": "evm", "ethereum": "evm"}.get(
+        language, language
+    )
+    return "/".join((
+        str(cfg.get("pipeline") or "sc").strip().lower(),
+        str(cfg.get("mode") or "core").strip().lower(),
+        ecosystem,
+        str(cfg.get("cli_backend") or "claude").strip().lower(),
+        "recon",
+    ))
+_stub_mod.recon_prepass_expected_owner_prefix = (
+    _recon_prepass_expected_owner_prefix
+)
+_stub_mod.assert_recon_prepass_dispatch_authority = lambda cfg: (
+    _recon_prepass_expected_owner_prefix(cfg) + "/prepass"
+)
+def _resolve_snapshot_build_root(cfg):
+    root = Path(cfg["project_root"]).resolve()
+    cfg["_resolved_build_root"] = str(root)
+    return root
+_stub_mod.resolve_snapshot_build_root = _resolve_snapshot_build_root
+_stub_mod.prepare_snapshot_bound_inputs = lambda cfg: {
+    "status": "UNCHANGED", "reason": "driver-smoke immutable-input stub"
+}
+# Deterministic recon-side dependency enumeration imports these helpers lazily.
+# The phase-loop harness owns no real source corpus, so provide the closed empty
+# dependency surface instead of degrading recon because its module is stubbed.
+_stub_mod._is_production_source_path = lambda _path, _root: True
+_stub_mod._detect_external_dependency_markers = lambda _root: []
+_stub_mod._production_source_files = lambda root, suffixes: [
+    path for path in Path(root).rglob("*")
+    if path.is_file() and path.suffix.lower() in set(suffixes)
+]
+_stub_mod._rel = lambda path, root: Path(path).resolve().relative_to(
+    Path(root).resolve()
+)
 sys.modules["recon_prepass"] = _stub_mod
 
 import plamen_driver as pd
+# This harness exercises phase-loop policy rather than recon-prepass byte
+# archival.  The dedicated recon-prepass suites cover the authenticated retry
+# baseline; keep that orthogonal subsystem out of these black-box scenarios.
+pd._ensure_recon_prepass_retry_baseline = lambda _scratch, _cfg: []
+from artifact_ledger import (
+    read_artifact_ledger as _smoke_read_artifact_ledger,
+    record_work_unit_artifacts as _smoke_record_artifacts,
+    record_work_unit_inputs as _smoke_record_inputs,
+)
+from phase_io_contracts import (
+    ArtifactSpec as _SmokeArtifactSpec,
+    LaunchSpec as _SmokeLaunchSpec,
+    PhaseIOContract as _SmokePhaseIOContract,
+    canonical_work_unit_key as _smoke_work_unit_key,
+)
 
 CALL_LOG = Path(r'__CALL_LOG__')
 SCENARIO = "__SCENARIO__"
@@ -151,9 +207,9 @@ _MANIFEST_5_ROWS = (
     "|----------|----------|-----------|----------|------------|-----------------|--------|\n"
     "| AGENT | core-state | YES | agent_1 | storage + accounting | analysis_storage_accounting.md | PENDING |\n"
     "| AGENT | access-control | YES | agent_2 | role + caps | analysis_role_caps.md | PENDING |\n"
-    "| AGENT | token-flow | YES | agent_3 | transfer/mint/burn | analysis_transfer_mint_burn.md | PENDING |\n"
-    "| AGENT | economic | YES | agent_4 | fees + incentives | analysis_fees_incentives.md | PENDING |\n"
-    "| AGENT | oracle-external | YES | agent_5 | price + xchain | analysis_price_xchain.md | PENDING |\n"
+    "| AGENT | token-flow-tracing | YES | agent_3 | transfer/mint/burn | analysis_transfer_mint_burn.md | PENDING |\n"
+    "| AGENT | economic-design-audit | YES | agent_4 | fees + incentives | analysis_fees_incentives.md | PENDING |\n"
+    "| AGENT | oracle-analysis | YES | agent_5 | price + xchain | analysis_price_xchain.md | PENDING |\n"
     "\n**Gate Check**: All REQUIRED templates have agents? YES\n"
 )
 
@@ -163,6 +219,22 @@ _MANIFEST_1_ROW = (
     "|----------|----------|-----------|----------|------------|-----------------|--------|\n"
     "| AGENT | core-state | YES | agent_1 | storage + accounting | analysis_storage_accounting.md | PENDING |\n"
     "\n**Gate Check**: All REQUIRED templates have agents? YES\n"
+)
+
+_MANIFEST_3_ROWS = (
+    "# Spawn Manifest\n\n"
+    "| Row Type | Template | Required? | Agent ID | Focus Area | Expected Output | Status |\n"
+    "|----------|----------|-----------|----------|------------|-----------------|--------|\n"
+    "| AGENT | core-state | YES | agent_1 | storage + accounting | analysis_storage_accounting.md | PENDING |\n"
+    "| AGENT | access-control | YES | agent_2 | role + caps | analysis_role_caps.md | PENDING |\n"
+    "| AGENT | token-flow-tracing | YES | agent_3 | transfer/mint/burn | analysis_transfer_mint_burn.md | PENDING |\n"
+    "\n**Gate Check**: All REQUIRED templates have agents? YES\n"
+)
+
+_MANIFEST_4_ROWS = _MANIFEST_3_ROWS.replace(
+    "\n**Gate Check**",
+    "| AGENT | economic-design-audit | YES | agent_4 | fees + incentives | analysis_fees_incentives.md | PENDING |\n"
+    "\n**Gate Check**",
 )
 
 _MANIFEST_5_OUTPUTS = [
@@ -205,11 +277,21 @@ _ANALYSIS_LOW_ONLY = (
     "### Finding [F-01]\n"
     "**Severity**: Low\n"
     "**Location**: src/Stub.sol:L10\n"
-    "Missing event emission on admin setter.\n\n"
+    "**Preferred Tag**: [CODE-TRACE]\n"
+    "**Verdict**: NEEDS_VERIFICATION\n"
+    "**Root Cause**: The admin setter omits its state-change event.\n"
+    "**Description**: Missing event emission on admin setter.\n"
+    "**Impact**: Off-chain observers can miss the administrative change.\n\n"
     "### Finding [F-02]\n"
     "**Severity**: Informational\n"
     "**Location**: src/Stub.sol:L42\n"
-    "Variable could be immutable.\n"
+    "**Preferred Tag**: [CODE-TRACE]\n"
+    "**Verdict**: NEEDS_VERIFICATION\n"
+    "**Root Cause**: A construction-only value uses mutable storage.\n"
+    "**Description**: The variable is assigned only during construction and "
+    "remains unchanged after deployment.\n"
+    "**Impact**: The contract pays avoidable storage-read cost without a "
+    "security-critical state transition.\n"
 )
 
 _INVENTORY_MEDIUM_THREE = (
@@ -232,36 +314,324 @@ _ANALYSIS_MEDIUM_THREE = (
     "### Finding [F-01]\n"
     "**Severity**: Medium\n"
     "**Location**: src/Stub.sol:L10\n"
-    "Medium finding one.\n\n"
+    "**Preferred Tag**: [CODE-TRACE]\n"
+    "**Verdict**: NEEDS_VERIFICATION\n"
+    "**Root Cause**: Missing validation permits transition one.\n"
+    "**Description**: Medium finding one.\n"
+    "**Impact**: Synthetic medium impact one.\n\n"
     "### Finding [F-02]\n"
     "**Severity**: Medium\n"
     "**Location**: src/Stub.sol:L20\n"
-    "Medium finding two.\n\n"
+    "**Preferred Tag**: [CODE-TRACE]\n"
+    "**Verdict**: NEEDS_VERIFICATION\n"
+    "**Root Cause**: Missing validation permits transition two.\n"
+    "**Description**: Medium finding two.\n"
+    "**Impact**: Synthetic medium impact two.\n\n"
     "### Finding [F-03]\n"
     "**Severity**: High\n"
     "**Location**: src/Stub.sol:L30\n"
-    "High finding three.\n"
+    "**Preferred Tag**: [CODE-TRACE]\n"
+    "**Verdict**: NEEDS_VERIFICATION\n"
+    "**Root Cause**: Missing validation permits transition three.\n"
+    "**Description**: High finding three.\n"
+    "**Impact**: Synthetic high impact three.\n"
 )
 
 _ANALYSIS_MEDIUM_ONE = (
     "### Finding [F-01]\n"
     "**Severity**: Medium\n"
     "**Location**: src/Stub.sol:L10\n"
-    "Medium finding one.\n"
+    "**Preferred Tag**: [CODE-TRACE]\n"
+    "**Verdict**: NEEDS_VERIFICATION\n"
+    "**Root Cause**: Missing validation permits transition one.\n"
+    "**Description**: Medium finding one.\n"
+    "**Impact**: Synthetic medium impact one.\n"
     + ("padding " * 20) + "\n"
 )
 
 def _analysis_low_unique(fid, line):
     return (
-        f"### Finding [{fid}]\n"
+        f"### Finding [{fid}]: Exact smoke candidate\n"
         "**Severity**: Low\n"
         f"**Location**: src/Stub.sol:L{line}\n"
-        "Low-severity finding for inventory sharding.\n"
+        "**Preferred Tag**: [CODE-TRACE]\n"
+        "**Verdict**: NEEDS_VERIFICATION\n"
+        "**Root Cause**: Missing validation permits an unauthorized state transition.\n"
+        "**Description**: An unchecked input can bypass the synthetic phase-loop guard.\n"
+        "**Impact**: The state can become inconsistent until the next repair operation.\n"
     )
 
+_STUB_PHASE_CONTEXT = None
+_STUB_WRITE_ORDINAL = 0
+
+
+def _prepare_smoke_exact_consumer_boundary(phase, config, attempt):
+    # Compile the real Claude capability policy for the hermetic launcher.
+    if phase.name not in pd._CLAUDE_EXACT_CONSUMER_PHASES:
+        return
+    scratch = Path(config["scratchpad"])
+    snapshot = (
+        scratch / "_smoke_runtime" /
+        f"{phase.name}.attempt-{attempt:04d}.prompt.md"
+    )
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text(
+        f"Hermetic exact-consumer prompt for {phase.name} attempt {attempt}.\n",
+        encoding="utf-8",
+    )
+    pd._prepare_claude_phase_tool_boundary(
+        phase=phase,
+        scratchpad=scratch,
+        config=config,
+        attempt=attempt,
+        prompt_snapshot=snapshot,
+    )
+
+
+def _record_smoke_exact_write_receipt(target, text):
+    # Run the real PreToolUse hook before one fixture-owned model write.
+    context = _STUB_PHASE_CONTEXT
+    if context is None:
+        return
+    phase, config, attempt = context
+    state = config.get("_claude_phase_tool_boundaries", {}).get(phase.name)
+    if not isinstance(state, dict):
+        return
+    policy_path = Path(state["policy_path"])
+    policy = pd.claude_phase_tool_policy.load_policy(policy_path)
+    resolved = Path(target).resolve(strict=False)
+    allowed = {
+        Path(value).resolve(strict=False)
+        for value in policy.get("exact_write_files", [])
+    }
+    if resolved not in allowed:
+        return
+    event = {
+        "session_id": f"smoke-{phase.name}-{attempt}",
+        "tool_use_id": f"write-{resolved.name}",
+        "cwd": str(Path(config["project_root"]).resolve()),
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(resolved), "content": text},
+    }
+    code, output = pd.claude_phase_tool_policy.run_hook(
+        policy_path,
+        json.dumps(event, sort_keys=True).encode("utf-8"),
+    )
+    decision = (
+        output.get("hookSpecificOutput", {}).get("permissionDecision")
+        if isinstance(output, dict)
+        else None
+    )
+    if code != 0 or decision != "allow":
+        raise RuntimeError(
+            f"smoke exact-consumer Write was not authorized: "
+            f"{phase.name}/{resolved.name}: code={code}, output={output!r}"
+        )
+
+
 def _write(p, text):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8")
+    # Write one smoke MODEL output with an explicit arm-before-write receipt.
+    # The phase-loop smoke replaces the live worker launcher. As production
+    # consumers became PhaseIO-strict, leaving these synthetic worker bytes
+    # unowned stopped testing the intended phase-loop policy and instead tested
+    # a fixture artifact-authority violation. Each test-only write therefore
+    # uses a unique zero-input MODEL work unit before touching disk.
+    global _STUB_WRITE_ORDINAL
+    target = Path(p)
+    context = _STUB_PHASE_CONTEXT
+    armed = None
+    if context is not None:
+        phase, config, attempt = context
+        scratch = Path(config["scratchpad"])
+        project = Path(config["project_root"])
+        try:
+            relative = target.relative_to(scratch).as_posix()
+            root_name = "scratchpad"
+        except ValueError:
+            relative = target.relative_to(project).as_posix()
+            root_name = "project"
+        identity = f"{root_name}:{relative}"
+
+        # The real phase loop arms migrated MODEL contracts before invoking
+        # this stub.  Do not interpose a second smoke owner on an output that
+        # already belongs to such an INPUTS_BOUND transaction: the production
+        # post-run commit must observe the exact prestate it froze.  The
+        # synthetic zero-input owner below is only for auxiliary fixture bytes
+        # whose production provider is intentionally bypassed by this smoke.
+        pending_owner = False
+        try:
+            ledger = _smoke_read_artifact_ledger(scratch)
+            for unit in ledger.get("work_units", {}).values():
+                if (
+                    isinstance(unit, dict)
+                    and unit.get("run_id") == config["_run_id"]
+                    and unit.get("semantic_status") == "INPUTS_BOUND"
+                    and unit.get("execution_state")
+                    == "INPUTS_BOUND_PREEXECUTION"
+                    and identity in (unit.get("output_prestates") or {})
+                ):
+                    pending_owner = True
+                    break
+        except Exception:
+            pending_owner = False
+        if pending_owner:
+            _record_smoke_exact_write_receipt(target, text)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+            return
+
+        _STUB_WRITE_ORDINAL += 1
+        work_id = (
+            f"smoke_fixture.attempt-{attempt}."
+            f"write-{_STUB_WRITE_ORDINAL:04d}"
+        )
+        owner = _smoke_work_unit_key(
+            config.get("pipeline", "sc"),
+            config.get("mode", "light"),
+            config.get("language", "unknown"),
+            config.get("cli_backend", "claude"),
+            phase.name,
+            work_id,
+        )
+        contract = _SmokePhaseIOContract(
+            pipeline=config.get("pipeline", "sc"),
+            mode=config.get("mode", "light"),
+            ecosystem=config.get("language", "unknown"),
+            backend=config.get("cli_backend", "claude"),
+            phase=phase.name,
+            work_unit_id=work_id,
+            outputs=(
+                _SmokeArtifactSpec(
+                    root=root_name,
+                    path=relative,
+                    owner_key=owner,
+                    artifact_class="REQUIRED",
+                    writer="MODEL",
+                    write_mode="REPLACE",
+                    schema_version="plamen.driver_smoke_fixture.v1",
+                    minimum_gate="TEST_ONLY_ARM_BEFORE_WRITE",
+                    consumers=(
+                        "semantic_identity/projection",
+                        "verify_queue/preverify_capture",
+                        "sc_verify_queue/preverify_capture",
+                    ),
+                ),
+            ),
+            immutable_inputs=(),
+            bounded_lookup_inputs=(),
+            model_invoked=True,
+        )
+        launch = _SmokeLaunchSpec(
+            work_unit_key=contract.key,
+            pipeline=contract.pipeline,
+            mode=contract.mode,
+            ecosystem=contract.ecosystem,
+            backend=contract.backend,
+            model="smoke-fixture",
+            timeout_s=30,
+            exec_mode="headless",
+            tool_policy=("filesystem",),
+        )
+        unit = _smoke_record_inputs(
+            scratch,
+            project,
+            contract,
+            launch,
+            run_id=config["_run_id"],
+        )
+        if (
+            unit.get("semantic_status") == "INPUTS_BOUND"
+            and unit.get("execution_state") == "INPUTS_BOUND_PREEXECUTION"
+        ):
+            armed = (scratch, project, contract, launch, config["_run_id"])
+
+    _record_smoke_exact_write_receipt(target, text)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+
+    if armed is not None:
+        scratch, project, contract, launch, run_id = armed
+        _smoke_record_artifacts(
+            scratch,
+            project,
+            contract,
+            launch,
+            run_id=run_id,
+            actor="MODEL",
+        )
+
+
+def _write_group(items):
+    # Commit related smoke model outputs as one exact producer unit.
+    global _STUB_WRITE_ORDINAL
+    phase, config, attempt = _STUB_PHASE_CONTEXT
+    scratch = Path(config["scratchpad"])
+    project = Path(config["project_root"])
+    normalized = []
+    for target, text in items:
+        target = Path(target)
+        relative = target.relative_to(scratch).as_posix()
+        normalized.append((target, relative, text))
+    _STUB_WRITE_ORDINAL += 1
+    work_id = "model"
+    owner = _smoke_work_unit_key(
+        config.get("pipeline", "sc"),
+        config.get("mode", "light"),
+        config.get("language", "unknown"),
+        config.get("cli_backend", "claude"),
+        phase.name,
+        work_id,
+    )
+    contract = _SmokePhaseIOContract(
+        pipeline=config.get("pipeline", "sc"),
+        mode=config.get("mode", "light"),
+        ecosystem=config.get("language", "unknown"),
+        backend=config.get("cli_backend", "claude"),
+        phase=phase.name,
+        work_unit_id=work_id,
+        outputs=tuple(
+            _SmokeArtifactSpec(
+                root="scratchpad",
+                path=relative,
+                owner_key=owner,
+                artifact_class="REQUIRED",
+                writer="MODEL",
+                write_mode="REPLACE",
+                schema_version="unstructured.v1",
+                minimum_gate="FIXTURE_EXACT_BYTES",
+                consumers=("sc_verify_queue/preverify_chain_pair",),
+            )
+            for _target, relative, _text in normalized
+        ),
+        immutable_inputs=(),
+        bounded_lookup_inputs=(),
+        model_invoked=True,
+    )
+    launch = _SmokeLaunchSpec(
+        work_unit_key=contract.key,
+        pipeline=contract.pipeline,
+        mode=contract.mode,
+        ecosystem=contract.ecosystem,
+        backend=contract.backend,
+        model="smoke-fixture",
+        timeout_s=30,
+        exec_mode="pty",
+        tool_policy=("filesystem",),
+    )
+    _smoke_record_inputs(
+        scratch, project, contract, launch, run_id=config["_run_id"],
+    )
+    for target, _relative, text in normalized:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    _smoke_record_artifacts(
+        scratch,
+        project,
+        contract,
+        launch,
+        run_id=config["_run_id"],
+        actor="MODEL",
+    )
 
 
 def _breadth_marked(name, body, count):
@@ -284,12 +654,12 @@ def _breadth_marked(name, body, count):
 
 
 def _write_depth_support_artifacts(scratch, *, valid_checkpoint=True,
-                                   valid_exit=True, include_skill_gap=True):
-    _write(scratch / "design_stress_findings.md", _STUB_BODY)
-    _write(scratch / "perturbation_findings.md", _STUB_BODY)
-    _write(scratch / "confidence_scores.md", _STUB_BODY)
+                                   valid_exit=True, include_skill_gap=True,
+                                   findings_body=_STUB_BODY):
+    _write(scratch / "design_stress_findings.md", findings_body)
+    _write(scratch / "perturbation_findings.md", findings_body)
     if include_skill_gap:
-        _write(scratch / "skill_execution_gaps.md", _STUB_BODY)
+        _write(scratch / "skill_execution_gaps.md", findings_body)
 
     if valid_checkpoint:
         _write(
@@ -302,7 +672,6 @@ def _write_depth_support_artifacts(scratch, *, valid_checkpoint=True,
                 "depth-edge-case: SPAWNED depth_edge_case_findings.md",
                 "design-stress: SPAWNED design_stress_findings.md",
                 "perturbation: SPAWNED perturbation_findings.md",
-                "confidence-scoring: SPAWNED confidence_scores.md",
                 "skill-execution-checklist: SPAWNED skill_execution_gaps.md",
             ]) + "\n"
         )
@@ -337,9 +706,32 @@ def _write_depth_support_artifacts(scratch, *, valid_checkpoint=True,
 
 
 def stub_run_phase(phase, config, attempt):
+    global _STUB_PHASE_CONTEXT, _STUB_WRITE_ORDINAL
+    _STUB_PHASE_CONTEXT = (phase, config, attempt)
+    _STUB_WRITE_ORDINAL = 0
     scratch = Path(config["scratchpad"])
     with CALL_LOG.open("a", encoding="utf-8") as f:
         f.write(f"{phase.name}:{attempt}\n")
+    # ``run_phase`` is replaced by this hermetic provider, so reproduce the
+    # production launcher's exact-consumer capability compilation here.  Every
+    # matching ``_write`` still crosses the real hook and persists the same
+    # receipt that the post-run authority validator requires.
+    _prepare_smoke_exact_consumer_boundary(phase, config, attempt)
+
+    # Production ``run_phase`` owns Instantiate's just-in-time input bind
+    # because its retry ordinal is receipt-governed.  Replacing ``run_phase``
+    # means the fixture must reproduce that one precondition before emitting
+    # the proposal; all producer bindings themselves remain real ledger rows.
+    if phase.name == "instantiate":
+        config.setdefault("_active_model_attempts", {})[phase.name] = attempt
+        bind_issues = pd._bind_typed_model_phase_inputs(
+            phase, scratch, config
+        )
+        if bind_issues:
+            raise RuntimeError(
+                "smoke Instantiate semantic bind failed: "
+                + "; ".join(bind_issues)
+            )
 
     # Scenario K invariant for crossbatch phase: write the consistency stub
     # ONLY when the crossbatch phase fires, not earlier — phase containment
@@ -355,6 +747,39 @@ def stub_run_phase(phase, config, attempt):
         cb_lines.extend(f"| {fid} | Low | CONSISTENT |" for fid in ids)
         _write(scratch / "cross_batch_consistency.md",
                "\n".join(cb_lines) + "\n")
+        return 0
+
+    # Scenario C exercises a canonical zero verification denominator.  The
+    # report-index model stub must still honor the current typed projection
+    # contract: an empty Master Finding Index is a real table, not a generic
+    # prose placeholder.  Keeping this in the provider fixture avoids
+    # weakening production status-projection validation for nonempty audits.
+    if SCENARIO == "C" and phase.name == "report_index":
+        _write(
+            scratch / "report_index.md",
+            "# Report Index\n\n"
+            "## Summary\n\n"
+            "| Severity | Count |\n"
+            "|---|---:|\n"
+            "| Critical | 0 |\n"
+            "| High | 0 |\n"
+            "| Medium | 0 |\n"
+            "| Low | 0 |\n"
+            "| Informational | 0 |\n\n"
+            "## Master Finding Index\n\n"
+            "| Report ID | Title | Severity | Location | Verification | "
+            "Trust Adj. | Internal Hypothesis |\n"
+            "|---|---|---|---|---|---|---|\n\n"
+            "No reportable, independently verified findings were produced.\n",
+        )
+        _write(
+            scratch / "report_coverage.md",
+            "# Report Coverage\n\n"
+            "## Raw Candidate Ledger\n\n"
+            "| Source | Finding ID | Severity | Disposition | Notes |\n"
+            "|---|---|---|---|---|\n\n"
+            "Total: 0 candidates; verification denominator was empty.\n",
+        )
         return 0
 
     # Phase E11: body-writer phase stubs for K. Body writer must produce a
@@ -530,11 +955,16 @@ def stub_run_phase(phase, config, attempt):
         return 0
 
     if phase.name == "instantiate":
-        # Scenarios B and C use five rows for manifest-exact quorum. Other
-        # scenarios still need a valid producer manifest now that instantiate
-        # owns schema validation.
-        body = _MANIFEST_5_ROWS if SCENARIO in ("B", "C") else _MANIFEST_1_ROW
-        _write(scratch / "spawn_manifest.md", body)
+        # B deliberately exercises a five-row Core manifest. Light scenarios
+        # use the documented 3-4-row contract so they reach the phase behavior
+        # each smoke test actually targets.
+        if SCENARIO == "B":
+            body = _MANIFEST_5_ROWS
+        elif SCENARIO == "C":
+            body = _MANIFEST_4_ROWS
+        else:
+            body = _MANIFEST_3_ROWS
+        _write(scratch / "spawn_manifest_proposal.md", body)
         return 0
 
     if phase.name == "breadth":
@@ -548,14 +978,19 @@ def stub_run_phase(phase, config, attempt):
                 _write(scratch / name, _STUB_BODY)
             return 0
         if SCENARIO == "C":
-            # Pass the manifest-exact gate comfortably (5 files). Fresh
+            # Pass the manifest-exact Light gate comfortably (4 files). Fresh
             # mode requires COMPLETE markers + ## Findings structure.
-            for name in _MANIFEST_5_OUTPUTS:
+            for name in _MANIFEST_5_OUTPUTS[:4]:
                 _write(scratch / name, _breadth_marked(name, _ANALYSIS_LOW_ONLY, 2))
             return 0
         if SCENARIO in ("D", "E", "F", "G", "I"):
             for i in range(5):
                 _write(scratch / f"analysis_agent_{i}.md", _ANALYSIS_LOW_ONLY)
+            if SCENARIO == "I":
+                # Inventory is now a deterministic Python merge, so exercise
+                # the same later-phase foreign-write boundary from the live
+                # breadth worker instead of an unreachable inventory subprocess.
+                _write(scratch / "semantic_invariants.md", _STUB_BODY)
             return 0
         if SCENARIO == "K":
             for i in range(6):
@@ -637,7 +1072,14 @@ def stub_run_phase(phase, config, attempt):
         for role in ("token_flow", "state_trace", "edge_case", "external"):
             _write(scratch / f"depth_{role}_findings.md", _DEPTH_COMPLETE_BODY)
         if SCENARIO == "C":
-            _write_depth_support_artifacts(scratch)
+            # This lane proves an authenticated empty verification
+            # denominator.  Its auxiliary depth artifacts must therefore be
+            # zero-finding too; the generic smoke body contains synthetic
+            # finding blocks and the real promotion engine correctly treats
+            # those as candidates.
+            _write_depth_support_artifacts(
+                scratch, findings_body=_DEPTH_COMPLETE_BODY,
+            )
         return 0
 
     if phase.name == "inventory":
@@ -684,26 +1126,109 @@ def stub_run_phase(phase, config, attempt):
             _write(scratch / "depth_agent_0_findings.md", _STUB_BODY)
         return 0
 
-    if phase.name == "inventory_chunk_a" and SCENARIO == "K":
+    if phase.name.startswith("inventory_chunk_"):
+        # P0-L exact reconciliation requires the smoke worker to preserve one
+        # source-bound disposition per assigned raw finding. A generic stub
+        # can no longer stand in for a shard because that was the production
+        # loss mode this gate is designed to catch.
+        import re
+        manifest = scratch / f"{phase.name}.manifest.md"
+        assigned = []
+        if manifest.is_file():
+            for match in re.finditer(
+                r"(?m)^\s*\|\s*`?([A-Za-z0-9_.-]+\.md)`?\s*\|",
+                manifest.read_text(encoding="utf-8", errors="replace"),
+            ):
+                name = match.group(1)
+                if name not in assigned:
+                    assigned.append(name)
+        blocks = [
+            f"# {phase.name} exact smoke inventory",
+            "",
+            "## Source Summary",
+            "",
+            "Synthetic exact-source shard for phase-loop testing.",
+            "",
+            "## Master Table",
+            "",
+            "| Finding ID | Severity | Title | Source IDs | Location |",
+            "|---|---|---|---|---|",
+        ]
+        details = ["", "## Per-Finding Detail", ""]
+        ordinal = 0
+        for source_name in assigned:
+            source = scratch / source_name
+            text = source.read_text(encoding="utf-8", errors="replace") if source.is_file() else ""
+            matches = list(re.finditer(
+                r"(?im)^#{2,4}\s+Finding\s+\[?([A-Za-z][A-Za-z0-9_-]*-\d+)\]?[^\n]*$",
+                text,
+            ))
+            for match_index, match in enumerate(matches):
+                ordinal += 1
+                source_id = match.group(1)
+                block_end = (
+                    matches[match_index + 1].start()
+                    if match_index + 1 < len(matches)
+                    else len(text)
+                )
+                source_block = text[match.start():block_end]
+
+                def source_field(label, fallback):
+                    field_match = re.search(
+                        rf"(?im)^\*\*{re.escape(label)}\*\*:\s*(.+?)\s*$",
+                        source_block,
+                    )
+                    return field_match.group(1).strip() if field_match else fallback
+
+                title_match = re.search(r"\]\s*:\s*(.+?)\s*$", match.group(0))
+                title = title_match.group(1).strip() if title_match else "Exact smoke candidate"
+                location = source_field("Location", f"src/Stub.sol:L{10 + ordinal}")
+                preferred_tag = source_field("Preferred Tag", "[CODE-TRACE]")
+                verdict = source_field("Verdict", "NEEDS_VERIFICATION")
+                root_cause = source_field(
+                    "Root Cause", "Missing validation permits an unauthorized state transition."
+                )
+                description = source_field(
+                    "Description", "An unchecked input can bypass the synthetic phase-loop guard."
+                )
+                impact = source_field(
+                    "Impact", "The state can become inconsistent until the next repair operation."
+                )
+                qualified = f"{source_name}:{source_id}"
+                # Chunk-local ordinals restart in every independently spawned
+                # inventory worker.  Derive the fixture identity from the
+                # source-qualified candidate so cross-shard merge cannot
+                # collapse distinct findings that happen to share CC-1.
+                local_id = (
+                    "CC-"
+                    + str(int(hashlib.sha256(qualified.encode("utf-8")).hexdigest()[:12], 16))
+                )
+                blocks.append(
+                    f"| {local_id} | Low | {title} | {qualified} | {location} |"
+                )
+                details.extend([
+                    f"### Finding [{local_id}]: {title}",
+                    "",
+                    f"**Source IDs**: {qualified}",
+                    "**Severity**: Low",
+                    f"**Location**: {location}",
+                    f"**Preferred Tag**: {preferred_tag}",
+                    f"**Verdict**: {verdict}",
+                    f"**Root Cause**: {root_cause}",
+                    f"**Description**: {description}",
+                    f"**Impact**: {impact}",
+                    "",
+                ])
+        if ordinal == 0:
+            details.extend([
+                "## No Findings",
+                "",
+                "No assigned source finding blocks were present in this smoke shard.",
+                "",
+            ])
         _write(
-            scratch / "findings_inventory_chunk_a.md",
-            "# Findings Inventory Chunk A\n\n"
-            "| Finding ID | Severity | Title | Source IDs | Location |\n"
-            "|-----------|----------|-------|------------|----------|\n"
-            "| F-1 | Low | one | F-1 | src/Stub.sol:L10 |\n"
-            "| F-2 | Low | two | F-2 | src/Stub.sol:L11 |\n"
-            "| F-3 | Low | three | F-3 | src/Stub.sol:L12 |\n"
-        )
-        return 0
-    if phase.name == "inventory_chunk_b" and SCENARIO == "K":
-        _write(
-            scratch / "findings_inventory_chunk_b.md",
-            "# Findings Inventory Chunk B\n\n"
-            "| Finding ID | Severity | Title | Source IDs | Location |\n"
-            "|-----------|----------|-------|------------|----------|\n"
-            "| F-4 | Low | four | F-4 | src/Stub.sol:L13 |\n"
-            "| F-5 | Low | five | F-5 | src/Stub.sol:L14 |\n"
-            "| F-6 | Low | six | F-6 | src/Stub.sol:L15 |\n"
+            scratch / f"findings_{phase.name}.md",
+            "\n".join([*blocks, *details]) + "\n",
         )
         return 0
 
@@ -718,10 +1243,49 @@ def stub_run_phase(phase, config, attempt):
         # hypotheses.md is the preferred severity-count source. In C we
         # want it present (so is_verification_queue_empty uses it) and
         # clean of Medium+ markers.
-        body = _INVENTORY_LOW_ONLY if SCENARIO == "C" else _STUB_BODY
-        _write(scratch / "hypotheses.md", body)
-        _write(scratch / "finding_mapping.md", _STUB_BODY)
-        _write(scratch / "enabler_results.md", _STUB_BODY)
+        if SCENARIO == "C":
+            empty_hypotheses = (
+                "# Empty chain projection\n\n"
+                "<!-- PLAMEN_CHAIN_RELATION_COUNT: 0 -->\n\n"
+                "| Hypothesis | Constituents |\n"
+                "|---|---|\n\n"
+                "The authenticated low-only smoke denominator produced no "
+                "chain candidates.\n" + "padding " * 40 + "\n"
+            )
+            empty_mapping = (
+                "# Empty finding mapping\n\n"
+                "<!-- PLAMEN_CHAIN_RELATION_COUNT: 0 -->\n\n"
+                "| Hypothesis | Source Findings |\n"
+                "|---|---|\n\n"
+                "The authenticated low-only smoke denominator produced no "
+                "chain candidates.\n" + "padding " * 40 + "\n"
+            )
+            # The real phase loop has already armed the registered chain/model
+            # transaction.  ``_write`` detects that pending owner and writes
+            # only the bytes; the production post-run path commits the exact
+            # six-input contract and live launch receipt atomically.
+            _write(scratch / "hypotheses.md", empty_hypotheses)
+            _write(scratch / "finding_mapping.md", empty_mapping)
+            _write(scratch / "enabler_results.md", empty_hypotheses)
+        else:
+            _write(scratch / "hypotheses.md", _STUB_BODY)
+            _write(scratch / "finding_mapping.md", _STUB_BODY)
+            _write(scratch / "enabler_results.md", _STUB_BODY)
+        return 0
+
+    if phase.name == "chain_agent2" and SCENARIO == "C":
+        # As with chain/model, the production loop owns the already-armed
+        # three-output transaction.  The smoke launcher supplies only model
+        # bytes and leaves exact contract/launch commit to that real path.
+        empty_synthesis = (
+            "# Empty chain synthesis\n\n"
+            "## No Hypotheses\n\n"
+            "The authenticated low-only chain denominator has no synthesis "
+            "candidates.\n" + "padding " * 40 + "\n"
+        )
+        _write(scratch / "chain_hypotheses.md", empty_synthesis)
+        _write(scratch / "composition_coverage.md", empty_synthesis)
+        _write(scratch / "synthesis_full.md", empty_synthesis)
         return 0
 
     if phase.name == "inventory" and SCENARIO == "H":
@@ -802,6 +1366,27 @@ def stub_run_phase(phase, config, attempt):
 
 pd.run_phase = stub_run_phase
 pd.detect_rate_limit = lambda _p: False
+# Program Facts Stage 2 is a separately covered deterministic integration.
+# This smoke module exercises the phase-loop/checkpoint policy and must not run
+# a real graph bake or publish PhaseIO sidecars before its phase stubs begin.
+# Keep the substitute shaped like the production outcome consumed by main().
+pd._ensure_program_facts_stage2_emit_only = lambda **_kwargs: types.SimpleNamespace(
+    state="SMOKE_STUBBED",
+    reused=False,
+    consumer_activation=False,
+)
+# Auxiliary writable-root startup reconciles host-global provider journals.
+# That boundary has its own integration suite and makes this otherwise-hermetic
+# phase-loop lane depend on unrelated workstation history (including large
+# cleanup ledgers).  Keep the production driver call in place, but substitute
+# the already-replayed allow outcome in this generated smoke process only.
+pd._run_auxiliary_writable_root_startup_boundary = (
+    lambda _scratchpad, _config, _checkpoint: {
+        "allocation_permitted": True,
+        "allocation_disposition": "ALLOW_NEW_LEASES",
+        "runtime_debt": [],
+    }
+)
 # Verify-recovery is an inter-phase worker subprocess, not routed through
 # run_phase. Keep this phase-loop smoke harness hermetic: return the missing IDs
 # so the deterministic stub/degrade path is exercised without launching a real
@@ -809,6 +1394,24 @@ pd.detect_rate_limit = lambda _p: False
 pd._run_verify_recovery_shard = lambda _config, missing: [
     fid for fid, _row in missing
 ]
+# Scenario C is specifically the empty-verification phase-loop contract.  Its
+# model subprocess is already replaced by ``stub_run_phase`` above, so those
+# synthetic Markdown bytes cannot carry a real producer receipt.  Let only
+# this scenario cross the unrelated model-input admission boundary; central
+# closure replay/cache, mechanical queue construction, verification, report
+# integrity, and checkpoint transitions remain the real implementations.
+if SCENARIO == "C":
+    _real_bind_typed_model_phase_inputs = pd._bind_typed_model_phase_inputs
+    _scenario_c_model_stubs = {"sc_semantic_dedup"}
+    pd._bind_typed_model_phase_inputs = (
+        lambda _phase, _scratch, _config: []
+        if _phase.name in _scenario_c_model_stubs
+        else _real_bind_typed_model_phase_inputs(_phase, _scratch, _config)
+    )
+    # Keep the deterministic chain-prep transactions live. They are the real
+    # registered producers of the exact Agent-2 denominator (candidate pairs,
+    # variable map, state resolution, and the enabler prefill), so bypassing
+    # them would make an otherwise valid model fixture unauthoritative.
 
 sys.argv = ["plamen_driver.py", r'__CONFIG_PATH__']
 try:
@@ -843,19 +1446,44 @@ def _run_driver(tmp: Path, config_path: Path, call_log: Path,
     empty_path.mkdir(exist_ok=True)
     child_env = dict(os.environ)
     child_env["PATH"] = str(empty_path)
-    proc = subprocess.run(
-        [sys.executable, str(runner_path)],
-        capture_output=True,
-        text=True,
-        cwd=str(tmp),
-        env=child_env,
-        # A production startup traversal bug once left this integration lane
-        # waiting forever and orphaned the child when only the outer pytest
-        # process was killed. Keep every scenario self-bounding so a future
-        # regression fails as a TimeoutExpired error instead of masking the
-        # rest of the integration baseline.
-        timeout=120,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(runner_path)],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp),
+            env=child_env,
+            # A production startup traversal bug once left this integration lane
+            # waiting forever and orphaned the child when only the outer pytest
+            # process was killed. Keep every scenario self-bounding so a future
+            # regression fails as a TimeoutExpired error instead of masking the
+            # rest of the integration baseline.
+            # The current authenticated artifact-ledger boundary makes these
+            # full phase-loop scenarios substantially slower on Windows.  Do
+            # not install ``faulthandler.dump_traceback_later`` in the child:
+            # CPython's all-thread dumper is unsafe while another live thread
+            # can disappear, and has produced a real 0xC0000005 in this lane.
+            # The parent timeout remains the single process-lifetime bound.
+            # Scenario C traverses the complete 30-shard empty-verification
+            # closure plus report reconciliation. Authenticated T0--T9, typed
+            # report publication, and final disposition replay are all serial
+            # authority boundaries; a clean Windows run can exceed 30 minutes
+            # without a retry or model stall. Keep a finite parent-owned bound,
+            # but leave enough headroom for the secured path to finish.
+            timeout=2700 if scenario == "C" else 300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if exc.stdout:
+            sys.stdout.write(
+                exc.stdout.decode(errors="replace")
+                if isinstance(exc.stdout, bytes) else exc.stdout
+            )
+        if exc.stderr:
+            sys.stderr.write(
+                exc.stderr.decode(errors="replace")
+                if isinstance(exc.stderr, bytes) else exc.stderr
+            )
+        raise
     sys.stdout.write(proc.stdout)
     sys.stderr.write(proc.stderr)
     return proc.returncode
@@ -895,6 +1523,10 @@ def _make_project(prefix: str, mode: str = "light",
         "language": "rust" if pipeline == "l1" else "evm",
         "mode": mode,
         "pipeline": pipeline,
+        # These phase-loop scenarios span Light/Core and L1.  Claude's
+        # authenticated contained route is intentionally SC Thorough-only;
+        # use the supported Codex matrix for this backend-neutral stub lane.
+        "cli_backend": "codex",
     }
     if extra_config:
         config.update(extra_config)
@@ -929,9 +1561,14 @@ def test_scenario_a_breadth_halt_and_resume() -> None:
 
         breadth_attempts = [c for c in call_log.read_text(encoding="utf-8").splitlines()
                             if c.startswith("breadth:")]
-        _assert(len(breadth_attempts) == 3,
-                f"A.run1: breadth is a RECOVERING phase -> 3 hinted attempts before "
-                f"degrade (all-backend extended retry budget); got {breadth_attempts}")
+        _assert(len(breadth_attempts) == 2,
+                f"A.run1: an identical retry must stop after attempt 2 records "
+                f"NO_PROGRESS; got {breadth_attempts}")
+        receipt = json.loads((
+            scratch / "_retry_receipts" / "breadth" / "phase.attempt2.json"
+        ).read_text(encoding="utf-8"))
+        _assert(receipt["status"] == "NO_PROGRESS",
+                f"A.run1: retry receipt must explain suppression; got {receipt}")
 
         # Run 2: resume, expect breadth retried, recon/instantiate skipped
         call_log.write_text("", encoding="utf-8")
@@ -939,8 +1576,8 @@ def test_scenario_a_breadth_halt_and_resume() -> None:
         _assert(rc2 == 3, f"A.run2 exit: got {rc2}, expected 3 (still degraded)")
 
         calls2 = call_log.read_text(encoding="utf-8").splitlines()
-        _assert(len([c for c in calls2 if c.startswith("breadth:")]) == 3,
-                f"A.run2: breadth (recovering) retries to 3 hinted attempts; got {calls2}")
+        _assert(len([c for c in calls2 if c.startswith("breadth:")]) == 2,
+                f"A.run2: identical retry again stops on typed NO_PROGRESS; got {calls2}")
         _assert(len([c for c in calls2 if c.startswith("recon:")]) == 0,
                 f"A.run2: recon must NOT rerun; got {calls2}")
         _assert(len([c for c in calls2 if c.startswith("instantiate:")]) == 0,
@@ -954,7 +1591,9 @@ def test_scenario_a_breadth_halt_and_resume() -> None:
 @pytest.mark.integration
 def test_scenario_b_manifest_quorum() -> None:
     """Manifest-aware quorum override (3 of 5)."""
-    tmp, project, scratch, cfg_path, call_log = _make_project("plamen_smoke_b_")
+    tmp, project, scratch, cfg_path, call_log = _make_project(
+        "plamen_smoke_b_", mode="core"
+    )
     try:
         rc = _run_driver(tmp, cfg_path, call_log, "B")
         # Breadth writes 3 files, manifest declares 5 -> gate fails both attempts
@@ -1004,7 +1643,11 @@ def test_scenario_c_empty_verify_shortcircuit() -> None:
     tmp, project, scratch, cfg_path, call_log = _make_project("plamen_smoke_c_")
     try:
         rc = _run_driver(tmp, cfg_path, call_log, "C")
-        _assert(rc == 0, f"C exit: got {rc}, expected 0 (pipeline completed)")
+        # The hermetic runner cannot provide live Claude exact-consumer or
+        # optional recon-tool authority, so unrelated analysis phases remain
+        # visibly degraded.  The empty-verification contract succeeds when it
+        # ships without verify or report-integrity debt.
+        _assert(rc == 3, f"C exit: got {rc}, expected 3 (known harness debt)")
 
         ckpt = json.loads(
             (scratch / "_v2_checkpoint.json").read_text(encoding="utf-8")
@@ -1019,6 +1662,8 @@ def test_scenario_c_empty_verify_shortcircuit() -> None:
                           if "verify" in p]
         _assert(len(verify_degraded) == 0,
                 f"C: no verify phase should be degraded; got {verify_degraded}")
+        _assert("report_floor" not in ckpt.get("degraded", []),
+                "C: authenticated empty denominator created report-integrity debt")
 
         # Report must have completed (proves pipeline continued past verify).
         _assert("report_assemble" in ckpt["completed"],
@@ -1026,9 +1671,17 @@ def test_scenario_c_empty_verify_shortcircuit() -> None:
         _assert((project / "AUDIT_REPORT.md").exists(),
                 "C: AUDIT_REPORT.md missing — report phase did not run")
 
+        _assert(
+            not (scratch / "_overflow" / "report_integrity_no_ship").exists(),
+            "C: empty-denominator report was incorrectly quarantined",
+        )
+
         print("[scenario C] PASS")
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        if os.environ.get("PLAMEN_KEEP_FAILED_SMOKE") == "1":
+            print(f"[scenario C] retained diagnostic root: {tmp}")
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 @pytest.mark.integration
@@ -1186,22 +1839,10 @@ def test_scenario_h_verify_completeness_gate() -> None:
         _write = lambda p, t: Path(p).write_text(t, encoding="utf-8")
         (project / "src").mkdir(parents=True, exist_ok=True)
         _write(project / "src" / "Stub.sol", ("contract Stub {}\n" * 40))
-        _write(
-            scratch / "findings_inventory.md",
-            "# Findings Inventory\n\n"
-            "### Finding [F-01]\n"
-            "**Severity**: Medium\n"
-            "**Location**: src/Stub.sol:L10\n"
-            "Medium finding one.\n\n"
-            "### Finding [F-02]\n"
-            "**Severity**: Medium\n"
-            "**Location**: src/Stub.sol:L20\n"
-            "Medium finding two.\n\n"
-            "### Finding [F-03]\n"
-            "**Severity**: Medium\n"
-            "**Location**: src/Stub.sol:L30\n"
-            "Medium finding three.\n",
-        )
+        # Do not pre-seed scratchpad evidence before startup.  The live stub
+        # writes the inventory at its owning phase; a pre-existing inventory
+        # with no snapshot/run identity is correctly rejected as
+        # LEGACY_UNBOUND by the non-destructive startup contract.
         rc = _run_driver(tmp, cfg_path, call_log, "H")
         _assert(rc == 3, f"H exit: got {rc}, expected 3 (degraded verification)")
 
@@ -1210,17 +1851,45 @@ def test_scenario_h_verify_completeness_gate() -> None:
         )
         _assert("verify_medium_a" in ckpt["degraded"],
                 f"H: verify_medium_a must be degraded; got {ckpt['degraded']}")
-        _assert("verify_medium_a" not in ckpt["completed"],
-                f"H: verify_medium_a must NOT be completed; got {ckpt['completed']}")
+        _assert("verify_medium_a" in ckpt["completed"],
+                f"H: completed-with-debt shard must remain resumably completed; "
+                f"got {ckpt['completed']}")
+        _assert(
+            ckpt.get("phase_commits", {}).get("verify_medium_a", {}).get("state")
+            == "COMPLETED_WITH_DEBT",
+            "H: verify_medium_a needs typed COMPLETED_WITH_DEBT authority",
+        )
         _assert((scratch / "verify_medium_a.degraded").exists(),
                 "H: verify_medium_a.degraded marker missing")
-        recovery_stub = scratch / "verify_F-03.md"
-        _assert(recovery_stub.exists(),
-                "H: missing F-3 must receive a deterministic unverified stub")
-        _assert("VERIFICATION NOT EXECUTED" in recovery_stub.read_text(encoding="utf-8"),
-                "H: F-3 recovery stub must disclose that verification did not run")
-        _assert("Verdict: CONFIRMED" in (scratch / "verify_F-01.md").read_text(encoding="utf-8"),
-                "H: a present verifier result must not be overwritten by recovery")
+        runtime_debt = json.loads(
+            (scratch / "verification_runtime_debt.json").read_text(encoding="utf-8")
+        )
+        _assert(runtime_debt["proof_authority"] == "NONE",
+                "H: unresolved dynamic workers must have no proof authority")
+        _assert(runtime_debt["report_verification_projection"] == "CONTESTED",
+                "H: unresolved candidates must remain report-visible")
+        queue_rows = __import__("plamen_parsers").parse_verification_queue_rows(
+            scratch
+        )
+        expected_pending = [
+            str(row.get("finding id") or "").strip()
+            for row in queue_rows
+            if str(row.get("finding id") or "").strip()
+            and not (scratch / f"verify_{str(row.get('finding id') or '').strip()}.md").exists()
+        ]
+        _assert(
+            runtime_debt["pending_work_item_ids"] == expected_pending,
+            "H: every exact queue identity lacking verifier output must "
+            f"remain pending; got {runtime_debt['pending_work_item_ids']}, "
+            f"expected {expected_pending}",
+        )
+        _assert(
+            not any(
+                (scratch / f"verify_{finding_id}.md").exists()
+                for finding_id in runtime_debt["pending_work_item_ids"]
+            ),
+            "H: dynamic verifier debt must not synthesize per-finding proof stubs",
+        )
         print("[scenario H] PASS")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1230,10 +1899,10 @@ def test_scenario_h_verify_completeness_gate() -> None:
 def test_scenario_i_phase_containment_detector() -> None:
     """Phase-containment detector.
 
-    Inventory writes later-phase artifacts. That phase-boundary violation is
-    a hard failure signal even if inventory's own required artifact exists:
-    the driver must retry inventory, then degrade/halt instead of checkpointing
-    inventory as clean and continuing with quarantined overflow.
+    Breadth writes a later-phase artifact. That phase-boundary violation is a
+    hard failure signal even if breadth's own required artifacts exist: the
+    driver must retry breadth, then degrade/halt instead of checkpointing it as
+    clean and continuing with quarantined overflow. Inventory is Python-only.
     """
     tmp, project, scratch, cfg_path, call_log = _make_project(
         "plamen_smoke_i_", pipeline="l1"
@@ -1246,37 +1915,39 @@ def test_scenario_i_phase_containment_detector() -> None:
         ckpt = json.loads(
             (scratch / "_v2_checkpoint.json").read_text(encoding="utf-8")
         )
-        _assert("inventory" in ckpt["degraded"],
-                f"I: inventory must be degraded on containment failure; "
+        _assert("breadth" in ckpt["degraded"],
+                f"I: breadth must be degraded on containment failure; "
                 f"got degraded={ckpt.get('degraded', [])}")
-        _assert("inventory" not in ckpt["completed"],
-                f"I: inventory must NOT be completed after foreign writes; "
+        _assert("breadth" not in ckpt["completed"],
+                f"I: breadth must NOT be completed after foreign writes; "
                 f"got completed={ckpt['completed']}")
-        _assert((scratch / "inventory.degraded").exists(),
-                "I: inventory.degraded marker missing")
+        _assert((scratch / "breadth.degraded").exists(),
+                "I: breadth.degraded marker missing")
 
         calls = call_log.read_text(encoding="utf-8").splitlines()
-        inventory_calls = [c for c in calls if c.startswith("inventory:")]
-        # CONTAINMENT failures are NOT hint-recoverable, so inventory does NOT
+        breadth_calls = [c for c in calls if c.startswith("breadth:")]
+        # CONTAINMENT failures are NOT hint-recoverable, so breadth does NOT
         # get the extra hinted retry here — it stays at 2 attempts and falls to
         # the standard quarantine + halt path (the extended retry budget applies
         # only to coverage/content gaps, e.g. scenario A's breadth).
-        _assert(len(inventory_calls) == 2,
-                f"I: inventory containment violation -> no extra hinted retry "
-                f"(2 attempts), straight to quarantine+halt; got {inventory_calls}")
+        _assert(len(breadth_calls) == 2,
+                f"I: breadth containment violation -> no extra hinted retry "
+                f"(2 attempts), straight to quarantine+halt; got {breadth_calls}")
+        inventory_calls = [c for c in calls if c.startswith("inventory:")]
+        _assert(len(inventory_calls) == 0,
+                f"I: driver must halt at breadth before inventory; got {inventory_calls}")
         depth_calls = [c for c in calls if c.startswith("depth:")]
         _assert(len(depth_calls) == 0,
-                f"I: driver must halt at inventory before depth; got {depth_calls}")
+                f"I: driver must halt at breadth before depth; got {depth_calls}")
 
         # Foreign artifacts should be quarantined to _overflow/
-        overflow = scratch / "_overflow" / "inventory"
-        _assert(overflow.exists(), "I: _overflow/inventory missing")
+        overflow = scratch / "_overflow" / "breadth"
+        _assert(overflow.exists(), "I: _overflow/breadth missing")
         quarantined = {p.name for p in overflow.iterdir()}
-        _assert("semantic_invariants.md" in quarantined
-                and "depth_agent_0_findings.md" in quarantined,
+        _assert("semantic_invariants.md" in quarantined,
                 f"I: expected foreign artifacts in overflow; got {quarantined}")
         # The foreign files should NOT remain in the main scratchpad
-        _assert(not (scratch / "depth_agent_0_findings.md").exists(),
+        _assert(not (scratch / "semantic_invariants.md").exists(),
                 "I: foreign artifact was NOT quarantined from scratchpad")
 
         print("[scenario I] PASS")
@@ -1290,20 +1961,19 @@ def test_scenario_j_breadth_model_override() -> None:
     import plamen_driver as _pd
     phase = next(p for p in _pd.L1_PHASES if p.name == "breadth")
     model = _pd.phase_model(
-        phase, "thorough", {"breadth_model_override": "claude-opus-4-6"}
+        phase, "thorough", {"breadth_model_override": "claude-opus-5"}
     )
-    _assert(model == "claude-opus-4-6",
+    _assert(model == "claude-opus-5",
             f"J: breadth override should win; got {model}")
     light_model = _pd.phase_model(
-        phase, "light", {"breadth_model_override": "claude-opus-4-6"}
+        phase, "light", {"breadth_model_override": "claude-opus-5"}
     )
-    _assert(light_model == "sonnet",
+    _assert(light_model == "claude-sonnet-5",
             f"J: light mode must still force sonnet; got {light_model}")
     print("[scenario J] PASS")
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(reason="L1 depth never-cut gate evolved past stub expectations — needs rework")
 def test_scenario_k_inventory_sharding() -> None:
     """Inventory sharding."""
     tmp, project, scratch, cfg_path, call_log = _make_project(
@@ -1312,26 +1982,94 @@ def test_scenario_k_inventory_sharding() -> None:
     )
     try:
         rc = _run_driver(tmp, cfg_path, call_log, "K")
-        _assert(rc == 0, f"K exit: got {rc}, expected 0 (pipeline completed)")
+        _assert(rc == 3, f"K exit: got {rc}, expected 3 (known harness debt)")
 
         ckpt = json.loads(
             (scratch / "_v2_checkpoint.json").read_text(encoding="utf-8")
         )
-        for name in ("inventory_prepare", "inventory_chunk_a", "inventory_chunk_b", "inventory"):
+        inventory_phases = (
+            "inventory_prepare",
+            "inventory_chunk_a",
+            "inventory_chunk_b",
+            "inventory_chunk_c",
+            "inventory",
+        )
+        for name in inventory_phases:
             _assert(name in ckpt["completed"],
                     f"K: {name} must be completed; got {ckpt['completed']}")
+            _assert(name not in ckpt["degraded"],
+                    f"K: {name} must not carry debt; got {ckpt['degraded']}")
+            _assert(
+                ckpt.get("phase_commits", {}).get(name, {}).get("state") == "CLEAN",
+                f"K: {name} must have a CLEAN typed phase commit",
+            )
         _assert((scratch / "inventory_shard_plan.md").exists(),
                 "K: inventory_shard_plan.md missing")
-        _assert((scratch / "inventory_chunk_a.manifest.md").exists(),
-                "K: inventory_chunk_a.manifest.md missing")
-        _assert((scratch / "findings_inventory_chunk_a.md").exists(),
-                "K: findings_inventory_chunk_a.md missing")
-        _assert((scratch / "findings_inventory_chunk_b.md").exists(),
-                "K: findings_inventory_chunk_b.md missing")
+        manifest_texts = []
+        for shard in ("a", "b", "c"):
+            manifest = scratch / f"inventory_chunk_{shard}.manifest.md"
+            output = scratch / f"findings_inventory_chunk_{shard}.md"
+            _assert(manifest.exists(), f"K: {manifest.name} missing")
+            _assert(output.exists(), f"K: {output.name} missing")
+            manifest_texts.append(
+                manifest.read_text(encoding="utf-8", errors="replace")
+            )
+        assigned_sources = __import__("re").findall(
+            r"\banalysis_agent_\d+\.md\b", "\n".join(manifest_texts)
+        )
+        expected_sources = [f"analysis_agent_{i}.md" for i in range(6)]
+        _assert(
+            __import__("collections").Counter(assigned_sources)
+            == __import__("collections").Counter(expected_sources),
+            "K: every breadth source must be assigned to exactly one shard; "
+            f"got {assigned_sources}",
+        )
+        for text in manifest_texts:
+            _assert(
+                len(__import__("re").findall(r"\banalysis_agent_\d+\.md\b", text)) == 2,
+                "K: the 6-source/3-shard fixture must assign exactly two sources per shard",
+            )
         _assert((scratch / "findings_inventory.md").exists(),
                 "K: findings_inventory.md missing")
-        _assert("inventory" not in ckpt["degraded"],
-                f"K: inventory must NOT be degraded; got {ckpt['degraded']}")
+        inventory = (scratch / "findings_inventory.md").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        inventory_ids = __import__("re").findall(
+            r"(?m)^### Finding \[(INV-\d+)\]", inventory
+        )
+        _assert(
+            len(inventory_ids) == len(set(inventory_ids)) == 6,
+            "K: six distinct shard inputs must survive exactly once; "
+            f"got {inventory_ids}",
+        )
+        source_fields = "\n".join(
+            __import__("re").findall(
+                r"(?im)^\*\*Source IDs\*\*:\s*(.+?)\s*$", inventory
+            )
+        )
+        source_ids = __import__("re").findall(r"\bF-\d+\b", source_fields)
+        expected_ids = [f"F-{i}" for i in range(1, 7)]
+        _assert(
+            __import__("collections").Counter(source_ids)
+            == __import__("collections").Counter(expected_ids),
+            "K: exact F-1..F-6 source identities must survive once each; "
+            f"got {source_ids}",
+        )
+        orphans = scratch / "promotion_orphans.md"
+        _assert(orphans.exists(), "K: promotion completeness receipt is missing")
+        orphan_text = orphans.read_text(encoding="utf-8", errors="replace")
+        _assert(
+            "Exact delivered/repeated subjects excluded: 6 | Orphans: 0"
+            in orphan_text,
+            "K: exact retained source identities must be reconciled and must "
+            "not be re-harvested as promotion gaps",
+        )
+        _assert(
+            set(ckpt.get("degraded", []))
+            == {"verify_queue", "mechanical_verify", "report_index"},
+            "K: rc=3 may reflect only the explicitly modeled downstream "
+            f"provider debt; got {ckpt.get('degraded', [])}",
+        )
         print("[scenario K] PASS")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

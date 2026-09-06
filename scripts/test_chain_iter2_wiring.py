@@ -131,18 +131,16 @@ def test_validator_treats_near_empty_as_degraded(tmp_path: Path):
 
 # -------- Pre-spawn skip detector ----------------------------------------
 
-def test_no_coverage_file_triggers_skip(tmp_path: Path):
-    """When composition_coverage.md doesn't exist at all (chain phase
-    upstream may have failed), skip iteration 2 rather than spawn an LLM
-    with no input."""
+def test_no_coverage_file_remains_unresolved(tmp_path: Path):
+    """Missing coverage is debt, never authority to skip iteration 2."""
     from plamen_parsers import _chain_iter2_has_no_unexplored_pairs
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
-    assert _chain_iter2_has_no_unexplored_pairs(sp) is True
+    assert _chain_iter2_has_no_unexplored_pairs(sp) is False
 
 
-def test_all_explored_triggers_skip(tmp_path: Path):
-    """Coverage table fully explored → nothing for iter 2 to do."""
+def test_markdown_all_explored_cannot_authorize_skip(tmp_path: Path):
+    """Producer Markdown cannot self-certify complete pair coverage."""
     from plamen_parsers import _chain_iter2_has_no_unexplored_pairs
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
@@ -154,7 +152,7 @@ def test_all_explored_triggers_skip(tmp_path: Path):
         "| H-01 (High) | M-05 (Medium) | YES | chain CH-1 | — |\n"
         "| H-02 (High) | M-07 (Medium) | YES | no match | — |\n",
     )
-    assert _chain_iter2_has_no_unexplored_pairs(sp) is True
+    assert _chain_iter2_has_no_unexplored_pairs(sp) is False
 
 
 def test_unexplored_medium_plus_triggers_spawn(tmp_path: Path):
@@ -173,10 +171,8 @@ def test_unexplored_medium_plus_triggers_spawn(tmp_path: Path):
     assert _chain_iter2_has_no_unexplored_pairs(sp) is False
 
 
-def test_unexplored_but_only_low_severity_skips(tmp_path: Path):
-    """If unexplored rows are all Low/Info, the iteration-2 ROI is
-    poor; per the early-exit rule we skip. The skip ONLY triggers when
-    ALL unexplored rows are Low/Info; one Medium+ keeps us alive."""
+def test_untyped_low_severity_rows_cannot_authorize_skip(tmp_path: Path):
+    """Severity does not convert Markdown into chain-tail authority."""
     from plamen_parsers import _chain_iter2_has_no_unexplored_pairs
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
@@ -187,4 +183,4 @@ def test_unexplored_but_only_low_severity_skips(tmp_path: Path):
         "|-----------|-----------|-----------|--------|-------|\n"
         "| L-01 (Low) | I-02 (Info) | NO | — | unexplored low-only |\n",
     )
-    assert _chain_iter2_has_no_unexplored_pairs(sp) is True
+    assert _chain_iter2_has_no_unexplored_pairs(sp) is False

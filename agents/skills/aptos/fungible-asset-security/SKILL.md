@@ -6,7 +6,7 @@ description: "Trigger FA_STANDARD flag detected (protocol uses FungibleAsset sta
 # Skill: FUNGIBLE_ASSET_SECURITY
 
 > **Trigger**: FA_STANDARD flag detected (protocol uses FungibleAsset standard)
-> **Used by**: Breadth agents, depth-token-flow
+> **Inject Into**: Breadth agents, depth-token-flow
 > **Covers**: FungibleAsset metadata validation, zero-value exploitation, store ownership, dispatchable hooks, Ref safety, Coin-to-FA migration
 
 ## Purpose

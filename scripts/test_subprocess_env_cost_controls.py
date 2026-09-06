@@ -48,11 +48,14 @@ def _make_env_like_run_phase(phase_name: str, mocked_os_environ: dict) -> dict:
         L1_VERIFY_PHASE_NAMES,
         SC_VERIFY_PHASE_NAMES,
     )
-    from plamen_driver import _filtered_child_subprocess_environ
+    from plamen_driver import (
+        _CLAUDE_UPDATE_DISABLE_ENV,
+        _filtered_child_subprocess_environ,
+    )
 
     env = {
         **_filtered_child_subprocess_environ(mocked_os_environ),
-        "ANTHROPIC_DISABLE_AUTOUPDATE": "1",
+        **_CLAUDE_UPDATE_DISABLE_ENV,
         "ANTHROPIC_DEFAULT_OPUS_MODEL": PLAMEN_OPUS_MODEL,
         "PLAMEN_SCRATCHPAD": "/fake/scratchpad",
         "BASH_MAX_OUTPUT_LENGTH": mocked_os_environ.get(
@@ -92,6 +95,8 @@ def test_tool_output_caps_present_for_every_phase():
         assert env["MAX_MCP_OUTPUT_TOKENS"] == "8000", (
             f"{phase}: MAX_MCP_OUTPUT_TOKENS missing or wrong default"
         )
+        assert env["DISABLE_UPDATES"] == "1"
+        assert env["DISABLE_AUTOUPDATER"] == "1"
 
 
 def test_context_editing_beta_only_on_high_turn_phases():

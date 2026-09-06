@@ -14,10 +14,35 @@ def _load(name: str):
 
 def test_security_obligations_are_generic_feature_derived(tmp_path: Path):
     mech = _load("plamen_mechanical")
-    (tmp_path / "recon_summary.md").write_text(
-        "The protocol has a router that performs swaps through pools, "
-        "handles refunds on failed cross-chain messages, and unwraps native "
-        "assets before withdrawal.",
+    (tmp_path / "_v2_checkpoint.json").write_text(
+        json.dumps({
+            "run_id": "12345678-1234-4234-9234-123456789abc",
+            "config": {"pipeline": "sc", "language": "evm", "mode": "thorough"},
+            "audit_snapshot": {
+                "snapshot_digest": "a" * 64,
+                "components": {"source_scope": {"digest": "b" * 64}},
+            },
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "_mechanical_graph.json").write_text(
+        json.dumps({
+            "schema_version": "plamen.mechanical-graph.v2",
+            "source": "evm-source",
+            "var_refs": {},
+            "state_symbols": [],
+            "functions": {
+                "vault::swap_router_asset_amount_minout": {
+                    "bare": "swap_router_asset_amount_minout", "callees": [],
+                },
+                "vault::failed_refund_asset_to_sender": {
+                    "bare": "failed_refund_asset_to_sender", "callees": [],
+                },
+                "vault::wrap_native_token_transfer": {
+                    "bare": "wrap_native_token_transfer", "callees": [],
+                },
+            },
+        }),
         encoding="utf-8",
     )
 
@@ -57,6 +82,25 @@ def test_candidate_semantic_facets_extract_general_mechanisms(tmp_path: Path):
     assert "asset-binding-mismatch" in facets["mechanisms"]
     assert "swap-skip-or-divergence" in facets["mechanisms"]
     assert "unauthenticated-source" in facets["branch_conditions"]
+
+
+def test_candidate_semantic_facets_emit_explicit_zero_envelope(tmp_path: Path):
+    mech = _load("plamen_mechanical")
+
+    assert mech._write_candidate_semantic_facets(tmp_path) == 0
+    payload = json.loads(
+        (tmp_path / "candidate_semantic_facets.json").read_text(encoding="utf-8")
+    )
+    assert payload == {
+        "schema_version": "plamen.candidate_semantic_facets.v1",
+        "candidate_count": 0,
+        "candidates": [],
+    }
+    projection = (tmp_path / "candidate_semantic_facets.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Candidate Semantic Facets" in projection
+    assert "0 candidates" in projection
 
 
 def test_thorough_mode_mode_limited_deferred_degrades_not_halts(tmp_path: Path):
@@ -225,5 +269,8 @@ def test_chain_anti_absorption_repair_splits_overmerged_groups(tmp_path: Path):
     assert after == []
     mapping = (tmp_path / "finding_mapping.md").read_text(encoding="utf-8")
     assert "INV-001" in mapping and "INV-002" in mapping
-    assert "HH-01" not in mapping
+    assert "HH-01" in mapping  # raw composition card is preserved
+    from plamen_parsers import _parse_hypothesis_constituents
+    assert "HH-01" not in _parse_hypothesis_constituents(tmp_path)
     assert (tmp_path / "anti_absorption_repair.md").exists()
+    assert (tmp_path / "chain_anti_absorption_applied_receipt.json").exists()

@@ -1,7 +1,7 @@
 # Architecture
 
-> Plamen v2.2.4. The default analysis model is Opus 4.8 (`claude-opus-4-8`),
-> resolved via `PLAMEN_OPUS_MODEL` / `PLAMEN_THOROUGH_OPUS_MODEL` in
+> Plamen v2.2.4. Claude analysis tiers are pinned to Opus 5 and Sonnet 5,
+> resolved via the `PLAMEN_*_MODEL` controls in
 > `scripts/plamen_types.py`. Runs on Windows, macOS, and Linux.
 
 ## Pipeline Overview
@@ -70,19 +70,55 @@ Phase 1 RECON -> Phase 2 INSTANTIATE -> Phase 3 BREADTH -> Phase 3b RESCAN
 
 ## Canonical Layout
 
-`~/.plamen/` is the canonical Git checkout. `~/.claude/` (Claude Code) and `~/.codex/plamen/` (Codex) are install-created runtime integration symlinks pointing at it. The driver resolves the right one at runtime via `plamen_home()` in `scripts/plamen_types.py:91`, so prompts can use `~/.claude/...` paths even when running under Codex.
+`~/.plamen/` is the authenticated installed package, not a Git checkout. A
+complete source tree may live anywhere else and is installation input only.
+`plamen install` validates its exact governed 761-row closure, transactionally
+publishes the installed package and receipt, and wires the command front in
+`~/.local/bin`. Claude and Codex projections are derived from that committed
+package; neither is a mutable link back to source.
+
+The driver resolves the authenticated installed methodology for the selected
+backend through `plamen_home()` in `scripts/plamen_types.py`. Prompts may retain
+their portable `~/.claude/...` references because the Codex adapter translates
+them into the installed Codex projection.
+
+### Runtime authority
+
+Installation owns a private hash-locked Python environment and an immutable
+model-runtime generation. Managed Node.js 24.20.0 executes its authenticated
+npm 11.19.0 closure to materialize exact Claude Code 2.1.252 and Codex 0.152.0
+payloads. Ambient Node/npm/npx or global backend executables are never launch
+authority.
+
+A signed current selection binds the generation receipt, census, request,
+policy, backend native-resource closures, and permitted MCP launch descriptors.
+Normal backend launch replays the bounded signed resource closure under a
+generation lock, making steady-state launch fast after the one-time install
+materialization. `plamen doctor` validates the same committed authority without
+provider calls or ambient-tool discovery.
+
+MCP is admitted only for receipt-bound Claude-headless `rag_sweep`. Windows
+uses Job-object descendant containment; Linux uses delegated cgroup v2 plus
+Landlock when supported. Unsupported Linux and macOS deny MCP before spawn and
+the audit uses its governed Web/local fallback. Claude PTY and Codex routes do
+not load MCP servers. Backend CLI stdio is not passed through the MCP
+sanitizer.
 
 ---
 
 ## Phase Details
 
-### Phase 1: Reconnaissance (4 parallel agents)
+### Phase 1: Reconnaissance (4 parallel shards)
 
-Split into 4 agents to prevent timeout:
-- **Agent 1A (sonnet)**: RAG queries -- unified-vuln-db, Solodit live search
-- **Agent 1B (opus)**: Documentation parsing, fork ancestry research, trust model extraction
-- **Agent 2 (sonnet)**: Build environment, static analysis (Slither -> Farofino/Aderyn -> grep fallback), test suite
-- **Agent 3 (opus)**: Pattern detection, attack surface mapping, template recommendations with BINDING MANIFEST
+Split into four source-analysis shards to prevent timeout:
+- **Build/static**: build environment, direct locked static analysis, tests
+- **Design/context**: documentation parsing, trust model and operational invariants
+- **Inventory/surface**: contract/function/state inventory and attack surface
+- **Templates/patterns**: pattern detection and template recommendations
+
+Recon receives no MCP. A conditional external-dependency leaf may use governed
+Web research, while historical vulnerability precedent is deferred until the
+post-freeze `rag_sweep` phase.
 
 Produces 17+ scratchpad artifacts consumed by all downstream phases.
 
@@ -134,7 +170,10 @@ Worker-pool phase (`_run_depth_worker_pool_pty`, `scripts/plamen_driver.py:10265
 
 **Iterations 2-3** (Thorough): Devil's Advocate workers with structural adversarial role, contrastive path summaries, fresh MCP calls.
 
-**Confidence scoring** (sonnet, batched): 4-axis model (Evidence x 0.25 + Consensus x 0.25 + Analysis Quality x 0.3 + RAG Match x 0.2).
+**Confidence scoring** (driver-canonical, optional sonnet-class routing
+proposal): three code-derived axes (Evidence × 0.25 + Consensus × 0.25 +
+Analysis Quality × 0.3). Historical precedent is separate context and never a
+confidence axis.
 
 **Axis-coverage meta-pass** (Thorough only; deterministic prepass plus a conditional Sonnet worker): the driver deterministically ranks mechanically-hot functions (fan-in, state-writes, privilege, value-movement signals), persists a fixed risk-axis matrix (theft / liveness / accounting / provenance / boundary / identity), and skips the worker when every cell is `EXAMINED` or mechanically `N/A`. Structured depth-evidence tags are the primary coverage signal; narrowly bounded cues in finding Description/Impact fields are a secondary signal for tag-light ecosystems. Ambiguous cells remain `GAP`. Only when at least one GAP exists does the Sonnet worker interrogate those cells and propose additive candidates for the normal dedup/verify funnel. Core and Light do not run this phase. Part of the [Mechanical Recall Gates](#mechanical-recall-gates) layer below.
 
@@ -168,9 +207,10 @@ The Index Agent's report_index is built deterministically where it used to rely 
 
 A durable post-report deduplication phase (`report_dedup`, dispatched at
 `scripts/plamen_driver.py:18822`, `critical=False`/non-fatal). It runs a
-data-loss-free dedup over the full candidate set with a precision-guarded
-cross-tier same-fix catch — recall-positive, and a non-fatal failure never
-blocks delivery of `AUDIT_REPORT.md`.
+data-loss-free dedup over the full candidate set. LLM and heuristic same-fix
+rows remain proposals; consolidation requires exact current source identity and
+a typed applied-alias receipt staged by the report transaction. A non-fatal
+failure retains both standalone findings and never blocks report delivery.
 
 ---
 
@@ -245,7 +285,9 @@ unproven exploit can never ship as verified-Critical.
 
 ## Driver Architecture
 
-`scripts/plamen_driver.py` is a Python outer loop. Invoked via `/plamen-wizard` (Claude Code), the `plamen` terminal wrapper (both backends), or directly:
+`scripts/plamen_driver.py` is the Python outer loop behind `/plamen-wizard`
+(Claude Code) and the authenticated `plamen` front (both backends). It is an
+installed implementation detail, not a user-facing launch path:
 
 ```
 plamen_driver.py
@@ -282,7 +324,7 @@ Disk-gate completion contract. The driver only counts a worker complete when:
 Claude saying "done" in the PTY transcript is not trusted for worker phases. The reader thread captures the `DONE:` line for observability but the only completion authority is the disk gate. This closes the premature-DONE failure class observed when Claude Code auto-compacts a worker turn (see *Compaction-as-informational* below).
 
 Key properties:
-- **Resumable**: re-run `python3 ~/.claude/scripts/plamen_driver.py {project}/.scratchpad/config.json` to resume from the last checkpoint. Stale or corrupt checkpoints recover rather than stranding the run.
+- **Resumable**: re-run `plamen resume {project}/.scratchpad/config.json` to resume from the last checkpoint. Stale or corrupt checkpoints recover rather than stranding the run.
 - **Phase-isolated**: each subprocess sees only its own prompt section; forward refs and foreign subsections are stripped before dispatch.
 - **Backend-agnostic**: Claude Code (`claude -p`) and Codex CLI (`codex exec`) share the same phase contracts.
 - **Deterministic gating**: artifact existence and marker hygiene are checked mechanically. The LLM never self-reports completion to the driver's state machine.
@@ -344,7 +386,13 @@ Reason: launching `/plamen` from inside Claude Code on macOS/Linux meant the Pyt
 SUBPROCESS_ISOLATION_PAYLOAD = '{"enabledPlugins":{},"hooks":{},"mcpServers":{},"skipDangerousModePermissionPrompt":true}'
 ```
 
-Defined in `scripts/pty_exec.py:113` and passed to every spawned `claude` via `--settings` + `--strict-mcp-config`. Empty `enabledPlugins`/`hooks`/`mcpServers` disables plugin and hook cold-start work for the child subprocess (e.g. `rust-analyzer-lsp` plugin sync, hook-driven network calls) without modifying the user's real `settings.json` -- so OAuth keychain auth keeps working. Load-bearing for users whose host Claude Code has heavy plugin or MCP integrations.
+Defined in `scripts/pty_exec.py:113` and passed to each Claude PTY worker via
+`--settings` plus strict MCP configuration. Empty plugins, hooks, and MCP
+servers disable ambient cold-start work without modifying the user's real
+settings, so provider authentication remains available. The separately
+admitted Claude-headless `rag_sweep` route receives only its receipt-bound
+contained RAG server; this PTY overlay is not used to smuggle ambient MCP into
+that route.
 
 ### Preflight cache schema v3
 
@@ -380,7 +428,9 @@ Claude context compaction during a worker turn is informational, not a failure -
 
 A driver-generated artifact feeds each depth worker beyond the standard inventory/findings inputs (`prompts/shared/v2/phase4b-depth.md:21,230,355`):
 
-- `security_obligations.md` -- feature-derived obligation ledger. Workers consult it and emit `[OBLIG:security_obligations.md:<SO-ID>] STATUS:R|D|C KEY:<one-line> -> <finding_id|reason|phase>` lines so the driver can mechanically reconcile coverage.
+- `security_feature_facts.json` and `security_obligation_authority.json` -- the run/source/hash-bound P1-C authority. Rules consume subject-local typed feature facts, own one canonical obligation, preserve relation-scoped conflicts as review work, and reconcile only current bound receipts. Object relations have deterministic IDs, so one typed fact cannot clear a different symbol or structural target.
+- Asset-representation seams follow the closed, proposal-only trust contract in [asset-representation-foundation.md](asset-representation-foundation.md). Legacy/model `PRESENT`, checkpoint-local operator claims, and self-described graph-v3 fields add context but cannot suppress application work. Terminal authority remains disabled until a genuine out-of-tree principal/provider receipt substrate exists.
+- `security_obligations.md` -- exact worker-facing projection of that authority, including an enumerate-all alias table with symbol/object context. Workers emit one `[OBLIG:security_obligations.md:<SO-ID>] ALIAS:<SOT-ID> STATUS:R|D|C KEY:<one-line> -> <finding_id|reason|phase>` line per evaluated alias; `ALIAS:` may be omitted only for a single-alias obligation. The driver does not reconstruct authority from this Markdown.
 
 ---
 
@@ -408,10 +458,14 @@ The driver supports OpenAI Codex CLI (`codex exec`) as an alternative backend,
 added in v2.1.0 as a cost-saving option (still beta):
 
 - Prompts are rewritten by `scripts/codex_adapter.py`: `~/.claude/...` paths become `~/.codex/plamen/...` equivalents, `Task(subagent_type=...)` becomes `spawn_agent(...)`, bash snippets become PowerShell where required. This is prompt-text rewriting, not MCP transport translation.
-- MCP is supported natively by Codex via `[mcp_servers.*]` TOML stanzas in `~/.codex/config.toml`, which `codex_adapter.py` generates from the Claude Code MCP config so unified-vuln-db and Solodit RAG tools work in both backends.
+- Codex audit subprocesses are ephemeral and use `--ignore-user-config`, so they load no ambient MCP servers. `rag_sweep` uses governed Web/local precedent research.
 - Sandbox constraints are adapted for Codex's execution model.
-- `~/.codex/plamen/` is symlinked to `~/.plamen/` (the canonical Git checkout), exactly the same way `~/.claude/` is. The Codex tree carries `AGENTS.md` (orchestrator) and `config.toml` (settings), replacing Claude Code's `CLAUDE.md`, `settings.json`, and `mcp.json`.
-- Install: `plamen install --codex`. The driver auto-detects the active backend and resolves the correct symlink via `plamen_home()` (`scripts/plamen_types.py:91`).
+- The authenticated installation carries both model backends. The signed
+  current selection identifies the exact Codex 0.152.0 resource closure, and
+  the installed public front holds generation authority through `codex exec`.
+- Install or upgrade both backends with `plamen install` from complete governed
+  source. The driver selects the requested backend without consulting a global
+  Codex installation.
 
 v2.1.0 Codex-specific hardening:
 - **Per-job depth fan-out**: the depth phase runs one `codex exec` per depth job rather than a single subprocess, fixing the never-cut-stub halt from single-subprocess under-fan-out.

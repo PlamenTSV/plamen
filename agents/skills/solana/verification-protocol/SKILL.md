@@ -190,54 +190,14 @@ When verdict is CONTESTED or FALSE_POSITIVE, document the failure details:
 
 ---
 
-## RAG Queries Before PoC (MANDATORY for HIGH/CRITICAL)
+## Shared External Precedent Boundary
 
-Before writing PoC tests for HIGH/CRITICAL findings:
-
-### Step 1: Get Attack Vectors
-```
-mcp__unified-vuln-db__get_attack_vectors(bug_class="{category}")
-```
-
-### Step 2: Get Similar Findings
-```
-mcp__unified-vuln-db__get_similar_findings(pattern="{vulnerability description}")
-```
-
-### Step 3: Validate Hypothesis
-```
-mcp__unified-vuln-db__validate_hypothesis(hypothesis="{finding summary}")
-```
-
-### Step 4: Live Search for Solana-Specific Precedents
-```
-mcp__unified-vuln-db__search_solodit_live(
-  keywords="{solana vulnerability pattern}",
-  impact=["HIGH", "CRITICAL"],
-  tags=["Access Control", "Logic Error"],
-  language="Rust",
-  quality_score=3,
-  max_results=15
-)
-```
-
-Document RAG evidence in output:
-```markdown
-### RAG Evidence
-- **Attack Vectors Consulted**: [list bug classes queried]
-- **Similar Exploits Found**: [count and brief descriptions]
-- **Historical Precedent**: [matching Solana-specific vulnerabilities]
-```
-
----
-
-## RAG Confidence Override
-
-| RAG Confidence | Local Verdict | Final Verdict | Action |
-|----------------|---------------|---------------|--------|
-| >= 7/8 matches | FALSE_POSITIVE | **CONTESTED** (override) | Cannot dismiss -- strong precedent |
-| >= 6/8 matches | FALSE_POSITIVE | **CONTESTED** (override) | Cannot dismiss -- significant precedent |
-| < 6/8 matches | FALSE_POSITIVE | FALSE_POSITIVE | Allowed -- limited precedent |
+Read `~/.claude/rules/precedent-evidence-policy.md`.
+Do not query vulnerability databases, WebSearch, or fresh RAG before or during
+PoC adjudication. Seal the code-derived hypothesis, plan, and executed result
+without historical anchoring. Centralized precedent can only create additive
+test ideas in a separate post-plan phase; it is never verifier evidence and
+cannot support a negative verdict, severity, proof, demotion, or report claim.
 
 ---
 

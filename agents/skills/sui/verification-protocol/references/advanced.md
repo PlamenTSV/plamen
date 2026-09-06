@@ -2,75 +2,14 @@
 
 > Part of the Sui Verification Protocol skill. Read `SKILL.md` for the core workflow first.
 
-## RAG Queries Before PoC (MANDATORY for HIGH/CRITICAL)
+## Shared External Precedent Boundary
 
-Before writing PoC tests for HIGH/CRITICAL findings:
-
-### Step 1: Get Attack Vectors
-```
-mcp__unified-vuln-db__get_attack_vectors(bug_class="{category}")
-```
-Returns step-by-step attack strategies from real exploits.
-
-### Step 2: Get PoC Templates
-```
-mcp__unified-vuln-db__get_poc_template(bug_class="{category}", framework="move_test")
-```
-Returns example test structures for this vulnerability type.
-
-### Step 3: Get Similar Exploit Code
-```
-mcp__unified-vuln-db__get_similar_findings(pattern="{vulnerability description}")
-```
-Returns similar historical findings with code examples.
-
-### Step 4: Validate Before Committing
-```
-mcp__unified-vuln-db__validate_hypothesis(hypothesis="{your finding summary}")
-```
-Returns supporting/contradicting evidence from historical exploits.
-
-### Step 5: Live Search for Sui-Specific Precedents
-```
-mcp__unified-vuln-db__search_solodit_live(
-  keywords="{sui move vulnerability pattern}",
-  impact=["HIGH", "CRITICAL"],
-  tags=["Access Control", "Logic Error"],
-  language="Move",
-  quality_score=3,
-  max_results=15
-)
-```
-
-### RAG Integration Rules
-
-| RAG Result | Impact on Verification |
-|------------|----------------------|
-| Attack vector found | Use documented steps as test basis |
-| Similar exploit exists | Extract key attack pattern |
-| PoC template available | Adapt template to Sui test_scenario |
-| No similar findings | Proceed with manual analysis, note uncertainty |
-
-### Document RAG Evidence
-
-In the verification output, add:
-```markdown
-### RAG Evidence
-- **Attack Vectors Consulted**: [list bug classes queried]
-- **Similar Exploits Found**: [count and brief descriptions]
-- **PoC Template Used**: [yes/no, which template]
-- **Historical Precedent**: [describe any matching Sui/Move vulnerabilities]
-```
-
----
-
-## RAG Confidence Override
-
-| RAG Confidence | Local Verdict | Final Verdict | Action |
-|----------------|---------------|---------------|--------|
-| >= 7/8 matches | FALSE_POSITIVE | **CONTESTED** (override) | Cannot dismiss -- strong precedent |
-| >= 6/8 matches | FALSE_POSITIVE | **CONTESTED** (override) | Cannot dismiss -- significant precedent |
-| < 6/8 matches | FALSE_POSITIVE | FALSE_POSITIVE | Allowed -- limited precedent |
+Read `~/.claude/rules/precedent-evidence-policy.md`.
+Do not query vulnerability databases, WebSearch, or fresh RAG before or during
+PoC adjudication. Seal the code-derived hypothesis, plan, and executed result
+without historical anchoring. Centralized precedent can only create additive
+test ideas in a separate post-plan phase; it is never verifier evidence and
+cannot support a negative verdict, severity, proof, demotion, or report claim.
 
 ---
 
@@ -172,7 +111,7 @@ If only one direction analyzed -> verdict CANNOT be FALSE_POSITIVE. Return CONTE
 
 ### Protection Rules
 
-1. **RAG >= 6/8 + Chain**: Cannot be dismissed as FALSE_POSITIVE
+1. **Precedent is context only**: chain disposition follows the executed full sequence, never match counts
 2. **3+ agents flagged + Chain**: Need PRODUCTION evidence to refute
 3. **Chain PoC MUST test full sequence**: Both enabler AND blocked finding
 
@@ -304,4 +243,3 @@ If Direction 2 (USER -> ROLE) is NOT analyzed:
 - Finding flagged for depth review
 
 ---
-

@@ -301,111 +301,16 @@ Return: CONFIRMED/FALSE_POSITIVE/CONTESTED + evidence tag + 3-sentence justifica
 
 ---
 
-## Skeptic-Judge Verification (Thorough mode only, HIGH/CRIT)
+## Independent Skeptic Challenge Boundary (Thorough mode)
 
-> **Purpose**: Challenge the standard verifier's reasoning. Nobody audits the auditor - this step does.
-> **Trigger**: Thorough mode, findings with severity HIGH, CRITICAL, or MEDIUM, after standard Phase 5 verification completes.
-> **Architecture**: Standard verifier → Skeptic agent (sonnet) → Judge agent (haiku, only if disagreement)
+> **Ownership:** This ecosystem verification prompt ends with the standard verifier. It MUST NOT spawn skeptic or judge workers, apply a skeptic proposal, or change report severity or disposition.
+> **Triggering:** After standard verification, the driver constructs an independent semantic trigger manifest across all severities. Severity alone is neither an eligibility rule nor an exclusion rule.
+> **Execution:** The shared driver-owned skeptic methodology receives that manifest and the applicable ecosystem anti-hallucination constraints. Its artifact is proposal-only and has no report authority. A distinct typed adjudicator receives each challenge requiring disposition; skeptic and adjudicator MUST NOT be the same worker or session.
+> **Completeness:** A hash-bound receipt MUST account for every exact manifest finding ID once. Missing, duplicate, unknown, stale, or constituent-substituted IDs make the phase incomplete and require retry or explicit human-review degradation; they are never silently skipped.
+> **Authority:** Only a validated, report-authoritative typed severity/disposition ledger can change upstream severity or disposition. Legacy `skeptic_*.md` and `judge_*.md` files are diagnostic or proposal artifacts only.
+> **Recall floor:** `UNRESOLVED` and `PARTIAL` preserve the highest supported upstream tier and remain visible in the report body. They create explicit review work, never an automatic demotion or exclusion.
 
-### Step 1: Spawn Skeptic Agent (per finding)
-
-For each HIGH/CRIT finding after standard verification:
-
-```
-Task(subagent_type="security-verifier", model="sonnet", prompt="
-You are the SKEPTIC VERIFIER. Your job is to challenge the standard verifier's conclusion.
-
-## INVERSION MANDATE
-The standard verifier concluded: {STANDARD_VERDICT} for hypothesis {HYPOTHESIS_ID}.
-Your job is to argue the OPPOSITE:
-- If standard said CONFIRMED → you MUST try to REFUTE. Find why this attack CANNOT work.
-- If standard said FALSE_POSITIVE → you MUST try to CONFIRM. Find why this attack CAN work.
-- If standard said CONTESTED → you MUST try to reach a definitive verdict (either direction).
-
-## Your Inputs
-Read:
-- {SCRATCHPAD}/verify_{hypothesis_id}.md (standard verifier's full analysis)
-- The source files at {LOCATION}
-- {SCRATCHPAD}/design_context.md
-- ~/.claude/rules/phase5-poc-execution.md
-
-## HARD RULES
-1. You MUST make your OWN tool calls. Do NOT rely on the standard verifier's code traces.
-2. You MUST read the source code yourself. Do NOT trust the standard verifier's code quotes.
-3. You MUST try to write and execute a PoC that proves the OPPOSITE of the standard verdict.
-4. If the standard verifier's PoC passed, try to show why it doesn't prove what it claims (wrong setup, unrealistic parameters, missing preconditions).
-5. If the standard verifier's PoC failed, try to show a variant that succeeds (different parameters, different entry point, different timing).
-
-## Output
-Write to {SCRATCHPAD}/skeptic_{hypothesis_id}.md:
-
-### Skeptic Verdict
-- **Standard Verdict**: {STANDARD_VERDICT}
-- **Skeptic Verdict**: {CONFIRMED/FALSE_POSITIVE/CONTESTED}
-- **Agreement**: {AGREE/DISAGREE}
-- **Evidence Tag**: {[POC-PASS]/[POC-FAIL]/[CODE-TRACE]}
-- **Reasoning**: {3-5 sentences explaining your position}
-
-If DISAGREE: include your counter-PoC or counter-trace.
-
-Return: '{AGREE/DISAGREE}: skeptic says {verdict} vs standard {STANDARD_VERDICT} - {1-line reason}'
-")
-```
-
-### Step 2: Evaluate Agreement
-
-After skeptic agent returns:
-- If **AGREE** → final verdict = standard verdict (high confidence, both perspectives aligned)
-- If **DISAGREE** → spawn Judge Agent (Step 3)
-
-### Step 3: Spawn Judge Agent (only on disagreement)
-
-```
-Task(subagent_type="general-purpose", model="haiku", prompt="
-You are the JUDGE. Two verifiers disagree on hypothesis {HYPOTHESIS_ID}. Your job is to determine which argument has STRONGER mechanical evidence.
-
-## Prove It or Lose It
-Read BOTH verification files:
-- {SCRATCHPAD}/verify_{hypothesis_id}.md (standard verifier)
-- {SCRATCHPAD}/skeptic_{hypothesis_id}.md (skeptic verifier)
-
-## Decision Criteria (STRICTLY mechanical)
-1. `[POC-PASS]` beats `[CODE-TRACE]` - always. Executed test > manual reasoning.
-2. `[POC-PASS]` beats `[POC-FAIL]` - the test that passes wins.
-3. If both have `[POC-PASS]` (conflicting tests) → verdict = CONTESTED
-4. If both have `[CODE-TRACE]` only → whichever traces MORE concrete values with SPECIFIC line numbers wins. If roughly equal depth → CONTESTED.
-5. If one has `[MEDUSA-PASS]` → that side wins (fuzzer counterexample is mechanical proof).
-
-## Output
-Write to {SCRATCHPAD}/judge_{hypothesis_id}.md:
-
-### Judge Ruling
-- **Standard Verdict**: {verdict} with {evidence_tag}
-- **Skeptic Verdict**: {verdict} with {evidence_tag}
-- **Ruling**: {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}
-- **Final Verdict**: {CONFIRMED/FALSE_POSITIVE/CONTESTED}
-- **Reasoning**: {2-3 sentences - which evidence was mechanically stronger}
-
-Return: 'RULING: {final_verdict} - {STANDARD_WINS/SKEPTIC_WINS/CONTESTED}'
-")
-```
-
-### Step 4: Apply Final Verdict
-
-| Outcome | Final Verdict | Confidence |
-|---------|--------------|------------|
-| Skeptic AGREES | Standard verdict | HIGH (dual-confirmed) |
-| Judge: STANDARD_WINS | Standard verdict | MEDIUM-HIGH |
-| Judge: SKEPTIC_WINS | Skeptic verdict | MEDIUM-HIGH (override) |
-| Judge: CONTESTED | CONTESTED | LOW (genuine ambiguity) |
-
-### Budget Impact
-
-| Component | Cost |
-|-----------|------|
-| Skeptic agents | 1 sonnet per HIGH/CRIT finding (~3-8 agents typical) |
-| Judge agents | 1 haiku per disagreement (~0-3 agents typical) |
-| **Total** | ~3-11 agents (only in Thorough mode) |
+Execution details belong to the shared driver-owned skeptic and typed-adjudication contracts; do not copy them into an ecosystem verifier prompt.
 
 ---
 

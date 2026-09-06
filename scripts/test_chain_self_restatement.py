@@ -247,11 +247,20 @@ def test_justified_chain_that_elevates_severity_stays_separate(tmp_path):
 
 
 def test_hypothesis_constituents_includes_chains(tmp_path):
-    """The extended _parse_hypothesis_constituents merges chain links in."""
+    """Raw chain links are available only to the grouping gate/repair path.
+
+    Ordinary consumers fail closed to independent work until the typed
+    grouping authority accepts an equivalence relation.
+    """
     _, pp = _mods()
     _write_chain(tmp_path, _chain_section("CH-01", "M-07", "M-09", justified=False))
     mapping = pp._parse_hypothesis_constituents(tmp_path)
-    assert mapping.get("CH-01") == ["M-07", "M-09"], mapping
+    assert "CH-01" not in mapping, mapping
+
+    raw_mapping = pp._parse_hypothesis_constituents(
+        tmp_path, apply_chain_grouping_authority=False
+    )
+    assert raw_mapping.get("CH-01") == ["M-07", "M-09"], raw_mapping
 
 
 # ──────────── STEP 3: dedup-queue collapse inherits constituent sev ────────────
@@ -272,9 +281,10 @@ def _write_queue(sp: Path, rows: list[dict]) -> None:
     (sp / "verification_queue.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def test_dedup_chain_collapse_inherits_constituent_severity(tmp_path):
-    """Unjustified chain (High) + constituent (Medium) collapse to ONE row at
-    the constituent's Medium severity (no High-tier inflation)."""
+def test_dedup_chain_without_independent_equivalence_stays_separate(tmp_path):
+    """A chain proposal cannot collapse constituents or alter severity until
+    an independently bound typed equivalence decision authorizes that action.
+    """
     _, pp = _mods()
     _write_inventory(tmp_path, [
         {"id": "M-07", "severity": "Medium", "location": "A.sol:L10 foo()",
@@ -290,11 +300,16 @@ def test_dedup_chain_collapse_inherits_constituent_severity(tmp_path):
         {"finding id": "CH-01", "severity": "High", "location": "A.sol:L10"},
     ])
     removed = pp._dedup_queue_by_hypothesis(tmp_path)
-    assert removed >= 1, "chain should collapse with its constituents"
+    assert removed == 0, "unapproved chain grouping must not collapse work"
     rows = pp.parse_verification_queue_rows(tmp_path)
-    rep = [r for r in rows if (r.get("finding id") or "").upper() == "CH-01"]
-    assert rep, f"expected a CH-01 representative row, got {rows}"
-    assert rep[0].get("severity", "").lower() == "medium", rep
+    by_id = {
+        (r.get("finding id") or "").upper(): r
+        for r in rows
+    }
+    assert set(by_id) == {"M-07", "M-09", "CH-01"}, rows
+    assert by_id["M-07"].get("severity", "").lower() == "medium", rows
+    assert by_id["M-09"].get("severity", "").lower() == "medium", rows
+    assert by_id["CH-01"].get("severity", "").lower() == "high", rows
 
 
 def test_dedup_justified_chain_stays_separate(tmp_path):

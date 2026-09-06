@@ -1,0 +1,168 @@
+{
+  "schema": "plamen.continuation.evidence-index.v1",
+  "status": "ACTIVE_INCOMPLETE",
+  "generated_date": "2026-09-06",
+  "rules": [
+    "Evidence is scoped to the exact source and command that produced it.",
+    "A failure record remains evidence and cannot be overwritten by a later pass.",
+    "Mutable narrative evidence must be converted to immutable release-candidate receipts before final acceptance.",
+    "No record in this index contains private target findings, ground truth, credentials, or machine paths."
+  ],
+  "records": [
+    {
+      "id": "EV-CANONICAL-REGISTRY-20260906",
+      "kind": "requirements_snapshot",
+      "source_ref": "architecture/canonical-requirement-ownership.v2.json",
+      "source_sha256": "18126a61679d3687db45b0748d0d010945923c5a21185d9708e58fd8c3222662",
+      "result": "166 requirements: 127 represented with residual, 19 represented with external residual, 20 contract-only pending implementation",
+      "scope": "Requirement ownership and residual denominator only",
+      "acceptance_effect": "No canonical requirement is proven DONE by this snapshot"
+    },
+    {
+      "id": "EV-DOWNLOADS-CORPUS-20260906",
+      "kind": "discovery_snapshot",
+      "source_identity": "downloads-corpus-inventory-2026-09-06.json",
+      "source_sha256": "e77cfc170913d735f7df23cdd44077824438610c7874dfafb64401750a7aa767",
+      "result": "127 immediate Plamen-named regular files; 5216964 bytes",
+      "scope": "Filename-level discovery with content hashes; not semantic extraction",
+      "acceptance_effect": "Full corpus reconciliation remains open"
+    },
+    {
+      "id": "EV-WINDOWS-LIFECYCLE-SELECTED-61",
+      "kind": "test_observation",
+      "result": "61 passed in 10.22 seconds, exit 0, no skips",
+      "scope": "Selected Windows process ownership, cleanup replay, long paths, injected disk-full failures, startup diagnostics, and two startup caller nodes",
+      "source_snapshot": {
+        "scripts/auxiliary_writable_root_lease.py": "fe96acc26a75007fc1e68255303f6e64c743dc75a5576cd1c724013a45c5ce7f",
+        "scripts/test_owned_directory_reconciliation_bounds.py": "aaa8e0b195a4e318b678c145890cffcc846c4b36101ab3008383c51d27f9bf41"
+      },
+      "acceptance_effect": "Scoped substrate evidence only; full lifecycle, package, backend, and cross-platform acceptance remain open",
+      "provenance": "historical_external_observation"
+    },
+    {
+      "id": "EV-ATTENTION-GLOBAL-ID-20",
+      "kind": "test_observation",
+      "result": "20 passed in 29.32 seconds, exit 0",
+      "command_shape": "pytest -q -p no:cacheprovider scripts/test_attention_repair_sharding_bb.py scripts/test_attention_repair_global_id_regression.py",
+      "source_refs": [
+        "scripts/attention_repair_shards.py",
+        "scripts/test_attention_repair_global_id_regression.py",
+        "prompts/shared/v2/phase4b4-attention-repair.md"
+      ],
+      "scope": "Global ATT-N queue identity, canonical heading acceptance, local-renumbering rejection, and prefix/suffix collision rejection",
+      "acceptance_effect": "Focused proof only; rerun on the frozen package and through E2E",
+      "provenance": "unsealed_local_observation"
+    },
+    {
+      "id": "EV-DODO-P18-FAILED",
+      "kind": "end_to_end_attempt",
+      "backend": "codex",
+      "mode": "thorough",
+      "result": "FAILED after Depth during attention repair; two staged semantic-validation failures; required attention_repair_summary.md absent; no final report",
+      "last_successful_boundary": "Depth gate passed with six depth finding artifacts",
+      "additional_debt": [
+        "Build exit 1 with unresolved imports",
+        "Dependency research admission rejected; 25 dependencies unresolved",
+        "Program Facts unsupported with consumer activation false",
+        "Slither execution skipped under toolchain authority debt",
+        "Semantic invariant enrichment used a fallback before later pass"
+      ],
+      "scope": "Runtime reachability, bounded retry, and critical-gate failure evidence",
+      "acceptance_effect": "Not a successful audit and not reusable as a mutable run",
+      "private_artifacts_included": false
+    },
+    {
+      "id": "EV-DODO-P19-IN-PROGRESS",
+      "kind": "end_to_end_attempt",
+      "backend": "codex",
+      "mode": "thorough",
+      "result": "RUNNING; Recon and Instantiate committed, Breadth started",
+      "observed_boundary": "Breadth phase 3 of 75",
+      "additional_debt": [
+        "EVM build degraded after two Git-for-Windows/MSYS process failures and continued with grep plus on-demand compilation",
+        "Dependency research receipt rejected because cited sources were absent from typed Codex web_search events",
+        "All 25 dependency obligations remain explicitly unresolved; no favorable external behavior was assumed"
+      ],
+      "scope": "Live runtime progress observation only; not a successful audit and not terminal evidence",
+      "acceptance_effect": "Codex E2E completion gate remains open",
+      "private_artifacts_included": false
+    },
+    {
+      "id": "EV-V3-PORTABLE-SELECTED-20260906",
+      "kind": "test_observation",
+      "result": "69 passed, 4 expected Windows skips, 1 failed from concurrent global low-integrity/process-scope lease contention with the live audit",
+      "scope": "Public packaging freeze, Python packaging, macOS bootstrap contract, attention repair, and cross-OS hygiene",
+      "acceptance_effect": "Selected portable-source checks are substantially green; rerun the contended attention-shard integration after the live audit releases its lease",
+      "provenance": "unsealed_local_observation"
+    },
+    {
+      "id": "EV-MACOS-DEV-BOOTSTRAP-20260906",
+      "kind": "test_observation",
+      "result": "21 passed, 17 platform skips across focused portability checks; bootstrap-specific Windows contract check passed with POSIX execution deferred",
+      "source_refs": [
+        "scripts/bootstrap_macos_dev.sh",
+        "scripts/test_bootstrap_macos_dev.py",
+        "docs/development/macos.md",
+        "docs/development/machine-migration.md"
+      ],
+      "scope": "Source-development bootstrap contract for Darwin arm64/x86_64 and explicit denial of unsupported native audit runtime",
+      "acceptance_effect": "A real clean-clone Mac bootstrap remains required; this does not satisfy native macOS production audit support"
+    },
+    {
+      "id": "EV-STATIC-LAUNCH-RATCHET-FAIL",
+      "kind": "test_observation",
+      "result": "1 failed, 1 passed, 1 warning in 18.27 seconds",
+      "scope": "Fixed-file raw-launch inventory and narrow Claude-headless source check",
+      "finding": "Two installed-front admission subprocess sites were not in the static baseline; their ownership and bounded-output treatment remain unaccepted",
+      "acceptance_effect": "Worker lifecycle item WL-20 remains open"
+    },
+    {
+      "id": "EV-NATIVE-SPOOL-CHARACTERIZATION",
+      "kind": "test_observation",
+      "result": "1 passed in 0.48 seconds",
+      "scope": "A 10000-byte backing file returned a bounded tail under a 1024-byte return limit",
+      "finding": "Returned text is bounded but backing temporary storage is not",
+      "acceptance_effect": "Captured-output storage quota remains unimplemented"
+    },
+    {
+      "id": "EV-PACKAGE-ASSET-IDENTITY-FAIL",
+      "kind": "package_attempt",
+      "result": "FAILED before compile/import on packaged asset identity mismatch",
+      "scope": "Clean archive/package admission",
+      "acceptance_effect": "No clean-package acceptance; expected identities must not be silently rebased"
+    },
+    {
+      "id": "EV-RETENTION-ACCUMULATION",
+      "kind": "characterization",
+      "result": "Terminal profile ledgers can exhaust the startup inventory bound; startup denies new leases while preserving evidence",
+      "scope": "Small-limit synthetic characterization plus read-only production inventory observation",
+      "acceptance_effect": "Sustainable retention, retirement authority, and integrated capacity warning remain open"
+    },
+    {
+      "id": "EV-CODEX-E2E-GATE",
+      "kind": "acceptance_gate",
+      "result": "MISSING",
+      "scope": "Fresh packaged non-ground-truth audit through final report plus resume/fault evidence",
+      "acceptance_effect": "Blocks tool completion"
+    },
+    {
+      "id": "EV-CLAUDE-E2E-GATE",
+      "kind": "acceptance_gate",
+      "result": "MISSING",
+      "scope": "Fresh packaged non-ground-truth audit through final report plus clean resume and route evidence",
+      "acceptance_effect": "Blocks tool completion"
+    },
+    {
+      "id": "EV-MACOS-GATE",
+      "kind": "acceptance_gate",
+      "result": "MISSING",
+      "scope": "Clean clone, install, smoke validation, audit start, stop, and resume on macOS",
+      "acceptance_effect": "Blocks portable handoff"
+    }
+  ],
+  "supersession_notes": [
+    "The 61-test observation supersedes earlier selected regression counts only for that source snapshot.",
+    "The current runtime addendum supersedes p18-in-progress observations with the terminal failure observation.",
+    "A future green package or E2E record may satisfy a gate but must not delete the earlier failure evidence."
+  ]
+}

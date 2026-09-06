@@ -1,261 +1,113 @@
 # Updating Plamen
 
-## Quick Update
+Plamen upgrades are authenticated install transactions. The installed tree at
+`~/.plamen` is not a Git checkout, npm prefix, or editable development tree.
+Do not run `git pull`, npm, or an editor inside it.
+
+## Safe update procedure
+
+Acquire the release in a separate source directory, including its submodules,
+then run the installer from that source.
+
+Linux:
 
 ```bash
-# macOS / Linux
-cd ~/.plamen && git pull && plamen install
+git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME/plamen-source-next"
+cd "$HOME/plamen-source-next"
+python3.12 plamen.py install
 ```
+
+Windows PowerShell:
 
 ```powershell
-# Windows (PowerShell)
-cd $HOME\.plamen; git pull; plamen install
+git clone --recurse-submodules https://github.com/PlamenTSV/plamen.git "$HOME\plamen-source-next"
+Set-Location "$HOME\plamen-source-next"
+python plamen.py install
 ```
 
-`plamen install` is safe to re-run at any time. It will not wipe your RAG database, re-install toolchains, or overwrite your API keys.
+macOS currently has a separate source-development workflow. Do not run the
+governed production installer or treat a development bootstrap as an update to
+an audit runtime. Update the `Plamen-v3` source checkout with normal reviewed
+Git operations, then rerun `scripts/bootstrap_macos_dev.sh`; see the
+[macOS development guide](development/macos.md) and
+[machine-migration guide](development/machine-migration.md). Native or
+governed-host audit support remains an open exit criterion in the
+[Plamen-v3 continuation goal](continuation/GOAL.md).
 
-If you skip `plamen install` after pulling, `plamen` will warn you on next launch:
+An existing trusted source checkout may be updated according to your normal
+source-control policy, but `plamen.py install` must still be run from the
+complete reviewed result. Never point Git at `~/.plamen` and never replace
+the installed package by copying or linking a checkout over it.
 
-```
-⚠ Version mismatch: repo is v2.1.0 but ~/.claude/CLAUDE.md has v1.0.6
-  Run 'plamen install' to update. Pipeline may behave incorrectly until then.
-```
+## What the installer authenticates
 
-(Codex backend shows the equivalent: `~/.codex/AGENTS.md has v1.0.6`.)
+Before changing live state, `plamen install` validates the exact governed
+764-row source closure. It then publishes the new package transactionally and
+commits a receipt that binds the installed package, managed runtime, adapter,
+and model-runtime projection. An interrupted transaction is recovered or
+rejected; a partially published package is not accepted as current.
 
----
+The same transaction manages:
 
-## What Changed in v2.1.0 (runtime, not methodology)
+- a private, hash-locked CPython 3.12 dependency environment;
+- the reviewed Node.js 24.20.0 archive and complete npm 11.19.0 closure;
+- immutable Claude Code 2.1.252 and Codex 0.152.0 backend payloads;
+- a signed current selection binding generation, receipt, census, request,
+  policy, executable resource closures, and permitted MCP launches;
+- the authenticated `plamen` command front and backend integration files.
 
-v2.1.0 changes *how* the pipeline runs, not what the agents analyze. None of
-these require any action beyond the normal `git pull && plamen install` — they
-take effect on your next audit:
+There is no separate global Claude/Codex upgrade and no supported `npm -g`
+path. Do not run `plamen install --codex` as a second update step: the governed
+install carries both backends together.
 
-- **PTY-supervised execution + disk-derived completion.** The driver now drives
-  each worker through a pseudo-terminal and infers turn completion from
-  artifacts written to disk (`<!-- PLAMEN_STATUS: COMPLETE -->`) rather than a
-  stdout/JSON envelope, eliminating the 0-byte-stdio ambiguity and silent-hang
-  class from v2.0.x. A PTY transport preflight runs at startup.
-- **Haltless resilience.** A finished audit is no longer thrown away at the
-  finish line: report_index, verify, inventory, and resume paths now
-  repair-then-degrade and surface unfinished obligations as flagged Appendix-B
-  items in `AUDIT_REPORT.md` instead of halting. Stale/corrupt checkpoints
-  recover instead of stranding the run.
-- **Ecosystem auto-detect.** The audited ecosystem (EVM / Solana / Aptos / Sui /
-  Soroban, or Go/Rust for L1) is auto-detected and auto-corrected at startup via
-  manifest-priority rules — no halt-to-rerun — and shown on the startup banner.
-- **macOS + Linux readiness.** The driver runs on Windows, macOS, and Linux.
-  POSIX PTY execution uses `Popen` ownership + SIGCHLD reset, with nested-session
-  env isolation (`CLAUDE_CODE_*` stripped from child workers) and PATH
-  persistence.
-- **Opus 4.8 default.** Thorough-mode SC depth defaults to Opus 4.8
-  (`claude-opus-4-8`, override via `PLAMEN_OPUS_MODEL`).
-- **Codex backend (cost-saving BETA).** See [Codex Backend Updates](#codex-backend-updates) below.
-- **More deterministic plumbing.** Several fragile LLM phases were replaced with
-  deterministic Python (mechanical SC report_index recovery, verify
-  backfill/queue manifests, the data-loss-free `report_dedup` builder, the recon
-  prepass, and a Go SCIP bake for L1 Go audits). These are internal — no install
-  step or config change is needed.
+## Materialization cost and normal launches
 
----
+The first install, or an update that changes a locked runtime, may download
+and extract the reviewed Node archive and run managed `npm ci`. That one-time
+materialization can take several minutes. Plamen never executes ambient
+`node`, `npm`, `npx`, or npm shell wrappers for this work.
 
-## What Updates Automatically (just `git pull`)
+Normal audit launches do not repeat installation. They authenticate the
+committed receipt and signed current selection, then validate the bounded
+native resource closure for the selected backend. This keeps launches fast
+while rejecting stale, missing, replaced, or partially updated generations.
 
-These components are symlinked as **directories** — new and modified files are immediately visible:
+## Verification
 
-| Component | Symlink Type | Claude Code Path | Codex Path (`--codex`) |
-|-----------|-------------|------|------|
-| Skills (standard + injectable + niche) | Directory | `~/.claude/agents/skills/` → `~/.plamen/agents/skills/` | `~/.codex/plamen/agents/skills/` → same |
-| Prompts (all 5 language trees) | Directory | `~/.claude/prompts/` → `~/.plamen/prompts/` | `~/.codex/plamen/prompts/` → same |
-| MCP server source code | Directory | `~/.claude/custom-mcp/` → `~/.plamen/custom-mcp/` | `~/.codex/plamen/custom-mcp/` → same (Codex loads MCP from `[mcp_servers.*]` in `~/.codex/config.toml`, regenerated by `plamen install --codex` from `mcp.json.example`) |
-| Driver + modules (`plamen_driver.py`, `plamen_validators.py`, `plamen_mechanical.py`, `pty_exec.py`, `plamen_contracts.py`, `plamen_markdown.py`, …) | Directory | `~/.claude/scripts/` → `~/.plamen/scripts/` | Same (driver is invoked from `~/.claude/scripts/` on both backends) |
-
-These are symlinked as **individual files** — existing files update on `git pull`, but *new* files in these categories are only linked at install time, so run `plamen install` after pulling a release that adds agent or rule files:
-
-| Component | Claude Code Path | Codex Path (`--codex`) |
-|-----------|------|------|
-| Agent definitions | `~/.claude/agents/depth-*.md`, `security-*.md` | `~/.codex/plamen/agents/` (same files) |
-| Rule files | `~/.claude/rules/*.md` | `~/.codex/plamen/rules/` (same files) |
-| `/plamen*` commands (4) | `~/.claude/commands/plamen{,-wizard,-l1,-l1-wizard}.md` | `~/.codex/commands/plamen{,-wizard,-l1,-l1-wizard}.md` (from `codex-adapter/commands/`) |
-| CLI wrapper | `~/.claude/plamen.py`, `plamen.sh`, `plamen.bat` | Same (shared CLI entry point) |
-| VERSION file | `~/.claude/VERSION` | `~/.codex/plamen/VERSION` (same file) |
-
----
-
-## What Requires `plamen install`
-
-These are **not symlinked** — they are merged/injected at install time:
-
-| Component | Why Not Symlinked | What Install Does |
-|-----------|-------------------|-------------------|
-| **CLAUDE.md** (Claude Code) | User may have their own content | Strips old `<!-- PLAMEN:START -->...<!-- PLAMEN:END -->` section, re-injects current version. User content outside markers is preserved. |
-| **AGENTS.md** (Codex, `--codex`) | User may have their own content | Same marker-based injection as CLAUDE.md. Codex equivalent of the orchestrator config. |
-| **settings.json** (Claude Code) | User has their own API keys and permissions | Additive merge: adds new env vars and permissions that don't exist. Never overwrites existing keys. |
-| **config.toml** (Codex, `--codex`) | User has their own Codex settings | Full copy from `codex-adapter/config.toml`. Overwrites existing file — back up custom settings before re-install. |
-| **mcp.json** (Claude Code only) | User has their own MCP servers and API keys | Additive merge: adds new server entries that don't exist. Fixes wrong-platform paths (e.g., Windows `C:/` on macOS) in existing servers while preserving env vars and API keys. |
-| **MCP packages** (Claude Code legacy only) | Only if `~/.claude.json` has bare `npx -y @pkg` without version pins | Installs pinned npm packages locally, updates config to use schema sanitizer. Skipped for fresh installs. |
-
-**CLAUDE.md (or AGENTS.md for Codex) is the critical one.** It contains the orchestrator's rules — agent counts, mode table, critical rules, and phase references. If it is stale, the orchestrator follows old rules while skills and prompts are already updated. This can cause wrong agent counts, skipped mandatory steps, or mismatched phase references.
-
----
-
-## MCP Package Pinning (Claude Code Only)
-
-npm-based MCP servers (`evm-chain-data`, `foundry-suite`, `tavily-search`, `memory`, `helius`) are pinned to specific versions in `mcp-packages/package.json` to prevent the Anthropic API `oneOf`/`allOf` schema rejection error caused by upstream npm package updates. On Codex, MCP servers are configured in `[mcp_servers.*]` blocks of `~/.codex/config.toml` (regenerated from `mcp.json.example` by `plamen install --codex`); the npm version-pinning concern below is Claude-Code-specific because Codex's Python servers are schema-sanitized instead.
-
-`plamen install` handles this automatically:
-1. Runs `npm install` in `mcp-packages/` (installs pinned versions to `node_modules/`)
-2. Runs `update_config.py` to update `~/.claude/mcp.json` with pinned paths + schema sanitizer
-
-If you add a new npm MCP server or update a version:
-1. Edit `mcp-packages/package.json`
-2. Run `cd ~/.plamen/mcp-packages && npm install` (or just `plamen install`)
-3. Restart Claude Code
-
-The `schema-sanitizer.js` proxy wraps `evm-chain-data` and `foundry-suite` — it strips `oneOf`/`allOf`/`anyOf` from tool schemas before they reach the API. Safe servers run directly without the proxy.
-
----
-
-## What Is Never Touched
-
-| Component | Location | Update Method |
-|-----------|----------|---------------|
-| RAG database | `~/.plamen/custom-mcp/unified-vuln-db/data/` (gitignored) | `plamen rag` (manual, explicit). Re-run after update if new indexers were added (e.g., Immunefi Competitions in v1.1.5). |
-| Toolchains (Foundry, Solana CLI, etc.) | System-level installs | `plamen setup` (interactive, checkbox) |
-| API keys | In `settings.json`/`mcp.json` (Claude Code) or `config.toml` (Codex) | Manual edit only |
-| User's own agents/rules | `~/.claude/` (non-Plamen files) or `~/.codex/` (non-Plamen files) | Never modified by either `plamen install` or `plamen install --codex` |
-
----
-
-## Codex Backend Updates
-
-> **Backend status**: Claude Code is the default, fully-supported backend. The
-> OpenAI Codex CLI (`codex exec`) is a **cost-saving BETA** added in v2.1.0. It
-> runs one `codex exec` per depth job (so depth fans out cleanly), auto-waits on
-> natural-language usage-cap detection instead of halting, and runs real
-> Devil's-Advocate iteration-2 depth. Some features remain Claude-only — notably
-> the Claude PTY transport (Codex invokes `codex exec` directly).
-
-If you use the Codex CLI backend (`~/.codex/plamen/`), updating follows the same pattern:
+After an update, open a fresh terminal and run:
 
 ```bash
-# macOS / Linux
-cd ~/.plamen && git pull && plamen install --codex
+plamen doctor
+plamen plan core /path/to/project --claude
+plamen plan core /path/to/project --codex
 ```
 
-```powershell
-# Windows (PowerShell)
-cd $HOME\.plamen; git pull; plamen install --codex
-```
+`plamen doctor` and `plamen plan` are read-only and make zero provider calls.
+Doctor validates the authenticated installed state and private runtimes; it
+does not depend on, repair from, or report success because of ambient
+Node/npm/npx/Claude/Codex tools.
 
-If you use **both** backends, run both installs:
+## MCP behavior after an update
 
-```bash
-# macOS / Linux
-cd ~/.plamen && git pull && plamen install && plamen install --codex
-```
+MCP configuration is not a mutable set of package paths. On a supported
+Claude-headless RAG route, Plamen admits only the server launch recorded in
+the signed current selection and revalidates its generation under a held
+lock. Claude PTY and all Codex audit subprocesses run without MCP servers.
 
-```powershell
-# Windows (PowerShell)
-cd $HOME\.plamen; git pull; plamen install; plamen install --codex
-```
+Windows uses Job-object descendant containment. Linux uses the delegated
+cgroup v2 and Landlock route when the host supports the required policy.
+Unsupported Linux hosts fail closed before MCP spawn and use the governed
+Web/local research fallback. On macOS, the earlier package-transaction and
+worker-containment gates currently block production audits entirely; the MCP
+fallback does not make native Mac E2E execution supported.
 
-**Key differences from Claude Code install:**
-- `AGENTS.md` (not `CLAUDE.md`) receives the marker-based orchestrator injection
-- `config.toml` (not `settings.json`) receives additive model/sandbox merges
-- On Codex, MCP servers are configured in `[mcp_servers.*]` blocks of `~/.codex/config.toml` (regenerated from `mcp.json.example` by `plamen install --codex`); the npm version-pinning concern is Claude-Code-specific because Codex's Python servers are schema-sanitized instead
-- Symlinked directories (skills, prompts, agent definitions, rules) work identically
+## Rollback and recovery
 
----
+Do not manually swap directories, rewrite receipts, or repoint command
+symlinks. Re-run `plamen.py install` from the last trusted complete source if
+you need to return to that release. The installer owns recovery of interrupted
+transactions and will refuse foreign or unauthenticated state.
 
-## Install Is Idempotent
-
-Running `plamen install` (or `plamen install --codex`) multiple times is safe. Here's what each step does on re-install:
-
-| Step | First Install | Re-install | Codex (`--codex`) |
-|------|--------------|------------|-------------------|
-| Symlinks | Creates new links | Removes old links, recreates (same result) | Same (into `~/.codex/plamen/`) |
-| User file backup | Backs up to `.pre-plamen` | Skips if backup already exists | Same |
-| settings.json / config.toml | Merges Plamen entries (permissions, env) | Skips entries that already exist | Merges model routing and sandbox entries into `config.toml` |
-| mcp.json | Merges Plamen servers | Skips existing servers, but fixes wrong-platform paths and backfills new env vars | Regenerates `[mcp_servers.*]` in `~/.codex/config.toml` from `mcp.json.example` (Codex's Python servers are schema-sanitized instead of npm-pinned) |
-| CLAUDE.md / AGENTS.md | Injects between markers | Strips old injection, re-injects current | Same (into `AGENTS.md`) |
-| Python deps | Installs packages | `pip` skips already-installed packages | Same |
-| Toolchains | Shows missing as checkboxes | Already-installed tools don't appear in list | Same |
-| RAG | Shows as optional checkbox | Only offered if empty or user explicitly selects | Same |
-
----
-
-## Migrating from v1.x — safety and rollback
-
-`plamen migrate` is the recommended path from a v1.x install (Plamen
-lived directly in `~/.claude/`) to the v2.x layout (Plamen lives in
-`~/.plamen/`, symlinked into `~/.claude/`). It handles three states:
-
-| State | Detection | What migrate does |
-|-------|-----------|-------------------|
-| (a) v1.x with `.git/` in `~/.claude/` | Common case for `git clone`-based v1 installs | Strips dangling Plamen hooks from `settings.json`, then `os.rename(~/.claude → ~/.plamen)`, then runs the non-interactive install. **No backup is created** — the rename is atomic but irreversible by `migrate` itself. |
-| (b) v1.x without `.git/` (ZIP-downloaded) | No `~/.claude/.git/` | Creates a timestamped backup at `~/.plamen-backup-{YYYYMMDD-HHMMSS}/`, then tells you to re-clone the repo as `~/.plamen/`. |
-| (c) Existing v2.x layout | `~/.plamen/` already exists | Just runs the non-interactive install. |
-
-### Risks to know before running migrate
-
-**Custom files in `~/.claude/` move along with Plamen.** In state (a),
-`os.rename` moves the entire `~/.claude/` directory tree — including any
-non-Plamen agents, settings, or scratch files you put there yourself.
-After migrate, those files live under `~/.plamen/` next to the Plamen
-repo content. The install step then recreates `~/.claude/` fresh with
-only the Plamen symlinks + merged config. Your custom files are not
-lost, just relocated. If you want them back at `~/.claude/`, copy them
-out of `~/.plamen/` after migrate completes:
-
-```bash
-cp -r ~/.plamen/agents/my-custom-agent.md ~/.claude/agents/
-# etc.
-```
-
-If you want to keep them with `~/.claude/` ownership entirely, back them
-up to a separate directory **before** running migrate.
-
-**State (a) has no automatic rollback.** If `plamen install` fails after
-the rename (network error during `pip install`, submodule fetch failure,
-disk full), the directory has moved to `~/.plamen/` but the install
-isn't complete. Recovery is manual:
-
-```bash
-# 1. Verify the rename is the only thing that happened
-ls ~/.plamen/.git   # should exist
-ls ~/.claude        # should NOT exist or should be empty
-
-# 2. Decide path:
-#    Option A — finish the install
-cd ~/.plamen && python plamen.py install
-
-#    Option B — roll back to v1.x state
-mv ~/.plamen ~/.claude
-```
-
-State (b) is safe by design: the timestamped backup remains until you
-delete it. State (c) is safe because nothing destructive happens.
-
-### Manual migration alternative
-
-If you'd rather not use `plamen migrate`, the equivalent manual flow is:
-
-```bash
-# 1. Close Claude Code (and Codex CLI if running) — dangling hooks
-#    block PreToolUse Bash otherwise
-# 2. (Optional, recommended) snapshot your old install first
-cp -r ~/.claude ~/.claude-v1-backup
-# 3. Move and reinstall
-mv ~/.claude ~/.plamen
-cd ~/.plamen && python plamen.py install
-```
-
-This gives you an explicit backup before the rename, at the cost of
-disk space until you remove `~/.claude-v1-backup/`.
-
----
-
-## Version History
-
-See [CHANGELOG.md](../CHANGELOG.md) for what changed in each version.
+Your projects, `.scratchpad` audit workspaces, reports, API keys, and
+operator-installed chain toolchains are outside the installed package
+transaction and are not removed by an ordinary update.

@@ -6,7 +6,7 @@ description: "Trigger Pattern SPL token CPI transfers, token_account.amount, inv
 # TOKEN_FLOW_TRACING Skill (Solana)
 
 > **Trigger Pattern**: SPL token CPI transfers, `token_account.amount`, `invoke`/`invoke_signed`, `Transfer`/`TransferChecked`
-> **Inject Into**: Lifecycle, External-Env agents
+> **Inject Into**: Breadth agents, depth-token-flow
 
 For every token the protocol handles:
 

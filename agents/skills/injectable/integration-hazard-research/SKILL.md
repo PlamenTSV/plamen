@@ -11,11 +11,15 @@ description: "Protocol Type Trigger NAMED_EXTERNAL_PROTOCOL (detected when recon
 > **Finding prefix**: `[IHR-N]`
 > **Added in**: v1.1.5
 
-## Orchestrator Decomposition Guide
+## Worker Application Contract
 
-This skill adds a **research phase** (Section 0) before depth-external's existing code analysis. All sections map to depth-external's domain. The orchestrator includes this skill in the depth-external agent's prompt when `NAMED_EXTERNAL_PROTOCOL` is flagged.
+This skill is executed by one already-launched depth-external worker. It adds a
+dependency-evidence pass (Section 0) before that worker's existing code
+analysis. Do not spawn or delegate work. The runtime prompt's exact input
+projection and single output allowlist override every illustrative filename in
+this methodology.
 
-When decomposing into investigation questions:
+When decomposing the assigned investigation:
 - Section 0 (research): produces a hazard catalog that informs all of depth-external's existing Sections 1-4
 - Section 1 (third-party race): extends depth-external Section 1 (side effects)
 - Section 2 (state TOCTOU): extends depth-external Section 4 (governance/parameter change)
@@ -45,51 +49,43 @@ For each section below, execute in order:
 
 For EACH named external protocol detected by recon:
 
-### 0a. Read the Recon-Baked External Dependency Research Ledger (PRIMARY — MANDATORY)
+### 0a. Consume the Authenticated Dependency Projection (PRIMARY — MANDATORY)
 
-DO NOT call `mcp__unified-vuln-db__search_solodit_live` or any tavily/web-search
-MCP tool for dependency research. They are unavailable in depth-phase subagent
-contexts — the driver launches `depth` workers with `--disallowedTools mcp__*`
-and an empty MCP server config to prevent cold-start hangs. Any Solodit/Tavily
-MCP call in this phase will silently fail or hang; do not attempt it.
+Use only the exact authenticated
+`scratchpad:external_dependency_research.md` input listed in the runtime
+prompt's model-visible PhaseIO projection. Never discover, infer, or open a
+producer, intermediate, home-directory copy, or alternate research artifact.
+Do not invoke network, precedent, vulnerability-database, shell, or package
+tools from this filesystem-only depth worker.
 
-Read `{SCRATCHPAD}/external_dependency_research.md` instead. This is the
-recon-baked research ledger: recon runs as a phase-LLM with live
-`WebSearch`/`WebFetch`/`tavily_search` access and already researched every
-detected external dependency's real interface/semantics (deployed source,
-ABI/arity, monotonicity, gas/error behavior) before depth ever runs. For each
-target protocol/dependency, find its row: `Dependency | Integration Surface
-(file:line) | Assumed Behavior (as coded) | Real Behavior (researched) |
-Source (URL + fetch date) | Conformance MATCH/MISMATCH/CHECK | Fetch Status
-OK/FETCH_FAILED:reason`. Use the ledger's Real Behavior / Conformance columns
-as your hazard-catalog input for Section 0c below instead of live search
-results.
+For each target protocol/dependency, find its row in that exact projection:
+`Dependency | Integration Surface (file:line) | Assumed Behavior (as coded) |
+Real Behavior (researched) | Source (URL + fetch date) | Conformance
+MATCH/MISMATCH/CHECK | Fetch Status OK/FETCH_FAILED:reason`. Use only its Real
+Behavior / Conformance columns as the hazard-catalog input for Section 0c.
 
 ### 0b. Escalate Uncovered Surfaces — Do Not Guess (MANDATORY)
 
-For an integration surface in your target that is NOT covered by any ledger
-row (a dependency the ledger missed, or a row with `Fetch Status:
-FETCH_FAILED`), do NOT guess the real behavior and do NOT silently fall
-through to the 0d floor catalog as if it were live research. Emit, in your
-finding output, one escalation line per uncovered surface:
+If the authenticated projection is absent from the runtime input list,
+unreadable, missing a dependency, or contains `Fetch Status: FETCH_FAILED`, do
+not guess the real behavior and do not silently treat the floor catalog as
+research. Emit, inside the assigned findings output, one typed escalation line
+per uncovered surface:
 
 ```
 NEEDS_DEPENDENCY_RESEARCH: <dependency>:<file:line>: <what you need to know>
 ```
 
-Then proceed under the assumed WORST-CASE realistic external condition per
-Rule 10 (`rules/finding-output-format.md`), tagging the finding
-`[EXTERNAL-ASSUMPTION: <assumed condition>]`. Note: native `WebSearch`/
-`WebFetch` (non-MCP Claude Code tools) remain available if you need a single
-targeted check beyond the ledger — but the ledger is the primary source and
-should cover the large majority of surfaces; ad-hoc web search is not a
-substitute for reading it first.
+Then proceed under the assumed WORST-CASE realistic external condition per the
+driver-bound finding-format rules, tagging the finding
+`[EXTERNAL-ASSUMPTION: <assumed condition>]`. The typed escalation is the only
+valid fallback for missing dependency evidence in this worker.
 
 ### 0c. Compile Hazard Catalog
 
 | Target Protocol | Known Integration Hazard | Severity | Root Cause | Source | Applicable to This Integration? |
 |----------------|------------------------|----------|------------|--------|-------------------------------|
-| {protocol} | {hazard title} | {sev} | {brief root cause} | {ledger row dependency name / URL from external_dependency_research.md} | YES / NO / CHECK |
+| {protocol} | {hazard title} | {sev} | {brief root cause} | {authenticated projection row / URL} | YES / NO / CHECK |
 
 **Applicability criteria** (same as FORK_ANCESTRY):
 - YES: The audited code calls the function or reads the state involved in this hazard
@@ -107,11 +103,11 @@ Cross-chain gateways frequently deliver the gas token in a DIFFERENT FORM than t
 ### 0d. Hardcoded Hazard Floor (TERTIARY FALLBACK — ledger-miss only, NOT the default)
 
 This floor is a coarse last resort, not a substitute for 0a. Use it ONLY when
-BOTH hold: (1) `external_dependency_research.md` has no row for the
-dependency (or the row is `Fetch Status: FETCH_FAILED`), AND (2) you have
-already emitted the matching `NEEDS_DEPENDENCY_RESEARCH` escalation line for
-it per 0b. Do NOT reach for this table as a first move, and do NOT treat a
-hit here as equivalent to a live-researched ledger row — it only lists
+BOTH hold: (1) the authenticated projection has no researched row for the
+dependency, AND (2) you have already emitted the matching
+`NEEDS_DEPENDENCY_RESEARCH` escalation line for it per 0b. Do NOT reach for
+this table as a first move, and do NOT treat a hit here as equivalent to an
+authenticated researched row — it only lists
 historical bug *classes* for a fixed list of famous protocols, not the
 dependency's current real interface/semantics. Check EACH applicable
 protocol against this minimum catalog:
@@ -138,11 +134,12 @@ minimum coverage, not exhaustive, and NOT a substitute for the live-researched
 ledger (0a). Real research typically surfaces several more hazards specific to the
 actual dependency.
 
-### 0e. Record Research Results
+### 0e. Embed Research Results in the Assigned Output
 
-Write the hazard catalog to `{SCRATCHPAD}/integration_hazard_catalog.md`. This file is consumed by:
-- depth-external (this agent) for Sections 1-4 analysis
-- Chain analysis for enabler enumeration (integration hazards may create preconditions for other findings)
+Write the hazard catalog as `## Integration Hazard Catalog` inside this
+worker's one driver-assigned findings file. Do not create any other artifact.
+Refer to the embedded catalog in Sections 1-4 so later phases receive it
+through the authenticated assigned output.
 
 ---
 
@@ -194,10 +191,10 @@ Tag: `[VARIATION:external_state({value}) fresh_at_read=X → stale_at_use=Y → 
 
 | Section | Required | Completed? | Notes |
 |---------|----------|------------|-------|
-| 0a. Ledger read (`external_dependency_research.md`) per target dependency | YES — no MCP calls | Y/N/? | |
+| 0a. Authenticated dependency projection consumed per target dependency | YES — exact bound input only | Y/N/? | |
 | 0b. `NEEDS_DEPENDENCY_RESEARCH` emitted for every ledger-uncovered surface | YES for each uncovered surface | Y/N/? | |
 | 0c. Hazard catalog compiled | YES | Y/N/? | |
 | 0d. Floor catalog checked (TERTIARY — ledger-miss AND 0b escalation only) | IF 0a had no row AND 0b escalated | Y/N/? | |
-| 0e. integration_hazard_catalog.md written | YES | Y/N/? | |
+| 0e. Hazard catalog embedded in the assigned findings output | YES — no second file | Y/N/? | |
 | 1. Third-party race conditions | FOR EACH YES/CHECK hazard | Y/N/? | |
 | 2. Integration state TOCTOU | FOR EACH external state read | Y/N/? | |

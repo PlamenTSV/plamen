@@ -37,7 +37,7 @@ Then run the toolchain probe. **CRITICAL**: Copy the bash block below VERBATIM i
 export PATH="$HOME/.cargo/bin:$HOME/go/bin:$HOME/.local/bin:$PATH" && \
 echo "L1 Toolchain:" && \
 echo -n "  Required:  " && \
-(command -v claude >/dev/null 2>&1 && echo -n "claude " || echo -n "MISSING:claude ") && \
+(command -v codex >/dev/null 2>&1 && echo -n "codex " || echo -n "MISSING:codex ") && \
 (command -v python >/dev/null 2>&1 && echo -n "python " || echo -n "MISSING:python ") && \
 (command -v git >/dev/null 2>&1 && echo -n "git" || echo -n "MISSING:git") && echo "" && \
 echo -n "  Go:        " && \
@@ -67,15 +67,19 @@ AskUserQuestion(questions=[{
   header: "Existing Audit Found",
   options: [
     { label: "Resume", description: "Continue from last checkpoint ({LAST_PHASE} → next)" },
-    { label: "Fresh restart", description: "Wipe scratchpad and start over" },
-    { label: "New audit", description: "Ignore existing, configure a new target" }
+    { label: "New audit", description: "Preserve this run; configure a distinct clean destination" }
   ]
 }])
 ```
 
-- **Resume**: Skip to launch section — use the existing `config.json` path directly. Launch with `run_in_background: true`.
-- **Fresh restart**: Launch with `--fresh` flag. Skip to launch section.
-- **New audit**: Fall through to Step 2 (codebase scan).
+- **Resume**: First validate the existing backend without changing the file.
+  L1 Claude execution is not a supported contained route; an L1 run may resume
+  here only with its unchanged supported Codex configuration. Otherwise preserve
+  the run and create a distinct clean Codex configuration. Never rewrite,
+  auto-migrate, or rebind existing evidence in place.
+- **New audit**: Preserve every existing file, then fall through to Step 2. The
+  selected project and scratchpad MUST be a distinct clean destination; never
+  reuse, delete, move, rename, or overwrite the existing run root.
 
 If no config found, fall through to Step 2.
 
@@ -243,8 +247,7 @@ config = {
     "mode": MODE,               # "light" | "core" | "thorough"
     "pipeline": "l1",
     "language": LANGUAGE,       # "go" | "rust"
-    "cli_backend": "claude",
-    "claude_exec_mode": "pty",
+    "cli_backend": "codex",
     "tier": TIER,               # "t0" | "t1" | "t2" | "t3"
     "subsystem_scope": SUBSYSTEM_SCOPE or "",
     "fork_mode": FORK_MODE or "standalone",
@@ -254,6 +257,11 @@ config = {
 ```
 
 Write this JSON to `{PROJECT_PATH}/.scratchpad/config.json` (create .scratchpad/ if needed).
+
+Claude is not a supported contained backend for L1 audits. Do not create a
+Claude compatibility configuration. Use Codex for this L1 run, or stop and
+create a distinct clean configuration for another supported audit route; never
+change provider metadata or migrate evidence inside an existing run.
 
 Before launching, print the pre-launch message:
 
@@ -284,6 +292,8 @@ Set `run_in_background: true` on the Bash tool call. Do NOT use `&` or `nohup` �
 The driver runs in the background. When it completes, Claude Code will notify you. At that point, check the exit code:
 
 - **Exit 0**: Pipeline completed. Tell the user: `Report is at {PROJECT_PATH}/AUDIT_REPORT.md`
+- **Exit 3 (degraded)**: Pipeline execution completed in a degraded state. Preserve the scratchpad and inspect its runtime debt and violations before resuming.
+- **Exit 5 (startup decision required)**: The resume attempt stopped during startup without launching a new audit-model generation. Read the typed external startup-decision receipt and follow its exact restore-or-distinct-destination action; do not repeat resume unchanged.
 - **Exit 2 (rate limit / usage exhausted)**: The driver saved a checkpoint. Tell the user:
 
 ```

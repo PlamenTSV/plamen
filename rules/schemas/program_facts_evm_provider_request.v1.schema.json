@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_provider_request.v1.schema.json",
+  "title": "Program Facts EVM provider request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mode",
+    "run_id",
+    "run_generation",
+    "attempt_id",
+    "build_variant_id",
+    "selected_capability_ids",
+    "execution_authority_digest",
+    "build_plan_digest",
+    "build_attempt_digest",
+    "environment_digest",
+    "tool_manifest_digest",
+    "snapshot_pack",
+    "request_context",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_provider_request.v1"
+    },
+    "mode": {
+      "enum": [
+        "SHADOW_RAW",
+        "ACTIVE_EMIT_ONLY"
+      ]
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "attempt_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "build_variant_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "selected_capability_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "execution_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_plan_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_attempt_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "environment_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "tool_manifest_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "snapshot_pack": {
+      "$ref": "#/$defs/snapshotPack"
+    },
+    "request_context": {
+      "$ref": "#/$defs/requestContext"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    },
+    "snapshotPack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "digest",
+        "size_bytes"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "program-facts-build-input"
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        }
+      }
+    },
+    "requestContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_root_id",
+        "output_mode"
+      ],
+      "properties": {
+        "source_root_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "output_mode": {
+          "const": "STDOUT_ASSIGNED_OUTPUT"
+        }
+      }
+    }
+  }
+}

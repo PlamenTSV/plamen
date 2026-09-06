@@ -13,9 +13,10 @@ make on its own:
    `## Quality Observations` table instead of a full `###` section.
 
 You **PROPOSE ONLY**. You do NOT edit, rewrite, renumber, or delete anything in
-the report. A deterministic Python pass consumes your decisions and performs the
-actual merges/retabulation through a zero-data-loss gate — so your job is purely
-to identify the semantic relationships the mechanical signals miss.
+the report. A deterministic Python pass treats your rows as proposals. It may
+apply a merge only when exact current source identity is proven and a typed,
+transaction-bound applied-alias receipt plus the zero-data-loss gate both pass.
+Textual similarity and your prose never authorize removal of a standalone ID.
 
 ---
 
@@ -26,7 +27,11 @@ to identify the semantic relationships the mechanical signals miss.
   severity, location, and the internal hypothesis it maps to.
 - `{SCRATCHPAD}/finding_mapping.md` — hypothesis → source-finding IDs (use to
   confirm two report findings share provenance).
-- `{SCRATCHPAD}/report_dedup_candidate_pairs.md` — OPTIONAL driver-computed HINT
+- `{SCRATCHPAD}/report_dedup_candidate_pairs.json` — **AUTHORITATIVE complete
+  candidate-pair denominator.** Read every object in its `pairs` array and
+  preserve the `denominator_digest`. Every unordered `pair_key`, including rows
+  whose `projection_rank` is null, requires an exact disposition in your output.
+- `{SCRATCHPAD}/report_dedup_candidate_pairs.md` — bounded driver-computed HINT
   list. Covers TWO cases: (1) any-tier pairs whose FIRST Location range matches
   within ±3 lines on the same file, and (2) SAME-TIER pairs on the same file
   whose titles overlap or share a specific identifier (e.g. a function/struct
@@ -70,8 +75,8 @@ the deterministic backstop within a tier too, not only across tiers. Use the
 same-tier rows in `report_dedup_candidate_pairs.md` (when present) as a starting
 point, then keep scanning the report yourself.
 
-**Coverage receipt (MANDATORY).** Every candidate pair listed in
-`report_dedup_candidate_pairs.md` MUST receive an EXPLICIT disposition in your
+**Coverage receipt (MANDATORY).** Every candidate pair in
+`report_dedup_candidate_pairs.json` MUST receive an EXPLICIT disposition in your
 output — either a row in the `## MERGE Decisions` table (if the consolidation
 test passes) OR a row in the `## Reviewed — Kept Separate` table (if it fails,
 with the reason). A candidate pair that appears in NEITHER table is a silently
@@ -79,7 +84,10 @@ skipped duplicate — exactly the failure this receipt prevents. If the hint fil
 is absent/empty, this requirement is vacuous, but you still run your own full
 semantic pass. Covering a pair with "kept separate" is always acceptable when
 the consolidation test does not clearly pass — the receipt forces a decision, it
-never forces a merge (when in doubt, KEEP SEPARATE).
+never forces a merge (when in doubt, KEEP SEPARATE). The Markdown file may show
+only the strongest first 50 pairs; it is a projection and does not reduce the
+JSON denominator. A Quality Observation row, or mentioning both IDs in reason
+prose, does not dispose the pair.
 
 **Cross-tier is explicitly in scope.** The most valuable merges you make are the
 ones the mechanical same-tier pass cannot: e.g. an UNVERIFIED High that is the

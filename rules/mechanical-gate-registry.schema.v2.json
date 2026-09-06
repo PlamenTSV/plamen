@@ -1,0 +1,1528 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plamen.mechanical_gate_registry.v2",
+  "title": "Plamen mechanical-gate registry v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "registry_revision",
+    "registry_scope",
+    "migration_status",
+    "migration",
+    "activation_inventory",
+    "seam_taxonomy",
+    "decision_class_taxonomy",
+    "direction_taxonomy",
+    "seam_budgets",
+    "gate_records"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.mechanical_gate_registry.v2"
+    },
+    "registry_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "registry_scope": {
+      "$ref": "#/$defs/registry_scope"
+    },
+    "migration_status": {
+      "const": "BASELINING_EXISTING_ACTIVATIONS"
+    },
+    "migration": {
+      "$ref": "#/$defs/migration"
+    },
+    "activation_inventory": {
+      "$ref": "#/$defs/activation_inventory"
+    },
+    "seam_taxonomy": {
+      "const": [
+        "STARTUP_RESUME",
+        "PRE_DISCOVERY",
+        "POST_DISCOVERY",
+        "PRE_VERIFY",
+        "POST_VERIFY",
+        "REPORT_ASSEMBLY"
+      ]
+    },
+    "decision_class_taxonomy": {
+      "const": [
+        "RC_AGENT_MECHANIZABLE",
+        "RECALL_GENERATOR",
+        "PIPELINE_INTEGRITY",
+        "PRECISION_DISCRIMINATOR",
+        "TELEMETRY_ONLY"
+      ]
+    },
+    "direction_taxonomy": {
+      "const": [
+        "GENERATE_ADD_ONLY",
+        "REOPEN_ADD_ONLY",
+        "RECONCILE_LOSSLESS",
+        "CAP_DESTRUCTIVE",
+        "FLOOR_RECALL_OPEN",
+        "FLAG_TELEMETRY",
+        "ROUTE_RECALL_OPEN",
+        "CONSOLIDATE_LOSSLESS",
+        "BLOCK_EXECUTION",
+        "EXECUTE_TARGET",
+        "VETO_SHIP"
+      ]
+    },
+    "seam_budgets": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "$ref": "#/$defs/seam_budget"
+      }
+    },
+    "gate_records": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/gate_record"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nullable_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullable_string": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullable_integer": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullable_ppm_integer": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "human_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+    },
+    "gate_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$"
+    },
+    "gate_id_array": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/gate_id"
+      }
+    },
+    "nonempty_string_array": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "registry_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope_version",
+        "included_authorities",
+        "excluded_control_families",
+        "production_roots",
+        "production_excludes",
+        "scope_review_receipt_sha256"
+      ],
+      "properties": {
+        "scope_version": {
+          "const": "plamen.mechanical_gate_scope.v1"
+        },
+        "included_authorities": {
+          "const": [
+            "CANDIDATE_MEMBERSHIP",
+            "OBLIGATION_LIFECYCLE",
+            "DISPOSITION_OR_REPORT_TIER",
+            "SEVERITY",
+            "EVIDENCE_OR_SUCCESSOR_AUTHORITY",
+            "TARGET_EXECUTION",
+            "VERIFICATION_ROUTING",
+            "SHIP_AUTHORITY"
+          ]
+        },
+        "excluded_control_families": {
+          "const": [
+            "STRUCTURAL_SELF_VALIDATION",
+            "TRANSACTION_MECHANICS",
+            "PURE_DATA_UTILITIES",
+            "UNCONSUMED_TOOL_OUTPUT",
+            "MODEL_JUDGMENT",
+            "NON_PRODUCTION_CODE",
+            "POST_AUDIT_HUMAN_CLASSIFICATION"
+          ]
+        },
+        "production_roots": {
+          "const": [
+            "scripts"
+          ]
+        },
+        "production_excludes": {
+          "$ref": "#/$defs/nonempty_string_array"
+        },
+        "scope_review_receipt_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_tree_digest",
+        "source_tree_digest_algorithm",
+        "baseline_gate_ids",
+        "baseline_live_gate_count",
+        "baseline_review_status",
+        "baseline_reviewer",
+        "baseline_reviewed_at",
+        "baseline_review_receipt_sha256",
+        "new_runtime_transitions_blocked"
+      ],
+      "properties": {
+        "source_tree_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_tree_digest_algorithm": {
+          "const": "sha256:plamen-source-tree-v1"
+        },
+        "baseline_gate_ids": {
+          "$ref": "#/$defs/gate_id_array"
+        },
+        "baseline_live_gate_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "baseline_review_status": {
+          "const": "UNREVIEWED"
+        },
+        "baseline_reviewer": {
+          "type": "null"
+        },
+        "baseline_reviewed_at": {
+          "type": "null"
+        },
+        "baseline_review_receipt_sha256": {
+          "type": "null"
+        },
+        "new_runtime_transitions_blocked": {
+          "const": true
+        }
+      }
+    },
+    "activation_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "manifest_path",
+        "manifest_sha256",
+        "source_tree_digest_algorithm",
+        "source_tree_digest",
+        "generator_version",
+        "generator_digest",
+        "independent_review_receipt_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "plamen.mechanical_gate_activation_inventory.v1"
+        },
+        "manifest_path": {
+          "const": "rules/mechanical-gate-activation-baseline.v1.json"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_tree_digest_algorithm": {
+          "const": "sha256:plamen-source-tree-v1"
+        },
+        "source_tree_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "generator_version": {
+          "const": "plamen.mechanical_gate_inventory.stage1-v1"
+        },
+        "generator_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "independent_review_receipt_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activation_id",
+        "module",
+        "wrapper_symbol",
+        "implementation_symbols",
+        "hook_id",
+        "phases",
+        "pipelines",
+        "modes",
+        "ecosystems",
+        "backends",
+        "runtime_state",
+        "code_digest_algorithm",
+        "code_digest"
+      ],
+      "properties": {
+        "activation_id": {
+          "$ref": "#/$defs/gate_id"
+        },
+        "module": {
+          "type": "string",
+          "pattern": "^scripts/[A-Za-z0-9_./-]+\\.py$"
+        },
+        "wrapper_symbol": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+        },
+        "implementation_symbols": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+          }
+        },
+        "hook_id": {
+          "$ref": "#/$defs/gate_id"
+        },
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "STARTUP",
+              "RECON",
+              "BREADTH",
+              "INVENTORY",
+              "RESCAN",
+              "PER_CONTRACT",
+              "SEMANTIC_INVARIANTS",
+              "DEPTH",
+              "CHAIN",
+              "VERIFY",
+              "REPORT"
+            ]
+          }
+        },
+        "pipelines": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "SC",
+              "L1"
+            ]
+          }
+        },
+        "modes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "LIGHT",
+              "CORE",
+              "THOROUGH"
+            ]
+          }
+        },
+        "ecosystems": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "EVM",
+              "SOLANA",
+              "APTOS",
+              "SUI",
+              "SOROBAN",
+              "DAML",
+              "L1_GO",
+              "L1_RUST"
+            ]
+          }
+        },
+        "backends": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "CLAUDE",
+              "CODEX"
+            ]
+          }
+        },
+        "runtime_state": {
+          "enum": [
+            "RUNTIME",
+            "LEGACY_NOT_MIGRATED",
+            "NON_RUNTIME"
+          ]
+        },
+        "code_digest_algorithm": {
+          "enum": [
+            "sha256:plamen-python-decision-closure-ast-v1",
+            "sha256:plamen-python-module-bytes-v1"
+          ]
+        },
+        "code_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "pipelines": {
+                "const": [
+                  "SC"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "ecosystems": {
+                "items": {
+                  "enum": [
+                    "EVM",
+                    "SOLANA",
+                    "APTOS",
+                    "SUI",
+                    "SOROBAN",
+                    "DAML"
+                  ]
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "ecosystems": {
+                "items": {
+                  "enum": [
+                    "L1_GO",
+                    "L1_RUST"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runtime_state": {
+                "enum": [
+                  "RUNTIME",
+                  "NON_RUNTIME"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "code_digest_algorithm": {
+                "const": "sha256:plamen-python-decision-closure-ast-v1"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "evidence_requirements",
+        "evidence_receipt_sha256"
+      ],
+      "properties": {
+        "status": {
+          "const": "LEGACY_UNASSESSED"
+        },
+        "evidence_requirements": {
+          "$ref": "#/$defs/nonempty_string_array"
+        },
+        "evidence_receipt_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "can_add",
+        "can_remove",
+        "can_lower_severity",
+        "can_raise_severity",
+        "can_block_execution",
+        "can_execute_target",
+        "can_clear_debt",
+        "can_veto_ship",
+        "direction",
+        "subject_identity_schema",
+        "join_rule",
+        "monotonicity_claim",
+        "invalid_authority_fallback"
+      ],
+      "properties": {
+        "can_add": {
+          "type": "boolean"
+        },
+        "can_remove": {
+          "type": "boolean"
+        },
+        "can_lower_severity": {
+          "type": "boolean"
+        },
+        "can_raise_severity": {
+          "type": "boolean"
+        },
+        "can_block_execution": {
+          "type": "boolean"
+        },
+        "can_execute_target": {
+          "type": "boolean"
+        },
+        "can_clear_debt": {
+          "type": "boolean"
+        },
+        "can_veto_ship": {
+          "type": "boolean"
+        },
+        "direction": {
+          "enum": [
+            "GENERATE_ADD_ONLY",
+            "REOPEN_ADD_ONLY",
+            "RECONCILE_LOSSLESS",
+            "CAP_DESTRUCTIVE",
+            "FLOOR_RECALL_OPEN",
+            "FLAG_TELEMETRY",
+            "ROUTE_RECALL_OPEN",
+            "CONSOLIDATE_LOSSLESS",
+            "BLOCK_EXECUTION",
+            "EXECUTE_TARGET",
+            "VETO_SHIP"
+          ]
+        },
+        "subject_identity_schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "join_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "monotonicity_claim": {
+          "type": "string",
+          "minLength": 1
+        },
+        "invalid_authority_fallback": {
+          "$ref": "#/$defs/failure_action"
+        }
+      }
+    },
+    "failure_action": {
+      "enum": [
+        "HARD_STOP_BEFORE_SIDE_EFFECT",
+        "BLOCK_TARGET_EXECUTION",
+        "RETAIN_UPSTREAM_AND_FLAG",
+        "GENERATE_ADD_ONLY_WITH_DEBT",
+        "SHADOW_ONLY_WITH_DEBT",
+        "QUARANTINE_AND_RETRY",
+        "UNKNOWN_DEBT_CONTINUE",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "input_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_identity",
+        "artifact_root",
+        "schema_version",
+        "authoritative_producer",
+        "role",
+        "subject_identity_schema",
+        "join_rule",
+        "freshness_rule",
+        "absent_behavior",
+        "malformed_behavior"
+      ],
+      "properties": {
+        "artifact_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_root": {
+          "enum": [
+            "scratchpad",
+            "project"
+          ]
+        },
+        "schema_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authoritative_producer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "enum": [
+            "EXACT",
+            "BOUNDED_LOOKUP",
+            "OPTIONAL_CAPABILITY"
+          ]
+        },
+        "subject_identity_schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "join_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "freshness_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "absent_behavior": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "malformed_behavior": {
+          "$ref": "#/$defs/failure_action"
+        }
+      }
+    },
+    "output_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_identity",
+        "artifact_root",
+        "schema_version",
+        "phase_io_work_unit_id",
+        "artifact_class",
+        "writer",
+        "write_mode",
+        "minimum_gate",
+        "consumers",
+        "condition_id",
+        "external_preimage_validator",
+        "authority_carried"
+      ],
+      "properties": {
+        "artifact_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_root": {
+          "enum": [
+            "scratchpad",
+            "project"
+          ]
+        },
+        "schema_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_io_work_unit_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_class": {
+          "enum": [
+            "REQUIRED",
+            "OPTIONAL",
+            "CONDITIONAL",
+            "DRIVER_GENERATED"
+          ]
+        },
+        "writer": {
+          "enum": [
+            "MODEL",
+            "DRIVER"
+          ]
+        },
+        "write_mode": {
+          "enum": [
+            "CREATE",
+            "REPLACE",
+            "APPEND",
+            "MERGE"
+          ]
+        },
+        "minimum_gate": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consumers": {
+          "$ref": "#/$defs/nonempty_string_array"
+        },
+        "condition_id": {
+          "type": "string"
+        },
+        "external_preimage_validator": {
+          "type": "string"
+        },
+        "authority_carried": {
+          "enum": [
+            "COMMON_RECEIPT",
+            "GOVERNANCE_DEBT",
+            "OVERFLOW_BACKLOG",
+            "CANDIDATE",
+            "OBLIGATION",
+            "DISPOSITION",
+            "SEVERITY",
+            "EXECUTION_BLOCK",
+            "SHIP_VETO",
+            "TELEMETRY"
+          ]
+        }
+      }
+    },
+    "failure_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "absent",
+        "malformed",
+        "stale",
+        "split",
+        "duplicate",
+        "contradictory",
+        "provider_failure",
+        "timeout",
+        "budget_overflow",
+        "receipt_failure",
+        "input_mutation",
+        "partial_resume"
+      ],
+      "properties": {
+        "absent": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "malformed": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "stale": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "split": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "duplicate": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "contradictory": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "provider_failure": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "timeout": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "budget_overflow": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "receipt_failure": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "input_mutation": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "partial_resume": {
+          "$ref": "#/$defs/failure_action"
+        }
+      }
+    },
+    "runtime_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "denominator_must_be_exact",
+        "stable_shard_ordering",
+        "overflow_action",
+        "max_input_bytes",
+        "max_input_files",
+        "max_raw_rows",
+        "max_unique_subjects",
+        "max_eligible_subjects",
+        "max_retained_or_fired",
+        "max_emitted_candidates",
+        "max_wall_clock_ms",
+        "max_external_processes",
+        "max_workers",
+        "max_tokens"
+      ],
+      "properties": {
+        "denominator_must_be_exact": {
+          "type": "boolean"
+        },
+        "stable_shard_ordering": {
+          "type": "string",
+          "minLength": 1
+        },
+        "overflow_action": {
+          "$ref": "#/$defs/failure_action"
+        },
+        "max_input_bytes": {
+          "type": "null"
+        },
+        "max_input_files": {
+          "type": "null"
+        },
+        "max_raw_rows": {
+          "type": "null"
+        },
+        "max_unique_subjects": {
+          "type": "null"
+        },
+        "max_eligible_subjects": {
+          "type": "null"
+        },
+        "max_retained_or_fired": {
+          "type": "null"
+        },
+        "max_emitted_candidates": {
+          "type": "null"
+        },
+        "max_wall_clock_ms": {
+          "type": "null"
+        },
+        "max_external_processes": {
+          "type": "null"
+        },
+        "max_workers": {
+          "type": "null"
+        },
+        "max_tokens": {
+          "type": "null"
+        }
+      }
+    },
+    "release_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "replacement_gate_ids",
+        "recall_parity_receipt_sha256",
+        "system_owner_approval_sha256"
+      ],
+      "properties": {
+        "status": {
+          "const": "UNESTABLISHED"
+        },
+        "replacement_gate_ids": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "recall_parity_receipt_sha256": {
+          "type": "null"
+        },
+        "system_owner_approval_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "false_fire_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "held_out_corpus_id",
+        "held_out_corpus_sha256",
+        "evaluator_principal",
+        "gate_implementer_principal",
+        "evaluator_build_sha256",
+        "comparator_sha256",
+        "observation_window_id",
+        "minimum_adjudicated_denominator",
+        "adjudicated_fire_count",
+        "true_fire_count",
+        "false_fire_count",
+        "maximum_false_fire_count",
+        "maximum_false_fire_rate_ppm",
+        "current_evidence_receipt_sha256"
+      ],
+      "properties": {
+        "status": {
+          "const": "UNESTABLISHED"
+        },
+        "held_out_corpus_id": {
+          "type": "null"
+        },
+        "held_out_corpus_sha256": {
+          "type": "null"
+        },
+        "evaluator_principal": {
+          "type": "null"
+        },
+        "gate_implementer_principal": {
+          "type": "null"
+        },
+        "evaluator_build_sha256": {
+          "type": "null"
+        },
+        "comparator_sha256": {
+          "type": "null"
+        },
+        "observation_window_id": {
+          "type": "null"
+        },
+        "minimum_adjudicated_denominator": {
+          "type": "null"
+        },
+        "adjudicated_fire_count": {
+          "type": "null"
+        },
+        "true_fire_count": {
+          "type": "null"
+        },
+        "false_fire_count": {
+          "type": "null"
+        },
+        "maximum_false_fire_count": {
+          "type": "null"
+        },
+        "maximum_false_fire_rate_ppm": {
+          "type": "null"
+        },
+        "current_evidence_receipt_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "overlap_and_consolidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "overlapping_gate_ids",
+        "shared_contract_ids",
+        "unique_authority",
+        "consolidation_status",
+        "retirement_criteria",
+        "recall_parity_receipt_sha256"
+      ],
+      "properties": {
+        "overlapping_gate_ids": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "shared_contract_ids": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "unique_authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consolidation_status": {
+          "const": "NOT ASSESSED"
+        },
+        "retirement_criteria": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recall_parity_receipt_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component_owner",
+        "system_owner",
+        "implementer",
+        "independent_reviewer",
+        "assignment_status"
+      ],
+      "properties": {
+        "component_owner": {
+          "type": "null"
+        },
+        "system_owner": {
+          "type": "null"
+        },
+        "implementer": {
+          "type": "null"
+        },
+        "independent_reviewer": {
+          "type": "null"
+        },
+        "assignment_status": {
+          "const": "UNASSIGNED_MIGRATION_DEBT"
+        }
+      }
+    },
+    "review_and_sunset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "previous_lifecycle_state",
+        "transition_review_status",
+        "reviewed_at",
+        "review_receipt_sha256",
+        "expires_at",
+        "sunset_reason",
+        "superseded_by_gate_ids"
+      ],
+      "properties": {
+        "previous_lifecycle_state": {
+          "type": "null"
+        },
+        "transition_review_status": {
+          "enum": [
+            "LEGACY_UNREVIEWED",
+            "MIGRATION_TOMBSTONE_UNASSESSED"
+          ]
+        },
+        "reviewed_at": {
+          "type": "null"
+        },
+        "review_receipt_sha256": {
+          "type": "null"
+        },
+        "expires_at": {
+          "type": "null"
+        },
+        "sunset_reason": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "superseded_by_gate_ids": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    "part0": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "generic_subject",
+        "target_names",
+        "finding_ids",
+        "target_locations",
+        "motivating_answers",
+        "review_receipt_sha256"
+      ],
+      "properties": {
+        "status": {
+          "const": "PASS"
+        },
+        "generic_subject": {
+          "$ref": "#/$defs/human_text"
+        },
+        "target_names": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "finding_ids": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "target_locations": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "motivating_answers": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "review_receipt_sha256": {
+          "type": "null"
+        }
+      }
+    },
+    "gate_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "display_name",
+        "lifecycle_state",
+        "decision_class",
+        "admission",
+        "owning_seam",
+        "execution_order",
+        "activations",
+        "purpose",
+        "authority",
+        "input_contracts",
+        "output_contracts",
+        "failure_contract",
+        "runtime_budget",
+        "release_evidence",
+        "false_fire_budget",
+        "overlap_and_consolidation",
+        "ownership",
+        "review_and_sunset",
+        "part0"
+      ],
+      "properties": {
+        "gate_id": {
+          "$ref": "#/$defs/gate_id"
+        },
+        "display_name": {
+          "$ref": "#/$defs/human_text"
+        },
+        "lifecycle_state": {
+          "enum": [
+            "LEGACY_ACTIVE_UNGOVERNED",
+            "CONSOLIDATED",
+            "SUNSET"
+          ]
+        },
+        "decision_class": {
+          "enum": [
+            "RC_AGENT_MECHANIZABLE",
+            "RECALL_GENERATOR",
+            "PIPELINE_INTEGRITY",
+            "PRECISION_DISCRIMINATOR",
+            "TELEMETRY_ONLY"
+          ]
+        },
+        "admission": {
+          "$ref": "#/$defs/admission"
+        },
+        "owning_seam": {
+          "enum": [
+            "STARTUP_RESUME",
+            "PRE_DISCOVERY",
+            "POST_DISCOVERY",
+            "PRE_VERIFY",
+            "POST_VERIFY",
+            "REPORT_ASSEMBLY"
+          ]
+        },
+        "execution_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "activations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/activation"
+          }
+        },
+        "purpose": {
+          "$ref": "#/$defs/human_text"
+        },
+        "authority": {
+          "$ref": "#/$defs/authority"
+        },
+        "input_contracts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/input_contract"
+          }
+        },
+        "output_contracts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/output_contract"
+          }
+        },
+        "failure_contract": {
+          "$ref": "#/$defs/failure_contract"
+        },
+        "runtime_budget": {
+          "$ref": "#/$defs/runtime_budget"
+        },
+        "release_evidence": {
+          "$ref": "#/$defs/release_evidence"
+        },
+        "false_fire_budget": {
+          "$ref": "#/$defs/false_fire_budget"
+        },
+        "overlap_and_consolidation": {
+          "$ref": "#/$defs/overlap_and_consolidation"
+        },
+        "ownership": {
+          "$ref": "#/$defs/ownership"
+        },
+        "review_and_sunset": {
+          "$ref": "#/$defs/review_and_sunset"
+        },
+        "part0": {
+          "$ref": "#/$defs/part0"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "lifecycle_state": {
+                "const": "LEGACY_ACTIVE_UNGOVERNED"
+              }
+            },
+            "required": [
+              "lifecycle_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "admission": {
+                "properties": {
+                  "status": {
+                    "const": "LEGACY_UNASSESSED"
+                  },
+                  "evidence_receipt_sha256": {
+                    "type": "null"
+                  }
+                }
+              },
+              "activations": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/activation"
+                    },
+                    {
+                      "properties": {
+                        "runtime_state": {
+                          "const": "LEGACY_NOT_MIGRATED"
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "input_contracts": {
+                "type": "array",
+                "maxItems": 0
+              },
+              "output_contracts": {
+                "type": "array",
+                "maxItems": 0
+              },
+              "ownership": {
+                "properties": {
+                  "component_owner": {
+                    "type": "null"
+                  },
+                  "system_owner": {
+                    "type": "null"
+                  },
+                  "implementer": {
+                    "type": "null"
+                  },
+                  "independent_reviewer": {
+                    "type": "null"
+                  },
+                  "assignment_status": {
+                    "const": "UNASSIGNED_MIGRATION_DEBT"
+                  }
+                }
+              },
+              "review_and_sunset": {
+                "properties": {
+                  "previous_lifecycle_state": {
+                    "type": "null"
+                  },
+                  "transition_review_status": {
+                    "const": "LEGACY_UNREVIEWED"
+                  },
+                  "reviewed_at": {
+                    "type": "null"
+                  },
+                  "review_receipt_sha256": {
+                    "type": "null"
+                  },
+                  "expires_at": {
+                    "type": "null"
+                  },
+                  "sunset_reason": {
+                    "type": "null"
+                  },
+                  "superseded_by_gate_ids": {
+                    "type": "array",
+                    "maxItems": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "lifecycle_state": {
+                "enum": [
+                  "CONSOLIDATED",
+                  "SUNSET"
+                ]
+              }
+            },
+            "required": [
+              "lifecycle_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "activations": {
+                "type": "array",
+                "maxItems": 0
+              },
+              "input_contracts": {
+                "type": "array",
+                "maxItems": 0
+              },
+              "output_contracts": {
+                "type": "array",
+                "maxItems": 0
+              },
+              "review_and_sunset": {
+                "properties": {
+                  "transition_review_status": {
+                    "const": "MIGRATION_TOMBSTONE_UNASSESSED"
+                  },
+                  "sunset_reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exception_approver",
+        "temporary_ceiling_delta",
+        "exception_rationale_code",
+        "held_out_evidence_receipt_sha256",
+        "review_by",
+        "expires_on"
+      ],
+      "properties": {
+        "exception_approver": {
+          "type": "string",
+          "minLength": 1
+        },
+        "temporary_ceiling_delta": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "exception_rationale_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "held_out_evidence_receipt_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "review_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expires_on": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "seam_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owning_seam",
+        "approval_status",
+        "gate_budget_ceiling",
+        "approval_revision",
+        "approver",
+        "baseline_gate_ids",
+        "addition_gate_ids",
+        "release_gate_ids",
+        "active_gate_count",
+        "activated_or_shadow_additions",
+        "approved_slot_releases",
+        "post_change_gate_count",
+        "exception"
+      ],
+      "properties": {
+        "owning_seam": {
+          "enum": [
+            "STARTUP_RESUME",
+            "PRE_DISCOVERY",
+            "POST_DISCOVERY",
+            "PRE_VERIFY",
+            "POST_VERIFY",
+            "REPORT_ASSEMBLY"
+          ]
+        },
+        "approval_status": {
+          "const": "UNAPPROVED_BASELINE"
+        },
+        "gate_budget_ceiling": {
+          "$ref": "#/$defs/nullable_integer"
+        },
+        "approval_revision": {
+          "$ref": "#/$defs/nullable_integer"
+        },
+        "approver": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "baseline_gate_ids": {
+          "$ref": "#/$defs/gate_id_array"
+        },
+        "addition_gate_ids": {
+          "$ref": "#/$defs/gate_id_array"
+        },
+        "release_gate_ids": {
+          "$ref": "#/$defs/gate_id_array"
+        },
+        "active_gate_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "activated_or_shadow_additions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "approved_slot_releases": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "post_change_gate_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "exception": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/exception"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "approval_status": {
+                "const": "UNAPPROVED_BASELINE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "gate_budget_ceiling": {
+                "type": "null"
+              },
+              "approval_revision": {
+                "type": "null"
+              },
+              "approver": {
+                "type": "null"
+              },
+              "addition_gate_ids": {
+                "type": "array",
+                "maxItems": 0
+              },
+              "release_gate_ids": {
+                "type": "array",
+                "maxItems": 0
+              },
+              "activated_or_shadow_additions": {
+                "const": 0
+              },
+              "approved_slot_releases": {
+                "const": 0
+              },
+              "exception": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

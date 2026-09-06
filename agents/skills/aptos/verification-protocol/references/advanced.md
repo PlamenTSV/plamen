@@ -2,54 +2,14 @@
 
 > Part of the Aptos Verification Protocol skill. Read `SKILL.md` for the core workflow first.
 
-## RAG Queries Before PoC (MANDATORY for HIGH/CRITICAL)
+## External Precedent Boundary
 
-Before writing PoC tests for HIGH/CRITICAL findings, query the vulnerability database:
-
-### Step 1: Get Attack Vectors
-```
-mcp__unified-vuln-db__get_attack_vectors(bug_class="{category}")
-```
-Returns step-by-step attack strategies from real exploits.
-
-### Step 2: Get PoC Templates
-```
-mcp__unified-vuln-db__get_poc_template(bug_class="{category}", framework="move_test")
-```
-Returns example test structures for this vulnerability type.
-
-### Step 3: Get Similar Exploit Code
-```
-mcp__unified-vuln-db__get_similar_findings(pattern="{vulnerability description}")
-```
-Returns similar historical findings with code examples.
-
-### Step 4: Validate Before Committing
-```
-mcp__unified-vuln-db__validate_hypothesis(hypothesis="{your finding summary}")
-```
-Returns supporting/contradicting evidence from historical exploits.
-
-### RAG Integration Rules
-
-| RAG Result | Impact on Verification |
-|------------|----------------------|
-| Attack vector found | Use documented steps as test basis |
-| PoC template available | Adapt template to this protocol |
-| Similar exploit exists | Extract key attack pattern |
-| No similar findings | Proceed with manual analysis, note uncertainty |
-
-### Document RAG Evidence
-
-In the verification output, add:
-
-```markdown
-### RAG Evidence
-- **Attack Vectors Consulted**: [list bug classes queried]
-- **Similar Exploits Found**: [count and brief descriptions]
-- **PoC Template Used**: [yes/no, which template]
-- **Historical Precedent**: [describe any matching historical vulnerabilities]
-```
+Read `~/.claude/rules/precedent-evidence-policy.md`.
+Do not query vulnerability databases, WebSearch, or fresh RAG before or during
+PoC adjudication. Seal the code-derived hypothesis, plan, and executed result
+without historical anchoring. Centralized precedent can only create additive
+test ideas in a separate post-plan phase; it is never verifier evidence and
+cannot support a negative verdict, severity, proof, demotion, or report claim.
 
 ---
 
@@ -155,36 +115,14 @@ If Direction 2 (USER -> ROLE) is NOT analyzed:
 
 ---
 
-## RAG Confidence Override
+## Shared External Precedent Boundary
 
-> **PURPOSE**: Prevent dismissal of findings with strong historical precedent.
-
-### RAG Confidence Scoring
-
-When validating a hypothesis, RAG returns a confidence score based on:
-- Number of similar findings in database
-- Severity distribution of similar findings
-- Match quality (exact pattern vs. related pattern)
-
-### Override Rules
-
-| RAG Confidence | Local Verdict | Final Verdict | Action |
-|----------------|---------------|---------------|--------|
-| >= 7/8 matches | FALSE_POSITIVE | **CONTESTED** (override) | Cannot dismiss -- strong precedent |
-| >= 6/8 matches | FALSE_POSITIVE | **CONTESTED** (override) | Cannot dismiss -- significant precedent |
-| < 6/8 matches | FALSE_POSITIVE | FALSE_POSITIVE | Allowed -- limited precedent |
-
-**Implementation**:
-```markdown
-### RAG Confidence Check
-- Similar findings found: 8
-- HIGH severity matches: 5
-- RAG confidence: 8/8 (>=6 threshold)
-- **Override applied**: Cannot mark FALSE_POSITIVE
-
-## Verdict: CONTESTED (RAG override)
-**Reason**: 8 similar HIGH findings in database. Local analysis suggests FALSE_POSITIVE but historical precedent too strong to dismiss.
-```
+Read `~/.claude/rules/precedent-evidence-policy.md`. External results may
+suggest test structure or provide labelled report context. Generic methodology
+literature supplies context only. Even exact precedent requires the same typed
+mechanism class and matching preconditions and contributes zero code
+confidence. Match counts and historical severity never override the locally
+executed verdict, change severity, force `CONTESTED`, or reduce test depth.
 
 ---
 
@@ -194,7 +132,7 @@ When validating a hypothesis, RAG returns a confidence score based on:
 
 ### Protection Rules
 
-1. **RAG >= 6/8 + Chain**: Cannot be dismissed as FALSE_POSITIVE
+1. **Precedent is context only**: chain disposition follows the executed full sequence, never match counts
 2. **3+ agents flagged + Chain**: Need PRODUCTION evidence to refute
 3. **Chain PoC MUST test full sequence**: Both enabler AND blocked finding
 

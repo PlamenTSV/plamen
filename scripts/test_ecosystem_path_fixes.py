@@ -93,6 +93,16 @@ def test_source_suffix_scan_stops_at_total_entry_budget(
     assert visited <= 4
 
 
+def test_source_suffix_scan_keeps_nested_protocol_lib_skips_root_dependency_lib(
+    tmp_path: Path,
+):
+    _touch(tmp_path / "contracts" / "lib" / "SolvencyMath.sol")
+    _touch(tmp_path / "lib" / "openzeppelin-contracts" / "ERC20.sol")
+
+    counts = D._count_source_suffixes_under(tmp_path, {".sol"}, file_cap=100)
+    assert counts == {".sol": 1}
+
+
 def test_manifest_scan_stops_at_total_entry_budget(tmp_path: Path, monkeypatch):
     """A found manifest must not disable the traversal budget for its tree."""
     visited = 0

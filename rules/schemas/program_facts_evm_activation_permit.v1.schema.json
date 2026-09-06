@@ -1,0 +1,665 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_activation_permit.v1.schema.json",
+  "title": "Program Facts EVM activation permit v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "release_id",
+    "issuer_id",
+    "run_id",
+    "run_generation",
+    "execution_authority_digest",
+    "composition_authority_digest",
+    "methodology_package_digest",
+    "provider_environment_digest",
+    "provider_package_digest",
+    "native_host_receipt_digest",
+    "independent_review_receipts",
+    "issuer_policy_digest",
+    "activation_decision_digest",
+    "platform_capability",
+    "permit_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_activation_permit.v1"
+    },
+    "release_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "issuer_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "execution_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "composition_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "methodology_package_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "provider_environment_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "provider_package_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "native_host_receipt_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "independent_review_receipts": {
+      "$ref": "#/$defs/reviewDenominator"
+    },
+    "issuer_policy_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "activation_decision_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_scope": {
+      "const": "LOCAL_WINDOWS_CLAUDE_EVM_AUDIT_TESTING_CANDIDATE"
+    },
+    "pipeline_scope": {
+      "const": "SMART_CONTRACT"
+    },
+    "ecosystem_scope": {
+      "const": "EVM"
+    },
+    "backend_scope": {
+      "const": "CLAUDE"
+    },
+    "audit_mode_scope": {
+      "const": "THOROUGH"
+    },
+    "program_facts_mode_scope": {
+      "const": "ACTIVE_EMIT_ONLY"
+    },
+    "host_os": {
+      "const": "WINDOWS"
+    },
+    "host_architecture": {
+      "const": "AMD64"
+    },
+    "consumer_activation": {
+      "const": false
+    },
+    "terminal_negative_authority": {
+      "const": false
+    },
+    "scope_review": {
+      "$ref": "#/$defs/scopeReview"
+    },
+    "platform_capability": {
+      "$ref": "#/$defs/platformCapability"
+    },
+    "permit_digest": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "platform_capability": {
+            "properties": {
+              "os": {
+                "const": "WINDOWS"
+              }
+            },
+            "required": [
+              "os"
+            ]
+          }
+        },
+        "required": [
+          "platform_capability"
+        ]
+      },
+      "then": {
+        "required": [
+          "authority_scope",
+          "pipeline_scope",
+          "ecosystem_scope",
+          "backend_scope",
+          "audit_mode_scope",
+          "program_facts_mode_scope",
+          "host_os",
+          "host_architecture",
+          "consumer_activation",
+          "terminal_negative_authority",
+          "scope_review"
+        ],
+        "properties": {
+          "independent_review_receipts": {
+            "$ref": "#/$defs/windowsReviewDenominator"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "independent_review_receipts": {
+            "$ref": "#/$defs/linuxReviewDenominator"
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "authority_scope"
+              ]
+            },
+            {
+              "required": [
+                "pipeline_scope"
+              ]
+            },
+            {
+              "required": [
+                "ecosystem_scope"
+              ]
+            },
+            {
+              "required": [
+                "backend_scope"
+              ]
+            },
+            {
+              "required": [
+                "audit_mode_scope"
+              ]
+            },
+            {
+              "required": [
+                "program_facts_mode_scope"
+              ]
+            },
+            {
+              "required": [
+                "host_os"
+              ]
+            },
+            {
+              "required": [
+                "host_architecture"
+              ]
+            },
+            {
+              "required": [
+                "consumer_activation"
+              ]
+            },
+            {
+              "required": [
+                "terminal_negative_authority"
+              ]
+            },
+            {
+              "required": [
+                "scope_review"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "providedCapability": {
+      "enum": [
+        "PINNED_HELPER_RUNTIME_TOOL_EXECUTION_IDENTITY",
+        "IMMUTABLE_ENUMERATED_FILESYSTEM_READ_ROOTS",
+        "BOUNDED_ENUMERATED_WRITABLE_ROOTS",
+        "SECRET_FREE_CLOSED_CHILD_ENVIRONMENT",
+        "CLOSED_INHERITED_FILE_DESCRIPTOR_SET",
+        "NO_NETWORK_NAMESPACE_ACCESS",
+        "CGROUP_PROCESS_TREE_AND_RESOURCE_OWNERSHIP",
+        "TERMINAL_CGROUP_POPULATION_ZERO_EVIDENCE",
+        "IMMUTABLE_READONLY_VHDX_READ_ROOT",
+        "BOUNDED_WRITABLE_VHDX_ROOT",
+        "EXPLICIT_INHERITED_HANDLE_ALLOWLIST",
+        "NO_NETWORK_ADAPTER",
+        "NON_BREAKAWAY_GUEST_JOB_PROCESS_TREE_OWNERSHIP",
+        "HCS_COMPUTE_SYSTEM_PROCESS_TREE_OWNERSHIP",
+        "JOB_HCS_RESOURCE_ENFORCEMENT_AND_READBACK",
+        "FIXED_VHDX_BYTE_AND_FILE_RECORD_BOUND",
+        "TERMINAL_DESCENDANT_ZERO_EVIDENCE",
+        "FLUSH_DETACH_CLEANUP_EVIDENCE"
+      ]
+    },
+    "reviewBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "sha256"
+      ],
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "reviewB": {
+      "$ref": "#/$defs/reviewBase",
+      "properties": {
+        "role": {
+          "const": "B"
+        }
+      }
+    },
+    "reviewC": {
+      "$ref": "#/$defs/reviewBase",
+      "properties": {
+        "role": {
+          "const": "C"
+        }
+      }
+    },
+    "reviewNativeHost": {
+      "$ref": "#/$defs/reviewBase",
+      "properties": {
+        "role": {
+          "const": "NATIVE_HOST"
+        }
+      }
+    },
+    "reviewPackage": {
+      "$ref": "#/$defs/reviewBase",
+      "properties": {
+        "role": {
+          "const": "PACKAGE"
+        }
+      }
+    },
+    "scopeReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "const": "review_fixtures/program_facts_local_windows_graph_active_scope_amendment_independent_review_r2_20260730.md"
+        },
+        "size_bytes": {
+          "const": 5814
+        },
+        "sha256": {
+          "const": "1bf333e19e5b088401f080e625a052a1db0163c2146f421a034ee11a2f5d8dc0"
+        }
+      }
+    },
+    "reviewLocalScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "role": {
+          "const": "LOCAL_SCOPE"
+        },
+        "path": {
+          "const": "review_fixtures/program_facts_local_windows_graph_active_scope_amendment_independent_review_r2_20260730.md"
+        },
+        "size_bytes": {
+          "const": 5814
+        },
+        "sha256": {
+          "const": "1bf333e19e5b088401f080e625a052a1db0163c2146f421a034ee11a2f5d8dc0"
+        }
+      }
+    },
+    "linuxReviewDenominator": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/reviewB"
+        },
+        {
+          "$ref": "#/$defs/reviewC"
+        },
+        {
+          "$ref": "#/$defs/reviewNativeHost"
+        },
+        {
+          "$ref": "#/$defs/reviewPackage"
+        }
+      ],
+      "items": false,
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "windowsReviewDenominator": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/reviewB"
+        },
+        {
+          "$ref": "#/$defs/reviewC"
+        },
+        {
+          "$ref": "#/$defs/reviewNativeHost"
+        },
+        {
+          "$ref": "#/$defs/reviewPackage"
+        },
+        {
+          "$ref": "#/$defs/reviewLocalScope"
+        }
+      ],
+      "items": false,
+      "minItems": 5,
+      "maxItems": 5
+    },
+    "reviewDenominator": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/linuxReviewDenominator"
+        },
+        {
+          "$ref": "#/$defs/windowsReviewDenominator"
+        }
+      ]
+    },
+    "platformCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "architecture",
+        "filesystem_class",
+        "sandbox_environment_receipt_digest",
+        "boundary_profile",
+        "provided_capabilities",
+        "required_capabilities"
+      ],
+      "properties": {
+        "os": {
+          "enum": [
+            "LINUX",
+            "WINDOWS"
+          ]
+        },
+        "architecture": {
+          "enum": [
+            "AMD64",
+            "ARM64"
+          ]
+        },
+        "filesystem_class": {
+          "$ref": "#/$defs/identifier"
+        },
+        "sandbox_environment_receipt_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "boundary_profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "provided_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/providedCapability"
+          },
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "SAME_UID_HOST_CONFIDENTIALITY_NOT_PROVIDED",
+              "GENERAL_HOSTILE_HOST_ISOLATION_NOT_PROVIDED"
+            ]
+          },
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "same_uid_host_confidentiality_claim": {
+          "type": "boolean"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/providedCapability"
+          },
+          "maxItems": 16,
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "os": {
+                "const": "LINUX"
+              }
+            },
+            "required": [
+              "os"
+            ]
+          },
+          "then": {
+            "required": [
+              "limitations",
+              "same_uid_host_confidentiality_claim"
+            ],
+            "properties": {
+              "boundary_profile": {
+                "const": "LINUX_PROVIDER_BOUNDARY_V1"
+              },
+              "provided_capabilities": {
+                "prefixItems": [
+                  {
+                    "const": "PINNED_HELPER_RUNTIME_TOOL_EXECUTION_IDENTITY"
+                  },
+                  {
+                    "const": "IMMUTABLE_ENUMERATED_FILESYSTEM_READ_ROOTS"
+                  },
+                  {
+                    "const": "BOUNDED_ENUMERATED_WRITABLE_ROOTS"
+                  },
+                  {
+                    "const": "SECRET_FREE_CLOSED_CHILD_ENVIRONMENT"
+                  },
+                  {
+                    "const": "CLOSED_INHERITED_FILE_DESCRIPTOR_SET"
+                  },
+                  {
+                    "const": "NO_NETWORK_NAMESPACE_ACCESS"
+                  },
+                  {
+                    "const": "CGROUP_PROCESS_TREE_AND_RESOURCE_OWNERSHIP"
+                  },
+                  {
+                    "const": "TERMINAL_CGROUP_POPULATION_ZERO_EVIDENCE"
+                  }
+                ],
+                "items": false,
+                "minItems": 8,
+                "maxItems": 8
+              },
+              "limitations": {
+                "prefixItems": [
+                  {
+                    "const": "SAME_UID_HOST_CONFIDENTIALITY_NOT_PROVIDED"
+                  },
+                  {
+                    "const": "GENERAL_HOSTILE_HOST_ISOLATION_NOT_PROVIDED"
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "same_uid_host_confidentiality_claim": {
+                "const": false
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "limitations"
+                  ]
+                },
+                {
+                  "required": [
+                    "same_uid_host_confidentiality_claim"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "os": {
+                "const": "WINDOWS"
+              }
+            },
+            "required": [
+              "os"
+            ]
+          },
+          "then": {
+            "properties": {
+              "architecture": {
+                "const": "AMD64"
+              },
+              "filesystem_class": {
+                "const": "NTFS_FIXED_VHDX"
+              },
+              "boundary_profile": {
+                "const": "WINDOWS_HYPERV_HCS_PROVIDER_BOUNDARY_V1"
+              },
+              "provided_capabilities": {
+                "prefixItems": [
+                  {
+                    "const": "PINNED_HELPER_RUNTIME_TOOL_EXECUTION_IDENTITY"
+                  },
+                  {
+                    "const": "IMMUTABLE_READONLY_VHDX_READ_ROOT"
+                  },
+                  {
+                    "const": "BOUNDED_WRITABLE_VHDX_ROOT"
+                  },
+                  {
+                    "const": "SECRET_FREE_CLOSED_CHILD_ENVIRONMENT"
+                  },
+                  {
+                    "const": "EXPLICIT_INHERITED_HANDLE_ALLOWLIST"
+                  },
+                  {
+                    "const": "NO_NETWORK_ADAPTER"
+                  },
+                  {
+                    "const": "NON_BREAKAWAY_GUEST_JOB_PROCESS_TREE_OWNERSHIP"
+                  },
+                  {
+                    "const": "HCS_COMPUTE_SYSTEM_PROCESS_TREE_OWNERSHIP"
+                  },
+                  {
+                    "const": "JOB_HCS_RESOURCE_ENFORCEMENT_AND_READBACK"
+                  },
+                  {
+                    "const": "FIXED_VHDX_BYTE_AND_FILE_RECORD_BOUND"
+                  },
+                  {
+                    "const": "TERMINAL_DESCENDANT_ZERO_EVIDENCE"
+                  },
+                  {
+                    "const": "FLUSH_DETACH_CLEANUP_EVIDENCE"
+                  }
+                ],
+                "items": false,
+                "minItems": 12,
+                "maxItems": 12,
+                "uniqueItems": true
+              },
+              "required_capabilities": {
+                "prefixItems": [
+                  {
+                    "const": "PINNED_HELPER_RUNTIME_TOOL_EXECUTION_IDENTITY"
+                  },
+                  {
+                    "const": "IMMUTABLE_READONLY_VHDX_READ_ROOT"
+                  },
+                  {
+                    "const": "BOUNDED_WRITABLE_VHDX_ROOT"
+                  },
+                  {
+                    "const": "SECRET_FREE_CLOSED_CHILD_ENVIRONMENT"
+                  },
+                  {
+                    "const": "EXPLICIT_INHERITED_HANDLE_ALLOWLIST"
+                  },
+                  {
+                    "const": "NO_NETWORK_ADAPTER"
+                  },
+                  {
+                    "const": "NON_BREAKAWAY_GUEST_JOB_PROCESS_TREE_OWNERSHIP"
+                  },
+                  {
+                    "const": "HCS_COMPUTE_SYSTEM_PROCESS_TREE_OWNERSHIP"
+                  },
+                  {
+                    "const": "JOB_HCS_RESOURCE_ENFORCEMENT_AND_READBACK"
+                  },
+                  {
+                    "const": "FIXED_VHDX_BYTE_AND_FILE_RECORD_BOUND"
+                  },
+                  {
+                    "const": "TERMINAL_DESCENDANT_ZERO_EVIDENCE"
+                  },
+                  {
+                    "const": "FLUSH_DETACH_CLEANUP_EVIDENCE"
+                  }
+                ],
+                "items": false,
+                "minItems": 12,
+                "maxItems": 12,
+                "uniqueItems": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

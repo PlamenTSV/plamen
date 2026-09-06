@@ -248,13 +248,12 @@ def test_ADVERSARIAL_prompt_injection_in_inventory():
 def test_ADVERSARIAL_status_field_with_directive_text():
     """Verify status that tries to be clever: 'CONFIRMED but actually REFUTED'."""
     text = "**Verdict**: CONFIRMED but actually REFUTED on review\n"
-    # Verdict field takes precedence; first match in the field wins.
+    # An annotated field is legacy prose, not an exact enum contract. Conflicts
+    # must not select the first negative/positive token by parser order.
     status = D._verifier_status_from_text(text)
-    # Either CONFIRMED or REFUTED is defensible; CONFIRMED is the literal
-    # field value. Garbage (non-canonical) would be a bug.
     check(
-        "ADVERSARIAL.status-with-multi-tokens uses field precedence",
-        status in ("CONFIRMED", "REFUTED"),
+        "ADVERSARIAL.status-with-multi-tokens resolves uncertain",
+        status == "UNRESOLVED",
         f"status={status!r}",
     )
 

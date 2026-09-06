@@ -177,7 +177,7 @@ Could new abort conditions be added in dependency upgrades?
 
 1. **Pinning**: Are all third-party dependencies pinned to specific git revisions?
 2. **Critical functions**: For each math/utility function from a dependency, does it handle edge cases correctly?
-3. **Bit shifts**: Are ALL bit shift operations in math libraries bounds-checked? (Cetus precedent)
+3. **Bit shifts**: Are ALL bit shift operations in math libraries bounds-checked? (historical arithmetic-library incidents motivate this enumeration)
 4. **Upgrade risk**: Can any dependency change behavior without the protocol team's knowledge?
 5. **Shared objects**: If we use shared objects from external packages, can their behavior change via upgrade?
 6. **Transitive**: Are there transitive dependencies, and are they audited?
@@ -223,7 +223,7 @@ Could new abort conditions be added in dependency upgrades?
 | 1. Dependency Inventory | YES | | All deps from Move.toml enumerated |
 | 2. Package Immutability Check | YES | | Pinning and on-chain policy for each dep |
 | 3. Transitive Dependency Risk | YES | | Full dependency tree mapped |
-| 4. Math Library Audit | IF math/arithmetic deps exist | | **HIGH PRIORITY** -- Cetus precedent |
+| 4. Math Library Audit | IF math/arithmetic deps exist | | **HIGH PRIORITY** -- exact arithmetic operations require direct code review |
 | 4a. Bit Shift Operation Audit | IF bit shifts in math deps | | Every shift bounds-checked |
 | 4b. Overflow/Underflow Audit | IF math deps | | Checked vs unchecked arithmetic |
 | 4c. Rounding and Precision | IF division in math deps | | Direction documented and consistent |

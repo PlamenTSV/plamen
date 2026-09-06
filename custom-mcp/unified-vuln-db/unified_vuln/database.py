@@ -74,10 +74,13 @@ class CodeAwareEmbeddingFunction:
     This is the only supported model — no Nomic, no Voyage, no alternatives.
     """
 
+    MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+    MODEL_REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+
     def __init__(self):
         self.model = None
         self.model_type = None
-        self._model_name_str = "all-MiniLM-L6-v2"
+        self._model_name_str = "all-MiniLM-L6-v2@1110a24"
         self.dimensions = 384
 
     def name(self) -> str:
@@ -91,7 +94,11 @@ class CodeAwareEmbeddingFunction:
             # Keep MCP stdout clean. Several downstream libraries emit progress
             # and load reports on stdout during model initialization.
             with _suppress_native_output(), redirect_stdout(io.StringIO()):
-                self.model = SentenceTransformer("all-MiniLM-L6-v2")
+                self.model = SentenceTransformer(
+                    self.MODEL_ID,
+                    revision=self.MODEL_REVISION,
+                    trust_remote_code=False,
+                )
             self.model_type = "minilm"
         except ImportError:
             console.print(

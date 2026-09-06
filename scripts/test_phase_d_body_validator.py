@@ -19,14 +19,23 @@ Run: `python test_phase_d_body_validator.py`
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
+import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import plamen_driver as D  # noqa: E402
+import plamen_parsers as P  # noqa: E402
+from queue_work_items import (  # noqa: E402
+    QueueWorkItem,
+    VerifierOutputIdentity,
+    VerifierOutputReceipt,
+    build_queue_work_plan,
+)
 
 PASS = 0
 FAIL = 0
@@ -40,6 +49,136 @@ def check(label: str, ok: bool, detail: str = ""):
     else:
         FAIL += 1
         print(f"  FAIL  {label} :: {detail}")
+
+
+def _proposal_bytes(item: QueueWorkItem) -> bytes:
+    constituents = [item.work_item_id, *item.constituents]
+    payload = {
+        "schema_version": "plamen.severity_proposal.v1",
+        "candidate_id": item.work_item_id,
+        "constituent_ids": constituents,
+        "impact": {
+            "class": "High",
+            "harmed_asset": "protected asset",
+            "harmed_capability": "asset integrity",
+            "premise_id": f"PREM-{item.work_item_id}-IMPACT",
+            "premise_kind": "INTERNAL",
+            "evidence_ids": [f"EVID-{item.work_item_id}-IMPACT"],
+            "proof_scope": "IN_SCOPE_SOURCE",
+        },
+        "likelihood": {
+            "class": "Medium",
+            "actor": "unprivileged actor",
+            "preconditions": ["reachable state"],
+            "premise_id": f"PREM-{item.work_item_id}-LIKELIHOOD",
+            "premise_kind": "INTERNAL",
+            "evidence_ids": [f"EVID-{item.work_item_id}-LIKELIHOOD"],
+            "proof_scope": "IN_SCOPE_SOURCE",
+        },
+        "modifiers": [],
+        "proposed_severity": "High",
+        "adjustment": None,
+        "constituent_premise_outcomes": {
+            value: {"impact": "SUPPORTED", "likelihood": "SUPPORTED"}
+            for value in constituents
+        },
+    }
+    return json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
+def _bind_current_verifier_outputs(sp: Path) -> None:
+    """Install exact typed completion authority for positive legacy fixtures."""
+    queue = sp / "verification_queue.md"
+    if not queue.is_file():
+        verify_files = sorted(sp.glob("verify_*.md"))
+        if verify_files:
+            lines = [
+                "# Verification Queue",
+                "",
+                "| Finding ID | Severity | Title | Location | Preferred Tag |",
+                "|------------|----------|-------|----------|---------------|",
+            ]
+            for output in verify_files:
+                finding_id = output.stem.removeprefix("verify_")
+                body = output.read_text(encoding="utf-8", errors="replace")
+                severity_match = re.search(
+                    r"(?im)^\s*\*\*(?:final\s+)?severity\*\*\s*:\s*([^\r\n]+)",
+                    body,
+                )
+                severity = severity_match.group(1).strip() if severity_match else "Medium"
+                title_match = re.search(
+                    rf"(?im)^\s*#{{1,3}}\s+(?:Verification:\s*{re.escape(finding_id)}\s*(?:[â—–-]+\s*)?)?(.+?)\s*$",
+                    body,
+                )
+                title = title_match.group(1).strip() if title_match else f"Fixture {finding_id}"
+                if title.casefold() == finding_id.casefold():
+                    title = f"Fixture {finding_id}"
+                location_match = re.search(
+                    r"(?im)^\s*\*\*Location\*\*\s*:\s*([^\r\n]+)", body
+                ) or re.search(
+                    r"`([^`\r\n]+\.(?:sol|rs|move|go)(?::[^`\r\n]+)?)`", body
+                )
+                location = location_match.group(1).strip() if location_match else "fixture/source"
+                tag = "CODE-TRACE" if "CODE-TRACE" in body.upper() else "MANUAL-REVIEW"
+                cells = [finding_id, severity, title, location, tag]
+                lines.append("| " + " | ".join(cell.replace("|", "\\|") for cell in cells) + " |")
+            queue.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if not queue.is_file():
+        return
+    rows = P.parse_verification_queue_rows(sp)
+    if not rows:
+        return
+    items = P._ensure_typed_queue_authority(queue, rows)
+    shard = "fixture_verifier"
+    plan = build_queue_work_plan(
+        items,
+        {shard: tuple(item.work_item_id for item in items)},
+        planner_version="test.phase-d.v1",
+    )
+    (sp / "verification_queue.work_plan.json").write_text(
+        plan.to_json(), encoding="utf-8"
+    )
+    for item in items:
+        output = sp / item.expected_output_file
+        if not output.is_file():
+            continue
+        proposal = _proposal_bytes(item)
+        (sp / f"verify_{item.work_item_id}.severity_proposal.json").write_bytes(
+            proposal
+        )
+        identity = VerifierOutputIdentity.for_assignment(item, plan, shard)
+        receipt = VerifierOutputReceipt.bind(
+            identity,
+            output.read_bytes(),
+            severity_proposal=proposal,
+            launch_digest="a" * 64,
+            verifier_backend="claude",
+        )
+        (sp / f"verify_{item.work_item_id}.identity.json").write_text(
+            json.dumps(identity.to_dict(), sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        (sp / f"verify_{item.work_item_id}.receipt.json").write_text(
+            receipt.to_json(), encoding="utf-8"
+        )
+
+
+@pytest.fixture(autouse=True)
+def _typed_verifier_fixture_boundary(monkeypatch):
+    """Migrate positive legacy fixtures without weakening production gates."""
+    l1_builder = D._build_body_writer_manifests
+    sc_builder = D._build_sc_body_writer_manifests
+
+    def bound_l1(sp: Path, *args, **kwargs):
+        _bind_current_verifier_outputs(Path(sp))
+        return l1_builder(sp, *args, **kwargs)
+
+    def bound_sc(sp: Path, *args, **kwargs):
+        _bind_current_verifier_outputs(Path(sp))
+        return sc_builder(sp, *args, **kwargs)
+
+    monkeypatch.setattr(D, "_build_body_writer_manifests", bound_l1)
+    monkeypatch.setattr(D, "_build_sc_body_writer_manifests", bound_sc)
 
 
 # =============================================================================
@@ -81,6 +220,7 @@ def _seed_records(sp: Path, n_per_tier: dict[str, int]):
 """,
             encoding="utf-8",
         )
+    _bind_current_verifier_outputs(sp)
 
 
 def test_MAN_shape_and_required_fields(tmp_path: Path):

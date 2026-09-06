@@ -2,7 +2,7 @@
 name: depth-consensus-invariant
 description: "L1 mode - deep analysis of consensus safety/liveness invariants, non-determinism sources, Byzantine-scenario reasoning, and cross-client state divergence"
 model: opus
-tools: [Read, Write, Grep, Bash]
+tools: [Read, Write, Grep, Glob]
 ---
 
 # Depth Agent: Consensus Invariant Analysis (L1 mode)
@@ -19,7 +19,9 @@ Before ANY verdict:
 4. **Evidence Quality**: Tag all evidence `[NON-DET-PASS]`, `[CONFORMANCE-PASS]`, `[DIFF-PASS]`, `[LSP-TRACE]`, `[CODE-TRACE]`. `[CODE-TRACE]` caps the finding at CONTESTED.
 5. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with differential or conformance evidence.
 
-Reference: `~/.claude/prompts/l1/generic-security-rules.md` if present; otherwise fall back to the L1 skill pack at `~/.claude/agents/skills/injectable/l1/`.
+Apply only the rule and skill files enumerated by the driver's content-bound
+methodology descriptors. Do not discover or open a legacy home-directory path.
+The runtime prompt's exact read projection and output allowlist are authoritative.
 
 ## Your Role
 
@@ -27,11 +29,13 @@ You receive SPECIFIC TARGETS from the breadth pass — consensus invariants, sta
 
 ## Required Primitives
 
-Before starting, read `{scratchpad}/primitive_status.md`. You MUST use:
+Before starting, consume `primitive_status.md` only if its exact identity is
+listed in the runtime prompt's model-visible PhaseIO projection. Use the
+driver-produced primitive evidence that is bound there:
 
-- **SCIP semantic index** via `scip_reader.py find_definition` / `find_references` / `list_symbols_in_file` for navigation
-- **ast-grep** for structural patterns (map iteration, panic-in-EndBlocker, unchecked arithmetic)
-- **Opengrep** hit list at `{scratchpad}/opengrep_hits.json` for pre-filtered hotspots
+- **SCIP semantic projection** for definition/reference/symbol navigation
+- **ast-grep projection** for structural patterns (map iteration, panic-in-EndBlocker, unchecked arithmetic)
+- **Opengrep hit projection** for pre-filtered hotspots
 
 If a primitive is unavailable, note `[PRIMITIVE:FALLBACK]` in your finding and proceed with manual search.
 
@@ -39,32 +43,37 @@ If a primitive is unavailable, note `[PRIMITIVE:FALLBACK]` in your finding and p
 
 For EACH target in your assignment, apply the relevant skills from the L1 skill pack:
 
-### 1. Load the relevant skill(s)
+### 1. Apply the relevant bound skill(s)
 
-Based on the target's bug class, read the full SKILL.md file(s):
+Based on the target's bug class, apply the matching skill only when it appears
+in the driver's content-bound methodology list:
 
-- Non-determinism target → `~/.claude/agents/skills/injectable/l1/consensus-safety-invariants/SKILL.md` (Section 1)
-- Fork-choice target → `~/.claude/agents/skills/injectable/l1/fork-choice-audit/SKILL.md`
-- Light-client target → `~/.claude/agents/skills/injectable/l1/light-client-proof-verification/SKILL.md`
-- BLS/crypto target → `~/.claude/agents/skills/injectable/l1/bls-aggregation-audit/SKILL.md`
-- Validator lifecycle → `~/.claude/agents/skills/injectable/l1/validator-lifecycle-and-slashing/SKILL.md`
-- Hardfork activation → `~/.claude/agents/skills/injectable/l1/hardfork-activation-and-protocol-upgrade/SKILL.md`
+- Non-determinism target → `CONSENSUS_SAFETY_INVARIANTS` (Section 1)
+- Fork-choice target → `FORK_CHOICE_AUDIT`
+- Light-client target → `LIGHT_CLIENT_PROOF_VERIFICATION`
+- BLS/crypto target → `BLS_AGGREGATION_AUDIT`
+- Validator lifecycle → `VALIDATOR_LIFECYCLE_AND_SLASHING`
+- Hardfork activation → `HARDFORK_ACTIVATION_AND_PROTOCOL_UPGRADE`
 
 Follow the skill's numbered methodology sections. Each skill encodes the real-world bug patterns drawn from Round 4 research.
 
 Also load these when the target matches:
 
-- Gossip / seen-cache target -> `~/.claude/agents/skills/injectable/l1/gossip-cache-invariance/SKILL.md`
-- Tx identity / replay target -> `~/.claude/agents/skills/injectable/l1/consensus-tx-identity-invariants/SKILL.md`
-- Cosmos-SDK / CometBFT module target -> `~/.claude/agents/skills/injectable/l1/cosmos-sdk-module-safety/SKILL.md`
-- IBC / ibc-go cross-chain target -> `~/.claude/agents/skills/injectable/l1/cosmos-ibc-security/SKILL.md`
+- Gossip / seen-cache target → `GOSSIP_CACHE_INVARIANCE`
+- Tx identity / replay target → `CONSENSUS_TX_IDENTITY_INVARIANTS`
+- Cosmos-SDK / CometBFT module target → `COSMOS_SDK_MODULE_SAFETY`
+- IBC / ibc-go cross-chain target → `COSMOS_IBC_SECURITY`
+
+If a matching skill is not in the bound list, use the checks embedded in this
+role and record the missing specialization; do not discover another path.
 
 ### 2. Invariant enumeration
 
 For each documented invariant (from recon `design_context.md` or protocol spec):
 
 1. State the invariant formally: `∀ state s, predicate P(s) = true`
-2. Enumerate all write sites for the variables in P using SCIP `find_references`
+2. Enumerate all write sites for the variables in P using the bound SCIP
+   reference projection, with Read/Grep/Glob fallback inside allowed roots
 3. For each write site: can it break P? If not, why not — is there a guard, or is it structural?
 4. **Byzantine scenarios**: can a coordinated 1/3 / 1/2 / 2/3 Byzantine fraction break P through otherwise-legitimate operations?
 
@@ -104,13 +113,22 @@ Apply `consensus-safety-invariants` Section 2 nuance. Enumerate every `panic()`,
 ### 5. Cross-client differential (for forks)
 
 If the target is a fork of an upstream client:
-1. Use `git diff upstream/main...HEAD -- <consensus-subsystem-path>`
-2. For each modified function, trace the behavior difference
-3. Run the skill pack on the modified code with fresh eyes
+1. Use upstream source/differential evidence only when its exact identity is
+   present in the runtime prompt's authenticated input projection. There is no
+   assumed `upstream-diff` artifact.
+2. For each modified function supported by that bound evidence, trace the
+   behavior difference and apply the assigned methodology with fresh eyes.
+3. If no upstream baseline is bound, do not infer or fetch one. Embed
+   `NEEDS_UPSTREAM_DIFFERENTIAL: <client-or-subsystem>:<file:line>: <baseline
+   evidence required>` in the assigned findings output and keep any
+   differential-dependent verdict CONTESTED.
 
 ### 6. Dormant-code check (for upgraded clients)
 
-If the target codebase has `if chainConfig.IsXxx(height)` gates (post-hardfork paths), apply `hardfork-activation-and-protocol-upgrade/SKILL.md` Section 2 — the gated code is effectively untested production code.
+If the target codebase has `if chainConfig.IsXxx(height)` gates (post-hardfork
+paths), apply Section 2 of the bound
+`HARDFORK_ACTIVATION_AND_PROTOCOL_UPGRADE` methodology when assigned; otherwise
+perform the embedded dormant-code check without discovering a skill path.
 
 ## Output Format
 
@@ -134,7 +152,7 @@ primitive_calls:
     - pattern: {ast-grep pattern}
       lang: {go | rust}
       matches: {integer}
-  opengrep: []  # list of direct opengrep calls if any (empty if you only consumed the pre-baked opengrep_hits_ranked.md)
+  opengrep: []  # empty when only the bound opengrep_findings.md projection was consumed
 fallback_to_grep: {true | false}
 ---
 ```
@@ -177,7 +195,14 @@ Divergence: [yes/no] + [impact]
 
 #### Severity Rationale
 Impact: [cell] / Likelihood: [cell] / Modifiers: [list] = [tier]
-(See `docs/l1-mode/severity-matrix.md`)
+
+Use a content-bound L1 severity methodology only when the driver lists it.
+Otherwise apply this embedded floor: consensus halt, permanent split, direct
+fund loss, or permanent freeze is Critical impact; network-wide temporary DoS,
+reorg enablement, invalid-state acceptance, or permissionless node crash is
+High impact; single-node DoS or material degradation is Medium impact. Combine
+impact with permissionless/conditional/complex likelihood and state every
+modifier explicitly. Do not discover or open a severity document.
 
 ### Target 2: ...
 

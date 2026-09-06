@@ -198,10 +198,10 @@ def test_CLUSTER_two_findings_below_threshold(tmp_path: Path):
 
 
 # =============================================================================
-# Application: clusters become consolidated report findings.
+# Application: clusters become non-authoritative consolidation proposals.
 # =============================================================================
 
-def test_APPLY_3_findings_merge_to_one_report_id(tmp_path: Path):
+def test_APPLY_3_findings_remain_independent_with_one_proposal(tmp_path: Path):
     sp = tmp_path
     (sp / "verification_queue.md").write_text("""# Verification Queue
 
@@ -223,8 +223,8 @@ def test_APPLY_3_findings_merge_to_one_report_id(tmp_path: Path):
     n_active = D._write_mechanical_report_index(sp)
     records = json.loads((sp / "report_records.json").read_text(encoding="utf-8"))
     check(
-        "APPLY.active_count_is_1_after_merge",
-        n_active == 1 and len(records["active"]) == 1,
+        "APPLY.active_count_preserves_all_cluster_members",
+        n_active == 3 and len(records["active"]) == 3,
         f"n_active={n_active} active={records.get('active')}",
     )
 
@@ -259,7 +259,7 @@ def test_APPLY_index_includes_consolidation_section(tmp_path: Path):
     idx = (sp / "report_index.md").read_text(encoding="utf-8")
     check(
         "APPLY.index_has_consolidation_map_section",
-        "## Consolidation Map" in idx,
+        "## Proposed Consolidation Map (Non-authoritative)" in idx,
         idx[:1000],
     )
     check(
@@ -308,8 +308,8 @@ def test_APPLY_unrelated_findings_kept_separate(tmp_path: Path):
     )
 
 
-def test_APPLY_consolidated_finding_gets_class_level_title(tmp_path: Path):
-    """Per report-template, consolidated findings get a class-level title."""
+def test_APPLY_consolidation_proposal_gets_class_level_title(tmp_path: Path):
+    """Proposal may summarize a class without replacing source identities."""
     sp = tmp_path
     (sp / "verification_queue.md").write_text("""# Verification Queue
 
@@ -330,8 +330,10 @@ def test_APPLY_consolidated_finding_gets_class_level_title(tmp_path: Path):
 
     D._write_mechanical_report_index(sp)
     records = json.loads((sp / "report_records.json").read_text(encoding="utf-8"))
-    title = records["active"][0]["title"]
-    # Class-level title should not be the title of any single absorbed finding.
+    assert len(records["active"]) == 3
+    assert all(not row["absorbed_finding_ids"] for row in records["active"])
+    title = records["consolidation_map"][0]["title"]
+    # The proposal title may be class-level; active rows retain their own IDs.
     check(
         "APPLY.title_is_class_level",
         "missing event" in title.lower() or "event emission" in title.lower(),
@@ -354,10 +356,10 @@ TESTS_INTEG = [
     test_CLUSTER_finds_3_plus_same_signature,
     test_CLUSTER_different_severity_no_cluster,
     test_CLUSTER_two_findings_below_threshold,
-    test_APPLY_3_findings_merge_to_one_report_id,
+    test_APPLY_3_findings_remain_independent_with_one_proposal,
     test_APPLY_index_includes_consolidation_section,
     test_APPLY_unrelated_findings_kept_separate,
-    test_APPLY_consolidated_finding_gets_class_level_title,
+    test_APPLY_consolidation_proposal_gets_class_level_title,
 ]
 
 

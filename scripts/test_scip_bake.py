@@ -6,6 +6,7 @@ writer _scip_to_graph_artifacts(), plus the wiring in run_recon_prepass().
 from __future__ import annotations
 
 import os
+import json
 import sys
 import textwrap
 import time
@@ -41,6 +42,47 @@ def _mkproj(tmp_path: Path, *, cargo: bool = True) -> Path:
 
 
 _GRAPH_ARTIFACTS = ["caller_map.md", "callee_map.md", "state_write_map.md", "function_summary.md"]
+
+
+@pytest.fixture(autouse=True)
+def _reviewed_provider_authority_for_downstream_bake_fixtures():
+    """This file exercises bake behavior after provider selection."""
+
+    def capture(tool_id, command, **_kwargs):
+        import shutil
+
+        return {
+            "schema": "plamen.runtime-tool-identity.v2",
+            "tool_id": tool_id,
+            "identity_kind": "command",
+            "command": list(command),
+            "resolved_executable": shutil.which(tool_id) or tool_id,
+            "authority_status": "MATCH",
+            "deterministic_provider_authority": True,
+            "authority_digest": "a" * 64,
+        }
+
+    def capture_python(tool_id, **_kwargs):
+        return {
+            "schema": "plamen.runtime-tool-identity.v2",
+            "tool_id": tool_id,
+            "identity_kind": "python_distribution",
+            "authority_status": "MATCH",
+            "deterministic_provider_authority": True,
+            "authority_digest": "b" * 64,
+        }
+
+    with mock.patch(
+        "recon_prepass._capture_command_provider_authority",
+        side_effect=capture,
+    ), mock.patch(
+        "recon_prepass._capture_python_provider_authority",
+        side_effect=capture_python,
+    ), mock.patch(
+        "recon_prepass._provider_authority_replays",
+        return_value=True,
+    ):
+        yield
 
 
 # ── _bake_rust_scip: skip/fail paths ────────────────────────────────────
@@ -564,13 +606,26 @@ def test_scip_to_graph_large_index_partial_no_nameerror(tmp_path):
 # the (mocked) subprocess call when the on-disk artifacts are fresh, and
 # still rebuilds when a source file is newer than the index.
 
-_ALL_GRAPH_ARTIFACTS = ("caller_map.md", "callee_map.md", "state_write_map.md", "function_summary.md")
+_ALL_GRAPH_ARTIFACTS = (
+    "caller_map.md", "callee_map.md", "state_write_map.md", "function_summary.md",
+    "_mechanical_graph.json",
+)
 
 
 def _touch(p: Path, mtime: float) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     if not p.exists():
-        p.write_text("stub", encoding="utf-8")
+        if p.name == "_mechanical_graph.json":
+            p.write_text(
+                json.dumps({
+                    "function_signature_schema": "plamen.function_signature_fact.v1",
+                    "functions": {},
+                    "function_signatures": {},
+                }),
+                encoding="utf-8",
+            )
+        else:
+            p.write_text("stub", encoding="utf-8")
     os.utime(p, (mtime, mtime))
 
 

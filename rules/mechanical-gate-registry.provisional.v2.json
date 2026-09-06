@@ -1,0 +1,653 @@
+{
+  "schema_version": "plamen.mechanical_gate_registry_candidate.provisional.v1",
+  "status": "PROVISIONAL_UNWRAPPED_UNREVIEWED",
+  "runtime_authority_granted": false,
+  "authoritative_registry": {
+    "path": "rules/mechanical-gate-registry.json",
+    "sha256": "5acf9a848bae74ab256872600324098e1472bff73fdcb0233923f6c5dac5157e",
+    "schema_version": "plamen.mechanical_gate_registry.v1"
+  },
+  "source_snapshot": {
+    "source_tree_digest_algorithm": "sha256:plamen-source-tree-v1",
+    "source_tree_digest": "605041aff4c9dc4cddf848af9fe71d7e7d5399487f9a89a7e2d624294489c9c6",
+    "digest_stability": "REGENERATE_AT_TREE_FREEZE",
+    "git_head": "67a0f85adc7a8169d79a286908b00bef7adb764a",
+    "files": [
+      {
+        "path": "scripts/audit_snapshot.py",
+        "sha256": "ea80ce08577f68eaad1d1b3c4d06c237d87e3a4d6db5fcda1435bb582561fe53"
+      },
+      {
+        "path": "scripts/enumeration_gate.py",
+        "sha256": "084b5604c8d48a1a321549bd987d66578a6cc86ce088402cd8162c92df14ec7c"
+      },
+      {
+        "path": "scripts/mandatory_reverification.py",
+        "sha256": "a786942c9efbd1e959969091f5ed5bb8def2246adcc042a7085f84de68690bad"
+      },
+      {
+        "path": "scripts/mechanical_verify.py",
+        "sha256": "c083898e011c7cb9a1f224edd3dda4b9fb40ec8f07465d355a64df7524418d2c"
+      },
+      {
+        "path": "scripts/phase_io_contracts.py",
+        "sha256": "ec4d4872f4f217a333fc0a5006b127a715b275bf69a402d9386f4a1ff662b9fd"
+      },
+      {
+        "path": "scripts/plamen_driver.py",
+        "sha256": "45aa2ebe92f85688e52f8886d6e75db17157d7d44bcbfa919cc4381ef51d3c69"
+      },
+      {
+        "path": "scripts/plamen_mechanical.py",
+        "sha256": "d24409338ef4d1a4c2a0b9e026b5f59f4521ec6ca8c2c56027e543e7c8abdf72"
+      },
+      {
+        "path": "scripts/plamen_validators.py",
+        "sha256": "20e4c437670d4e3c7575bcd5c360a59b96070870b7cc95e791901208c0fa7313"
+      },
+      {
+        "path": "scripts/post_verify_lifecycle.py",
+        "sha256": "fbc67412f5ca9a54c5d775bf2d4d2fb2db75985e5e1248e34e27827b7996142f"
+      },
+      {
+        "path": "scripts/recon_prepass.py",
+        "sha256": "86d1adca34a61c22fef34876b21573b854892ef1a7b98076890a3fa9037653c8"
+      },
+      {
+        "path": "scripts/report_disposition_authority.py",
+        "sha256": "46624f1f5f131d0e293c4421c4e3cebc14ccd486a671716ee4997f5052e6fbc2"
+      },
+      {
+        "path": "scripts/supply_chain_gate.py",
+        "sha256": "929c6aa88978907050a2b5e16e8d2c8a6037f15adf58a9d12ffd519b42bb420c"
+      }
+    ]
+  },
+  "independent_review_receipt_sha256": null,
+  "scope": {
+    "baseline_semantics": "MINIMUM_INDEPENDENT_DECISION_AUTHORITIES",
+    "included_authorities": [
+      "CANDIDATE_MEMBERSHIP",
+      "DISPOSITION_OR_REPORT_TIER",
+      "EVIDENCE_OR_SUCCESSOR_AUTHORITY",
+      "OBLIGATION_LIFECYCLE",
+      "SEVERITY",
+      "SHIP_AUTHORITY",
+      "TARGET_EXECUTION",
+      "VERIFICATION_ROUTING"
+    ],
+    "excluded_controls": [
+      "MODEL_JUDGMENT",
+      "NON_PRODUCTION_CODE",
+      "PURE_DATA_UTILITIES",
+      "STRUCTURAL_SELF_VALIDATION",
+      "TRANSACTION_MECHANICS",
+      "UNCONSUMED_TOOL_OUTPUT"
+    ],
+    "known_broader_validator_inventory_debt": true
+  },
+  "gate_count": 33,
+  "gate_records": [
+    {
+      "forensic_id": "MG-001",
+      "gate_id": "supply_chain.pre_input_execution",
+      "display_name": "Supply-chain gate before input preparation",
+      "owning_seam": "STARTUP_RESUME",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "BLOCK_EXECUTION",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "supply_chain.pre_input_execution.recon_prepass"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-002",
+      "gate_id": "supply_chain.pre_poc_execution",
+      "display_name": "Supply-chain gate before PoC execution",
+      "owning_seam": "POST_VERIFY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "BLOCK_EXECUTION",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "supply_chain.pre_poc_execution.mechanical_verify"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-003",
+      "gate_id": "snapshot.startup_binding",
+      "display_name": "Startup snapshot binding",
+      "owning_seam": "STARTUP_RESUME",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "BLOCK_EXECUTION",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "snapshot.startup_binding.driver"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-004",
+      "gate_id": "snapshot.interphase_drift",
+      "display_name": "Inter-phase source drift",
+      "owning_seam": "STARTUP_RESUME",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "BLOCK_EXECUTION",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "snapshot.interphase_drift.driver"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-005",
+      "gate_id": "enumeration.graph_health",
+      "display_name": "Enumeration graph-health decision",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "FLAG_TELEMETRY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumeration.graph_health.accepted_depth"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-006",
+      "gate_id": "enumeration.coreference_obligation",
+      "display_name": "Co-reference obligation enumeration",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "GENERATE_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumeration.coreference_obligation.accepted_depth"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-007",
+      "gate_id": "enumeration.coreference_gap",
+      "display_name": "Co-reference coverage-gap candidate",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "GENERATE_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumeration.coreference_gap.accepted_depth"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-008",
+      "gate_id": "enumeration.critical_asset_mover",
+      "display_name": "Critical-asset-mover candidate",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "GENERATE_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumeration.critical_asset_mover.accepted_depth"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-009",
+      "gate_id": "enumeration.array_uniqueness",
+      "display_name": "Array-uniqueness candidate",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "GENERATE_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumeration.array_uniqueness.accepted_depth"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-010",
+      "gate_id": "enumeration.unbounded_stored_input",
+      "display_name": "Unbounded stored-input candidate",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "GENERATE_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumeration.unbounded_stored_input.accepted_depth"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-011",
+      "gate_id": "enumeration.variant_boundary",
+      "display_name": "Boundary-variant candidate",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "GENERATE_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumeration.variant_boundary.accepted_depth"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-012",
+      "gate_id": "enumeration.variant_symmetric",
+      "display_name": "Symmetric-operation variant candidate",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "GENERATE_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumeration.variant_symmetric.accepted_depth"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-013",
+      "gate_id": "enumeration.committed_invariant",
+      "display_name": "Committed-invariant falsification candidate",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "GENERATE_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumeration.committed_invariant.accepted_depth"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-014",
+      "gate_id": "axis.hot_function_gap_matrix",
+      "display_name": "Hot-function by risk-axis gap matrix",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "GENERATE_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "axis.hot_function_gap_matrix.thorough"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-015",
+      "gate_id": "enumgap.exploration_delivery",
+      "display_name": "Enumeration-gap exploration delivery",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "REOPEN_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "enumgap.exploration_delivery.inventory_append"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-016",
+      "gate_id": "axis.finding_delivery",
+      "display_name": "Axis finding delivery",
+      "owning_seam": "POST_DISCOVERY",
+      "decision_class": "RECALL_GENERATOR",
+      "direction": "REOPEN_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "axis.finding_delivery.inventory_append"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-017",
+      "gate_id": "promotion.orphan_reopen",
+      "display_name": "Promotion-orphan reopen",
+      "owning_seam": "PRE_VERIFY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "REOPEN_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "promotion.orphan_reopen.preverify_report"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-018",
+      "gate_id": "inventory.location_exists",
+      "display_name": "Inventory location existence",
+      "owning_seam": "PRE_VERIFY",
+      "decision_class": "PRECISION_DISCRIMINATOR",
+      "direction": "ROUTE_RECALL_OPEN",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "inventory.location_exists.multi_phase"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-019",
+      "gate_id": "inventory.production_scope",
+      "display_name": "Inventory production-scope decision",
+      "owning_seam": "PRE_VERIFY",
+      "decision_class": "PRECISION_DISCRIMINATOR",
+      "direction": "ROUTE_RECALL_OPEN",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "inventory.production_scope.multi_phase"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-020",
+      "gate_id": "inventory.identifier_exists",
+      "display_name": "Inventory identifier existence",
+      "owning_seam": "PRE_VERIFY",
+      "decision_class": "PRECISION_DISCRIMINATOR",
+      "direction": "ROUTE_RECALL_OPEN",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "inventory.identifier_exists.multi_phase"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-021",
+      "gate_id": "poc.force_by_default",
+      "display_name": "Force-by-default PoC obligation",
+      "owning_seam": "PRE_VERIFY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "ROUTE_RECALL_OPEN",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "poc.force_by_default.verify_completion"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-022",
+      "gate_id": "mechanical_poc.execute",
+      "display_name": "Mechanical PoC execution",
+      "owning_seam": "POST_VERIFY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "EXECUTE_TARGET",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "mechanical_poc.execute.phase5b"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-023",
+      "gate_id": "verdict.evidence_integrity",
+      "display_name": "Verdict and evidence integrity decision",
+      "owning_seam": "POST_VERIFY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "RECONCILE_LOSSLESS",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "verdict.evidence_integrity.manifest"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-024",
+      "gate_id": "external_assumption.assert_cap",
+      "display_name": "External-assumption assert-side cap",
+      "owning_seam": "POST_VERIFY",
+      "decision_class": "PRECISION_DISCRIMINATOR",
+      "direction": "CAP_DESTRUCTIVE",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "external_assumption.assert_cap.report_index"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-025",
+      "gate_id": "external_assumption.demotion_veto",
+      "display_name": "External-assumption demotion veto",
+      "owning_seam": "POST_VERIFY",
+      "decision_class": "RC_AGENT_MECHANIZABLE",
+      "direction": "FLOOR_RECALL_OPEN",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "external_assumption.demotion_veto.phase_validator"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-026",
+      "gate_id": "severity.independent_challenge",
+      "display_name": "Independent-severity challenge",
+      "owning_seam": "POST_VERIFY",
+      "decision_class": "PRECISION_DISCRIMINATOR",
+      "direction": "ROUTE_RECALL_OPEN",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "severity.independent_challenge.phase_validator"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-027",
+      "gate_id": "external_research.citation_gap",
+      "display_name": "External-research citation-gap flag",
+      "owning_seam": "POST_VERIFY",
+      "decision_class": "TELEMETRY_ONLY",
+      "direction": "FLAG_TELEMETRY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "external_research.citation_gap.report_index_prework"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-028",
+      "gate_id": "postverify.late_candidate_reopen",
+      "display_name": "Post-verify late-candidate reopen",
+      "owning_seam": "POST_VERIFY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "REOPEN_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "postverify.late_candidate_reopen.routing"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-029",
+      "gate_id": "report.index_retention_reconcile",
+      "display_name": "Mechanical report-index retention reconciliation",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "RECONCILE_LOSSLESS",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "report.index_retention_reconcile.mechanical"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-030",
+      "gate_id": "report.dedup_lossless_consolidation",
+      "display_name": "Lossless report deduplication",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "decision_class": "PRECISION_DISCRIMINATOR",
+      "direction": "CONSOLIDATE_LOSSLESS",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "report.dedup_lossless_consolidation.assembly"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-031",
+      "gate_id": "report.typed_disposition",
+      "display_name": "Typed report disposition",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "decision_class": "PRECISION_DISCRIMINATOR",
+      "direction": "RECONCILE_LOSSLESS",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "report.typed_disposition.report_floor"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-032",
+      "gate_id": "report.mandatory_reverification",
+      "display_name": "Mandatory report reverification",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "REOPEN_ADD_ONLY",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "report.mandatory_reverification.report_floor"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    },
+    {
+      "forensic_id": "MG-033",
+      "gate_id": "report.integrity_no_ship",
+      "display_name": "Report-integrity no-ship authority",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "decision_class": "PIPELINE_INTEGRITY",
+      "direction": "VETO_SHIP",
+      "candidate_lifecycle_state": "LEGACY_ACTIVE_UNGOVERNED",
+      "activation_ids": [
+        "report.integrity_no_ship.finalize"
+      ],
+      "component_owner": null,
+      "system_owner": null,
+      "independent_reviewer": null,
+      "admission_evidence_receipt_sha256": null,
+      "part0_status": "PASS_GENERIC_METADATA_ONLY"
+    }
+  ]
+}

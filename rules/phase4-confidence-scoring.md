@@ -1,35 +1,45 @@
 # Phase 4: Confidence Scoring & Adaptive Depth
 
-> **Usage**: Orchestrator references this file during the Adaptive Depth Loop in Phase 4b.
-> The scoring agent (haiku) uses the formulas below. The orchestrator uses the thresholds for routing.
+> **Usage**: The orchestrator may ask a lightweight helper to return a
+> transient routing proposal during the Adaptive Depth Loop. The deterministic
+> driver independently applies the formulas below and publishes the canonical
+> confidence authority after the depth wave. No model may pre-create or modify
+> that canonical authority.
 
 ---
 
-## 4-Axis Confidence Model
+## Code-Confidence Model + Separate Precedent Context
 
-Every finding is scored on 4 axes after Phase 4b iteration 1 completes:
+Every finding is scored on three code-derived axes after Phase 4b iteration 1.
+External precedent is reconciled separately under
+`precedent-evidence-policy.md`; it is never a confidence axis.
 
 | Axis | What It Measures | Scoring |
 |------|-----------------|---------|
 | **Evidence** | Quality of supporting evidence | Best evidence tag: [PROD-ONCHAIN]=1.0, [PROD-SOURCE]=0.9, [PROD-FORK]=0.9, [MEDUSA-PASS]=1.0, [CODE]=0.8, [DOC]=0.4, [MOCK]=0.2, [EXT-UNV]=0.1 |
-| **Consensus** | Domain-aware agreement | (agents that flagged same root cause) / (agents whose domain covers this location). If only 1 agent's domain covers the location → Consensus = 1.0 if that agent found it. **Specialized agent bonus**: +0.2 when finding discovered by an agent instantiated from a Required skill template (capped at 1.0). |
+| **Consensus** | Independently corroborated analysis | Read the driver-derived `consensus_map.md`, which projects `confidence_consensus_authority.json`. One current observer = 0.0; one current, separately dispatched corroborator = 0.5; two = 0.75; three or more = 1.0. Corroborators must have distinct worker, prompt, and dispatch identities and explicitly reference the same upstream finding identity. Location coincidence, copied/retry prose, stale/unbound artifacts, and skill assignment are not agreement. |
 | **Analysis Quality** | Depth of analytical work performed | **Mode A** (depth agent findings, including [DST-*]): Count Depth Evidence tags - 0 tags=0.1, 1 tag=0.4, 2 tags=0.7, 3+ tags=1.0. **Mode B** (all other findings): Legacy step execution - (steps marked ✓) / (total applicable steps). Steps marked ✗(valid reason) count as ✓. Steps marked ✗(no reason) or ? count as 0. |
-| **RAG Match** | Historical precedent strength | RAG confidence from `rag_validation.md` (written by Phase 4b.5 RAG Sweep). Score = validate_hypothesis result / 10. If RAG Sweep tool call failed for a finding: 0.3 (floor). |
+| **Precedent Context (not scored)** | Investigation priority/report context only | Read only from driver-derived `precedent_evidence_authority.json`. Generic literature, exact precedent, refuting sources, timeouts, and unavailable research all contribute `0.0` to mechanism/code confidence. |
 
 ### Composite Score Formula
 
 ```
-composite = Evidence × 0.25 + Consensus × 0.25 + Analysis_Quality × 0.3 + RAG_Match × 0.2
+composite = Evidence × 0.25 + Consensus × 0.25 + Analysis_Quality × 0.3
 ```
 
-**Rationale**: Weighted average ensures no single axis can gate the score. Analysis Quality uses dual-mode scoring: depth agents are scored on concrete evidence tags (boundary substitution, parameter variation, trace to termination) to incentivize actual analytical work; breadth agents retain step execution scoring to avoid regression.
+**Rationale**: Analysis Quality uses dual-mode scoring: depth agents are scored
+on concrete evidence tags (boundary substitution, parameter variation, trace to
+termination); breadth agents retain step-execution scoring. Consensus measures
+independent corroboration, not source quality or methodology assignment. The
+coefficient sum intentionally remains `0.8`: removing the historical `0.2` RAG
+slot must not silently normalize weak code evidence upward and stop depth.
 
 ### Severity-Weighted Spawn Priority
 
 Used by the orchestrator to allocate budget in iterations 2-3. Does NOT modify the composite score.
 
 ```
-spawn_priority = (1 - composite) * severity_weight
+spawn_priority = (1 - composite) * severity_weight + exact_precedent_priority_bonus
 ```
 
 | Severity | Weight |
@@ -40,7 +50,10 @@ spawn_priority = (1 - composite) * severity_weight
 | Low | 1 |
 | Info | 0.5 |
 
-Spawn highest-priority domains first within remaining budget. This ensures a Critical finding at 0.5 confidence (priority = 0.5 × 4 = 2.0) gets depth before a Low finding at 0.4 confidence (priority = 0.6 × 1 = 0.6).
+`exact_precedent_priority_bonus` is non-negative and exists only for a current
+typed exact-precedent row. It can move work earlier; it can never reduce, skip,
+or close work. Generic/similar/refuting/unavailable research gets zero bonus.
+Spawn highest-priority domains first within remaining budget.
 
 ---
 
@@ -48,9 +61,9 @@ Spawn highest-priority domains first within remaining budget. This ensures a Cri
 
 | Composite Score | Classification | Action |
 |----------------|---------------|--------|
-| ≥ 0.7 | **CONFIDENT** | No more depth needed for this finding |
+| ≥ 0.7 | **CONFIDENT** | No more depth needed for routing; verification and lifecycle gates remain unchanged |
 | 0.4–0.7 | **UNCERTAIN** | Spawn targeted depth agent for this finding's domain |
-| < 0.4 | **LOW CONFIDENCE** | Spawn depth agent + force production verification + RAG deep search |
+| < 0.4 | **LOW CONFIDENCE** | Spawn depth agent + force production verification; precedent research is optional investigation context |
 
 ---
 
@@ -73,8 +86,12 @@ Spawn highest-priority domains first within remaining budget. This ensures a Cri
 3. **Progress check**: If NO finding's confidence improved in an iteration → exit loop early
 3a. **Iteration 2 skip policy**: Iteration 2 may ONLY be skipped if all UNCERTAIN findings are Low/Info severity. If ANY uncertain finding is Medium or above, iteration 2 is MANDATORY. "Pragmatic" skips of iteration 2 for Medium+ findings are a workflow violation.
 4. **Zero uncertain**: If 0 findings score < 0.7 after any iteration → exit loop
-5. **Forced CONTESTED**: After all iterations, any finding still < 0.4 → forced to CONTESTED verdict
-6. **Oscillation detection**: If >50% of score changes in iteration N are reversals (a finding that went up now goes down, or vice versa) → classify as OSCILLATORY → force all uncertain to CONTESTED, exit loop
+5. **Unresolved after cap**: Any finding still below the routing threshold
+   remains a candidate and routes to mandatory verification or visible
+   human-review debt. Confidence telemetry never changes a verdict.
+6. **Oscillation detection**: If more than half of score changes reverse,
+   classify the loop as OSCILLATORY, retain every unresolved candidate,
+   record routing debt, and exit the depth loop.
 
 ---
 
@@ -115,14 +132,20 @@ Each iteration 2+ agent receives at most **5 uncertain findings** in its domain.
 
 ### Rule AD-4: Fresh Tool Calls Mandatory
 
-Iteration 2+ agents MUST make their own MCP tool calls (static analyzer, RAG) rather than relying on summaries from iteration 1. Fresh tool output prevents stale-data regression.
+Iteration 2+ agents MUST make their own code-analysis/static-analysis calls
+rather than relying on summaries from iteration 1. External precedent calls may
+suggest test ideas but are not confidence evidence.
 
 ### Rule AD-5: New-Evidence-Only Re-Scoring
 
 Re-scoring after iteration 2+ only upgrades confidence if the agent produced NEW evidence - defined as:
 - A new code reference not in the iteration 1 output
-- A new MCP tool output (static analyzer function source, RAG match)
+- A new code-analysis/static-analysis tool output
 - A new production verification result
+
+External precedent, literature, match counts, and RAG scores never qualify as
+new mechanism-confidence evidence. An exact typed precedent can only raise the
+investigation-priority signal described above.
 
 Merely restating the same analysis with different words = zero confidence change.
 
@@ -154,69 +177,39 @@ Each finding card sent to iteration 2+ agents contains ONLY:
 
 1. **Monotonic confidence**: Confidence can only increase or stay flat between iterations. Evidence from prior iterations is preserved.
 2. **New evidence required**: Score increase requires at least one NEW evidence tag not present in the previous iteration's scoring input.
-3. **No self-referential scoring**: The scoring agent scores based on evidence artifacts in the scratchpad files, not on the depth agent's self-reported confidence.
-4. **Scoring agent model**: Always sonnet (formula application with per-finding differentiation — haiku produces binary-bucket stubs on large audits).
+3. **No self-referential scoring**: A transient routing proposal and the
+   driver derivation both score evidence artifacts, never a depth worker's
+   self-reported confidence.
+4. **Transient helper model**: When the coordinator needs a mid-session
+   routing proposal, use sonnet-class. The helper returns a compact table to
+   the coordinator and has no scratchpad write authority. If it fails, route
+   every unresolved Medium+ candidate as UNCERTAIN rather than skipping depth.
 
 ---
 
-## Phase 4b.5: Mandatory RAG Validation Sweep
+## Phase 4b.5: Mandatory External Precedent Research
 
-> **Trigger**: Always, after depth loop exits (Phase 4b DONE) and before confidence scoring.
-> **Purpose**: Ensures every finding gets RAG validation as a PIPELINE STAGE, not an optional agent tool call.
-> **Model**: sonnet (haiku rejects unified-vuln-db MCP tool schemas containing oneOf/allOf - see v1.0.1 fix)
-> **Budget**: 1 agent (not counted against depth budget)
+> **Trigger**: Always, after the depth loop exits.
+> **Purpose**: Build bounded investigation/report context. It does not re-score
+> findings or alter how much depth they receive.
+> **Model**: sonnet.
+> **Budget**: 1 agent (not counted against depth budget).
 
-### Pre-check: RAG_TOOLS_AVAILABLE flag
+The worker follows `prompts/shared/v2/phase4b5-rag-sweep.md` and the shared
+`precedent-evidence-policy.md`. It writes one row per finding plus one bounded
+typed proposal block in `rag_validation.md`. Generic methodology literature
+supplies context only. Exactness requires a primary precedent with the same
+mechanism class and matching preconditions. Family propagation requires typed
+equivalence.
 
-Before spawning, the orchestrator reads `{SCRATCHPAD}/build_status.md` for `RAG_TOOLS_AVAILABLE`. This flag is set by the recon agent's unified-vuln-db probe (Phase 1).
+If the research worker fails, do not retry a failing provider. Write complete
+`UNAVAILABLE` proposal rows, reconcile them to visible debt, and continue.
+There is no numeric floor and confidence scores remain unchanged.
 
-- If `RAG_TOOLS_AVAILABLE = true` → spawn RAG sweep agent normally
-- If `RAG_TOOLS_AVAILABLE = false` → spawn RAG sweep agent with **web search fallback mode** (see fallback chain below)
-- If flag is missing (recon probe was skipped) → assume `true`, let the agent handle failures via its fallback chain
-
-### Orchestrator spawns:
-
-```
-Task(subagent_type="general-purpose", model="sonnet", prompt="
-You are the RAG Validation Sweep Agent.
-
-## Your Task
-For EVERY finding in {SCRATCHPAD}/findings_inventory.md:
-1. Call validate_hypothesis(hypothesis='{finding title}: {1-line root cause}')
-2. Call search_solodit_live(keywords='{vulnerability class}', max_results=10)
-3. Record the result
-
-If a tool call fails, record [RAG: TOOL_ERROR] for that finding - do NOT silently skip.
-
-## Fallback Chain (if MCP tools fail)
-If validate_hypothesis or search_solodit_live fails (API error, schema error, timeout):
-1. Try get_similar_findings(pattern='{finding description}')
-2. If that also fails: try get_common_vulnerabilities(category='{vulnerability class}')
-3. If ALL MCP tools fail: use WebSearch fallback - search 'site:solodit.xyz {vulnerability class} {key term}' for each finding and extract match count + relevance
-4. If WebSearch also fails: record [RAG: ALL_TOOLS_FAILED] and score = 0.3
-
-**IMPORTANT**: If the FIRST MCP call fails with a schema/API error, assume ALL MCP calls will fail. Switch immediately to WebSearch fallback for remaining findings instead of retrying each one. This prevents N×timeout delays.
-
-**IMPORTANT**: If MCP tools SUCCEED but return 0 supporting examples AND 0 solodit matches for the first 3 findings, treat this as 'empty database' and run WebSearch as a COMPLEMENT for all remaining findings (search '{vulnerability class} {protocol type} audit' and 'site:solodit.xyz {key term}'). MCP success with empty results is functionally equivalent to MCP failure for novel protocols.
-
-## Output
-Write to {SCRATCHPAD}/rag_validation.md:
-| Finding ID | validate_hypothesis Score | solodit_live Matches | Final RAG Score | Notes |
-
-Return: 'DONE: {N} findings validated, {E} tool errors, fallback={MCP|WEB|NONE}'
-")
-```
-
-### Retry on agent failure (orchestrator inline)
-
-If the RAG sweep agent itself fails (API error, crash, 0 output):
-1. **Do NOT retry with the same model** - the failure is likely schema-level, not transient
-2. Log: `"RAG sweep failed: {error}. Writing floor scores."`
-3. Write `{SCRATCHPAD}/rag_validation.md` with 0.3 floor for all findings
-4. Continue to confidence scoring - the floor score preserves pipeline progress
-```
-
-The scoring agent reads `rag_validation.md` for Axis 4 instead of checking individual agent outputs.
+The deterministic driver extracts the proposal block and reconciles it against
+typed finding mechanism/precondition facts into
+`precedent_evidence_authority.json`; `precedent_context.md` is its investigation projection
+and `precedent_report_context.md` contains only receipt-bound report-eligible rows.
 
 ---
 
@@ -224,12 +217,16 @@ The scoring agent reads `rag_validation.md` for Axis 4 instead of checking indiv
 
 | File | Written By | Contents |
 |------|-----------|----------|
-| `consensus_map.md` | Orchestrator (before scoring) | Pre-computed Axis 2 consensus scores for all findings |
-| `confidence_scores.md` | Scoring agent batches (after each iteration) | Per-finding 4-axis scores + composite + classification |
+| `confidence_consensus_authority.json` | Deterministic driver (before scoring) | Hash-bound observations, explicit upstream semantic anchors, dispatch provenance, independence disposition, and Axis 2 scores |
+| `consensus_map.md` | Deterministic driver (before scoring) | Exact Markdown projection of the typed consensus authority; never an independent source of authority |
+| `confidence_scores.md` | Deterministic driver confidence transaction | Canonical per-finding code-derived scores + composite + classification; no precedent contribution |
 | `confidence_distribution.md` | Orchestrator (after scoring) | CONFIDENT/UNCERTAIN/LOW counts + exit condition check |
 | `adaptive_loop_log.md` | Orchestrator (after loop exits) | Iteration count, spawns used, exit condition triggered, per-iteration summary |
 | `verification_error_traces.md` | Orchestrator (after Phase 5) | Error traces from failed PoCs, formatted as investigation questions for post-verification depth |
-| `rag_validation.md` | RAG Validation Sweep Agent (Phase 4b.5) | Per-finding RAG scores from validate_hypothesis + search_solodit_live |
+| `rag_validation.md` | External precedent research worker | Human table plus typed proposal block; no decision authority |
+| `precedent_evidence_authority.json` | Deterministic driver | Exact/context/unavailable reconciliation, typed caps, input digests, and debt |
+| `precedent_context.md` | Deterministic driver | Read-only investigation-priority projection; not a report citation source |
+| `precedent_report_context.md` | Deterministic driver | Receipt-bound, report-eligible context only |
 | `design_stress_findings.md` | Design Stress Testing Agent | Design limit, adequacy, and constraint coherence findings |
 | `composition_coverage.md` | Chain Analysis Agent | Finding-pair composition coverage map (explored/unexplored) |
 | `violations.md` | Orchestrator (on skip) | Thorough mode workflow violations - skipped mandatory steps (Rule 12) |

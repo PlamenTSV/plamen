@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_runtime_diagnostic.v2.schema.json",
+  "title": "Program Facts runtime diagnostic v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "code",
+    "run_id",
+    "run_generation",
+    "phase",
+    "work_unit",
+    "scope_kind",
+    "scope_ids",
+    "evidence_digests",
+    "diagnostic_digest",
+    "retryable",
+    "reuse_blocking",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_runtime_diagnostic.v2"
+    },
+    "code": {
+      "$ref": "#/$defs/reasonCode"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "phase": {
+      "enum": [
+        "RECON",
+        "BREADTH",
+        "INVENTORY",
+        "RESCAN",
+        "PER_CONTRACT",
+        "SEMANTIC_INVARIANTS",
+        "DEPTH",
+        "CHAIN",
+        "VERIFY",
+        "REPORT"
+      ]
+    },
+    "work_unit": {
+      "$ref": "#/$defs/identifier"
+    },
+    "scope_kind": {
+      "enum": [
+        "RUN",
+        "BUILD_VARIANT",
+        "CAPABILITY",
+        "SOURCE_FILE",
+        "WORK_UNIT",
+        "GENERATION"
+      ]
+    },
+    "scope_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "evidence_digests": {
+      "$ref": "#/$defs/digestSet"
+    },
+    "diagnostic_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "reuse_blocking": {
+      "type": "boolean"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "reasonCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    },
+    "digestSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sha256"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    }
+  }
+}

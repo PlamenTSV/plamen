@@ -7,11 +7,12 @@ inventory->verify path. Generic: names no protocol; symbols resolve at the locus
 Covers: one-candidate-per-block for all six shapes, correct Falsify Class, chain
 metadata present, `Source IDs: INVARIANT` stamping, budget isolation from the
 co-ref pool, idempotency (receipt honored), degrade (missing graph /
-un-executable), and the soft validator (`.ci_gap` sentinel, passed stays True).
+un-executable), and fail-closed commitment-debt validation (`.ci_gap` sentinel).
 """
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -236,7 +237,7 @@ def test_degrade_empty_stub_block_skipped(tmp_path: Path):
 
 # ── soft validator: NO-GAP clears without [CI-n] → warning + .ci_gap, passed True ──
 
-def test_soft_validator_ci_gap_sentinel(tmp_path: Path):
+def test_validator_ci_gap_is_explicit_debt_and_writes_sentinel(tmp_path: Path):
     V = _V()
     _root, sp = _proj(tmp_path)
     # skeptic artifact with a NO-GAP clear but NO committed-invariant block
@@ -248,8 +249,10 @@ def test_soft_validator_ci_gap_sentinel(tmp_path: Path):
         encoding="utf-8",
     )
     issues = V._validate_invariant_commitment(sp, "thorough")
-    # SOFT: never a hard issue, never passed=False.
-    assert issues == []
+    assert issues == [
+        "committed-invariant coverage gap: "
+        "1 value-bearing clear(s), 0 harvestable CI blocks"
+    ]
     assert (sp / "invariant_commitment.ci_gap").exists()
 
 
@@ -363,6 +366,62 @@ def test_verify_ci_block_harvested(tmp_path: Path):
     out = eg.compute_invariant_assertion_candidates(sp)
     assert len(out) == 1
     assert out[0]["source_tag"] == "INVARIANT:CI-2"
+
+
+def test_late_verify_ci_is_never_current_run_verified(tmp_path: Path):
+    """A verifier-emitted CI is only a next-run/human-review candidate."""
+    eg = _eg()
+    _root, sp = _proj(tmp_path)
+    _write_verify(sp, _ci_block(2, "FRESHNESS", "property"))
+    assert eg.recover_invariant_assertion_candidates(sp) == 1
+    inventory = (sp / "findings_inventory.md").read_text(encoding="utf-8")
+    assert "**Source IDs**: INVARIANT:CI-2" in inventory
+    assert "**Verdict**: NEEDS_VERIFICATION" in inventory
+    assert "**Verdict**: VERIFIED" not in inventory
+
+
+def test_validator_persists_and_replays_late_verify_ci_authority(
+    tmp_path: Path,
+) -> None:
+    V = _V()
+    _root, sp = _proj(tmp_path)
+    _write_verify(sp, _ci_block(3, "FRESHNESS", "property"))
+    assert V._validate_invariant_commitment(sp, "thorough") == []
+    payload = json.loads(
+        (sp / "_late_committed_invariant_authority.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["authority"] == "HUMAN_REVIEW_NEXT_RUN"
+    assert payload["status"] == "NEEDS_VERIFICATION"
+    assert len(payload["records"]) == 1
+    assert V._validate_invariant_commitment(
+        sp, "thorough", recover=False
+    ) == []
+
+
+def test_validator_surfaces_typed_late_ci_recovery_failure(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    V = _V()
+    eg = _eg()
+    late = importlib.import_module("late_committed_invariant_authority")
+    _root, sp = _proj(tmp_path)
+    _write_verify(sp, _ci_block(4, "FRESHNESS", "property"))
+
+    def fail(_scratchpad: Path) -> int:
+        raise late.LateCommittedInvariantError(
+            stage="EMISSION",
+            code="INJECTED_FAILURE",
+            detail="candidate bytes unavailable",
+        )
+
+    monkeypatch.setattr(eg, "recover_invariant_assertion_candidates", fail)
+    issues = V._validate_invariant_commitment(sp, "thorough")
+    assert issues == [
+        "late committed-invariant EMISSION/INJECTED_FAILURE: "
+        "candidate bytes unavailable"
+    ]
 
 
 def test_depth_and_verify_both_scanned(tmp_path: Path):

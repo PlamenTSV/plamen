@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_provider_environment.v1.schema.json",
+  "title": "Program Facts EVM provider environment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "environment_digest",
+    "sandbox_receipt_digest",
+    "platform"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_provider_environment.v1"
+    },
+    "environment_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "sandbox_receipt_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "platform": {
+      "enum": [
+        "LINUX",
+        "WINDOWS",
+        "OTHER_UNAVAILABLE"
+      ]
+    },
+    "linux_boundary": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/linuxBoundary"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "windows_boundary": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/windowsBoundary"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "const": "LINUX"
+          }
+        },
+        "required": [
+          "platform"
+        ]
+      },
+      "then": {
+        "required": [
+          "linux_boundary"
+        ],
+        "properties": {
+          "linux_boundary": {
+            "$ref": "#/$defs/linuxBoundary"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "linux_boundary": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "const": "WINDOWS"
+          }
+        },
+        "required": [
+          "platform"
+        ]
+      },
+      "then": {
+        "required": [
+          "windows_boundary"
+        ],
+        "properties": {
+          "windows_boundary": {
+            "$ref": "#/$defs/windowsBoundary"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "windows_boundary": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "providedCapability": {
+      "enum": [
+        "PINNED_HELPER_RUNTIME_TOOL_EXECUTION_IDENTITY",
+        "IMMUTABLE_ENUMERATED_FILESYSTEM_READ_ROOTS",
+        "BOUNDED_ENUMERATED_WRITABLE_ROOTS",
+        "SECRET_FREE_CLOSED_CHILD_ENVIRONMENT",
+        "CLOSED_INHERITED_FILE_DESCRIPTOR_SET",
+        "NO_NETWORK_NAMESPACE_ACCESS",
+        "CGROUP_PROCESS_TREE_AND_RESOURCE_OWNERSHIP",
+        "TERMINAL_CGROUP_POPULATION_ZERO_EVIDENCE"
+      ]
+    },
+    "limitation": {
+      "enum": [
+        "SAME_UID_HOST_CONFIDENTIALITY_NOT_PROVIDED",
+        "GENERAL_HOSTILE_HOST_ISOLATION_NOT_PROVIDED"
+      ]
+    },
+    "windowsProvidedCapability": {
+      "enum": [
+        "PINNED_HELPER_RUNTIME_TOOL_EXECUTION_IDENTITY",
+        "IMMUTABLE_READONLY_VHDX_READ_ROOT",
+        "BOUNDED_WRITABLE_VHDX_ROOT",
+        "SECRET_FREE_CLOSED_CHILD_ENVIRONMENT",
+        "EXPLICIT_INHERITED_HANDLE_ALLOWLIST",
+        "NO_NETWORK_ADAPTER",
+        "NON_BREAKAWAY_GUEST_JOB_PROCESS_TREE_OWNERSHIP",
+        "HCS_COMPUTE_SYSTEM_PROCESS_TREE_OWNERSHIP",
+        "JOB_HCS_RESOURCE_ENFORCEMENT_AND_READBACK",
+        "FIXED_VHDX_BYTE_AND_FILE_RECORD_BOUND",
+        "TERMINAL_DESCENDANT_ZERO_EVIDENCE",
+        "FLUSH_DETACH_CLEANUP_EVIDENCE"
+      ]
+    },
+    "linuxBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boundary_profile",
+        "provided_capabilities",
+        "limitations",
+        "same_uid_host_confidentiality_claim"
+      ],
+      "properties": {
+        "boundary_profile": {
+          "const": "LINUX_PROVIDER_BOUNDARY_V1"
+        },
+        "provided_capabilities": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "PINNED_HELPER_RUNTIME_TOOL_EXECUTION_IDENTITY"
+            },
+            {
+              "const": "IMMUTABLE_ENUMERATED_FILESYSTEM_READ_ROOTS"
+            },
+            {
+              "const": "BOUNDED_ENUMERATED_WRITABLE_ROOTS"
+            },
+            {
+              "const": "SECRET_FREE_CLOSED_CHILD_ENVIRONMENT"
+            },
+            {
+              "const": "CLOSED_INHERITED_FILE_DESCRIPTOR_SET"
+            },
+            {
+              "const": "NO_NETWORK_NAMESPACE_ACCESS"
+            },
+            {
+              "const": "CGROUP_PROCESS_TREE_AND_RESOURCE_OWNERSHIP"
+            },
+            {
+              "const": "TERMINAL_CGROUP_POPULATION_ZERO_EVIDENCE"
+            }
+          ],
+          "items": false,
+          "minItems": 8,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "limitations": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "SAME_UID_HOST_CONFIDENTIALITY_NOT_PROVIDED"
+            },
+            {
+              "const": "GENERAL_HOSTILE_HOST_ISOLATION_NOT_PROVIDED"
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "same_uid_host_confidentiality_claim": {
+          "const": false
+        }
+      }
+    },
+    "windowsBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boundary_profile",
+        "provided_capabilities"
+      ],
+      "properties": {
+        "boundary_profile": {
+          "const": "WINDOWS_HYPERV_HCS_PROVIDER_BOUNDARY_V1"
+        },
+        "provided_capabilities": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "PINNED_HELPER_RUNTIME_TOOL_EXECUTION_IDENTITY"
+            },
+            {
+              "const": "IMMUTABLE_READONLY_VHDX_READ_ROOT"
+            },
+            {
+              "const": "BOUNDED_WRITABLE_VHDX_ROOT"
+            },
+            {
+              "const": "SECRET_FREE_CLOSED_CHILD_ENVIRONMENT"
+            },
+            {
+              "const": "EXPLICIT_INHERITED_HANDLE_ALLOWLIST"
+            },
+            {
+              "const": "NO_NETWORK_ADAPTER"
+            },
+            {
+              "const": "NON_BREAKAWAY_GUEST_JOB_PROCESS_TREE_OWNERSHIP"
+            },
+            {
+              "const": "HCS_COMPUTE_SYSTEM_PROCESS_TREE_OWNERSHIP"
+            },
+            {
+              "const": "JOB_HCS_RESOURCE_ENFORCEMENT_AND_READBACK"
+            },
+            {
+              "const": "FIXED_VHDX_BYTE_AND_FILE_RECORD_BOUND"
+            },
+            {
+              "const": "TERMINAL_DESCENDANT_ZERO_EVIDENCE"
+            },
+            {
+              "const": "FLUSH_DETACH_CLEANUP_EVIDENCE"
+            }
+          ],
+          "items": false,
+          "minItems": 12,
+          "maxItems": 12,
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

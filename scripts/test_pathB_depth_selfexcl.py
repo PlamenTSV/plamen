@@ -11,7 +11,8 @@ Fix (depth analogue of the Phase 3c per-contract net):
 - GATE: _validate_depth_self_exclusion flags absorbed candidates that (a) cite no
   concrete in-scope referent OR (b) rest on an unverified external assumption.
 - DRIVER: _reemit_depth_self_exclusions mints `### Finding [DXRE-k]` blocks
-  tagged [RE-EMITTED: depth self-exclusion without in-scope referent].
+  only for content-bearing rows; content-less rows become source-bound
+  `Review Disposition [DXRE-k]` methodology debt.
 
 Counterplan narrowing: legitimately-refuted candidates that cite a concrete
 in-scope refutation (a real file:Lnnn, no external assumption) are NOT
@@ -75,13 +76,15 @@ def test_drop_reproduction_external_assumption_no_referent_flagged_and_reemitted
     assert recovered, "the suppressed candidate must be recovered for re-emit"
     assert recovered[0]["external_assumption"] is True
 
-    # Driver side effect writes the re-emit artifact with DXRE heading form.
+    # This source row has no concrete location, so it is retained as review
+    # debt rather than fabricated into a vulnerability finding.
     out = D._reemit_depth_self_exclusions(tmp_path, recovered)
     assert out is not None and out.exists()
     assert out.name == "depth_selfexcl_reemit_findings.md"
     body = out.read_text(encoding="utf-8")
-    assert "### Finding [DXRE-1]:" in body, "must use ### Finding [DXRE-k] heading"
-    assert "[RE-EMITTED: depth self-exclusion without in-scope referent]" in body
+    assert "### Review Disposition [DXRE-1]:" in body
+    assert "CONTENT_LESS_HUMAN_REVIEW" in body
+    assert "### Finding [DXRE-1]:" not in body
     assert "<!-- PLAMEN_STATUS: COMPLETE -->" in body
 
 
@@ -144,8 +147,9 @@ def test_idempotency_reemitted_line_not_reflagged(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# CONTENT ROUTING: content-less -> Informational/appendix; content-bearing ->
-# own severity at LOW confidence (dedup/resolve). Both KEPT, neither dropped.
+# CONTENT ROUTING: content-less -> methodology/human-review debt;
+# content-bearing -> own severity at LOW confidence (dedup/resolve). Both KEPT,
+# neither dropped, and content-less rows never become vulnerability findings.
 # --------------------------------------------------------------------------
 
 def test_contentless_reemit_routes_to_appendix_not_body(tmp_path):
@@ -165,9 +169,10 @@ def test_contentless_reemit_routes_to_appendix_not_body(tmp_path):
 
     out = D._reemit_depth_self_exclusions(tmp_path, recovered)
     body = out.read_text(encoding="utf-8")
-    assert "**Severity**: Informational" in body
-    assert "**Severity**: Medium" not in body
-    assert "CONTENT-LESS" in body and "APPENDIX_ONLY" in body
+    assert "**Severity**:" not in body
+    assert "CONTENT_LESS_HUMAN_REVIEW" in body
+    assert "### Review Disposition [DXRE-1]:" in body
+    assert "### Finding [DXRE-1]:" not in body
     assert "[DXRE-1]" in body  # kept, not dropped
 
 

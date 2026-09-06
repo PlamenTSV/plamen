@@ -384,7 +384,10 @@ def test_MX_axis_coverage_registered_thorough_soft_ordered():
     # Correct expected artifact
     check(
         "MX.axis_coverage expected artifact",
-        ax.expected_artifacts == ["axis_coverage_findings.md"],
+        ax.expected_artifacts == [
+            "axis_coverage_findings.md",
+            "axis_coverage_dispositions.json",
+        ],
         f"expected_artifacts={ax.expected_artifacts}",
     )
     # Ordering: after 4b.6 + 4b.7, before 4e + chain

@@ -26,16 +26,21 @@ from plamen_types import Phase
 
 _HEADER = "## EXPECTED OUTPUT FILES (HARD CONTRACT -- GATE WILL FAIL IF VIOLATED)"
 _SECONDARIES = ["blind_spot_a_findings.md", "blind_spot_b_findings.md",
-                "blind_spot_c_findings.md", "validation_sweep_findings.md",
-                "confidence_scores.md"]
+                "blind_spot_c_findings.md", "validation_sweep_findings.md"]
+_DRIVER_ONLY = {
+    "confidence_scores.md",
+    "confidence_consensus_authority.json",
+    "consensus_map.md",
+}
 
 
 # ---------- name-list helper (single source of truth) ----------
 
-def test_secondary_names_sc_core_includes_scanners_validation_confidence():
+def test_secondary_names_sc_core_include_only_model_owned_outputs():
     names = D._codex_mandatory_secondary_names("depth", "sc", "core", None)
     for n in _SECONDARIES:
         assert n in names, f"{n} missing from sc-core secondary names"
+    assert _DRIVER_ONLY.isdisjoint(names)
 
 
 def test_secondary_names_recon_and_non_depth():
@@ -67,6 +72,7 @@ def test_widen_injects_secondaries_after_header():
     # secondaries now appear, and within the contract section (before the allowlist)
     for n in _SECONDARIES:
         assert f"`{n}`" in out
+    assert not any(f"`{name}`" in out for name in _DRIVER_ONLY)
     contract_idx = out.index(_HEADER)
     allowlist_idx = out.index("## OUTPUT ALLOWLIST (HARD)")
     for n in _SECONDARIES:

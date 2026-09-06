@@ -107,7 +107,7 @@
 ├── mcp-packages/                      # Pinned npm MCP server packages
 ├── mcp.json.example                   # MCP server config template
 ├── settings.json.example              # Permissions config template
-├── requirements.txt                   # Python deps (Rich, InquirerPy)
+├── requirements.txt                   # Runtime deps (UI, PTY, typed schemas, Markdown/JSON validation)
 ├── requirements-dev.txt               # Test-only pinned deps (pytest, pytest-xdist) — layered on requirements.txt, not read by the installer/runtime
 ├── pyproject.toml                     # [tool.pytest.ini_options]: unit/integration/slow markers, auto-applied by filename
 ├── .github/

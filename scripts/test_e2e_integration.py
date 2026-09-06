@@ -8,6 +8,7 @@ Run: `python test_e2e_integration.py`
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tempfile
@@ -17,6 +18,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import plamen_driver as D  # noqa: E402
+import plamen_validators as V  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -47,8 +49,8 @@ def _mkscratch(files: dict[str, str]) -> Path:
 
 def test_E2E_L1_full_fixture_through_all_gates():
     """L1 fixture: chunks -> inventory -> queue -> verify -> partial crossbatch
-    -> partial skeptic. Each gate must HALT/FLAG at the correct point until
-    each layer is complete, then produce a rich report."""
+    -> semantic-trigger skeptic. Each gate must HALT/FLAG at the correct point
+    until each layer is complete, then produce a rich report."""
     chunks = {}
     for ci, prefix in enumerate("ab"):
         body = []
@@ -107,6 +109,53 @@ def test_E2E_L1_full_fixture_through_all_gates():
             encoding="utf-8",
         )
 
+    # P0-V/R35A: skeptic scope is semantic, not a severity-only C/H subset.
+    # Pin the fixture's complete denominator and trigger authority so deriving
+    # the positive body below cannot conceal a future regression.
+    expected_rows = D._skeptic_expected_findings(sp)
+    expected_ids = [row["finding_id"] for row in expected_rows]
+    expected_triggers = {
+        "INV-001": {"HIGH_RISK_ADVERSARIAL_REVIEW", "UNRESOLVED_EXTERNAL_PREMISE", "EVIDENCE_INTEGRITY_REVIEW"},
+        "INV-002": {"HIGH_RISK_ADVERSARIAL_REVIEW", "UNRESOLVED_EXTERNAL_PREMISE", "EVIDENCE_INTEGRITY_REVIEW"},
+        "INV-003": {"HIGH_RISK_ADVERSARIAL_REVIEW", "UNRESOLVED_EXTERNAL_PREMISE", "EVIDENCE_INTEGRITY_REVIEW"},
+        "INV-004": {
+            "HIGH_RISK_ADVERSARIAL_REVIEW",
+            "PROPOSED_NONBODY_DISPOSITION",
+            "DEPTH_VERIFIER_DISAGREEMENT",
+            "UNRESOLVED_EXTERNAL_PREMISE",
+            "EVIDENCE_INTEGRITY_REVIEW",
+        },
+        "INV-005": {"UNRESOLVED_EXTERNAL_PREMISE", "EVIDENCE_INTEGRITY_REVIEW"},
+        "INV-006": {"UNRESOLVED_EXTERNAL_PREMISE", "EVIDENCE_INTEGRITY_REVIEW"},
+        "INV-007": {"HIGH_RISK_ADVERSARIAL_REVIEW", "UNRESOLVED_EXTERNAL_PREMISE", "EVIDENCE_INTEGRITY_REVIEW"},
+    }
+    assert expected_ids == [f"INV-{i:03d}" for i in range(1, 8)]
+    assert len(expected_ids) == len(set(expected_ids)) == 7
+    assert {
+        row["finding_id"]: set(row["challenge_triggers"])
+        for row in expected_rows
+    } == expected_triggers
+    for row in expected_rows:
+        if row["finding_id"] in {"INV-005", "INV-006"}:
+            assert "COMPUTE_RECEIPT_MISSING" in row["mechanical_authority_issue"]
+
+    # Scope derivation and manifest projection are observational and replay
+    # stable across queue, inventory, and verifier authority inputs.
+    authority_paths = sorted(
+        {
+            sp / "findings_inventory.md",
+            sp / "verification_queue.md",
+            *sp.glob("verify_*.md"),
+            *sp.glob("external_assumption_*"),
+        },
+        key=lambda path: path.as_posix(),
+    )
+    authority_before = {path: path.read_bytes() for path in authority_paths}
+    assert D._skeptic_expected_findings(sp) == expected_rows
+    assert V._skeptic_manifest_ids(sp) == expected_ids
+    assert V._skeptic_manifest_ids(sp) == expected_ids
+    assert {path: path.read_bytes() for path in authority_paths} == authority_before
+
     # Stage 5: PARTIAL crossbatch (only 2 of 7 verify files reviewed)
     (sp / "cross_batch_consistency.md").write_text(
         "# Cross-Batch\nFiles checked: 2\nVerifiers Checked: 2\n"
@@ -120,31 +169,117 @@ def test_E2E_L1_full_fixture_through_all_gates():
         f"cb_issues={cb_issues}",
     )
 
-    # Stage 6: PARTIAL skeptic (only first Critical reviewed)
+    # Stage 6: PARTIAL skeptic (only first semantic-trigger row reviewed)
     crit_high_ids = [r["finding id"] for r in queue_rows
                      if r["severity"].lower() in ("critical", "high")]
+    assert crit_high_ids == ["INV-001", "INV-002", "INV-003", "INV-004", "INV-007"]
+    assert set(expected_ids) - set(crit_high_ids) == {"INV-005", "INV-006"}
     (sp / "skeptic_findings.md").write_text(
-        f"# Skeptic\n\n## {crit_high_ids[0]}\n**Verdict**: AGREE\n",
+        f"# Skeptic\n\n## {expected_ids[0]}\n**Verdict**: AGREE\n",
         encoding="utf-8",
     )
     sk_issues = D._validate_skeptic_scope(sp)
     check(
-        f"E2E.L1: partial skeptic (1/{len(crit_high_ids)} C+H) is flagged",
-        bool(sk_issues),
+        f"E2E.L1: partial skeptic (1/{len(expected_ids)} semantic) is flagged",
+        bool(sk_issues) and "reviewed 1/7" in sk_issues[0],
         f"sk_issues={sk_issues}",
     )
 
-    # Stage 7: complete skeptic — gate clears
+    # A five-ID Critical/High body is explicitly incomplete: provisional
+    # severity cannot erase the two Medium rows carrying R10 authority debt.
     sk_body = "# Skeptic\n\n" + "\n\n".join(
         f"## {fid}\n**Verdict**: AGREE" for fid in crit_high_ids
     ) + "\n"
     (sp / "skeptic_findings.md").write_text(sk_body, encoding="utf-8")
+    ch_only_issues = D._validate_skeptic_scope(sp)
+    check(
+        "E2E.L1: C/H-only skeptic cannot shrink semantic scope",
+        bool(ch_only_issues)
+        and "reviewed 5/7" in ch_only_issues[0]
+        and "INV-005" in ch_only_issues[0]
+        and "INV-006" in ch_only_issues[0],
+        f"ch_only_issues={ch_only_issues}",
+    )
+
+    # A stale, well-formed five-row prompt manifest never overrides current
+    # verifier semantics; the current seven-row denominator remains primary.
+    (sp / "skeptic_manifest.json").write_text(
+        json.dumps({
+            "phase": "skeptic",
+            "required_count": len(crit_high_ids),
+            "findings": [{"finding_id": fid} for fid in crit_high_ids],
+        }, sort_keys=True),
+        encoding="utf-8",
+    )
+    assert V._skeptic_manifest_ids(sp) == expected_ids
+    assert D._validate_skeptic_scope(sp) == ch_only_issues
+
+    # Stage 7: complete semantic-trigger skeptic — gate clears.
+    complete_body = "# Skeptic\n\n" + "\n\n".join(
+        f"## {fid}\n**Verdict**: AGREE" for fid in expected_ids
+    ) + "\n"
+    (sp / "skeptic_findings.md").write_text(complete_body, encoding="utf-8")
     sk_issues_after = D._validate_skeptic_scope(sp)
     check(
-        "E2E.L1: full skeptic clears scope gate",
+        "E2E.L1: full semantic-trigger skeptic clears scope gate",
         not sk_issues_after,
         f"sk_issues_after={sk_issues_after}",
     )
+
+    # Coverage tamper is exact and replayable for both semantic-only IDs.
+    for fid in ("INV-005", "INV-006"):
+        tampered = complete_body.replace(f"## {fid}\n", f"## X-{fid[-3:]}\n", 1)
+        (sp / "skeptic_findings.md").write_text(tampered, encoding="utf-8")
+        tamper_issues = D._validate_skeptic_scope(sp)
+        assert tamper_issues and "reviewed 6/7" in tamper_issues[0]
+        assert f"missing {fid}" in tamper_issues[0]
+        (sp / "skeptic_findings.md").write_text(complete_body, encoding="utf-8")
+        assert D._validate_skeptic_scope(sp) == []
+
+    # Invalid/tampered denominator authority is fail-closed: changing a
+    # verifier's provisional verdict/severity or adding malformed R10 compute
+    # evidence may retain/expand independent review, but cannot shrink it.
+    inv006 = sp / "verify_INV-006.md"
+    inv006_before = inv006.read_bytes()
+    inv006.write_bytes(
+        inv006_before.replace(b"CONFIRMED", b"FALSE_POSITIVE", 1).replace(
+            b"**Severity**: Medium", b"**Severity**: Low", 1
+        )
+    )
+    verifier_tampered_ids = [
+        row["finding_id"] for row in D._skeptic_expected_findings(sp)
+    ]
+    assert set(verifier_tampered_ids) >= set(expected_ids)
+    assert V._skeptic_manifest_ids(sp) == verifier_tampered_ids
+    inv006.write_bytes(inv006_before)
+    assert D._skeptic_expected_findings(sp) == expected_rows
+
+    invalid_r10 = sp / "external_assumption_undemotion_compute.json"
+    invalid_r10.write_bytes(b'{"schema_version":"tampered"}')
+    invalid_r10_ids = [row["finding_id"] for row in D._skeptic_expected_findings(sp)]
+    assert set(invalid_r10_ids) >= set(expected_ids)
+    invalid_r10.unlink()
+    assert D._skeptic_expected_findings(sp) == expected_rows
+
+    # Legitimate report-ID aliases cover the same semantic identities.
+    assignments, _assignment_source = V.get_tier_assignments(sp)
+    aliases = {
+        row["finding_id"]: row["report_id"]
+        for row in assignments
+        if row.get("finding_id") in set(expected_ids)
+    }
+    assert set(aliases) == set(expected_ids)
+    alias_body = "# Skeptic\n\n" + "\n\n".join(
+        f"## {aliases[fid]}\n**Verdict**: AGREE" for fid in expected_ids
+    ) + "\n"
+    (sp / "skeptic_findings.md").write_text(alias_body, encoding="utf-8")
+    assert D._validate_skeptic_scope(sp) == []
+    assert D._validate_skeptic_scope(sp) == []
+
+    # Skeptic coverage is proposal-only. It does not rewrite verifier,
+    # inventory, queue, R10 debt, or report-disposition authority.
+    assert {path: path.read_bytes() for path in authority_paths} == authority_before
+    assert not invalid_r10.exists()
 
     # Stage 8: build report index + tier files; assert rich content
     n_active = D._write_mechanical_report_index(sp)
@@ -450,8 +585,8 @@ def test_DPROM_consolidated_and_false_positive_not_promoted():
 # 7. Inventory merge near-duplicates
 # =============================================================================
 
-def test_MERGE_exact_duplicates_collapse():
-    """MERGE: identical title + identical location -> 1 entry, both source IDs."""
+def test_MERGE_exact_mechanism_disjoint_provenance_stays_distinct():
+    """MECH similarity alone is tag-only before independent verification."""
     entries = [
         {"title": "missing zero check", "severity": "High", "location": "src/x.sol:L10",
          "source_ids": ["A1"], "root_cause": "no validation"},
@@ -460,9 +595,8 @@ def test_MERGE_exact_duplicates_collapse():
     ]
     merged = D._merge_inventory_entries(entries)
     check(
-        "MERGE.exact-duplicates: 2 inputs -> 1 entry, both Source IDs",
-        len(merged) == 1
-        and "A1" in merged[0]["source_ids"] and "A2" in merged[0]["source_ids"],
+        "MERGE.exact-mechanism: disjoint sources remain distinct",
+        len(merged) == 2,
         f"merged={merged}",
     )
 
@@ -503,7 +637,8 @@ def test_MERGE_same_title_different_location_kept():
 
 def test_SC_regression_slither_fuzz_niche_through_pipeline():
     """SC: SLITHER-*, FUZZ-*, niche IDs preserved through inv -> queue -> report.
-    Refuted FUZZ-* goes to Excluded, not body. No L1 assumptions leak in."""
+    A bare REFUTED claim remains visible until exact negative authority exists.
+    No L1 assumptions leak in."""
     inv = (
         "### Finding [INV-001]: real Slither finding\n"
         "**Severity**: High\n**Location**: contracts/Vault.sol:L42\n"
@@ -541,15 +676,16 @@ def test_SC_regression_slither_fuzz_niche_through_pipeline():
     )
     D._write_mechanical_report_index(sp)
     idx = (sp / "report_index.md").read_text(encoding="utf-8")
-    excluded_at = idx.find("Excluded Findings")
-    master = idx[:excluded_at] if excluded_at > -1 else idx
-    excluded = idx[excluded_at:] if excluded_at > -1 else ""
+    negative_at = idx.find("Proposed Negative Dispositions")
+    master = idx[:negative_at] if negative_at > -1 else idx
+    proposed_negative = idx[negative_at:] if negative_at > -1 else ""
     check(
         "SC.regression: SLITHER + BLIND + FUZZ + CBS all in queue; "
-        "REFUTED FUZZ goes to Excluded",
+        "unproven REFUTED FUZZ remains visible with a proposal-only disposition",
         sids_preserved
         and "INV-001" in master and "INV-003" in master
-        and "INV-002" in excluded and "| INV-002 |" not in master,
+        and "INV-002" in master and "INV-002" in proposed_negative
+        and "terminal authority not established" in proposed_negative,
         f"sids={sids_preserved}",
     )
 
@@ -749,7 +885,7 @@ TESTS = [
     test_DPROM_duplicate_verdict_not_promoted,
     test_DPROM_refuted_verdict_not_promoted,
     test_DPROM_consolidated_and_false_positive_not_promoted,
-    test_MERGE_exact_duplicates_collapse,
+    test_MERGE_exact_mechanism_disjoint_provenance_stays_distinct,
     test_MERGE_same_location_different_title_kept,
     test_MERGE_same_title_different_location_kept,
     test_SC_regression_slither_fuzz_niche_through_pipeline,

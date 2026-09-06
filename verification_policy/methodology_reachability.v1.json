@@ -1,0 +1,250 @@
+{
+  "schema_version": "plamen.methodology_reachability.v1",
+  "scan_paths": [
+    "prompts/evm/phase5-verification-prompt.md",
+    "prompts/solana/phase5-verification-prompt.md",
+    "prompts/aptos/phase5-verification-prompt.md",
+    "prompts/sui/phase5-verification-prompt.md",
+    "prompts/soroban/phase5-verification-prompt.md",
+    "prompts/daml/phase5-verification-prompt.md",
+    "prompts/l1/phase5-verification-prompt.md",
+    "prompts/l1/v2/phase5-verification-prompt.md",
+    "prompts/shared/v2/phase5-verification-sc.md",
+    "prompts/shared/v2/phase5-verification-l1.md",
+    "rules/phase5-poc-execution.md",
+    "rules/finding-output-format.md"
+  ],
+  "entries": [
+    {
+      "rule_id": "verification-denominator",
+      "source_pattern": "(?:ALL MEDIUM standalone hypotheses \\(MANDATORY\\)|Medium verification is mandatory)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-queue-policy",
+      "compiled_module": "core.classification",
+      "schema_field": "work_item_id",
+      "consumer_path": "verification_policy/__init__.py",
+      "test_path": "scripts/test_verification_execution_policy_p0_ah.py",
+      "rationale": "The execution policy owns the denominator; the compiler preserves per-row application."
+    },
+    {
+      "rule_id": "dual-perspective-mechanism",
+      "source_pattern": "DUAL-PERSPECTIVE VERIFICATION \\(MANDATORY\\)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.trace",
+      "schema_field": "operators.mechanism-trace",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "Compiled as direction-neutral mechanism and harm traces."
+    },
+    {
+      "rule_id": "anti-downgrade-class-first",
+      "source_pattern": "(?:ANTI-DOWNGRADE GUARD|CLASS-CHECK BEFORE FALSE_POSITIVE).*(?:MANDATORY)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.classification",
+      "schema_field": "operators.class-before-negative",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "Class preconditions are required before every terminal negative."
+    },
+    {
+      "rule_id": "poc-execution-and-ledger",
+      "source_pattern": "(?:MANDATORY PoC EXECUTION|PoC Attempt Ledger \\(MANDATORY\\)|PoC Testability (?:Ledger|Triage).*MANDATORY|PoC Attempt Protocol.*MANDATORY|Force-by-Default Skip Justification.*MANDATORY|Assertion Retry Protocol.*MANDATORY|PoC File Placement.*MANDATORY|mandatory.*Execution Result|protocol is MANDATORY|MANDATORY for.*PoC Class|local executable attempt is mandatory|Grouped PoC constituent scope.*mandatory)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-execution-policy",
+      "compiled_module": "poc.executable",
+      "schema_field": "PoC Attempt/Execution Result",
+      "consumer_path": "rules/phase5-poc-execution.md",
+      "test_path": "scripts/test_verification_policy_validator_integration_p0_ah.py",
+      "rationale": "The compiler selects the PoC operator while the execution-policy validator owns mechanical proof."
+    },
+    {
+      "rule_id": "impact-premise",
+      "source_pattern": "Impact Premise Verification \\(MANDATORY",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.harm",
+      "schema_field": "operators.harm-premise",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "Mechanism and harm premises are separately evidenced."
+    },
+    {
+      "rule_id": "protocol-context",
+      "source_pattern": "(?:MANDATORY.*for CONTESTED findings|### Mandatory Reads)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-context-packet",
+      "compiled_module": "core.context",
+      "schema_field": "context_packet_digest/context_status",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "A bounded graph-derived context packet replaces an unrestricted legacy read rule."
+    },
+    {
+      "rule_id": "new-observation-staging",
+      "source_pattern": "NEW OBSERVATIONS \\(MANDATORY\\)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "typed-verifier-operator-consumer",
+      "compiled_module": "core.observation",
+      "schema_field": "new_observations",
+      "consumer_path": "scripts/verification_operator_consumers.py",
+      "test_path": "scripts/test_verification_operator_consumers_p0_ai_g.py",
+      "rationale": "The verifier may only propose; a typed, bounded P0-G authority creates independent late-verification work while blocked operators become report-visible assurance debt."
+    },
+    {
+      "rule_id": "negative-error-trace",
+      "source_pattern": "ERROR TRACE OUTPUT \\(MANDATORY",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.negative",
+      "schema_field": "operators.negative-error-trace",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "Negative and failed execution paths require evidence-scoped traces."
+    },
+    {
+      "rule_id": "committed-invariant-self-certification",
+      "source_pattern": "(?:COMMITTED-INVARIANT EMISSION \\(MANDATORY|MANDATORY for every value-bearing)",
+      "disposition": "RETIRED_WITH_RATIONALE",
+      "owner": "deferred-negative-evidence-registry",
+      "compiled_module": null,
+      "schema_field": null,
+      "consumer_path": null,
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "The old verifier-certified committed-invariant rule violates generator/discriminator separation. It remains deferred until P1-D provides an independent reusable negative-evidence consumer; ordinary negative evidence stays active."
+    },
+    {
+      "rule_id": "falsifiability-aware-shape",
+      "source_pattern": "FALSIFIABILITY-AWARE SHAPE SELECTION \\(MANDATORY\\)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.evidence",
+      "schema_field": "operators.evidence-proof-scope",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "Proof scope and falsifiability are recorded without restoring the legacy output shape."
+    },
+    {
+      "rule_id": "direction-neutral-severity",
+      "source_pattern": "INDEPENDENT SEVERITY ASSESSMENT \\(MANDATORY",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "severity-proposal-and-adjudication",
+      "compiled_module": "core.severity",
+      "schema_field": "Impact/Likelihood/Independent Severity",
+      "consumer_path": "scripts/severity_decision_ledger.py",
+      "test_path": "scripts/test_severity_proposal_contract_p0_ag.py",
+      "rationale": "Rewritten direction-neutrally; no min-cap, popularity override, or upstream anchoring is compiled."
+    },
+    {
+      "rule_id": "anti-hallucination-evidence-scope",
+      "source_pattern": "ANTI-HALLUCINATION RULES \\(MANDATORY\\)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.evidence",
+      "schema_field": "operators.evidence-proof-scope",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "Replaced ecosystem prose with proof-scope and exact-evidence requirements."
+    },
+    {
+      "rule_id": "finding-material-harm",
+      "source_pattern": "Material Harm.*\\(MANDATORY\\)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.harm",
+      "schema_field": "Impact",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "The verifier must name the actor and material consequence separately from mechanism."
+    },
+    {
+      "rule_id": "rules-applied-field",
+      "source_pattern": "Rules Applied Field \\(MANDATORY\\)",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.evidence",
+      "schema_field": "Rules Applied",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "Compiled output schema requires an exact method-operator receipt rather than free prose alone."
+    },
+    {
+      "rule_id": "external-premise-burden",
+      "source_pattern": "R10 violation.*MANDATORY",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.harm",
+      "schema_field": "context_status",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "Missing external context remains unresolved and cannot authorize a terminal negative."
+    },
+    {
+      "rule_id": "design-does-not-close-harm",
+      "source_pattern": "R13 violation.*MANDATORY",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "verification-method-compiler",
+      "compiled_module": "core.harm",
+      "schema_field": "Impact",
+      "consumer_path": "scripts/verification_method_compiler.py",
+      "test_path": "scripts/test_verification_method_compiler_p0_ai.py",
+      "rationale": "A design claim does not substitute for a terminal harm assessment."
+    },
+    {
+      "rule_id": "legacy-one-way-severity-cap",
+      "source_pattern": "This field is MANDATORY.*final = min",
+      "disposition": "RETIRED_WITH_RATIONALE",
+      "owner": "severity-adjudication",
+      "compiled_module": null,
+      "schema_field": null,
+      "consumer_path": null,
+      "test_path": "scripts/test_independent_severity_cap.py",
+      "rationale": "The one-way minimum cap is directionally biased and has been replaced by proposal-only challenges plus independent direction-neutral adjudication."
+    },
+    {
+      "rule_id": "external-citation-binding",
+      "source_pattern": "Citation requirement \\(mandatory",
+      "disposition": "ACTIVE_IN_VERIFIER",
+      "owner": "evidence-integrity-gate",
+      "compiled_module": "core.evidence",
+      "schema_field": "operators.evidence-proof-scope",
+      "consumer_path": "scripts/plamen_mechanical.py",
+      "test_path": "scripts/test_fix1_fix3_status_and_external_assumption.py",
+      "rationale": "External evidence is source-bound; an uncited assumption cannot become proof authority."
+    },
+    {
+      "rule_id": "discovery-niche-rules",
+      "source_pattern": "R(?:6|15|16) violation.*MANDATORY",
+      "disposition": "MOVED_TO_INDEPENDENT_CONSUMER",
+      "owner": "discovery-skill-selection",
+      "compiled_module": null,
+      "schema_field": "effective_bindings",
+      "consumer_path": "rules/skill-index.md",
+      "test_path": "scripts/test_skill_selection_authority_p0_a_ad_p1_j.py",
+      "rationale": "These are discovery/niche obligations, not verifier operators; the typed skill-selection authority owns their application."
+    },
+    {
+      "rule_id": "skeptic-independent-boundary",
+      "source_pattern": "Independent Skeptic Challenge Boundary",
+      "disposition": "MOVED_TO_INDEPENDENT_CONSUMER",
+      "owner": "skeptic",
+      "compiled_module": null,
+      "schema_field": "skeptic_challenges.json",
+      "consumer_path": "prompts/shared/v2/phase5-skeptic.md",
+      "test_path": "scripts/test_skeptic_challenge_authority_p0_v.py",
+      "rationale": "The verifier remains a generator; a separate skeptic emits proposal-only challenges."
+    },
+    {
+      "rule_id": "crossbatch-independent-boundary",
+      "source_pattern": "Cross-Batch Consistency Check",
+      "disposition": "MOVED_TO_INDEPENDENT_CONSUMER",
+      "owner": "crossbatch",
+      "compiled_module": null,
+      "schema_field": "cross_batch_consistency.md",
+      "consumer_path": "prompts/shared/v2/phase5-crossbatch.md",
+      "test_path": "scripts/test_contract_hardening_regression.py",
+      "rationale": "Cross-row consistency is a separate phase and must not be restored inside a verifier writer."
+    }
+  ]
+}

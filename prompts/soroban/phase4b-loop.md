@@ -156,7 +156,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
     ("validation-sweep", "validation_sweep_findings.md"),
   ] + [(n.name, f"niche_{n.name}_findings.md") for n in niche_agents]
   write_manifest(SCRATCHPAD + "/phase4b_manifest.md", expected_outputs,
-    also_required=["confidence_scores.md"])  // post-step requirements
+    also_required=[])  // canonical confidence is a post-wave DRIVER output
 
   depth_spawns_used = 8 + len(niche_agents)
   await all results
@@ -313,9 +313,9 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
   // â•â•â• SCORE all findings â•â•â•
   // NOTE: Sibling Propagation is a standalone agent (scanner-tier, parallel with Validation Sweep).
   // It reads findings_inventory.md and writes sibling_propagation_findings.md.
-  // Spawn scoring agent (sonnet - use Scoring Agent Template below)
-  // Writes {SCRATCHPAD}/confidence_scores.md
-  await scoring_agent
+  // Ask the routing helper for an in-memory proposal (template below).
+  // It has no scratchpad write authority; the driver publishes canonical scores.
+  await routing_helper
 
   // Write confidence distribution to {SCRATCHPAD}/confidence_distribution.md:
   //   CONFIDENT (â‰¥0.7): N findings - [list]
@@ -352,9 +352,9 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
     depth_spawns_used += 1
   await all results
 
-  // Re-score with new-evidence-only rule (AD-5)
-  spawn scoring_agent(require_new_evidence=true)
-  await scoring_agent
+  // Re-route with new-evidence-only rule (AD-5); return table in memory.
+  ask routing_helper(require_new_evidence=true)
+  await routing_helper
 
   // â•â•â• LOOP DYNAMICS DETECTION â•â•â•
   dynamics = classify_loop_dynamics(score_changes):
@@ -362,7 +362,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
     // OSCILLATORY: >50% of score changes are reversals
     // EXPLORATORY: new findings keep appearing
   if dynamics == OSCILLATORY:
-    for f in uncertain: f.verdict = CONTESTED
+    for f in uncertain: retain_candidate_and_record_routing_debt(f)
     write {SCRATCHPAD}/adaptive_loop_log.md (2 iterations, exit: OSCILLATORY)
     goto DONE
 
@@ -372,7 +372,7 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
     write {SCRATCHPAD}/adaptive_loop_log.md (2 iterations, exit reason)
     goto DONE
   if no_confidence_improvement(still_uncertain):
-    for f in still_uncertain: f.verdict = CONTESTED
+    for f in still_uncertain: retain_candidate_and_record_routing_debt(f)
     write {SCRATCHPAD}/adaptive_loop_log.md (2 iterations, exit: no progress)
     goto DONE
 
@@ -386,13 +386,13 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
     depth_spawns_used += 1
   await results
 
-  // Final re-score
-  spawn scoring_agent(require_new_evidence=true)
-  await scoring_agent
+  // Final transient re-routing proposal
+  ask routing_helper(require_new_evidence=true)
+  await routing_helper
 
-  // Force any still-uncertain to CONTESTED
+  // Confidence telemetry cannot change verdicts.
   for f in all_findings:
-    if f.confidence < 0.4: f.verdict = CONTESTED
+    if f.confidence < 0.4: retain_candidate_and_require_verification(f)
 
   write {SCRATCHPAD}/adaptive_loop_log.md (3 iterations, exit: max iterations)
 
@@ -500,29 +500,29 @@ ADAPTIVE_DEPTH_LOOP(findings_inventory):
 
 > **Spawn after**: Each iteration of the depth loop.
 > **Model**: Always sonnet (formula application with per-finding differentiation).
-> Pre-compute consensus inline, then batch findings for parallel scoring to prevent single-agent overload on large audits.
+> The driver pre-computes typed consensus authority, then findings may be batched for scoring.
 
-### Pre-Score: Consensus Pre-Computation (Orchestrator Inline)
+### Pre-Score: Typed Consensus Authority (Deterministic Driver)
 
-Before spawning scoring agents, orchestrator produces `{SCRATCHPAD}/consensus_map.md`:
-1. Read `findings_inventory.md` - extract each finding's ID, Location, Agent source
-2. Group by Location (contract.rs:Line range). For each group:
-   - Agents flagging = unique agents with finding at this location
-   - Agents covering = agents whose domain scope includes this contract
-   - Consensus = flagging / covering (cap at 1.0; +0.2 if specialized agent, cap 1.0)
-3. Write table: `| Finding ID | Agents Flagging | Agents Covering | Consensus Score | Specialized? |`
+The driver writes `confidence_consensus_authority.json` and its exact
+`consensus_map.md` projection. One observer = 0.0. Corroboration requires
+distinct current worker/prompt/dispatch identities explicitly tied to the same
+upstream finding identity. Location overlap, retry/copy prose, stale authority,
+and specialized-skill assignment do not count as agreement.
 
 ### Batch Scoring
 
 Split all findings into domain batches of â‰¤15 findings each (token-flow, state-trace, edge-case, external, access-control, misc).
-Spawn parallel sonnet scoring agents per batch. Each receives:
+Ask parallel sonnet-class routing helpers per batch. Each receives:
 - Its batch of findings ONLY (extracted from source files)
-- `{SCRATCHPAD}/consensus_map.md` (pre-computed Axis 2, shared across all batches)
+- A current driver-owned `consensus_map.md` only if exact authority is already
+  available; otherwise Consensus is `0.0`
 - Scoring formula (unchanged - Axes 1,3,4 from finding data; Axis 2 from consensus_map)
 
-After all return: merge `confidence_scores_batch_*.md` into `confidence_scores.md`.
+After all return: merge the returned batch tables in coordinator memory. If
+any batch is absent, treat its unresolved Medium+ findings as UNCERTAIN.
 
-### Scoring Agent Template (per batch)
+### Transient Routing Helper Template (per batch)
 
 ```
 Task(subagent_type="general-purpose", model="sonnet", prompt="
@@ -530,9 +530,10 @@ You are the Confidence Scoring Agent (Batch: {DOMAIN}). You compute confidence s
 
 ## Your Inputs
 Read:
-- {SCRATCHPAD}/consensus_map.md (pre-computed Axis 2 scores for ALL findings)
+- {SCRATCHPAD}/consensus_map.md only when current and authority-bound;
+  otherwise use 0.0 for every Consensus row
 - Your batch of findings extracted from the relevant source files (provided below)
-{IF ITERATION 2+: - {SCRATCHPAD}/confidence_scores.md (previous scores - for monotonic check)}
+{IF ITERATION 2+: - the parent-supplied previous routing table}
 
 ## Your Batch
 {PASTE FINDING DATA FOR THIS BATCH - max 15 findings, extracted from findings_inventory.md + depth/blind_spot/validation files}
@@ -555,7 +556,7 @@ If finding has no explicit evidence tags, infer: code snippets from source = [CO
 
 ### Axis 2: Consensus (0.0—1.0)
 Read from `{SCRATCHPAD}/consensus_map.md` - use the pre-computed score for each finding ID.
-(Pre-computed by orchestrator: domain-aware agreement with specialized agent bonus.)
+(Driver-derived independent corroboration; missing/unbound rows score 0.0.)
 
 ### Axis 3: Analysis Quality (0.0—1.0) - DUAL MODE
 
@@ -573,12 +574,13 @@ From Step Execution field:
 - Score = COMPLETE / (COMPLETE + INCOMPLETE)
 If no Step Execution field: score = 0.3
 
-### Axis 4: RAG Match (0.0—1.0)
-If finding has RAG validation result: use RAG confidence / 10
-If no RAG validation: score = 0.3 (floor - missing RAG is a coverage gap, not negative evidence)
+### External Precedent (not a confidence axis)
+Do not emit a precedent column. Under
+`~/.claude/rules/precedent-evidence-policy.md`, external precedent never changes
+mechanism confidence or reduces depth.
 
 ### Composite Score
-composite = Evidence Ã— 0.25 + Consensus Ã— 0.25 + Analysis_Quality Ã— 0.3 + RAG_Match Ã— 0.2
+composite = Evidence Ã— 0.25 + Consensus Ã— 0.25 + Analysis_Quality Ã— 0.3
 
 ### Classification
 - composite â‰¥ 0.7: CONFIDENT
@@ -587,8 +589,8 @@ composite = Evidence Ã— 0.25 + Consensus Ã— 0.25 + Analysis_Quality Ã— 
 
 {IF ITERATION 2+ WITH require_new_evidence=true:
 ### Monotonic Check
-For each finding that existed in the previous confidence_scores.md:
-- If this iteration's agent produced NEW evidence (new code ref, new tool output, new RAG match not in previous iteration): allow score increase
+For each finding that existed in the previous routing table:
+- If this iteration's agent produced NEW code/production evidence (new code ref or code-analysis/test output): allow score increase
 - If NO new evidence: keep previous score (do not increase)
 - Score can NEVER decrease
 }
@@ -598,12 +600,14 @@ Each finding's composite MUST be computed from its individual evidence tags, con
 
 ## Output
 
-Write to {SCRATCHPAD}/confidence_scores.md:
+Return this table to the parent coordinator. MUST NOT modify
+`{SCRATCHPAD}/confidence_scores.md`; the driver publishes it after the
+depth wave:
 
-| Finding ID | Evidence | Consensus | Analysis Quality | RAG Match | Composite | Classification | Domain |
-|------------|----------|-----------|--------------|-----------|-----------|---------------|--------|
-| [XX-1] | 0.8 | 0.5 | 0.7 | 0.3 | 0.59 | UNCERTAIN | token-flow |
-| ... | ... | ... | ... | ... | ... | ... | ... |
+| Finding ID | Evidence | Consensus | Analysis Quality | Composite | Classification | Domain |
+|------------|----------|-----------|------------------|-----------|----------------|--------|
+| [XX-1] | 0.8 | 0.5 | 0.7 | 0.56 | UNCERTAIN | token-flow |
+| ... | ... | ... | ... | ... | ... | ... |
 
 ## Summary
 - CONFIDENT (â‰¥0.7): {N} findings
@@ -617,15 +621,15 @@ Return: 'DONE: {total} findings scored - {N} CONFIDENT, {M} UNCERTAIN, {K} LOW_C
 
 ## MCP Soft Redirect
 
-After iteration 1 scoring, the orchestrator checks for systematic RAG failure:
+After iteration 1 scoring, the orchestrator checks for systematic code-evidence gaps:
 
-**Detection**: If `confidence_scores.md` shows RAG_Match axis = 0.3 (floor) for > 80% of findings:
-1. Log to `adaptive_loop_log.md`: "MCP RAG FLOOR DETECTED - {N}% of findings at 0.3 floor"
+**Detection**: If more than 80% of findings remain UNCERTAIN/LOW from code-derived axes:
+1. Log to `adaptive_loop_log.md`: "SYSTEMATIC CODE-EVIDENCE GAP - {N}% remain open"
 2. For each UNCERTAIN finding, generate a targeted manual investigation question based on:
    - Fork ancestry patterns from `meta_buffer.md`
    - Protocol type common vulnerabilities (e.g., "vault: trace share price after fee harvest + loss event")
    - Attack surface signals tagged [ELEVATE] (see recon signal elevation)
-3. Add these questions to the `depth_candidates.md` as `[RAG-COMPENSATE]` investigation targets
+3. Add these questions to `depth_candidates.md` as `[EVIDENCE-GAP]` investigation targets
 4. Iteration 2+ depth agents receive these as additional investigation questions (compatible with AD-1 evidence-only format)
 
 **NOT a hard gate**: Pipeline continues normally. The redirect adds investigation breadth to compensate for missing historical pattern matching.
@@ -702,4 +706,3 @@ Write to {SCRATCHPAD}/depth_{type}_iteration{N}_findings.md:
 Return: 'DONE: {N} findings re-analyzed, {M} new evidence items, {K} verdict changes, {J} new findings'
 ")
 ```
-

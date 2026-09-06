@@ -1,4 +1,4 @@
-"""Stale-checkpoint mode-mismatch graceful recovery (2026-06-01).
+"""Stale-checkpoint mode-mismatch decision boundary.
 
 Bug: a finished Thorough audit leaves _v2_checkpoint.json (completed phases incl.
 skeptic/attention_repair/...). Launching a NEW Core audit in the same scratchpad
@@ -7,11 +7,9 @@ artifacts raised RuntimeError("checkpoint references phases outside the active
 graph") -> main() sys.exit(EXIT_DEGRADED) -> the run "just fails" right after the
 user configures it.
 
-Fix: _archive_stale_mismatched_checkpoint archives the stale checkpoint and
-returns a fresh one (driver continues, haltless) on a genuine mode/graph
-mismatch; returns None (caller hard-exits) on corruption / non-mismatch.
-Plus plamen.py launch_v2 now passes --fresh when a stale _v2_checkpoint.json
-survived (belt to the driver's suspenders).
+P0-AO correction: a normal resume may not reinterpret a graph mismatch as
+authorization to rename the checkpoint and start a fresh audit. The compatibility
+helper is now a non-mutating detector that returns ``None`` so the caller stops.
 """
 from __future__ import annotations
 
@@ -27,7 +25,7 @@ def _save_checkpoint(scratch: Path, completed, *, mode: str):
     return cp
 
 
-def test_mode_mismatch_archives_and_returns_fresh(tmp_path: Path):
+def test_mode_mismatch_preserves_checkpoint_and_requires_decision(tmp_path: Path):
     # Thorough-only completed phases, simulate a Core launch.
     cp = _save_checkpoint(
         tmp_path,
@@ -38,26 +36,25 @@ def test_mode_mismatch_archives_and_returns_fresh(tmp_path: Path):
         "checkpoint references phases outside the active graph: "
         "skeptic, attention_repair, invariants_p2"
     )
+    before = (tmp_path / "_v2_checkpoint.json").read_bytes()
     fresh = D._archive_stale_mismatched_checkpoint(
         tmp_path, cp, {"mode": "core", "pipeline": "sc"}, "core", exc
     )
-    assert fresh is not None, "mode mismatch must recover, not None"
-    assert fresh.completed == [], "fresh checkpoint must be empty"
-    # original checkpoint archived (renamed away), fresh one written
-    assert (tmp_path / "_v2_checkpoint.json").exists(), "fresh checkpoint saved"
-    backups = list(tmp_path.glob("_v2_checkpoint.thorough.bak-*.json"))
-    assert len(backups) == 1, f"expected 1 archived checkpoint, got {backups}"
+    assert fresh is None
+    assert (tmp_path / "_v2_checkpoint.json").read_bytes() == before
+    assert not list(tmp_path.glob("_v2_checkpoint.*.bak-*.json"))
 
 
-def test_archived_checkpoint_preserves_old_content(tmp_path: Path):
+def test_graph_mismatch_does_not_rename_old_checkpoint(tmp_path: Path):
     cp = _save_checkpoint(tmp_path, ["recon", "skeptic"], mode="thorough")
     exc = RuntimeError("checkpoint references phases outside the active graph: skeptic")
-    D._archive_stale_mismatched_checkpoint(
+    result = D._archive_stale_mismatched_checkpoint(
         tmp_path, cp, {"mode": "light", "pipeline": "sc"}, "light", exc
     )
-    backup = next(tmp_path.glob("_v2_checkpoint.thorough.bak-*.json"))
-    txt = backup.read_text(encoding="utf-8")
-    assert "skeptic" in txt, "archived checkpoint must preserve the old completed phases"
+    assert result is None
+    txt = (tmp_path / "_v2_checkpoint.json").read_text(encoding="utf-8")
+    assert "skeptic" in txt
+    assert not list(tmp_path.glob("_v2_checkpoint.*.bak-*.json"))
 
 
 def test_non_mismatch_error_returns_none(tmp_path: Path):
@@ -93,8 +90,9 @@ def test_unknown_old_mode_when_no_config(tmp_path: Path):
     fresh = D._archive_stale_mismatched_checkpoint(
         tmp_path, cp, {"mode": "core", "pipeline": "sc"}, "core", exc
     )
-    assert fresh is not None
-    assert list(tmp_path.glob("_v2_checkpoint.unknown.bak-*.json"))
+    assert fresh is None
+    assert (tmp_path / "_v2_checkpoint.json").exists()
+    assert not list(tmp_path.glob("_v2_checkpoint.*.bak-*.json"))
 
 
 def test_reconcile_still_raises_on_mode_mismatch(tmp_path: Path):

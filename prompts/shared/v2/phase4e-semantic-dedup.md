@@ -1,8 +1,9 @@
 # Semantic Dedup Agent
 
 > **Purpose**: bounded duplicate reduction.
-> **Pipeline**: SC (`findings_inventory.md` -> `findings_inventory_deduped.md`)
-> and L1 (`verification_queue.md` -> `verification_queue_deduped.md`).
+> **Pipeline**: SC and L1 both propose a bounded delta over
+> `findings_inventory.md`; the driver materializes
+> `findings_inventory_deduped.md`.
 > **Model**: sonnet.
 
 SC mode and L1 (mandatory) mode both use this prompt. The candidate packet
@@ -52,9 +53,9 @@ SC: do NOT read `{SCRATCHPAD}/findings_inventory.md`. The focus inventory
 inventory is the context-collapse trigger this phase deliberately avoids — the
 driver mechanically builds `findings_inventory_deduped.md` from your decisions.
 
-L1: `{SCRATCHPAD}/verification_queue.md` for passthrough/copy only (the L1
-deduped queue may still be agent-written; the focus inventory remains your
-primary judging source).
+L1: do NOT read `{SCRATCHPAD}/verification_queue.md`; it does not exist yet.
+As in SC, the focus inventory carries every body needed for judgment and the
+driver alone derives the post-dedup inventory.
 
 Do NOT read or expand `{SCRATCHPAD}/dedup_candidate_pairs_full.md` during this
 phase. It is traceability only.
@@ -77,9 +78,8 @@ Before semantic review, physically create the decisions stub on disk:
 
 - Write `{SCRATCHPAD}/dedup_decisions.md` with a header and a `Status:
   IN_PROGRESS_PASSTHROUGH_WRITTEN` line.
-- L1 only: copy `{SCRATCHPAD}/verification_queue.md` to
-  `{SCRATCHPAD}/verification_queue_deduped.md` as a crash-safety passthrough.
-- SC: do NOT copy `findings_inventory.md` to `findings_inventory_deduped.md` —
+- In either pipeline, do NOT copy or edit a verification queue and do NOT copy
+  `findings_inventory.md` to `findings_inventory_deduped.md` —
   the driver owns and (re)builds that artifact mechanically from your
   `dedup_decisions.md`. The driver also pre-writes a passthrough copy as a
   crash-safety net before this phase, so a timeout never loses the upstream
@@ -326,7 +326,7 @@ the survivor MUST end up with:
 - **Distinct impacts/recommendations** from the absorbed finding folded into
   the survivor's Impact/Recommendation.
 
-### SC output (driver-applied)
+### SC and L1 output (driver-applied)
 
 You do NOT write or edit `findings_inventory_deduped.md`. The driver
 mechanically builds it from your `dedup_decisions.md`, faithfully applying the
@@ -338,6 +338,7 @@ same coupling+removal you would have done by hand:
   and retains every evidence tag; THEN removes the absorbed finding block.
   Never delete the absorbed block before the survivor has absorbed its distinct
   content (the driver enforces this ordering mechanically).
+  Never drop the absorbed row before the survivor has absorbed its distinct content; this applies to any row-shaped materialization, while the parser-critical `MERGED into` decision row remains retained lineage.
 - For `GROUP`, the driver keeps all member blocks and stamps the
   `**Dedup Group**:` note on non-representatives.
 - For `KEEP SEPARATE`, both blocks are left unchanged.
@@ -348,18 +349,6 @@ the survivor) so the driver couples it faithfully. The parser-critical
 `### MERGE: {survivor_id} absorbs {absorbed_id}` heading and
 `| {absorbed_id} | MERGED into {survivor_id} | ... |` status row are what the
 driver reads to apply your decision.
-
-### L1 output
-
-`verification_queue_deduped.md` must remain a valid queue:
-
-- Start from an exact copy of `verification_queue.md`.
-- For `MERGE`, FIRST merge the absorbed row's Location (union), strongest
-  evidence tag, and higher severity into the survivor row; THEN keep only the
-  survivor row. Never drop the absorbed row before the survivor row has
-  absorbed its Location/evidence/severity.
-- For `GROUP`, keep the representative row and note inherited members.
-- For `KEEP SEPARATE`, leave both rows unchanged.
 
 ## Severity/Disposition Contract
 
@@ -388,9 +377,8 @@ Return:
 `DONE: evaluated {P} live pairs; {M} merges, {G} groups, {K} kept separate`
 
 Only return `DONE` after `dedup_decisions.md` exists on disk with one
-disposition row per live candidate pair. (SC: the driver builds
-`findings_inventory_deduped.md` from your decisions; L1: also ensure
-`verification_queue_deduped.md` exists.)
+disposition row per live candidate pair. In both pipelines the driver builds
+`findings_inventory_deduped.md` from your decisions.
 ```
 
 ---

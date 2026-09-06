@@ -4,11 +4,20 @@
 >
 > Want your AI assistant to install for you instead? Paste [SETUP.md](../SETUP.md) (only), not this file.
 
+> **Platform boundary:** this guide's install and audit commands apply to
+> Windows and admitted Linux production hosts. Native macOS production install
+> and E2E auditing are not yet supported because the governed package
+> transaction and worker-containment layers fail closed on Darwin. Mac users
+> can continue source development with the
+> [macOS bootstrap](development/macos.md) and
+> [machine-migration guide](development/machine-migration.md); remaining work
+> is recorded in the [Plamen-v3 continuation goal](continuation/GOAL.md).
+
 > Just installed Plamen? This page tells you exactly what to do next — what's required, what's optional, and how to run your first audit.
 
-> **Note:** On Windows use `python`; on macOS/Linux use `python3`.
+> **Note:** On Windows use `python`; on Linux use `python3.12`.
 
-> **First thing to run:** `plamen doctor` — verifies install (Plamen home, CLIs, Python deps, symlinks, submodules, CLAUDE.md markers) in a few seconds, exits non-zero on hard failures. No audit run, no paid API calls. If `plamen` isn't found, add `~/.plamen` to your PATH (see [README.md](../README.md)) or run `python plamen.py doctor` from inside `~/.plamen`. See [glossary.md](glossary.md) for terminology.
+> **First thing to run:** `plamen doctor` — verifies the signed committed package, managed backend selections, private Python and Node runtimes, backend configuration, and authentication without paid/provider calls. The exact installed-package integrity pass checks hundreds of files and may take up to a minute. If `plamen` isn't found, see [README.md](../README.md); do not add or edit files inside `~/.plamen`. See [glossary.md](glossary.md) for terminology.
 
 ## What did install do?
 
@@ -16,11 +25,12 @@
 
 | Component | What it is | Status after install |
 |-----------|-----------|---------------------|
-| **Symlinks** | Links Plamen's agents, rules, commands, and prompts into `~/.claude/` (Claude Code) or `~/.codex/plamen/` (Codex CLI) | Done |
-| **Config** | Merged permissions, env vars, and MCP servers into `~/.claude/settings.json` (Claude Code) or `~/.codex/config.toml` (Codex CLI) | Done |
+| **Committed package** | Publishes an authenticated, immutable runtime snapshot at `~/.plamen/`; the source checkout remains installation input only | Done |
+| **Backend integration** | Creates a receipt-bound Claude projection from the committed package and transactionally copies/merges Codex integration files under `~/.codex/` | Done |
+| **Config** | Merges backend settings and managed MCP configuration; audit subprocesses apply stricter phase-local isolation | Done |
 | **Orchestrator rules** | Injected `~/.claude/CLAUDE.md` (Claude Code) or `~/.codex/AGENTS.md` (Codex CLI) — the orchestrator's top-level instructions | Done |
 | **Core Python deps** | `rich`, `InquirerPy` (wrapper UI) | Done |
-| **MCP server deps** | slither-mcp, solana-fender, farofino-mcp | Done |
+| **Managed JS runtime** | Exact Node.js 24.20.0/npm 11.19.0 plus Claude Code 2.1.252, Codex 0.152.0, and locked MCP payloads | Done |
 | **Chain toolchains** | Foundry, Solana CLI, Anchor, Aptos, Sui, etc. | Only if you selected them |
 | **RAG database** | Vulnerability knowledge base (PyTorch + embeddings) | **Not installed** — separate step |
 
@@ -28,12 +38,13 @@
 
 ### Required for all audits
 
-These are installed automatically. If any are missing, `plamen` will tell you.
+The installer materializes the managed components automatically. The host needs
+only the acquisition/bootstrap prerequisites below; ambient `node`, `npm`,
+`npx`, `claude`, and `codex` commands are neither required nor trusted.
 
-- **Claude Code** (`claude` in PATH) or **Codex CLI** (`codex` in PATH — cost-saving BETA backend)
-- **Python 3.11-3.12** (`python` / `python3`)
-- **Node.js 18+** (`npx`, `npm`)
+- **CPython 3.12** (`python3.12`, or `python` on Windows when it resolves to 3.12)
 - **Git**
+- A complete reviewed Plamen source tree, kept outside `~/.plamen/`
 
 ### Required per chain (install only what you audit)
 
@@ -67,7 +78,11 @@ You can always build it later. Run the same command to rebuild after updates.
 
 ### Optional: API keys
 
-Set in `~/.claude/mcp.json` (Claude Code). MCP runs natively on both backends; on Codex the same servers are configured under `[mcp_servers.*]` in `~/.codex/config.toml`. On Codex, the non-`SOLODIT` keys below (ETHERSCAN/TAVILY/HELIUS/RPC) go in the per-server `[mcp_servers.<name>.env]` blocks of `config.toml`. Replace the `YOUR_*` placeholders:
+These keys are optional. Global MCP configuration is used only for manual
+adapter sessions; Plamen audit subprocesses use phase-local policy. Claude
+headless can select `unified-vuln-db` only for RAG, while Claude PTY and Codex
+use Web fallback. Replace the `YOUR_*` placeholders only for integrations you
+actually enable:
 
 > **`SOLODIT_API_KEY` is the exception — it does NOT go in mcp.json.** Add `SOLODIT_API_KEY` to `~/.claude/settings.json` → `"env"` section (or `~/.codex/config.toml` → `[env]` for Codex). This is the only place the key is reliably visible to both `plamen rag` and audit agent subprocesses. If you put it in mcp.json, `plamen rag` will silently fail to index Solodit (smaller/near-empty RAG DB) with no error. The remaining keys below go in mcp.json. Free key from [solodit.cyfrin.io](https://solodit.cyfrin.io).
 
@@ -96,6 +111,8 @@ The interactive wizard walks you through: mode selection → target project → 
 plamen core /path/to/your/project
 ```
 
+The terminal shows the launch summary and requires confirmation. In CI or another non-interactive shell, validate first with `plamen plan core /path/to/your/project --codex`, then add `--yes` to the audit command. Model fallback is disabled unless `--allow-model-fallback` is explicitly supplied.
+
 ### Option C: From inside your AI coding assistant
 
 **Claude Code:**
@@ -106,7 +123,7 @@ plamen core /path/to/your/project
 
 **Codex CLI:**
 
-After `plamen install --codex`, the same slash commands are installed into
+After the standard governed install, the same slash commands are installed into
 `~/.codex/commands/` (from `codex-adapter/commands/`), so they work the same way:
 ```
 /plamen-wizard          # Smart contract audit
@@ -117,11 +134,15 @@ Or use the terminal wrapper directly (no slash command needed):
 $plamen core /path/to/project
 ```
 
-All paths invoke the same V2 deterministic driver. The backend difference is transparent — agent prompts, depth templates, and verification logic are identical. The default high-capability model is **Opus 4.8** (`claude-opus-4-8`); override with `PLAMEN_OPUS_MODEL` / `PLAMEN_THOROUGH_OPUS_MODEL`.
+All paths invoke the same V2 deterministic driver. The backend difference is transparent — agent prompts, depth templates, and verification logic are identical. Claude routes are pinned to **Opus 5** (`claude-opus-5`), **Sonnet 5** (`claude-sonnet-5`), and `claude-haiku-4-5-20251001`; override only through the explicit `PLAMEN_*_MODEL` controls.
 
 ### How the driver runs workers (v2.1.0)
 
-- **PTY-supervised execution.** The driver drives each worker through a pseudo-terminal and infers turn completion from artifacts written to disk (the `<!-- PLAMEN_STATUS: COMPLETE -->` marker), not from a stdout/JSON envelope. This eliminates the 0-byte-stdio "silent hang" ambiguity from earlier versions. During breadth/rescan/depth you will see several `claude` (or `codex`) processes in your process tree — one per worker artifact. That's the driver-owned worker pool, not runaway processes.
+- **Backend-specific worker execution.** Claude worker pools use the dedicated
+  PTY transport and infer completion from artifacts written to disk (including
+  the `<!-- PLAMEN_STATUS: COMPLETE -->` marker), not a stdout/JSON envelope.
+  Codex does not use that PTY transport; the driver invokes `codex exec`
+  directly and retains the same artifact ownership and phase-gate contract.
 - **Haltless resilience.** A finished audit is never thrown away at the finish line. The report-index, verify, inventory, and resume paths repair-then-degrade: any unfinished obligation is surfaced as a flagged Appendix-B item in `AUDIT_REPORT.md` rather than halting the run. Stale or corrupt checkpoints recover instead of stranding the audit, and rate-limit / usage-cap conditions auto-wait then resume.
 - **Deterministic plumbing.** Report-index recovery, verify backfill, and finding dedup are mechanical Python steps (LLM out of the loop) for reliability.
 
@@ -175,8 +196,9 @@ server-health row:
   ╭─────────────────────────────────────────────────────────╮
   │  Toolchain                                                │
   │                                                           │
-  │    python  npx  git                                    ok │
-  │  Backend   ✓claude  ✓codex                                │
+  │    python  git                                        ok │
+  │  Managed   Node 24.20.0/npm 11.19.0                  ok │
+  │  Backend   Claude 2.1.252  Codex 0.152.0             ok │
   ├───────────────────────────────────────────────────────────┤
   │  EVM        ✓forge ✓anvil ✓cast ✓slither ○medusa      4/5 │
   │  Solana     ○solana ○anchor ○cargo ○trident ○scout    0/5 │
@@ -196,32 +218,35 @@ server-health row:
 - The `EVM` / `Solana` / `Move` / `Soroban` / `L1 (Go)` / `L1 (Rust)` rows each
   cover one audited ecosystem — install only the toolchains for the ecosystems
   you audit (L1 Go/Rust is for node-client / infrastructure audits)
-- You need at least one backend (`claude` or `codex`) — both are shown on the
-  `Backend` row but only one is required
+- Plamen installs exact managed Claude and Codex payloads; choose the backend
+  you authenticate and use for an audit
 - **RAG DB** = run `plamen rag` to build
 - **MCP** = static-analysis server health probes (may show `...` while probing)
 
 ## Updating
 
-After pulling new versions:
+Update the dedicated source checkout, review the change, and install from that
+source directory:
 
 ```bash
-cd ~/.plamen && git pull && plamen install
+cd /path/to/plamen-source
+git pull --ff-only
+python3.12 plamen.py install
 ```
 
-For Codex backend, add the `--codex` flag:
-
-```bash
-cd ~/.plamen && git pull && plamen install --codex
-```
-
-`git pull` alone updates symlinked files (agents, rules, skills, prompts), but `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md` (the orchestrator's rules) are injected copies — not symlinks. Without `plamen install`, the orchestrator follows stale rules while everything else is updated. `plamen` will warn you if it detects a version mismatch.
+Never run `git pull` inside `~/.plamen/`, globally update the managed npm
+packages, or point a backend at the mutable source checkout. Publication is a
+transaction: the new source closure must validate before it can replace the
+signed committed package and its backend projections/configuration.
 
 See [updating.md](updating.md) for details on what auto-updates and what doesn't.
 
 ## Troubleshooting
 
-Plamen runs on Windows, macOS, and Linux. POSIX systems use native PTY execution (`Popen` ownership + SIGCHLD reset) with nested-session env isolation. See [dependencies.md](dependencies.md) for platform-specific fixes (Windows Developer Mode, macOS hnswlib, Python version issues, etc.).
+Production audits run on Windows and admitted Linux hosts. macOS arm64 and
+x86_64 currently support the isolated source-development bootstrap only; see
+[development/macos.md](development/macos.md). See
+[dependencies.md](dependencies.md) for supported-host dependency details.
 
 **Windows: "Microsoft Store python stub" warning.** On a fresh Windows install,
 `plamen doctor` may warn that a Microsoft Store App Execution Alias stub for

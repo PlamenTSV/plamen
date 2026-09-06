@@ -9,9 +9,11 @@ R2: the driver writes report_index_coverage_seed.md -- a SUPERSET ID list from
     re-reading finding prose.
 """
 import re
+import shutil
 from pathlib import Path
 
 import plamen_driver as D
+from plamen_mechanical import apply_llm_dedup_decisions
 
 
 def _write_queue(tmp_path, finding_ids):
@@ -30,6 +32,30 @@ def _write_queue(tmp_path, finding_ids):
     (tmp_path / "verification_queue.md").write_text(header + body, encoding="utf-8")
 
 
+def _install_receipted_alias(tmp_path: Path, absorbed: str, survivor: str) -> None:
+    inventory = (
+        f"### Finding [{survivor}]: survivor\n"
+        "**Severity**: High\n**Location**: Foo.sol:1-20\n"
+        "**Source IDs**: A-1, B-1\n**Root Cause**: same root\n"
+        "**Description**: full path\n**Impact**: material\n"
+        "**Recommendation**: fix once\n\n"
+        f"### Finding [{absorbed}]: member\n"
+        "**Severity**: Medium\n**Location**: Foo.sol:2-4\n"
+        "**Source IDs**: B-1\n**Root Cause**: same root\n"
+        "**Description**: boundary path\n**Impact**: material\n"
+        "**Recommendation**: fix once\n"
+    )
+    (tmp_path / "findings_inventory.md").write_text(inventory, encoding="utf-8")
+    (tmp_path / "dedup_decisions.md").write_text(
+        f"MERGE: {survivor}, {absorbed}\n", encoding="utf-8"
+    )
+    assert apply_llm_dedup_decisions(tmp_path, "sc_semantic_dedup") == 1
+    shutil.copy2(
+        tmp_path / "findings_inventory_deduped.md",
+        tmp_path / "findings_inventory.md",
+    )
+
+
 # ── R2: coverage seed is a superset of every bounded ID ───────────────────────
 
 def test_coverage_seed_enumerates_every_queue_id(tmp_path):
@@ -45,12 +71,7 @@ def test_coverage_seed_enumerates_every_queue_id(tmp_path):
 
 def test_coverage_seed_includes_dedup_absorbed_and_survivor(tmp_path):
     _write_queue(tmp_path, [("INV-010", "High"), ("INV-011", "Medium")])
-    # dedup merged INV-011 into INV-010 -> both must appear, with the relation.
-    (tmp_path / "dedup_decisions.md").write_text(
-        "# Dedup Decisions\n\n"
-        "| INV-011 | MERGED into INV-010 | coupled stuff | note |\n",
-        encoding="utf-8",
-    )
+    _install_receipted_alias(tmp_path, "INV-011", "INV-010")
     D._write_report_index_coverage_seed(tmp_path)
     seed = (tmp_path / "report_index_coverage_seed.md").read_text(encoding="utf-8")
     assert "INV-010" in seed and "INV-011" in seed
@@ -77,7 +98,7 @@ def test_coverage_seed_includes_finding_mapping_hypotheses(tmp_path):
     assert "VS-1" in seed, "an ID present only in finding_mapping must still be seeded"
 
 
-def test_coverage_seed_never_drops_an_id(tmp_path):
+def test_coverage_seed_does_not_promote_raw_dedup_proposal_to_coverage(tmp_path):
     # Union across all bounded sources -> the seed row count >= the number of
     # distinct IDs in any single source.
     _write_queue(tmp_path, [("INV-100", "High"), ("INV-101", "Medium")])
@@ -93,9 +114,10 @@ def test_coverage_seed_never_drops_an_id(tmp_path):
     )
     n = D._write_report_index_coverage_seed(tmp_path)
     seed = (tmp_path / "report_index_coverage_seed.md").read_text(encoding="utf-8")
-    for fid in ("INV-100", "INV-101", "INV-102", "INV-103"):
+    for fid in ("INV-100", "INV-101", "INV-102"):
         assert fid in seed
-    assert n >= 4
+    assert "INV-103" not in seed
+    assert n >= 3
 
 
 def test_coverage_seed_empty_inputs_safe(tmp_path):

@@ -6,7 +6,7 @@ description: "Trigger Pattern SEP-41 token transfers, TokenClient::new, transfer
 # TOKEN_FLOW_TRACING Skill (Soroban)
 
 > **Trigger Pattern**: SEP-41 `transfer`/`transfer_from`/`approve`/`burn`, `TokenClient::new`, XLM native balance, SAC interactions
-> **Inject Into**: Lifecycle, External-Env agents
+> **Inject Into**: Breadth agents, depth-token-flow
 > **Finding prefix**: `[TF-N]`
 > **Rules referenced**: R4, R5, R10, R11
 

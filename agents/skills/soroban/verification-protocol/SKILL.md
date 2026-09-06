@@ -367,22 +367,14 @@ If during verification you discover a NEW bug not covered by any hypothesis:
 
 ---
 
-## RAG Queries Before PoC (MANDATORY for HIGH/CRITICAL)
+### Shared External Precedent Boundary
 
-1. `get_attack_vectors(bug_class="{category}")`
-2. `get_similar_findings(pattern="{vulnerability description}")`
-3. `validate_hypothesis(hypothesis="{finding summary}")`
-4. `search_solodit_live(keywords="{soroban stellar vulnerability pattern}", impact=["HIGH","CRITICAL"], language="Rust", quality_score=3, max_results=15)`
-
-Document in output: Attack Vectors Consulted, Similar Exploits Found, Historical Precedent.
-
-### RAG Confidence Override
-
-| RAG Confidence | Local Verdict | Final Verdict |
-|----------------|---------------|---------------|
-| >= 7/8 matches | FALSE_POSITIVE | **CONTESTED** (override) |
-| >= 6/8 matches | FALSE_POSITIVE | **CONTESTED** (override) |
-| < 6/8 matches | FALSE_POSITIVE | FALSE_POSITIVE (allowed) |
+Read `~/.claude/rules/precedent-evidence-policy.md`.
+Do not query vulnerability databases, WebSearch, or fresh RAG before or during
+PoC adjudication. Seal the code-derived hypothesis, plan, and executed result
+without historical anchoring. Centralized precedent can only create additive
+test ideas in a separate post-plan phase; it is never verifier evidence and
+cannot support a negative verdict, severity, proof, demotion, or report claim.
 
 ---
 

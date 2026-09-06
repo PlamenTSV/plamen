@@ -24,3 +24,18 @@ def test_inventory_chunk_retry_hint_names_impact_as_hard_field() -> None:
     assert "`**Impact**:` is mandatory for CONFIRMED, PARTIAL" in driver_source
     assert "does not replace Impact" in driver_source
     assert "block contains a literal " in driver_source
+
+
+def test_inventory_chunk_contract_is_lossless_one_to_one_before_dedup() -> None:
+    prompt_source = (Path(__file__).with_name("plamen_prompt.py")).read_text(
+        encoding="utf-8"
+    )
+    driver_source = (Path(__file__).with_name("plamen_driver.py")).read_text(
+        encoding="utf-8"
+    )
+
+    assert "lossless normalization boundary, not a semantic-dedup authority" in prompt_source
+    assert "exactly ONE `### Finding [<SHARD-ID>]" in prompt_source
+    assert "Never combine two upstream identities" in prompt_source
+    assert "copy the source Root Cause/Description" in driver_source
+    assert "Later phases own semantic deduplication" in driver_source

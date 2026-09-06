@@ -1,0 +1,438 @@
+{
+  "schema_version": "plamen.toolchain_governance.v1",
+  "registry_version": "1.0.0",
+  "scope": "mechanical detector and executor capability governance",
+  "reviewed_version_lock": {
+    "path": "verification_policy/toolchain_version_lock.v1.json",
+    "schema_version": "plamen.toolchain_version_lock.v1",
+    "sha256": "5b1ad506425eaa8d70e7198c1458e080f1551f6f8c22ee1f190ea3a595effe3a",
+    "runtime_statuses": [
+      "MATCH",
+      "MISMATCH",
+      "UNAVAILABLE",
+      "EXTERNAL_MANAGER",
+      "DEBT",
+      "UNREGISTERED",
+      "REVOKED",
+      "OBSERVED_NONAUTHORITATIVE"
+    ]
+  },
+  "capabilities": [
+    {
+      "capability_id": "opengrep.static-analysis",
+      "applicability": {
+        "pipelines": ["sc"],
+        "ecosystems": ["evm", "solana", "soroban", "aptos"],
+        "platforms": ["windows", "linux", "macos"],
+        "modes": ["core", "thorough"],
+        "phases": ["recon-prebreadth"]
+      },
+      "necessity": "CONDITIONAL",
+      "invocations": [
+        {"tool_ids": ["opengrep", "semgrep"], "argv_contract": "scan with release-bound local rules and SARIF output"}
+      ]
+    },
+    {
+      "capability_id": "sec3-xray.solana-static-analysis",
+      "applicability": {
+        "pipelines": ["sc"],
+        "ecosystems": ["solana"],
+        "platforms": ["windows", "linux", "macos"],
+        "modes": ["light", "core", "thorough"],
+        "phases": ["recon-prebreadth"]
+      },
+      "necessity": "OPTIONAL",
+      "invocations": [
+        {"tool_ids": ["docker", "sec3-xray"], "argv_contract": "immutable image digest, read-only source, isolated output"}
+      ]
+    },
+    {
+      "capability_id": "govulncheck.dependency-audit",
+      "applicability": {
+        "pipelines": ["l1"],
+        "ecosystems": ["go", "mixed"],
+        "platforms": ["windows", "linux", "macos"],
+        "modes": ["light", "core", "thorough"],
+        "phases": ["recon-prebreadth"]
+      },
+      "necessity": "CONDITIONAL",
+      "invocations": [
+        {"tool_ids": ["govulncheck"], "argv_contract": "structured NDJSON against a provenance-bound advisory source"}
+      ]
+    },
+    {
+      "capability_id": "cargo-audit.dependency-audit",
+      "applicability": {
+        "pipelines": ["l1"],
+        "ecosystems": ["rust", "mixed"],
+        "platforms": ["windows", "linux", "macos"],
+        "modes": ["light", "core", "thorough"],
+        "phases": ["recon-prebreadth"]
+      },
+      "necessity": "CONDITIONAL",
+      "invocations": [
+        {"tool_ids": ["cargo-audit"], "argv_contract": "resolved cargo-audit binary, neutral cwd, explicit Cargo.lock, JSON, no-fetch, provenance-bound local RustSec database"}
+      ]
+    },
+    {
+      "capability_id": "slither.evm-reference-graph",
+      "applicability": {
+        "pipelines": ["sc"],
+        "ecosystems": ["evm"],
+        "platforms": ["windows", "linux", "macos"],
+        "modes": ["light", "core", "thorough"],
+        "phases": ["recon-prebreadth"]
+      },
+      "necessity": "CONDITIONAL",
+      "invocations": [
+        {"tool_ids": ["slither"], "argv_contract": "authority-bound Python provider, project-native compilation, validated graph artifacts"}
+      ]
+    },
+    {
+      "capability_id": "scip-go.reference-graph",
+      "applicability": {
+        "pipelines": ["l1"],
+        "ecosystems": ["go", "mixed"],
+        "platforms": ["windows", "linux", "macos"],
+        "modes": ["light", "core", "thorough"],
+        "phases": ["recon-prebreadth"]
+      },
+      "necessity": "CONDITIONAL",
+      "invocations": [
+        {"tool_ids": ["scip-go", "go"], "argv_contract": "authority-bound scip-go index followed by validated SCIP graph conversion"}
+      ]
+    },
+    {
+      "capability_id": "scip-rust.reference-graph",
+      "applicability": {
+        "pipelines": ["sc", "l1"],
+        "ecosystems": ["solana", "soroban", "rust", "mixed"],
+        "platforms": ["windows", "linux", "macos"],
+        "modes": ["light", "core", "thorough"],
+        "phases": ["recon-prebreadth"]
+      },
+      "necessity": "CONDITIONAL",
+      "invocations": [
+        {"tool_ids": ["rust-analyzer"], "argv_contract": "authority-bound rust-analyzer SCIP index followed by validated SCIP graph conversion"}
+      ]
+    },
+    {
+      "capability_id": "protobuf.scip-graph-parser",
+      "applicability": {
+        "pipelines": ["sc", "l1"],
+        "ecosystems": ["solana", "soroban", "rust", "go", "mixed"],
+        "platforms": ["windows", "linux", "macos"],
+        "modes": ["light", "core", "thorough"],
+        "phases": ["recon-prebreadth"]
+      },
+      "necessity": "CONDITIONAL",
+      "invocations": [
+        {"tool_ids": ["protobuf"], "argv_contract": "authority-bound Python protobuf runtime parses SCIP before graph publication"}
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "tool_id": "git",
+      "version_policy": "operator platform release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_PLATFORM_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "codex",
+      "version_policy": "operator-managed backend release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_PLATFORM_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "claude",
+      "version_policy": "operator-managed backend release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_PLATFORM_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "node",
+      "version_policy": "external runtime release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus package-manager lockfiles",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_TOOLCHAIN_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "forge",
+      "version_policy": "mutable Foundry manager release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "foundryup channel is not immutable in the current installer", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "solc",
+      "version_policy": "project-selected compiler release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus project compiler configuration",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_TOOLCHAIN_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "medusa",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "installer uses a mutable Go module channel", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "rustc",
+      "version_policy": "external Rust toolchain release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus rustup/toolchain configuration",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_TOOLCHAIN_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "cargo-build-sbf",
+      "version_policy": "Solana toolchain-managed release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_TOOLCHAIN_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "cargo-fuzz",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus selected nightly toolchain",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "cargo install and nightly toolchain are not exact-release pinned", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "rust-analyzer",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus Rust toolchain provenance",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "multiple mutable acquisition routes have no reviewed exact identity", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "go",
+      "version_policy": "external Go toolchain release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus module/build information",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_TOOLCHAIN_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "solana",
+      "version_policy": "mutable Solana manager release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "stable channel is mutable", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "anchor",
+      "version_policy": "AVM-selected mutable release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "latest/untagged AVM acquisition is mutable", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "trident",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "cargo install release is not exact pinned", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "aptos",
+      "version_policy": "mutable Aptos installer channel; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "current release channel is mutable", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "sui",
+      "version_policy": "mutable Sui branch/channel; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "mainnet/testnet source channels are mutable", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "stellar",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "package-manager release channel is not digest pinned", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "damlc",
+      "version_policy": "DAML SDK-managed release; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "DAML current channel is mutable", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "ast-grep",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "installer source/release is not exact digest pinned", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "osv-scanner",
+      "version_policy": "v2 scan interface; runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus offline advisory database",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "mutable upstream installer channel is not release-digest pinned", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "npm",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus package-manager lockfile",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_TOOLCHAIN_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "opengrep",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus release-bound rule revisions",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "mutable upstream installer channel is not release-digest pinned", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "semgrep",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256 plus release-bound rule revisions",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "Python package range/install artifact is not hash pinned", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "sec3-xray",
+      "version_policy": "container image must use an immutable digest",
+      "integrity_policy": "OCI sha256 digest",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "HUMAN_REVIEWED_DIGEST_REQUIRED", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "FAIL_WITHOUT_REVIEWED_DIGEST"}
+    },
+    {
+      "tool_id": "docker",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_PLATFORM_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "govulncheck",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "installer uses an unpinned latest channel", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "cargo",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "EXTERNAL_TOOLCHAIN_MANAGER", "acquisition_scope": "EXTERNAL_OPERATOR_SETUP"},
+      "runtime_authority": {"identity_status": "EXTERNAL_MANAGER", "deterministic_provider_authority": false, "mismatch_effect": "SNAPSHOT_OBSERVED_IDENTITY_ONLY"}
+    },
+    {
+      "tool_id": "cargo-audit",
+      "version_policy": "runtime version captured",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "cargo install version is not release pinned", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "cargo-scout-audit",
+      "version_policy": "health probe uses --help",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "cargo install version is not release pinned", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "daml",
+      "version_policy": "daml version",
+      "integrity_policy": "resolved executable SHA-256",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "GOVERNED_DEBT", "reason": "installer channel is not immutable", "acquisition_scope": "SETUP_ONLY", "unresolved_debt": true},
+      "runtime_authority": {"identity_status": "DEBT", "deterministic_provider_authority": false, "mismatch_effect": "CAPABILITY_DEBT_NO_CLEAN_AUTHORITY"}
+    },
+    {
+      "tool_id": "slither",
+      "version_policy": "exact reviewed version 0.11.5; content authority pending",
+      "integrity_policy": "observed imported module origin and installed distribution closure SHA-256; no reviewed artifact digest",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "REVIEWED_VERSION_OBSERVED_CONTENT", "acquisition_scope": "SETUP_ONLY", "version_lock_identity": "slither"},
+      "runtime_authority": {"identity_status": "OBSERVED_NONAUTHORITATIVE", "deterministic_provider_authority": false, "mismatch_effect": "NO_AUTHORITY_WITHOUT_REVIEWED_CONTENT"}
+    },
+    {
+      "tool_id": "scip-go",
+      "version_policy": "exact official tag v0.2.7; content authority pending",
+      "integrity_policy": "observed resolved executable SHA-256, runtime version, and Go build information; no reviewed artifact digest",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "REVIEWED_VERSION_OBSERVED_CONTENT", "acquisition_scope": "SETUP_ONLY", "version_lock_identity": "scip-go"},
+      "runtime_authority": {"identity_status": "OBSERVED_NONAUTHORITATIVE", "deterministic_provider_authority": false, "mismatch_effect": "NO_AUTHORITY_WITHOUT_REVIEWED_CONTENT"}
+    },
+    {
+      "tool_id": "protobuf",
+      "version_policy": "exact Python runtime version 7.35.1 for generated code 7.34.1 with reviewed Windows abi3 content",
+      "integrity_policy": "exact reviewed wheel, installed RECORD, normalized RECORD rows, installed path/content closure, imported module, and generated-module digests",
+      "revocation_policy": {"blocked_version_substrings": [], "blocked_executable_sha256": []},
+      "update_policy": {"state": "REVIEWED_CONTENT_MATCH", "acquisition_scope": "SETUP_ONLY", "version_lock_identity": "protobuf"},
+      "runtime_authority": {"identity_status": "MATCH", "deterministic_provider_authority": true, "mismatch_effect": "REVOKE_ON_REVIEWED_CONTENT_MISMATCH"}
+    }
+  ],
+  "advisory_sources": [
+    {
+      "source_id": "osv-offline",
+      "provider": "https://osv.dev",
+      "offline_policy": "OSV-Scanner v2 must receive --offline and --offline-vulnerabilities, use scan -L, and emit schema-valid JSON",
+      "freshness_policy": {"claim_scope": "blocking-signal-only", "clean_zero_authority": false},
+      "unavailable_policy": "fail closed before target dependency execution"
+    },
+    {
+      "source_id": "npm-offline-cache",
+      "provider": "npm registry cache configured by the operator",
+      "offline_policy": "npm audit must receive --offline",
+      "freshness_policy": {"claim_scope": "blocking-signal-only", "clean_zero_authority": false},
+      "unavailable_policy": "fail closed before target dependency execution"
+    },
+    {
+      "source_id": "rustsec-local",
+      "provider": "https://github.com/RustSec/advisory-db",
+      "offline_policy": "cargo audit must receive --no-fetch and an explicit local database",
+      "freshness_policy": {"max_age_seconds": 604800, "future_clock_skew_seconds": 300},
+      "unavailable_policy": "record capability debt; never emit clean zero"
+    },
+    {
+      "source_id": "govulndb-local",
+      "provider": "https://vuln.go.dev",
+      "offline_policy": "govulncheck must receive an explicit file URI database",
+      "freshness_policy": {"max_age_seconds": 604800, "future_clock_skew_seconds": 300},
+      "unavailable_policy": "record capability debt; never emit clean zero"
+    }
+  ]
+}

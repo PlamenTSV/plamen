@@ -45,6 +45,33 @@ def _depth_phase() -> T.Phase:
 
 def _base_config(scratchpad: Path, *, backend: str, mode: str,
                  pipeline: str = "sc") -> dict:
+    # The production phase loop materializes these immutable upstream inputs
+    # before dispatching the lower-level fan-out helper.  This unit test calls
+    # that helper directly, so its fixture must represent the same boundary.
+    scratchpad.joinpath("findings_inventory.md").write_text(
+        "# Findings Inventory\n\nNo prior candidates.\n", encoding="utf-8"
+    )
+    scratchpad.joinpath("semantic_invariants.md").write_text(
+        "# Semantic Invariants\n\nNo invariant candidates.\n", encoding="utf-8"
+    )
+    scratchpad.joinpath("security_feature_facts.json").write_text(
+        '{"schema":"fixture.security-feature-facts.v1","facts":[]}\n',
+        encoding="utf-8",
+    )
+    scratchpad.joinpath("security_obligation_authority.json").write_text(
+        '{"schema":"fixture.security-obligations.v1","obligations":[]}\n',
+        encoding="utf-8",
+    )
+    scratchpad.joinpath("security_obligations.md").write_text(
+        "# Security Obligations\n\nNo obligations.\n", encoding="utf-8"
+    )
+    if mode == "thorough":
+        scratchpad.joinpath(
+            "semantic_invariant_final_byte_authority.json"
+        ).write_text(
+            '{"schema":"fixture.semantic-final-byte.v1"}\n',
+            encoding="utf-8",
+        )
     return {
         "cli_backend": backend,
         "mode": mode,
@@ -52,6 +79,8 @@ def _base_config(scratchpad: Path, *, backend: str, mode: str,
         "language": "evm",
         "scratchpad": str(scratchpad),
         "project_root": str(scratchpad),
+        "_run_id": "RUN-CODEX-FANOUT-TEST",
+        "_audit_snapshot": {"snapshot_digest": "a" * 64},
     }
 
 
@@ -84,8 +113,14 @@ def test_gating_codex_depth_core_true(tmp_path):
     assert D._should_use_depth_codex_fanout(cfg, tmp_path) is True
 
 
-def test_gating_claude_backend_false(tmp_path):
+def test_gating_claude_headless_backend_true(tmp_path):
     cfg = _base_config(tmp_path, backend="claude", mode="thorough")
+    assert D._should_use_depth_codex_fanout(cfg, tmp_path) is True
+
+
+def test_gating_claude_pty_backend_false(tmp_path):
+    cfg = _base_config(tmp_path, backend="claude", mode="thorough")
+    cfg["claude_exec_mode"] = "pty"
     assert D._should_use_depth_codex_fanout(cfg, tmp_path) is False
 
 
@@ -139,7 +174,7 @@ def _install_fanout_fakes(monkeypatch, *, produced: list[str],
     )
 
     def _fake_exec(*, prompt, phase, config, scratchpad, attempt, label,
-                   expected_outputs, timeout, effective_model):
+                   expected_outputs, timeout, effective_model, **_runtime):
         produced.append(label)
         for out in expected_outputs:
             if out in fail_outputs:
@@ -163,8 +198,19 @@ def _install_fanout_fakes(monkeypatch, *, produced: list[str],
             return False
 
     monkeypatch.setattr(D, "_depth_worker_output_complete", _complete)
+    # This unit isolates fan-out/retry scheduling. PhaseIO input/output
+    # authority is exercised by the dedicated adversarial prelaunch suite.
+    monkeypatch.setattr(
+        D, "_bind_typed_model_worker_inputs", lambda **_kwargs: []
+    )
+    monkeypatch.setattr(
+        D, "_record_typed_model_worker_artifact", lambda **_kwargs: []
+    )
 
-    def _synth(scratchpad, pipeline, *, force=False, mode="core"):
+    def _synth(
+        scratchpad, pipeline, *, force=False, mode="core", config=None,
+        phase=None,
+    ):
         synth_calls["n"] += 1
         return []
 
@@ -366,7 +412,7 @@ def test_codex_config_generator_no_context_window_landmine():
     assert 'model = "gpt-5.3-codex"' not in src   # ChatGPT-auth-rejected default removed
     assert "model_auto_compact_token_limit" in src
     assert 'service_tier = "flex"' in src
-    assert 'model = "gpt-5.4"' in src
+    assert 'model = "gpt-5.6-terra"' in src
 
 
 def test_codex_context_exceeded_degrades_not_perma_fail():

@@ -60,6 +60,38 @@ def test_appendix_includes_unknown_semantic_file(tmp_path: Path):
     assert "substantive was flagged" in out
 
 
+def test_appendix_delivers_depth_finalization_failure(tmp_path: Path):
+    (tmp_path / "depth_finalization_human_review.md").write_text(
+        "# Depth Finalization — Human Review Required\n\n"
+        "**Status**: DEGRADED_HUMAN_REVIEW\n\n"
+        "| Processor | Error |\n|---|---|\n"
+        "| enumeration_gate | RuntimeError: graph parser failed |\n",
+        encoding="utf-8",
+    )
+
+    out = M._build_human_review_appendix(tmp_path)
+
+    assert "Depth recall-postprocessor finalization" in out
+    assert "enumeration_gate" in out
+    assert "graph parser failed" in out
+
+
+def test_appendix_uses_authoritative_finalization_json_when_markdown_missing(
+    tmp_path: Path,
+):
+    (tmp_path / "depth_finalization_receipt.json").write_text(
+        '{"status":"DEGRADED_HUMAN_REVIEW","processors":{'
+        '"variant_gate":{"status":"FAILED","error":"structural output vanished"}}}',
+        encoding="utf-8",
+    )
+
+    out = M._build_human_review_appendix(tmp_path)
+
+    assert "Depth recall-postprocessor finalization" in out
+    assert "variant_gate" in out
+    assert "structural output vanished" in out
+
+
 def test_appendix_delivered_in_assembled_report(tmp_path: Path):
     """End-to-end: the appendix actually reaches AUDIT_REPORT.md."""
     sp = tmp_path / "sp"

@@ -42,7 +42,7 @@ description: "Launch the V2 deterministic L1 audit pipeline for Go/Rust node cli
 > **Scope**: Go and Rust L1 / L2 node clients — Geth, Erigon, Reth, Lighthouse, CometBFT, Cosmos SDK, Substrate, op-geth, op-reth, and their forks. Targets T0 (patch review) / T1 (subsystem audit) / T2 (whole-client via multi-scoped runs) / T3 (full client, shallower coverage).
 
 > **Architecture**: Unlike smart-contract modes, L1 mode:
-> - Runs **Phase 0.5 Bake** before recon (scip-go / rust-analyzer scip / Opengrep baseline)
+> - Runs **Phase 0.5 Bake** before recon (scip-go / rust-analyzer SCIP plus ast-grep inventories)
 > - Decomposes breadth by **layer** (network / consensus / execution / crypto / storage / rpc / mempool), not by file cluster
 > - Spawns **two new depth agent roles** (`depth-consensus-invariant`, `depth-network-surface`)
 > - **Removes Phase 4c chain analysis** — L1 bugs are point vulnerabilities, not compound exploits
@@ -89,7 +89,6 @@ echo -n "  Primitives: " && \
 (command -v scip-go >/dev/null 2>&1 && echo -n "✓scip-go " || echo -n "✗scip-go ") && \
 (command -v rust-analyzer >/dev/null 2>&1 && echo -n "✓rust-analyzer " || echo -n "✗rust-analyzer ") && \
 (command -v ast-grep >/dev/null 2>&1 && echo -n "✓ast-grep " || echo -n "✗ast-grep ") && \
-(command -v opengrep >/dev/null 2>&1 && echo -n "✓opengrep " || echo -n "○opengrep ") && \
 (command -v codeql >/dev/null 2>&1 && echo -n "✓codeql" || echo -n "○codeql") && echo "" && \
 echo -n "  Targets: " && \
 (command -v go >/dev/null 2>&1 && echo -n "✓go($(go version 2>/dev/null | awk '{print $3}')) " || echo -n "✗go ") && \
@@ -102,7 +101,6 @@ Missing `scip-go`, `rust-analyzer`, or `ast-grep` is a **hard blocker** — L1 m
 scip-go:       go install github.com/scip-code/scip-go/cmd/scip-go@latest
 rust-analyzer: rustup component add rust-analyzer  (or platform binary)
 ast-grep:      cargo install ast-grep --locked     (or brew install ast-grep)
-opengrep:      https://github.com/opengrep/opengrep/releases  (optional but recommended)
 codeql:        https://github.com/github/codeql-cli-binaries/releases  (public-OSS only)
 ```
 
@@ -208,7 +206,7 @@ fi
 Include this block verbatim in every depth agent prompt:
 
 > Read `{SCRATCHPAD}/scip/repo_map.md` + your domain-specific `call_graph_*.md` + `xref_map.md` + `type_hierarchy.md` + `concurrency_inventory.md` + `panic_sites.md`.
-> DO NOT call `mcp__scip-reader__*`, `mcp__ast-grep__*`, or `mcp__opengrep__*` tools. They are unavailable in subagent contexts.
+> DO NOT call `mcp__scip-reader__*` or `mcp__ast-grep__*` tools. They are unavailable in subagent contexts.
 > Cite `scip/*.md` files for `[LSP-TRACE]` evidence. Findings without SCIP file citations use `[CODE-TRACE]`.
 > For targeted queries not in pre-baked files, use Bash: `python -m plamen_l1.scip_reader {SCIP_INDEX_PATH} find_references "SymbolName"`
 
@@ -379,21 +377,11 @@ echo "SCIP_PREBAKE_FILES=$(ls $SCIP_DIR/*.md 2>/dev/null | wc -l)" >> "$SCRATCHP
 
 **Expected output**: 6-10 flat files in `{SCRATCHPAD}/scip/` (~80-200 KB total). If any `scip_reader` command fails, the file is created empty; agents fall back to Grep.
 
-### 1.5c: Opengrep Baseline
-
-```bash
-opengrep --config ~/.claude/agents/skills/injectable/l1/_opengrep-rules/ \
-  --json {PROJECT_PATH} > "$SCRATCHPAD/opengrep_hits.json" 2>&1 || \
-  echo '{"results":[],"errors":"opengrep unavailable"}' > "$SCRATCHPAD/opengrep_hits.json"
-```
-
-Record fallback status in `primitive_status.md` if unavailable.
-
 ---
 
 ## Step 2: L1 Recon
 
-Read `~/.claude/prompts/l1/phase1-recon-prompt.md`. Spawn 3 parallel recon agents (L1-1 threat model + fork ancestry, L1-2 subsystem map + attack surface + scope leftovers, L1-3 bake validation + Opengrep sweep). No RAG agent for L1.
+Read `~/.claude/prompts/l1/phase1-recon-prompt.md`. Spawn 3 parallel recon agents (L1-1 threat model + fork ancestry, L1-2 subsystem map + attack surface + scope leftovers, L1-3 bake validation + primitive sweep). No RAG agent for L1.
 
 After all three complete, write `$SCRATCHPAD/recon_summary.md` with:
 - `L1_PATTERN = true`
@@ -445,7 +433,7 @@ Soft cap: ≤3 for T1 scope. Log to `violations.md` if exceeded.
 
 ### 3c. Spawn
 
-For each layer, spawn ONE `general-purpose` Opus 4.8 agent (`model="claude-opus-4-8"`). Include the layer's skill set, paths to primitive artifacts, and the §WRITE-THEN-VERIFY directive. End with SCOPE CONTAINMENT.
+For each layer, spawn ONE `general-purpose` Opus 5 agent (`model="claude-opus-5"`). Include the layer's skill set, paths to primitive artifacts, and the §WRITE-THEN-VERIFY directive. End with SCOPE CONTAINMENT.
 
 After each agent returns, verify the file exists per §WRITE-THEN-VERIFY (`ls -lh` + `wc -l`). If missing, re-prompt for text fallback.
 
@@ -702,9 +690,9 @@ Spawn 5 depth agents in ONE message (all parallel), each as `general-purpose`:
 
 | Agent | Model | Reads (from `scip/`) | Skills |
 |---|---|---|---|
-| `depth-consensus-invariant` | claude-opus-4-8 | `call_graph_consensus.md`, `repo_map.md`, `xref_map.md` | consensus-safety, consensus-math-correctness (if difficulty / reward / EMA math detected), fork-choice, light-client, BLS, validator-lifecycle, hardfork, data-availability-enforcement (if `DATA_AVAILABILITY=true`) |
-| `depth-network-surface` | claude-opus-4-8 | `call_graph_p2p.md`, `concurrency_inventory.md`, `panic_sites.md` | p2p-dos, mempool, RPC |
-| `depth-state-trace` | claude-opus-4-8 | `call_graph_execution.md`, `type_hierarchy.md` | state-sync-pruning, execution-client-hardening |
+| `depth-consensus-invariant` | claude-opus-5 | `call_graph_consensus.md`, `repo_map.md`, `xref_map.md` | consensus-safety, consensus-math-correctness (if difficulty / reward / EMA math detected), fork-choice, light-client, BLS, validator-lifecycle, hardfork, data-availability-enforcement (if `DATA_AVAILABILITY=true`) |
+| `depth-network-surface` | claude-opus-5 | `call_graph_p2p.md`, `concurrency_inventory.md`, `panic_sites.md` | p2p-dos, mempool, RPC |
+| `depth-state-trace` | claude-opus-5 | `call_graph_execution.md`, `type_hierarchy.md` | state-sync-pruning, execution-client-hardening |
 | `depth-external` | sonnet | `xref_map.md`, `type_hierarchy.md` | dependency-audit-nodeclient, cross-environment-semantic-drift |
 | `depth-edge-case` | sonnet | `repo_map.md`, `xref_map.md` | zero-state, boundary checks |
 
@@ -790,13 +778,17 @@ if fails:
 PYEOF
 ```
 
-Core mode: iteration 1 + confidence scoring (2-axis). See Step 4b.3 for Thorough-only iterations.
+Core mode: iteration 1 + transient confidence routing (2-axis). See Step 4b.3 for Thorough-only iterations.
 
-### Step 4b.1: Confidence scoring (Core: 2-axis, Thorough: 4-axis)
+### Step 4b.1: Transient confidence routing (Core: 2-axis, Thorough: 3 code-evidence axes)
 
-Spawn ONE sonnet agent per `rules/phase4-confidence-scoring.md`. Reads all `depth_*_findings.md`.
-- **Core mode**: 2-axis scoring (Evidence × 0.5 + Analysis_Quality × 0.5). Returns `confidence_scores.md` per §WRITE-THEN-VERIFY. No iteration 2 routing.
-- **Thorough mode**: 4-axis scoring (Evidence × 0.25 + Consensus × 0.25 + Analysis_Quality × 0.3 + RAG_Match × 0.2). Returns `confidence_scores.md` per §WRITE-THEN-VERIFY. Findings with composite < 0.7 are UNCERTAIN and route to Step 4b.3 iter 2.
+Ask ONE sonnet-class helper to return a compact routing table to the
+coordinator per `rules/phase4-confidence-scoring.md`. It reads completed
+depth evidence but has no scratchpad write authority. The driver independently
+publishes `confidence_scores.md` after the depth wave. If the helper fails,
+route every unresolved Medium+ candidate as UNCERTAIN.
+- **Core mode**: 2-axis routing (Evidence × 0.5 + Analysis_Quality × 0.5). No iteration 2.
+- **Thorough mode**: 3-axis routing (Evidence × 0.25 + Consensus × 0.25 + Analysis_Quality × 0.3). Findings with composite < 0.7 are UNCERTAIN and route to Step 4b.3.
 
 ### Step 4b.2: THOROUGH-ONLY: Design Stress Testing (1 reserved slot, UNCONDITIONAL)
 
@@ -804,7 +796,7 @@ Spawn ONE sonnet agent. Reads `design_context.md`, `semantic_invariants.md`, `fi
 
 ### Step 4b.3: THOROUGH-ONLY: Depth iteration 2 (Devil's Advocate)
 
-Per `rules/phase4-confidence-scoring.md` §"Hard Devil's Advocate Role". For each UNCERTAIN finding in `confidence_scores.md`, spawn a DA agent with the contrastive prompt: "You are the Devil's Advocate. Your PRIMARY job is to find what the previous analysis MISSED. The prior agent explored {analysis path summary} — you MUST explore a DIFFERENT path." Each DA agent receives Max 5 findings via `extract_evidence_only()` card format (no verdicts, no reasoning contamination). Writes `depth_iter2_{type}_findings.md` per §WRITE-THEN-VERIFY. Re-scoring is new-evidence-only per Rule AD-5.
+Per `rules/phase4-confidence-scoring.md` §"Hard Devil's Advocate Role". For each UNCERTAIN finding in the transient routing table (or recall-safe fallback), spawn a DA agent with the contrastive prompt: "You are the Devil's Advocate. Your PRIMARY job is to find what the previous analysis MISSED. The prior agent explored {analysis path summary} — you MUST explore a DIFFERENT path." Each DA agent receives Max 5 findings via `extract_evidence_only()` card format (no verdicts, no reasoning contamination). Writes `depth_iter2_{type}_findings.md` per §WRITE-THEN-VERIFY. Re-routing is new-evidence-only per Rule AD-5.
 
 If iter 2 produces progress on any finding → spawn iter 3 with the same DA role. Hard cap: 3 iterations total.
 
@@ -939,7 +931,13 @@ SCOPE: Write ONLY to `attention_repair_summary.md` and, if needed,
 
 ## Step 4b.6: RAG Validation Sweep
 
-Spawn ONE sonnet agent per `rules/phase4-confidence-scoring.md` §"Phase 4b.5". Pre-check `build_status.md` for `RAG_TOOLS_AVAILABLE`. L1 vuln-db coverage is thin; expect floor scores (0.3). Returns `rag_validation.md` per §WRITE-THEN-VERIFY.
+Spawn ONE sonnet-class precedent agent per
+`rules/phase4-confidence-scoring.md` §"Phase 4b.5". Claude headless may use the
+receipt-bound singleton `unified-vuln-db`; Claude PTY and Codex use governed Web
+research. If neither route is available, record typed `UNAVAILABLE` context.
+Never invent a numeric floor or use precedent to change confidence, verdict,
+severity, proof, or remaining depth. Returns `rag_validation.md` per
+§WRITE-THEN-VERIFY.
 
 ---
 
@@ -982,15 +980,20 @@ the same bug reported by multiple depth agents enters verification N times,
 wasting budget.
 
 This phase runs a single sonnet agent that:
-1. Reads pre-computed Python dedup signals (`[LIKELY-DUP]` tags in
-   `findings_inventory.md` and `dedup_candidate_pairs.md`)
+1. Reads the exact typed, bounded block/pair/focus packet derived from the
+   current canonical `findings_inventory.md`
 2. Makes semantic merge/keep decisions for each candidate pair
 3. Identifies cross-file pattern groups (same bug at different locations)
-4. Writes `dedup_decisions.md` and `verification_queue_deduped.md`
+4. Writes only the proposal artifact `dedup_decisions.md`
 
-Post-dedup, verification shards read `verification_queue_deduped.md` instead
-of `verification_queue.md`. The driver re-runs `ensure_verify_shard_manifests`
-on the deduped queue.
+The model never mutates a verification queue. The driver applies accepted
+proposals through the crash-safe pre-queue semantic-dedup transaction, which
+atomically publishes the canonical post-dedup inventory, its exact typed
+records projection, the applied receipt, the absorbed-ID alias map, and the
+read-only deduped inventory projection. Missing or failed signal enumeration
+degrades to a DRIVER-owned inventory passthrough with visible debt and no
+negative conclusion. Verification queues and shards are derived later from
+the committed canonical inventory.
 
 ---
 
@@ -1260,5 +1263,4 @@ echo "[Report preserved] {SCRATCHPAD}/AUDIT_REPORT.${TIMESTAMP}.md"
 | L1 skills | `agents/skills/injectable/l1/` |
 | Depth agents | `agents/depth-consensus-invariant.md`, `agents/depth-network-surface.md` |
 | Primitive shim | `plamen_l1/scip_reader.py` |
-| Opengrep rules | `agents/skills/injectable/l1/_opengrep-rules/` |
 | Benchmark corpus | `benchmarks/l1/README.md` |

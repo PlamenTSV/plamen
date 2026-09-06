@@ -1,0 +1,5 @@
+-r requirements-runtime-core.in
+
+# Optional local RAG service. pip-compile resolves these declared ranges once;
+# runtime installation consumes only the exact, hashed wheel lock.
+-r custom-mcp/unified-vuln-db/requirements.txt

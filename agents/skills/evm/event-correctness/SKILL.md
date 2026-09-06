@@ -6,7 +6,7 @@ description: "Trigger 15 events detected in recon event_definitions.md (optional
 # Skill: EVENT_CORRECTNESS
 
 > **Trigger**: >15 events detected in recon event_definitions.md (optional skill)
-> **Used By**: breadth agents (assigned to core state or dedicated agent)
+> **Inject Into**: Breadth agents
 > **Purpose**: Verify emitted event parameters match actual state changes
 
 ## Methodology

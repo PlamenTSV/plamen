@@ -127,6 +127,25 @@ class TestPlamenHomeIntegration:
         assert plamen_home().as_posix() in rendered
         assert "{PLAMEN_BASE}" not in rendered
 
+    def test_legacy_claude_methodology_paths_render_to_canonical_home(self):
+        import plamen_prompt as PP
+        test_text = (
+            "Read `~/.claude/rules/test.md` and "
+            "`$HOME/.claude/agents/example.md`."
+        )
+        config = {
+            "language": "evm",
+            "scratchpad": "/tmp/test",
+            "project_root": "/tmp",
+        }
+
+        rendered = PP._render_runtime_placeholders(test_text, config)
+
+        assert "~/.claude" not in rendered
+        assert "$HOME/.claude" not in rendered
+        assert f"{plamen_home().as_posix()}/rules/test.md" in rendered
+        assert f"{plamen_home().as_posix()}/agents/example.md" in rendered
+
 
 class TestPlamenHomeInAllField:
     def test_exported_in_all(self):

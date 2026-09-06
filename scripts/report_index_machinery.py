@@ -23,6 +23,7 @@ the driver path end-to-end.
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,7 +75,8 @@ def build_report_index_candidates_json(
       - `judge_decisions.json` (P0.2) or `skeptic_judge_decisions.md`:
         judge UNRESOLVED/DOWNGRADE/KEEP per finding
       - `_severity_override_ledger.json` (P1.2): driver auto-repairs (if any)
-      - `poc_demotions.md`: PoC-fail caps (existing)
+      - `poc_demotion_proposals.json`: proposal-only PoC-fail review context;
+        it has no severity, exclusion, or negative-disposition authority
 
     Output: `{scratchpad}/report_index_candidates.json` with one entry per
     queue finding. The LLM's job is reduced to picking one of the
@@ -89,26 +91,110 @@ def build_report_index_candidates_json(
     from plamen_parsers import (
         parse_verification_queue_rows,
         read_judge_decisions_json_sidecar,
+        _verifier_status_from_text,
     )
     try:
-        from mechanical_verify import read_verdict_manifest
+        from plamen_validators import _mechanical_successor_authority_view
     except ImportError:
-        def read_verdict_manifest(_): return []
+        def _mechanical_successor_authority_view(_):
+            return {
+                "status": "DEGRADED",
+                "mechanical_present": True,
+                "issues": ["mechanical successor authority validator unavailable"],
+                "verdicts": {},
+            }
     try:
         from plamen_validators import _read_severity_override_ledger
     except ImportError:
         def _read_severity_override_ledger(_): return []
 
-    # 1. Collect queue rows
-    queue_rows = parse_verification_queue_rows(scratchpad)
+    # 1. Collect the exact report universe.  Once the typed T8 publication
+    # exists, post-verification candidates can only enter through its
+    # authenticated additive delta; falling back to Markdown here would
+    # silently drop those candidates.
+    universe_binding: dict[str, Any]
+    from post_verify_candidate_delta import (
+        report_candidate_universe_requires_typed_authority,
+    )
+    if report_candidate_universe_requires_typed_authority(scratchpad):
+        from post_verify_candidate_delta import (
+            load_current_report_candidate_universe_authority,
+        )
+        from queue_work_items import queue_record_set_digest
+
+        candidate_authority = (
+            load_current_report_candidate_universe_authority(
+                scratchpad,
+                project_root=scratchpad.parent,
+            )
+        )
+        bound_universe = candidate_authority.candidates
+        queue_rows = []
+        source_rows: dict[tuple[str, str], dict[str, str]] = {}
+        for bound in bound_universe:
+            item = bound.item
+            location = ""
+            if item.location_records:
+                record = item.location_records[0]
+                location = record.artifact
+                if record.start_line is not None:
+                    location += f":{record.start_line}"
+                    if (
+                        record.end_line is not None
+                        and record.end_line != record.start_line
+                    ):
+                        location += f"-{record.end_line}"
+            queue_rows.append({
+                "finding id": item.work_item_id,
+                "severity": item.severity_proposal.level,
+                "title": item.title,
+                "location": location,
+                "expected output file": item.expected_output_file,
+                "_source_kind": bound.source_kind,
+                "_source_artifact": bound.source_artifact,
+                "_source_artifact_sha256": bound.source_artifact_sha256,
+                "_source_record_digest": bound.source_record_digest,
+            })
+            source_rows[(bound.source_artifact, bound.source_kind)] = {
+                "artifact": bound.source_artifact,
+                "source_kind": bound.source_kind,
+                "sha256": bound.source_artifact_sha256,
+            }
+        universe_binding = {
+            "authority": "T8_BASE_PLUS_POST_VERIFY_DELTA",
+            "record_count": len(bound_universe),
+            "record_set_digest": queue_record_set_digest(
+                row.item for row in bound_universe
+            ),
+            "sources": [
+                source_rows[key] for key in sorted(source_rows)
+            ],
+        }
+    else:
+        queue_rows = parse_verification_queue_rows(scratchpad)
+        universe_binding = {
+            "authority": "LEGACY_MARKDOWN_PRE_CUTOVER",
+            "record_count": len(queue_rows),
+            "record_set_digest": hashlib.sha256(
+                json.dumps(
+                    queue_rows,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "sources": [],
+        }
 
     # 2. Index verdict manifest by finding_id (P3.1 effective_tag is the
     #    authoritative evidence tag)
-    verdict_by_id: dict[str, dict] = {}
-    for v in read_verdict_manifest(scratchpad):
-        fid = (v.get("finding_id") or "").upper()
-        if fid:
-            verdict_by_id[fid] = v
+    mechanical_authority = _mechanical_successor_authority_view(scratchpad)
+    verdict_by_id: dict[str, dict] = dict(
+        mechanical_authority.get("verdicts") or {}
+    )
+    mechanical_global_unbound = bool(
+        mechanical_authority.get("mechanical_present")
+        and mechanical_authority.get("status") == "DEGRADED"
+    )
 
     # 3. Index judge decisions by finding_id
     judge_by_id: dict[str, dict] = {}
@@ -136,25 +222,38 @@ def build_report_index_candidates_json(
         upstream_severity = _normalize_severity(row.get("severity") or "Medium")
         # Apply verdict manifest integrity (downgrade if INFLATED_PROSE)
         vm_entry = verdict_by_id.get(canonical_id, {})
+        if not vm_entry and mechanical_global_unbound:
+            vm_entry = {
+                "effective_tag": "[CODE-TRACE] [MECHANICAL-UNAVAILABLE]",
+                "integrity_state": "MECHANICAL_UNAVAILABLE",
+                "authority_state": "UNBOUND",
+                "authority_issue": "mechanical authority denominator is degraded",
+            }
         effective_tag = vm_entry.get("effective_tag", "")
         integrity_state = vm_entry.get("integrity_state", "")
+        authority_state = vm_entry.get("authority_state", "ABSENT")
+        authority_issue = vm_entry.get("authority_issue", "")
+        verify_file = row.get("expected output file") \
+            or f"verify_{canonical_id}.md"
+        try:
+            verify_text = (scratchpad / verify_file).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except Exception:
+            verify_text = ""
+        verifier_status = _verifier_status_from_text(verify_text)
         # Sev after verdict manifest: today only affects downstream demote
         # via the PROVEN_ONLY / [CODE-TRACE] caps (handled by tier-writers).
         # For the candidates table, we record the effective_tag verbatim.
         effective_sev_after_vm = upstream_severity
 
-        # Apply judge decision (UNRESOLVED → -1 tier; DOWNGRADE → use FS)
+        # P0-V: skeptic/judge Markdown is proposal-only.  Preserve its token
+        # for visibility, but never derive a tier change from it.  A report
+        # severity change can only arrive through the shared typed severity
+        # ledger after explicit authority cutover.
         judge_entry = judge_by_id.get(canonical_id, {})
         judge_decision = judge_entry.get("decision", "")
         effective_sev_after_judge = effective_sev_after_vm
-        if judge_decision in ("UNRESOLVED", "PARTIAL"):
-            effective_sev_after_judge = _demote_one_tier(effective_sev_after_vm)
-        elif judge_decision == "DOWNGRADE":
-            final_sev = _normalize_severity(judge_entry.get("final_severity", ""))
-            if final_sev:
-                effective_sev_after_judge = final_sev
-        elif judge_decision in ("KEEP", ""):
-            pass
 
         enriched.append({
             "canonical_id": canonical_id,
@@ -164,13 +263,20 @@ def build_report_index_candidates_json(
                 effective_sev_after_vm,
             "judge_decision": judge_decision or "NONE",
             "effective_severity_after_judge": effective_sev_after_judge,
-            "verify_file": row.get("expected output file")
-                or f"verify_{canonical_id}.md",
+            "verify_file": verify_file,
+            "verifier_status": verifier_status,
             "effective_tag": effective_tag,
             "integrity_state": integrity_state,
+            "mechanical_authority_state": authority_state,
+            "mechanical_authority_issue": authority_issue,
             "trust_adj_source": _trust_adj_source(
-                judge_decision, integrity_state, canonical_id, override_by_rid
+                judge_decision, integrity_state, authority_state,
+                canonical_id, override_by_rid
             ),
+            "source_kind": row.get("_source_kind") or "LEGACY_QUEUE",
+            "source_artifact": row.get("_source_artifact") or "verification_queue.md",
+            "source_artifact_sha256": row.get("_source_artifact_sha256") or "",
+            "source_record_digest": row.get("_source_record_digest") or "",
         })
 
     # Sort by severity tier (Critical first), then alphabetic by canonical_id
@@ -194,6 +300,7 @@ def build_report_index_candidates_json(
         "schema_version": CANDIDATES_SCHEMA_VERSION,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "row_count": len(enriched),
+        "candidate_universe": universe_binding,
         "candidates": enriched,
     }
     out = scratchpad / "report_index_candidates.json"
@@ -360,7 +467,11 @@ def render_report_index_markdown(scratchpad: Path) -> bool:
         if isinstance(a, dict)
     }
 
-    # Partition into report-body candidates vs excluded
+    # The LLM action file is a proposal ledger, not lifecycle authority.  This
+    # renderer has no trusted negative-closure or applied-equivalence input, so
+    # every candidate remains in the body denominator.  Proposed drops and
+    # merges are rendered visibly for a later typed discriminator; they cannot
+    # remove or consolidate identity at this boundary.
     body_rows: list[dict] = []
     excluded_rows: list[dict] = []
     consolidations: list[dict] = []
@@ -368,15 +479,14 @@ def render_report_index_markdown(scratchpad: Path) -> bool:
         cid = c["canonical_id"]
         a = action_by_id.get(cid, {})
         action = (a.get("action") or "").upper()
-        if action == "REPORTABLE":
-            body_rows.append(c)
-        elif action == "MERGE_INTO":
+        body_rows.append(c)
+        if action == "MERGE_INTO":
             consolidations.append({
                 "candidate": c,
                 "merge_into": (a.get("merge_into") or "").upper(),
                 "reason": a.get("reason") or "",
             })
-        else:
+        elif action != "REPORTABLE":
             # APPENDIX_ONLY / DROP_* / UNRESOLVED_EVIDENCE
             excluded_rows.append({"candidate": c, "action": action,
                                   "reason": a.get("reason") or ""})
@@ -403,7 +513,7 @@ def render_report_index_markdown(scratchpad: Path) -> bool:
 
     if consolidations:
         lines.extend([
-            "## Consolidation Map",
+            "## Proposed Consolidation Map (Non-authoritative)",
             "",
             "| Source Candidate | Merged Into | Reason |",
             "|------------------|-------------|--------|",
@@ -417,7 +527,7 @@ def render_report_index_markdown(scratchpad: Path) -> bool:
 
     if excluded_rows:
         lines.extend([
-            "## Excluded Findings",
+            "## Proposed Non-Body Actions (Non-authoritative)",
             "",
             "| Canonical ID | Action | Reason |",
             "|--------------|--------|--------|",
@@ -506,13 +616,14 @@ def _demote_one_tier(sev: str) -> str:
 
 def _trust_adj_source(
     judge_decision: str, integrity_state: str,
+    authority_state: str,
     canonical_id: str, override_by_rid: dict,
 ) -> str:
     """Identify the source of the Trust Adj. token for this candidate."""
-    if judge_decision in ("UNRESOLVED", "PARTIAL"):
-        return "judge"
-    if judge_decision == "DOWNGRADE":
-        return "judge"
+    if judge_decision in ("UNRESOLVED", "PARTIAL", "DOWNGRADE", "UPGRADE"):
+        return "judge-proposal"
+    if authority_state == "UNBOUND":
+        return "mechanical-authority"
     if integrity_state == "INFLATED_PROSE":
         return "verdict_manifest"
     if canonical_id in override_by_rid:
@@ -525,14 +636,16 @@ def _trust_adj_for(c: dict) -> str:
     src = c.get("trust_adj_source", "none")
     sev_pre = c["effective_severity_after_verdict_manifest"]
     sev_post = c["effective_severity_after_judge"]
-    if src == "judge":
+    if src == "judge-proposal":
         decision = c.get("judge_decision", "")
         if decision in ("UNRESOLVED", "PARTIAL"):
             return f"UNRESOLVED({sev_pre})"
-        if decision == "DOWNGRADE":
-            return f"SKEPTIC-DOWNGRADE({sev_pre})"
+        if decision in ("DOWNGRADE", "UPGRADE"):
+            return f"SKEPTIC-CHALLENGE({sev_pre})"
     if src == "verdict_manifest" and c.get("integrity_state") == "INFLATED_PROSE":
         return "INTEGRITY-DOWNGRADE"
+    if src == "mechanical-authority":
+        return "MECHANICAL-UNAVAILABLE"
     if src == "driver-override":
         return f"SEVERITY_OVERRIDE(upstream={sev_pre}, llm={sev_post})"
     return "-"
@@ -547,6 +660,37 @@ def _verification_status(c: dict) -> str:
     [POC-FAIL]/INFLATED_PROSE is CONTESTED; a plain [CODE-TRACE] verdict-
     confirmed finding is CONFIRMED (previously mislabeled UNVERIFIED — the
     label collision Fix 1 removes)."""
+    authority_state = str(
+        c.get("mechanical_authority_state") or "ABSENT"
+    ).upper()
+    integrity_state = str(c.get("integrity_state") or "").upper()
+    verifier_status = str(c.get("verifier_status") or "CONFIRMED").upper()
+    if authority_state == "UNBOUND":
+        # Preserve the non-mechanical disposition, but an unbound execution
+        # result can never mint VERIFIED or an integrity demotion. Production
+        # evidence remains a separate proof authority and is not weakened by a
+        # missing local mechanical successor.
+        tag = (c.get("effective_tag") or "").upper()
+        if "[PROD-" in tag and verifier_status in {
+            "CONFIRMED", "TRUE_POSITIVE", "VALID"
+        }:
+            return "VERIFIED"
+        if verifier_status in {"CONTESTED", "UNRESOLVED", "PARTIAL"}:
+            return "CONTESTED"
+        if verifier_status in {"REFUTED", "FALSE_POSITIVE", "INFEASIBLE"}:
+            return "UNVERIFIED"
+        return "CONFIRMED"
+    if authority_state == "BOUND" and integrity_state == "INFLATED_PROSE":
+        return "CONTESTED"
+    # Missing/partial verifier authority is never promoted merely because no
+    # mechanical-successor record exists.  P0-AK can intentionally retain an
+    # exact pending child as UNRESOLVED debt; mapping the ABSENT-authority case
+    # to the historical default CONFIRMED would turn non-proof into positive
+    # proof semantics at the report boundary.
+    if verifier_status in {"CONTESTED", "UNRESOLVED", "PARTIAL"}:
+        return "CONTESTED"
+    if verifier_status in {"REFUTED", "FALSE_POSITIVE", "INFEASIBLE"}:
+        return "UNVERIFIED"
     tag = (c.get("effective_tag") or "").upper()
     if "POC-PASS" in tag or "MEDUSA-PASS" in tag or "PROD-" in tag \
             or "FUZZ-PASS" in tag or "DIFF-PASS" in tag \

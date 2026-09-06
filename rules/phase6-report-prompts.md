@@ -20,7 +20,9 @@ You are the Report Index Agent. You create the master finding index for the audi
 ## Your Inputs
 Read:
 - {SCRATCHPAD}/verify_core.md — **OPTIONAL but primary when present**. SC and L1 pipelines normally produce this via the verification aggregate phase. When absent, enumerate `verify_*.md` files directly and derive per-hypothesis verdicts. Do NOT fail the phase on its absence.
-- {SCRATCHPAD}/rag_validation.md (historical support / contradiction)
+- {SCRATCHPAD}/precedent_report_context.md (OPTIONAL, eligible-only driver projection of typed
+  precedent authority; labelled context only under
+  `precedent-evidence-policy.md`, never confidence/verdict/severity authority)
 - {SCRATCHPAD}/finding_mapping.md (hypothesis → agent finding mapping)
 - {SCRATCHPAD}/verification_queue.md (the bounded per-hypothesis view — coverage source)
 - {SCRATCHPAD}/severity_binding.md (driver-computed expected severity per finding)
@@ -40,10 +42,13 @@ Read:
   If it is absent, read `verify_*.md` files directly — each carries its own
   hypothesis ID + verdict header.
 - {SCRATCHPAD}/dedup_candidate_pairs.md (OPTIONAL — same-file pairs with high title/identifier overlap. HINTS for Step 1.5 consolidation, not mandates.)
-- {SCRATCHPAD}/poc_demotions.md (OPTIONAL — mechanical severity caps where PoC execution disproved the claimed harm; apply in STEP 1 rule 7.)
+- {SCRATCHPAD}/poc_demotion_proposals.json and poc_demotion_proposals.md (OPTIONAL — non-authoritative negative-review proposals. They MUST NOT lower severity, exclude, refute, merge, or otherwise dispose of a finding.)
+- {SCRATCHPAD}/poc_demotion_scope_receipt.json and poc_demotion_scope_recovery_status.json (OPTIONAL — exact grouped-PoC scope and repair state. Scope/reverification evidence only; constituents retain pre-proposal severity.)
 - {SCRATCHPAD}/independent_severity_caps.md (OPTIONAL — min(independent, claimed) caps; STEP 1 rule 9; cap-only.)
 
 Forbidden inputs:
+- Do NOT read raw `{SCRATCHPAD}/rag_validation.md`; only the deterministic
+  `precedent_report_context.md` projection may supply external-source context.
 - Do NOT read `{SCRATCHPAD}/report_index.md`, `{SCRATCHPAD}/report_coverage.md`,
   or any `*.attempt*` file when a retry hint is present. Previous report-index
   outputs are known-bad artifacts, not evidence.
@@ -84,6 +89,15 @@ that falls between tier-batches is mechanically detected and a retry hint names
 it. Cross-tier chains/cross-references are recorded once in the Cross-Reference
 Map after all tiers are written.
 
+### Disposition Authority Contract (MANDATORY)
+
+Index/disposition Markdown only accounts/proposes. Non-body treatment requires
+an exact same-identity, full-claim typed refutation or zero-harm decision, or an
+applied hash-bound alias naming its delivered survivor. Missing/stale/partial/
+contested authority defaults to BODY at upstream severity with
+`UNRESOLVED-DISPOSITION`; `DEFERRED` remains debt. Lexical rules may veto, never
+authorize.
+
 ## Your Task
 
 ### Severity Authority Contract (READ BEFORE TIERING)
@@ -108,7 +122,7 @@ For every Master Finding Index row:
    - `UNRESOLVED(original_sev)` or `PARTIAL(original_sev)`
    - `SEVERITY_OVERRIDE(original_sev)` only when supplied by the
      driver-only `_severity_override_ledger.json`
-   - `POC-FAIL(original_sev)`
+   - `POC-FAIL-PROPOSAL(no-tier-change)` only for visible review context
    - `PROVEN(original_sev)` only when `PROVEN_ONLY: true`
    - `CHAIN-UPGRADE(original_sev)` / `CHAIN-DOWNGRADE(original_sev)` with the
      chain ID and enabling relation
@@ -124,39 +138,37 @@ For each hypothesis, apply this priority order:
 1. If a verifier returned a verdict → use verifier's final severity
 2. If chain analysis upgraded severity → use upgraded severity
 3. Otherwise → use the severity from hypotheses.md
-4. **Trust tags**: In `findings_inventory.md`, `[ASSUMPTION-DEP: TRUSTED-ACTOR]` applies -1 tier (floor: Informational) and `TRUSTED-ACTOR(original_sev)` in Trust Adj.; `[ASSUMPTION-DEP: WITHIN-BOUNDS]` is index context only. Do not override, remove, or skip Inventory tags.
+4. **Trust claims**: Inventory trust labels are advisory. Only an exact, evidence-bound `FULLY_TRUSTED_ACTOR` typed-ledger event authorizes `TRUSTED-ACTOR(original_sev)`; otherwise preserve severity and show uncertainty. `WITHIN-BOUNDS` is context only.
 5. **Proven-only mode**: Only when `PROVEN_ONLY: true`, cap `[CODE-TRACE]`-only findings at Low and record `PROVEN(original_sev)`; count demotions for the header note. When false, `[CODE-TRACE]` doesn't affect severity. EXCEPTION: a genuine structural-untestability ledger reason keeps verifier severity — record `STRUCTURAL-UNTESTABLE(original_sev)`; `[PROD-*]` is proof-grade, never capped.
-6. **UNRESOLVED/PARTIAL**: Treat both tokens from `skeptic_*.md`/`judge_*.md` as unresolved disagreement. Apply -1 tier (floor: Low), record `UNRESOLVED(original_sev)`, keep in body, tag `[UNRESOLVED - needs human review]`. Placing it in Excluded Findings is a workflow violation.
-7. **Skeptic-judge DOWNGRADE**: If `skeptic_judge_decisions.md` exists, for each `DOWNGRADE` row, cap severity at the Final Severity value and record `SKEPTIC-DOWNGRADE(original_sev)`. Not for KEEP/UNRESOLVED/PARTIAL (rule 6). Priority over matrix defaults, yields to PoC evidence (rule 8).
-8. **PoC-fail caps**: If `poc_demotions.md` exists, apply each listed cap, record `POC-FAIL(original_sev)`, keep in body. Driver-computed from `[POC-FAIL]` evidence; do not override or skip.
-9. **Independent severity caps (M4)**: If `independent_severity_caps.md` exists, apply each cap (`final = min(independent, claimed)`), record `INDEPENDENT-MIN(original_sev)`. From the verifier's mandatory blind-first `Independent Severity` field; do not skip. Cap-only — never raises; missing/unparseable field or REFUTED = no cap.
-10. **Driver-only severity overrides**: If `_severity_override_ledger.json`
+6. **UNRESOLVED/PARTIAL**: Preserve the highest supported tier, record `UNRESOLVED(original_sev)` for visibility, retain the body, and flag human review. These states never discount severity by themselves.
+7. **Skeptic boundary**: skeptic artifacts are proposal-only. A distinct typed adjudicator and validated report-authoritative ledger are required for any state change; absent/stale/ambiguous authority preserves severity and body placement.
+8. **PoC-fail proposal boundary**: If `poc_demotion_proposals.json` exists, keep each listed finding at its highest supported pre-proposal severity and in the report body. A failed/non-established execution describes the encoded attempt; it MUST NOT lower severity, exclude, refute, merge, or close the candidate. Record `POC-FAIL-PROPOSAL(no-tier-change)` only as visible review context. Grouped scope rows identify which constituents require review; `P0-O REVERIFIED SUPPLEMENT` remains additive evidence and never creates a negative lifecycle effect.
+9. **Driver-only severity overrides**: If `_severity_override_ledger.json`
    exists, apply only the listed override rows and record
    `SEVERITY_OVERRIDE(original_sev)` in Trust Adj. Agents must not invent this
    token without the driver-only ledger.
-11. Obey driver `status_binding.md`/`severity_binding.md` tokens (Fix 1/3; see `report-template.md`).
+10. Obey driver `status_binding.md`/`severity_binding.md` tokens (Fix 1/3; see `report-template.md`).
 
 ### STEP 1.25: Client-Worthiness Triage (CONSERVATIVE)
 
 This is presentation triage, not a new analysis phase.
 
 **Material-Harm Body Floor (MANDATORY, recall-safe — also driver-enforced).**
-The body is for findings with a real security consequence; pure-quality
-findings go to the appendix. The driver mechanically classifies every finding
-BODY vs APPENDIX in `disposition.md` and RELOCATES any APPENDIX finding that
-still has a body `###` section into **Appendix C: Quality & Hardening
+The body is for findings with a real security consequence; independently
+confirmed zero-harm quality findings may go to the appendix. `disposition.md`
+is proposal-only. The driver derives `report_disposition_authority.json` from
+exact verifier receipts/typed decisions and applies only authorized APPENDIX
+proposals into **Appendix C: Quality & Hardening
 Observations** (never dropped) — so prefer matching this floor here to avoid
 churn:
 
+Every relocation preserves the complete original section in
+`report_appendix_full_content.json` and validates a client-field diff. Missing
+or contradictory authority leaves BODY unchanged.
+
 - A finding -> **APPENDIX** ONLY if it has ZERO security consequence — i.e. it
-  is pure quality/hardening/observability/style: missing events; missing
-  zero-address/range checks with no demonstrated loss; one-step ownership / no
-  two-step ownership / `renounceOwnership`; defense-in-depth ("add
-  `nonReentrant`" with no shown reentrancy loss); signature/EIP-712 binding
-  hardening with no shown exploit; missing asserts/gates ("does not validate
-  X") with no consequence; UX/allowance friction; naming; typos; error-message
-  wording; magic numbers; gas; docs; test-harness quality; interface-vs-impl
-  parity; `supportsInterface` omissions; latent/none-at-present hazards.
+  is pure quality/hardening/observability/style with no runtime consequence;
+  the exact typed decision must agree.
 - Otherwise -> **BODY.** ANY real security consequence keeps it in the body AT
   ANY SEVERITY, even if trusted-actor-gated, self-inflicted-precondition, or
   bounded/dust: direct fund loss/extraction; funds/assets locked or frozen;
@@ -164,43 +176,29 @@ churn:
   corruption leading to loss.
 - **Recall-safe default: when in doubt, BODY.** Burying a real finding in the
   appendix is the unacceptable error; an extra body finding is cheap.
-- This applies at EVERY severity (a Medium/High that is pure
-  observability/quality -> APPENDIX; a Low/Info with a real consequence ->
-  BODY). DROP/FALSE_POSITIVE (verifier-refuted) is unchanged and SEPARATE from
+- Unsupported High/Medium quality labels remain BODY at upstream severity;
+  Low/Info also remain BODY unless the exact independent zero-harm decision is
+  present. A Low/Info with a real consequence is always BODY.
+  DROP/FALSE_POSITIVE (independently typed full-claim refutation) is SEPARATE from
   APPENDIX — those go to Appendix A (Excluded), not Appendix C.
 
-Assign exactly one:
+Propose one status: `REPORTABLE`; `MERGE_INTO:<id>`; `APPENDIX_ONLY`;
+`DROP_FALSE_POSITIVE`; `DROP_NON_SECURITY`; `DROP_DESIGN_CONFIRMATION`;
+`DROP_UNACTIONABLE_SPECULATION`; or `UNRESOLVED_EVIDENCE`. These are proposals;
+only the typed authority contract makes a non-body state effective.
 
-- `REPORTABLE`: client-facing body section.
-- `MERGE_INTO:<report-or-internal-id>`: same root cause/fix, no semantic loss; preserve source ID in Consolidation Map.
-- `APPENDIX_ONLY`: true/plausible observation, but not body material.
-- `DROP_FALSE_POSITIVE`: verifier refuted the claim or harm.
-- `DROP_NON_SECURITY`: no plausible loss, privilege, liveness, accounting, integrity, or observability impact.
-- `DROP_DESIGN_CONFIRMATION`: expected behavior or intentionally safe design property.
-- `DROP_UNACTIONABLE_SPECULATION`: no reachable path, impacted actor, or actionable fix.
-- `UNRESOLVED_EVIDENCE`: contested or insufficient evidence after analysis/verification.
+Never silently delete a candidate: preserve its identity in `report_coverage.md`
+and the Consolidation Map or Excluded Findings. Every severity defaults to `REPORTABLE`.
+Only an exact independent full-claim decision or applied alias can
+override that default. `APPENDIX_ONLY` additionally requires typed zero security
+consequence, no contradiction, and Low/Informational upstream severity. Missing
+proof, `PARTIAL`, `CONTESTED`, `UNRESOLVED`, or external-premise uncertainty stay
+in BODY at upstream severity with visible review debt. Design confirmations use
+`DROP_DESIGN_CONFIRMATION`; repetitive non-security prose belongs outside BODY.
 
-Safety rules:
-
-1. Never silently delete a candidate. Non-`REPORTABLE` candidates MUST appear in
-   `report_coverage.md` and either the Consolidation Map or Excluded Findings.
-2. Medium+ verified candidates default to `REPORTABLE`. Move out of the body
-   only when verifier/judge evidence explicitly supports `DROP_FALSE_POSITIVE`,
-   `DROP_NON_SECURITY`, `MERGE_INTO`, or `UNRESOLVED_EVIDENCE`, with a reason
-   naming the missing reproducible path, trace, proof, support, or evidence.
-3. Low/Informational candidates may be `APPENDIX_ONLY` when minor, repetitive,
-   non-exploitable, or primarily operational/documentation quality.
-4. Design confirmations, positive properties, safe invariants, and
-   "works as intended" rows are not body findings: use
-   `DROP_DESIGN_CONFIRMATION` unless needed as context for a real reportable issue.
-5. Do not use triage to hide uncertainty. A candidate with credible loss or
-   safety impact that is not refuted stays `REPORTABLE` or `APPENDIX_ONLY`
-   with a clear reason.
-6. Dozens of weak, repetitive, design-confirmation, or non-security body sections are a quality failure. Prefer a smaller client body plus complete traceability.
-
-Use the existing `Excluded Findings` table for `APPENDIX_ONLY` and `DROP_*`
-statuses. The Exclusion Reason MUST begin with the exact triage status token
-above, followed by a concise evidence-based reason.
+For an authorized non-body outcome, the Excluded Findings reason starts with the
+exact status, cites the authority event, and names any alias survivor. Prose-only
+rows are rejected and restored to BODY.
 
 ### STEP 1.5: Root-Cause Consolidation (MANDATORY)
 
@@ -476,7 +474,7 @@ All tier writers MUST follow these rules:
 2. **Every finding gets its own ### section** - no tables, no groups, no summaries, no catch-all dumps
 3. **Write as if the reader has never seen the audit pipeline** - no references to breadth agents, chain analysis, etc.
 4. **Cross-references use report IDs only** - include finding title in parentheses for context: `see H-03 (example title)`
-5. **Trust context**: For `TRUSTED-ACTOR`, include after Severity: "Severity adjusted from {original} - attack requires {actor} to violate stated trust assumption: {assumption}." For `WITHIN-BOUNDS`, note bounds context in Description without changing severity.
+5. **Trust context**: For a ledger-authorized `TRUSTED-ACTOR`, include after Severity: "Severity adjusted from {original} - attack requires {actor} to violate stated trust assumption: {assumption}." An inventory tag alone is rendered as unresolved trust context without changing severity. For `WITHIN-BOUNDS`, note bounds context in Description without changing severity.
 6. **Missing verify_*.md**: Never stub. Write the full body from hypothesis/inventory data, mark header `[VERIFICATION NOT EXECUTED]`, include the Phase 5 no-PoC sentence, and populate Severity, Location, Description, Impact, Recommendation.
 7. **Minimum length**: Every `### [X-NN]` body must be at least 400 characters or the quality gate retries the writer.
 8. **Chunk scoping**: If the driver prefix lists "Findings assigned to THIS chunk", write only those IDs in order.

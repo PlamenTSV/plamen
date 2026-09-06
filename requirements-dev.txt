@@ -1,7 +1,8 @@
-# Test-only dependencies — pinned for reproducible, supply-chain-safe CI.
-# NOT required at runtime (plamen install does not read this file); only the
-# pytest test suite in scripts/ needs these. Versions pinned to exactly what the
-# suite was authored/verified against on this machine.
+# Exact top-level CI resolver manifest. This file and every recursively included
+# requirements/constraints file are digest-bound inputs to requirements-ci.lock.
+# CI consumes only the regenerated, byte-equal hash lock; ``plamen install``
+# does not read this test-only manifest.
+-c requirements-ci.constraints
 -r requirements.txt
-pytest==9.0.3
+pytest==9.1.1
 pytest-xdist==3.8.0  # `-n auto` fast-lane parallelism; already installed, pinned here

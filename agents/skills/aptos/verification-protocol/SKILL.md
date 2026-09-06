@@ -6,6 +6,7 @@ description: "How to prove a hypothesis is TRUE or FALSE using Move unit tests."
 # Verification Protocol -- Aptos Move
 
 > How to prove a hypothesis is TRUE or FALSE using Move unit tests.
+> **Inject Into**: security-verifier agents (Phase 5)
 
 ---
 
@@ -246,11 +247,8 @@ The assertion that "proves the bug" succeeded.
 ### Severity: {LEVEL}
 {Justification in 1-2 sentences}
 
-### RAG Evidence
-- **Attack Vectors Consulted**: [list bug classes queried]
-- **Similar Exploits Found**: [count and brief descriptions]
-- **PoC Template Used**: [yes/no, which template]
-- **Historical Precedent**: [describe any matching historical vulnerabilities]
+### External Precedent Boundary
+- Not consulted by this verifier and not valid as verdict/severity/proof evidence.
 ```
 
 ### FALSE_POSITIVE
@@ -378,4 +376,4 @@ If found, the finding will be escalated to CONTESTED and combined into a chain h
 
 ---
 
-> **Advanced Protocol Reference**: See [`advanced.md`](references/advanced.md) for RAG queries before PoC, exchange rate finding severity, design flaw escalation, bidirectional role analysis, chain hypothesis, and Aptos-specific verification considerations.
+> **Advanced Protocol Reference**: See [`advanced.md`](references/advanced.md) for the external-precedent isolation boundary, exchange rate finding severity, design flaw escalation, bidirectional role analysis, chain hypothesis, and Aptos-specific verification considerations.

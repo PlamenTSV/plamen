@@ -1,0 +1,670 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/mechanical_program_facts_receipt.v2.schema.json",
+  "title": "Plamen mechanical program facts receipt v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "run_id",
+    "run_generation",
+    "audit_snapshot_digest",
+    "source_snapshot_digest",
+    "execution_authority_digest",
+    "composition_authority_digest",
+    "methodology_package_digest",
+    "activation_decision_digest",
+    "activation_permit",
+    "build_input_snapshot_digest",
+    "build_input_pack",
+    "candidate_universe_digest",
+    "selected_scope_digest",
+    "capability_selection_digest",
+    "build_plan_digest",
+    "execution_set_digest",
+    "execution_evidence_pack",
+    "selected_build_variant_ids",
+    "selected_capability_ids",
+    "build_attempts",
+    "provider_executions",
+    "worker_transaction_refs",
+    "public_projection_policy_digest",
+    "phase_io",
+    "public_generation",
+    "artifacts",
+    "same_generation_replay_key",
+    "receipt_body_sha256",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.mechanical_program_facts_receipt.v2"
+    },
+    "status": {
+      "$ref": "#/$defs/publicStatus"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "audit_snapshot_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "source_snapshot_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "execution_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "composition_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "methodology_package_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "activation_decision_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "activation_permit": {
+      "$ref": "#/$defs/activationPermit"
+    },
+    "build_input_snapshot_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_input_pack": {
+      "$ref": "#/$defs/buildInputPack"
+    },
+    "candidate_universe_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "selected_scope_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "capability_selection_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_plan_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "execution_set_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "execution_evidence_pack": {
+      "$ref": "#/$defs/executionEvidencePack"
+    },
+    "selected_build_variant_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "selected_capability_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "build_attempts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/buildAttempt"
+      },
+      "maxItems": 1000000
+    },
+    "provider_executions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/providerExecution"
+      },
+      "maxItems": 1000000
+    },
+    "worker_transaction_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/workerTransactionRef"
+      },
+      "maxItems": 1000000
+    },
+    "public_projection_policy_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "phase_io": {
+      "$ref": "#/$defs/phaseIo"
+    },
+    "public_generation": {
+      "$ref": "#/$defs/publicGeneration"
+    },
+    "artifacts": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/payloadArtifact"
+        },
+        {
+          "$ref": "#/$defs/debtArtifact"
+        }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "same_generation_replay_key": {
+      "$ref": "#/$defs/sha256"
+    },
+    "receipt_body_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "portablePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._/-]+$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 10000000,
+      "uniqueItems": true
+    },
+    "digestSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sha256"
+      },
+      "maxItems": 10000000,
+      "uniqueItems": true
+    },
+    "publicStatus": {
+      "enum": [
+        "WRITTEN",
+        "DEGRADED",
+        "UNAVAILABLE",
+        "FAILED",
+        "STALE"
+      ]
+    },
+    "terminalState": {
+      "enum": [
+        "OK",
+        "USAGE_INVALID",
+        "REQUEST_MALFORMED",
+        "REQUEST_OVERSIZED",
+        "INPUT_DRIFT",
+        "WORKSPACE_INVALID",
+        "BUILD_BLOCKED",
+        "BUILD_FAILED",
+        "TOOL_UNAVAILABLE",
+        "TOOL_DRIFT",
+        "READ_BOUNDARY_DENIED",
+        "NETWORK_BOUNDARY_DENIED",
+        "MEMORY_LIMIT",
+        "PROCESS_LIMIT",
+        "WORKSPACE_QUOTA",
+        "TIMEOUT",
+        "CANCELLED",
+        "RAW_LIMIT_EXCEEDED",
+        "INTERNAL_FAILURE"
+      ]
+    },
+    "activationPermit": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "digest"
+          ],
+          "properties": {
+            "state": {
+              "const": "PRESENT_VALIDATED"
+            },
+            "digest": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "const": "ABSENT_DENIED"
+            }
+          }
+        }
+      ]
+    },
+    "buildInputPack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "digest",
+        "size_bytes"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "program-facts-build-input"
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        }
+      }
+    },
+    "executionEvidencePack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "digest",
+        "size_bytes"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "program-facts-execution-evidence"
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        }
+      }
+    },
+    "coverageSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_id",
+        "status",
+        "exact_empty_proof"
+      ],
+      "properties": {
+        "capability_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "status": {
+          "enum": [
+            "FULL",
+            "PARTIAL",
+            "FAILED",
+            "STALE",
+            "UNSUPPORTED",
+            "UNKNOWN"
+          ]
+        },
+        "exact_empty_proof": {
+          "enum": [
+            "PROVEN",
+            "NOT_PROVEN",
+            "NOT_APPLICABLE"
+          ]
+        }
+      }
+    },
+    "buildAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build_variant_id",
+        "eligible",
+        "attempted",
+        "compiled",
+        "compile_failed",
+        "policy_excluded",
+        "blocked_unattempted",
+        "outcome",
+        "capability_coverage",
+        "diagnostic_refs",
+        "build_attempt_digest"
+      ],
+      "properties": {
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "eligible": {
+          "type": "boolean"
+        },
+        "attempted": {
+          "type": "boolean"
+        },
+        "compiled": {
+          "type": "boolean"
+        },
+        "compile_failed": {
+          "type": "boolean"
+        },
+        "policy_excluded": {
+          "type": "boolean"
+        },
+        "blocked_unattempted": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "enum": [
+            "COMPILED",
+            "COMPILE_FAILED",
+            "POLICY_EXCLUDED",
+            "BLOCKED_UNATTEMPTED",
+            "UNAVAILABLE",
+            "STALE",
+            "RESOURCE_EXCEEDED",
+            "TIMEOUT",
+            "CANCELLED",
+            "INTERNAL_FAILURE"
+          ]
+        },
+        "capability_coverage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/coverageSummary"
+          },
+          "maxItems": 100000
+        },
+        "diagnostic_refs": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "build_attempt_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "rawMember": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "digest",
+        "size_bytes"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "program-facts-raw"
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        }
+      }
+    },
+    "providerExecution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "build_variant_id",
+        "capability_ids",
+        "request_digest",
+        "request_size",
+        "build_plan_digest",
+        "build_attempt_digest",
+        "execution_authority_digest",
+        "environment_digest",
+        "tool_manifest_digest",
+        "helper_digest",
+        "parser_digest",
+        "raw_schema_digest",
+        "sandbox_receipt_digest",
+        "capability_boundary_digest",
+        "run_id",
+        "run_generation",
+        "attempt_id",
+        "work_plan_digest",
+        "arm_digest",
+        "completion_digest",
+        "debt_digest",
+        "cas_manifest_digest",
+        "raw_member",
+        "execution_set_row_digest",
+        "incorporation_digest",
+        "terminal_state"
+      ],
+      "properties": {
+        "provider_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "capability_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "request_size": {
+          "$ref": "#/$defs/size"
+        },
+        "build_plan_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "build_attempt_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "execution_authority_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "environment_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "tool_manifest_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "helper_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "parser_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "raw_schema_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sandbox_receipt_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "capability_boundary_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "run_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "run_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "work_plan_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "arm_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "completion_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "debt_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "cas_manifest_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "raw_member": {
+          "$ref": "#/$defs/rawMember"
+        },
+        "execution_set_row_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "incorporation_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "terminal_state": {
+          "$ref": "#/$defs/terminalState"
+        }
+      }
+    },
+    "workerTransactionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref_id",
+        "provider_id",
+        "build_variant_id",
+        "run_id",
+        "run_generation",
+        "attempt_id",
+        "work_plan_digest",
+        "arm_digest",
+        "completion_digest",
+        "debt_digest",
+        "cas_manifest_digest",
+        "incorporation_digest",
+        "terminal_state",
+        "process_scope_active_zero"
+      ],
+      "properties": {
+        "ref_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "provider_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "build_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "run_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "run_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "work_plan_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "arm_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "completion_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "debt_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "cas_manifest_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "incorporation_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "terminal_state": {
+          "$ref": "#/$defs/terminalState"
+        },
+        "process_scope_active_zero": {
+          "type": "boolean"
+        }
+      }
+    },
+    "phaseIo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_digest",
+        "launch_digest"
+      ],
+      "properties": {
+        "contract_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "launch_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "publicGeneration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation_id",
+        "generation_manifest_digest"
+      ],
+      "properties": {
+        "generation_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "generation_manifest_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "payloadArtifact": {
+      "$ref": "#/$defs/artifact",
+      "properties": {
+        "path": {
+          "const": "mechanical_program_facts.v2.json"
+        }
+      }
+    },
+    "debtArtifact": {
+      "$ref": "#/$defs/artifact",
+      "properties": {
+        "path": {
+          "const": "mechanical_program_facts_debt.v2.json"
+        }
+      }
+    }
+  }
+}

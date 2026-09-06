@@ -98,10 +98,10 @@ def test_validator_never_halts_on_missing_artifact(tmp_path: Path):
     assert (sp / "post_verify_extract.degraded").exists()
 
 
-def test_prompt_instructs_dedup_and_no_reverify():
+def test_prompt_instructs_dedup_and_independent_reverification():
     """Two contracts in the prompt body that affect downstream report
     integrity: (1) dedupe against existing inventory + hypotheses, (2)
-    do NOT re-queue for verification. Both could quietly regress in
+    re-queue through an independent verifier without self-verdict. Both can
     a future edit. Lock them in."""
     from plamen_prompt import _STANDALONE_PROMPT_MAP, _STANDALONE_V2_DIR
     text = (_STANDALONE_V2_DIR / _STANDALONE_PROMPT_MAP["post_verify_extract"]).read_text(
@@ -110,6 +110,7 @@ def test_prompt_instructs_dedup_and_no_reverify():
     assert "Dedupe" in text or "dedup" in text or "dedupe" in text.lower(), (
         "Prompt must instruct dedup against existing inventory/hypotheses"
     )
-    assert "DO NOT re-queue" in text or "do not re-verify" in text.lower(), (
-        "Prompt must explicitly forbid re-verification of extracted findings"
-    )
+    lowered = text.lower()
+    assert "independently re-queued" in lowered
+    assert "do not self-verify" in lowered
+    assert "terminal verdict" in lowered

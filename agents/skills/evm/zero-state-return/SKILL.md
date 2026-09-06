@@ -6,6 +6,7 @@ description: "Trigger Always inject into Arithmetic agent (extends existing ZERO
 # ZERO_STATE_RETURN Skill
 
 > **Trigger**: Always inject into Arithmetic agent (extends existing ZERO_STATE_ECONOMICS)
+> **Inject Into**: depth-edge-case
 > **Purpose**: Check protocol return-to-zero state, not just initial zero state
 
 ## Overview

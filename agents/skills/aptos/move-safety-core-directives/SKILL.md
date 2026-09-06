@@ -7,6 +7,7 @@ type: "core-directive"
 # Move Safety Core Directives (Aptos)
 
 > **Purpose**: These are the INVENTORY + FLAG directives extracted from the 4 always-required Aptos skills (ABILITY_ANALYSIS, BIT_SHIFT_SAFETY, TYPE_SAFETY, REF_LIFECYCLE). Every breadth agent receives these to flag Move-specific patterns for depth review. The full trace methodology lives in the dedicated Move-Safety Agent (spawned separately).
+> **Inject Into**: Breadth agents
 > **Total**: ~130 lines (vs ~950 lines for 4 full skills)
 
 ## 1. Ability Inventory (from ABILITY_ANALYSIS)

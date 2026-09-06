@@ -62,7 +62,7 @@ def test_exploration_skeptic_phase_entry_in_sc_phases():
     assert p.expected_artifacts == ["exploration_skeptic_findings.md"]
 
 
-def test_exploration_skeptic_placement_between_rag_sweep_and_dedup():
+def test_exploration_skeptic_precedes_freeze_and_precedent_context():
     from plamen_types import SC_PHASES
     names = [p.name for p in SC_PHASES]
     for required in ("rag_sweep", "exploration_skeptic", "sc_semantic_dedup"):
@@ -70,9 +70,9 @@ def test_exploration_skeptic_placement_between_rag_sweep_and_dedup():
     i_rag = names.index("rag_sweep")
     i_es = names.index("exploration_skeptic")
     i_dedup = names.index("sc_semantic_dedup")
-    assert i_rag < i_es < i_dedup, (
-        f"exploration_skeptic must sit AFTER rag_sweep and BEFORE "
-        f"sc_semantic_dedup (positions rag={i_rag}, es={i_es}, "
+    assert i_es < i_dedup < i_rag, (
+        f"exploration_skeptic must run before semantic freeze; post-freeze "
+        f"precedent is context-only (positions rag={i_rag}, es={i_es}, "
         f"dedup={i_dedup})."
     )
 

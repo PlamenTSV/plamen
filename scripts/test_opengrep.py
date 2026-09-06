@@ -5,6 +5,7 @@ Tests skip/fail paths, SARIF parsing, and prepass wiring.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -39,6 +40,30 @@ def _mkproj(tmp_path: Path, *, lang: str = "evm") -> Path:
     src.mkdir()
     (src / f"Contract{ext.get(lang, '.sol')}").write_text("// source", encoding="utf-8")
     return p
+
+
+def _context(project: Path, ecosystem: str) -> dict[str, str]:
+    identity = os.path.normcase(str(project.resolve())).replace("\\", "/")
+    return {
+        "run_id": "opengrep-fixture",
+        "phase": "recon-prebreadth",
+        "snapshot_sha256": "1" * 64,
+        "project_root_sha256": hashlib.sha256(
+            identity.encode("utf-8")
+        ).hexdigest(),
+        "ecosystem": ecosystem,
+        "pipeline": "sc",
+        "mode": "thorough",
+        "platform": (
+            "windows"
+            if sys.platform == "win32"
+            else "macos"
+            if sys.platform == "darwin"
+            else "linux"
+            if sys.platform.startswith("linux")
+            else sys.platform
+        ),
+    }
 
 
 _SAMPLE_SARIF = {
@@ -97,6 +122,23 @@ def _fake_popen_factory(*, sarif=None, returncode=0, timeout=False, seen=None):
     return _factory
 
 
+def _fake_hardened_factory(*, sarif=None, returncode=0, timeout=False, seen=None):
+    def _runner(cmd, *args, **kwargs):
+        if seen is not None:
+            seen.append(cmd)
+        if sarif is not None:
+            for i, arg in enumerate(cmd):
+                if arg == "--sarif-output" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).write_text(
+                        json.dumps(sarif), encoding="utf-8"
+                    )
+                    break
+        if timeout:
+            return 124, "fixture timeout"
+        return returncode, ""
+    return _runner
+
+
 # ── _run_opengrep_scan: skip/fail paths ─────────────────────────────────
 
 def test_build_status_forge_uses_bounded_production_compile(tmp_path):
@@ -133,7 +175,9 @@ def test_scan_skip_no_opengrep(tmp_path):
     scratch = _mkscratch(tmp_path)
     proj = _mkproj(tmp_path)
     with mock.patch("shutil.which", return_value=None):
-        result = _run_opengrep_scan(scratch, proj, "evm")
+        result = _run_opengrep_scan(
+            scratch, proj, "evm", context=_context(proj, "evm")
+        )
     assert result.startswith("SKIPPED:")
     assert "opengrep" in result
 
@@ -143,7 +187,9 @@ def test_scan_skip_no_rules_for_lang(tmp_path):
     scratch = _mkscratch(tmp_path)
     proj = _mkproj(tmp_path, lang="sui")
     with mock.patch("shutil.which", return_value="/usr/bin/opengrep"):
-        result = _run_opengrep_scan(scratch, proj, "sui")
+        result = _run_opengrep_scan(
+            scratch, proj, "sui", context=_context(proj, "sui")
+        )
     assert result.startswith("SKIPPED:")
     assert "no OpenGrep rules" in result
 
@@ -163,7 +209,9 @@ def test_scan_skip_no_source_files(tmp_path):
     with mock.patch("shutil.which", return_value="/usr/bin/opengrep"), \
          mock.patch("recon_prepass._ensure_opengrep_rules",
                     return_value={"opengrep-rules": rules_dir, "decurity-rules": rules_dir}):
-        result = _run_opengrep_scan(scratch, proj, "evm")
+        result = _run_opengrep_scan(
+            scratch, proj, "evm", context=_context(proj, "evm")
+        )
     assert result.startswith("SKIPPED:")
     assert ".sol" in result
 
@@ -190,9 +238,15 @@ def test_scan_targets_only_production_source_files(tmp_path):
     with mock.patch("shutil.which", return_value="/usr/bin/opengrep"), \
          mock.patch("recon_prepass._ensure_opengrep_rules",
                     return_value={"opengrep-rules": rules_dir, "decurity-rules": rules_dir}), \
-         mock.patch("subprocess.Popen",
-                    side_effect=_fake_popen_factory(sarif=_SAMPLE_SARIF, seen=seen)):
-        result = _run_opengrep_scan(scratch, proj, "evm")
+             mock.patch(
+                 "recon_prepass._run_hardened",
+                 side_effect=_fake_hardened_factory(
+                     sarif=_SAMPLE_SARIF, seen=seen
+                 ),
+             ):
+        result = _run_opengrep_scan(
+            scratch, proj, "evm", context=_context(proj, "evm")
+        )
 
     assert result == "WRITTEN:2 findings"
     cmd = seen[0]
@@ -221,7 +275,9 @@ def test_scan_fail_timeout(tmp_path):
                     return_value={"opengrep-rules": rules_dir, "decurity-rules": rules_dir}), \
          mock.patch("recon_prepass._run_hardened",
                     return_value=(124, "[hardened: timed out after 300s, tree-killed]")):
-        result = _run_opengrep_scan(scratch, proj, "evm")
+        result = _run_opengrep_scan(
+            scratch, proj, "evm", context=_context(proj, "evm")
+        )
     assert result.startswith("FAILED:")
     assert "timeout" in result
 
@@ -243,9 +299,13 @@ def test_scan_fail_nonzero_no_sarif(tmp_path):
     with mock.patch("shutil.which", return_value="/usr/bin/opengrep"), \
          mock.patch("recon_prepass._ensure_opengrep_rules",
                     return_value={"opengrep-rules": rules_dir, "decurity-rules": rules_dir}), \
-         mock.patch("subprocess.Popen",
-                    side_effect=_fake_popen_factory(returncode=2)):
-        result = _run_opengrep_scan(scratch, proj, "evm")
+             mock.patch(
+                 "recon_prepass._run_hardened",
+                 side_effect=_fake_hardened_factory(returncode=2),
+             ):
+        result = _run_opengrep_scan(
+            scratch, proj, "evm", context=_context(proj, "evm")
+        )
     assert "FAILED:" in result or "WRITTEN:0" in result
 
 
@@ -324,35 +384,75 @@ def test_parse_sarif_pipe_in_message(tmp_path):
 
 # ── _ensure_opengrep_rules ──────────────────────────────────────────────
 
+def test_opengrep_rules_follow_selected_runtime_not_hostile_home(
+    tmp_path: Path,
+) -> None:
+    staged = tmp_path / "selected-runtime"
+    staged.mkdir()
+    ambient = tmp_path / "ambient-home"
+    (ambient / ".plamen" / "opengrep-rules").mkdir(parents=True)
+    environment = {
+        **os.environ,
+        "PLAMEN_HOME": str(staged),
+        "HOME": str(ambient),
+        "USERPROFILE": str(ambient),
+        "PYTHONPATH": str(Path(__file__).resolve().parent),
+    }
+    script_dir = str(Path(__file__).resolve().parent)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                f"import sys; sys.path.insert(0, {script_dir!r}); "
+                "import recon_prepass; "
+                "print(recon_prepass._opengrep_rules_base())"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert Path(result.stdout.strip()) == staged / "opengrep-rules"
+
+
 def test_ensure_rules_skip_if_present(tmp_path):
-    """Already cloned repos are returned without git clone."""
+    """Release-pinned, pre-populated rule submodules are accepted read-only."""
     with mock.patch("recon_prepass._OPENGREP_RULES_BASE", tmp_path):
         for name in ("opengrep-rules", "decurity-rules", "aptos-move-rules"):
             d = tmp_path / name
             d.mkdir()
             (d / ".git").mkdir()
+            (d / "rules.yaml").write_text("rules: []", encoding="utf-8")
 
-        with mock.patch("subprocess.run") as mock_run:
+        def revision_probe(cmd, *_args, **_kwargs):
+            name = Path(cmd[2]).name
+            return 0, __import__("recon_prepass")._OPENGREP_RULE_REVISIONS[name]
+
+        with mock.patch(
+            "recon_prepass._run_hardened", side_effect=revision_probe,
+        ) as mock_run:
             result = _ensure_opengrep_rules()
-        mock_run.assert_not_called()
+        assert mock_run.call_count == 3
         assert "opengrep-rules" in result
         assert "decurity-rules" in result
         assert "aptos-move-rules" in result
 
 
-def test_ensure_rules_clones_missing(tmp_path):
-    """Missing repos trigger git clone."""
+def test_ensure_rules_reports_missing_without_runtime_materialization(tmp_path):
+    """Missing rule submodules are coverage debt; audit-time repair is forbidden."""
     with mock.patch("recon_prepass._OPENGREP_RULES_BASE", tmp_path):
-        def fake_clone(cmd, *args, **kwargs):
-            target = Path(cmd[-1])
-            target.mkdir(parents=True, exist_ok=True)
-            (target / ".git").mkdir()
-            return (0, "")
-
-        with mock.patch("recon_prepass._run_hardened", side_effect=fake_clone) as mock_run:
+        with mock.patch("recon_prepass._run_hardened") as mock_run:
             result = _ensure_opengrep_rules()
-        assert mock_run.call_count == 3  # opengrep-rules + decurity + aptos-move-rules
-        assert "opengrep-rules" in result
+        mock_run.assert_not_called()
+        assert result == {}
+        failures = __import__("recon_prepass")._OPENGREP_RULE_FAILURES
+        assert set(failures) == {
+            "opengrep-rules", "decurity-rules", "aptos-move-rules",
+        }
 
 
 # ── run_recon_prepass wiring ─────────────────────────────────────────────
@@ -366,6 +466,8 @@ def test_prepass_evm_skips_opengrep_by_default(tmp_path):
         "project_root": str(proj),
         "language": "evm",
         "pipeline": "sc",
+        "_run_id": "opengrep-prepass-fixture",
+        "_audit_snapshot": {"snapshot_digest": "1" * 64},
     }
     with mock.patch("recon_prepass._run_opengrep_scan", return_value="SKIPPED:test") as m:
         results = run_recon_prepass(config)
@@ -382,11 +484,14 @@ def test_prepass_evm_triggers_opengrep_when_enabled(tmp_path):
         "project_root": str(proj),
         "language": "evm",
         "pipeline": "sc",
+        "_run_id": "opengrep-prepass-fixture",
+        "_audit_snapshot": {"snapshot_digest": "1" * 64},
         "prepass_external_scanners": True,
     }
     with mock.patch("recon_prepass._run_opengrep_scan", return_value="SKIPPED:test") as m:
         results = run_recon_prepass(config)
-    m.assert_called_once_with(scratch, proj, "evm")
+    m.assert_called_once_with(mock.ANY, proj, "evm", context=mock.ANY)
+    assert Path(m.call_args.args[0]).parent == scratch
     assert results.get("opengrep_scan") == "SKIPPED:test"
 
 
@@ -399,12 +504,17 @@ def test_prepass_solana_triggers_opengrep_when_enabled(tmp_path):
         "project_root": str(proj),
         "language": "solana",
         "pipeline": "sc",
+        "_run_id": "opengrep-prepass-fixture",
+        "_audit_snapshot": {"snapshot_digest": "1" * 64},
         "prepass_external_scanners": True,
     }
     with mock.patch("recon_prepass._run_opengrep_scan", return_value="SKIPPED:test") as m, \
          mock.patch("recon_prepass._bake_rust_scip", return_value="SKIPPED:test"):
         results = run_recon_prepass(config)
-    m.assert_called_once_with(scratch, proj, "solana")
+    m.assert_called_once_with(
+        mock.ANY, proj, "solana", context=mock.ANY
+    )
+    assert Path(m.call_args.args[0]).parent == scratch
 
 
 def test_prepass_l1_does_not_trigger_opengrep(tmp_path):
@@ -416,6 +526,8 @@ def test_prepass_l1_does_not_trigger_opengrep(tmp_path):
         "project_root": str(proj),
         "language": "solana",
         "pipeline": "l1",
+        "_run_id": "opengrep-prepass-fixture",
+        "_audit_snapshot": {"snapshot_digest": "1" * 64},
     }
     with mock.patch("recon_prepass._run_opengrep_scan", return_value="SKIPPED:test") as m:
         results = run_recon_prepass(config)
@@ -431,6 +543,8 @@ def test_prepass_opengrep_failure_does_not_crash(tmp_path):
         "project_root": str(proj),
         "language": "evm",
         "pipeline": "sc",
+        "_run_id": "opengrep-prepass-fixture",
+        "_audit_snapshot": {"snapshot_digest": "1" * 64},
         "prepass_external_scanners": True,
     }
     with mock.patch("recon_prepass._run_opengrep_scan", side_effect=RuntimeError("boom")):
@@ -462,9 +576,13 @@ def test_scan_success_writes_sarif_and_summary(tmp_path):
     with mock.patch("shutil.which", return_value="/usr/bin/opengrep"), \
          mock.patch("recon_prepass._ensure_opengrep_rules",
                     return_value={"opengrep-rules": rules_dir, "decurity-rules": rules_dir}), \
-         mock.patch("subprocess.Popen",
-                    side_effect=_fake_popen_factory(sarif=_SAMPLE_SARIF)):
-        result = _run_opengrep_scan(scratch, proj, "evm")
+             mock.patch(
+                 "recon_prepass._run_hardened",
+                 side_effect=_fake_hardened_factory(sarif=_SAMPLE_SARIF),
+             ):
+        result = _run_opengrep_scan(
+            scratch, proj, "evm", context=_context(proj, "evm")
+        )
 
     assert result == "WRITTEN:2 findings"
     assert (scratch / "opengrep_results.sarif").exists()
@@ -473,10 +591,12 @@ def test_scan_success_writes_sarif_and_summary(tmp_path):
     summary = (scratch / "opengrep_findings.md").read_text(encoding="utf-8")
     assert "reentrancy" in summary
 
-    # build_status should be updated
+    # Pre-breadth providers must not rewrite a committed canonical recon
+    # sibling. OpenGrep has its own governed artifacts and outcome receipt.
     bs = (scratch / "build_status.md").read_text(encoding="utf-8")
-    assert "OPENGREP_AVAILABLE: true" in bs
-    assert "OPENGREP_FINDINGS: 2" in bs
+    assert bs == "# Build Status\n\n**Status**: SUCCESS\n"
+    assert "OPENGREP_AVAILABLE" not in bs
+    assert "OPENGREP_FINDINGS" not in bs
 
 
 # ── P5: Aptos Move rules via OpenGrep ───────────────────────────────────
@@ -508,9 +628,13 @@ def test_aptos_resolves_move_rules(tmp_path):
     with mock.patch("shutil.which", return_value="/usr/bin/opengrep"), \
          mock.patch("recon_prepass._ensure_opengrep_rules",
                     return_value={"aptos-move-rules": rules_base}), \
-         mock.patch("subprocess.Popen",
-                    side_effect=_fake_popen_factory(sarif=_MOVE_SARIF)):
-        result = _run_opengrep_scan(scratch, proj, "aptos")
+             mock.patch(
+                 "recon_prepass._run_hardened",
+                 side_effect=_fake_hardened_factory(sarif=_MOVE_SARIF),
+             ):
+        result = _run_opengrep_scan(
+            scratch, proj, "aptos", context=_context(proj, "aptos")
+        )
 
     assert result == "WRITTEN:1 findings"
     summary = (scratch / "opengrep_findings.md").read_text(encoding="utf-8")
@@ -523,7 +647,9 @@ def test_sui_still_skipped_no_rules(tmp_path):
     scratch = _mkscratch(tmp_path)
     proj = _mkproj(tmp_path, lang="sui")
     with mock.patch("shutil.which", return_value="/usr/bin/opengrep"):
-        result = _run_opengrep_scan(scratch, proj, "sui")
+        result = _run_opengrep_scan(
+            scratch, proj, "sui", context=_context(proj, "sui")
+        )
     assert result.startswith("SKIPPED:")
 
 
@@ -536,9 +662,14 @@ def test_prepass_aptos_triggers_opengrep_when_enabled(tmp_path):
         "project_root": str(proj),
         "language": "aptos",
         "pipeline": "sc",
+        "_run_id": "opengrep-prepass-fixture",
+        "_audit_snapshot": {"snapshot_digest": "1" * 64},
         "prepass_external_scanners": True,
     }
     with mock.patch("recon_prepass._run_opengrep_scan", return_value="SKIPPED:test") as m:
         results = run_recon_prepass(config)
-    m.assert_called_once_with(scratch, proj, "aptos")
+    m.assert_called_once_with(
+        mock.ANY, proj, "aptos", context=mock.ANY
+    )
+    assert Path(m.call_args.args[0]).parent == scratch
     assert results.get("opengrep_scan") == "SKIPPED:test"

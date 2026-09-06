@@ -6,7 +6,7 @@ description: "Trigger Pattern Always required for Soroban audits - Inject Into B
 # STORAGE_LIFECYCLE Skill (Soroban)
 
 > **Trigger Pattern**: Always required for Soroban audits
-> **Inject Into**: Breadth agents, depth agents
+> **Inject Into**: Breadth agents, depth-state-trace, depth-edge-case
 > **Finding prefix**: `[SL-N]`
 > **Rules referenced**: R8, R10, R14
 

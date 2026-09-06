@@ -1,0 +1,309 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_compatibility_delta.v1.schema.json",
+  "title": "Program Facts compatibility delta v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "evidence_class",
+    "state",
+    "producer",
+    "pre_r2_boundary_manifest",
+    "post_r2_runtime_manifest",
+    "same_postimage_comparator",
+    "component_registry_authority",
+    "allowed_change_authority",
+    "semantic_review_authority",
+    "exclusion_authority",
+    "public_comparisons",
+    "allowed_change_roster",
+    "actual_deltas",
+    "unchanged_path_count",
+    "changed_path_count",
+    "authority_exclusion",
+    "receipt_body_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "plamen.program_facts_compatibility_delta.v1"
+    },
+    "evidence_class": {
+      "const": "RELEASE_PACKAGING_OUT_OF_BAND"
+    },
+    "state": {
+      "enum": [
+        "COMPONENT_LOCAL_PROVISIONAL_C4",
+        "FINAL_RUNTIME_QUIESCENT"
+      ]
+    },
+    "producer": {
+      "$ref": "#/$defs/binding"
+    },
+    "pre_r2_boundary_manifest": {
+      "$ref": "#/$defs/binding"
+    },
+    "post_r2_runtime_manifest": {
+      "$ref": "#/$defs/binding"
+    },
+    "same_postimage_comparator": {
+      "$ref": "#/$defs/binding"
+    },
+    "component_registry_authority": {
+      "$ref": "#/$defs/binding"
+    },
+    "allowed_change_authority": {
+      "$ref": "#/$defs/binding"
+    },
+    "semantic_review_authority": {
+      "$ref": "#/$defs/binding"
+    },
+    "exclusion_authority": {
+      "$ref": "#/$defs/binding"
+    },
+    "public_comparisons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "legacy_v1",
+        "disabled",
+        "shadow_raw"
+      ],
+      "properties": {
+        "legacy_v1": {
+          "$ref": "#/$defs/comparison"
+        },
+        "disabled": {
+          "$ref": "#/$defs/comparison"
+        },
+        "shadow_raw": {
+          "$ref": "#/$defs/comparison"
+        }
+      }
+    },
+    "allowed_change_roster": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/allowance"
+      },
+      "maxItems": 100000
+    },
+    "actual_deltas": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/delta"
+      },
+      "maxItems": 100000
+    },
+    "unchanged_path_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "changed_path_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "authority_exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "included_in_execution_authority",
+        "included_in_composition_authority",
+        "included_in_compared_runtime_manifest"
+      ],
+      "properties": {
+        "included_in_execution_authority": {
+          "const": false
+        },
+        "included_in_composition_authority": {
+          "const": false
+        },
+        "included_in_compared_runtime_manifest": {
+          "const": false
+        }
+      }
+    },
+    "receipt_body_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "portablePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "size",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "size": {
+          "$ref": "#/$defs/size"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "fileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "size",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "size": {
+          "$ref": "#/$defs/size"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "left_files",
+        "right_files",
+        "exact_equal"
+      ],
+      "properties": {
+        "left_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fileBinding"
+          },
+          "maxItems": 32
+        },
+        "right_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fileBinding"
+          },
+          "maxItems": 32
+        },
+        "exact_equal": {
+          "const": true
+        }
+      }
+    },
+    "semanticClass": {
+      "enum": [
+        "METHODOLOGY_COMPONENT",
+        "TOOLCHAIN_COMPONENT",
+        "TRANSITIVE_AUTHORITY_OR_REUSE_IDENTITY",
+        "NEW_PRIVATE_OR_V2_ARTIFACT"
+      ]
+    },
+    "allowance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "portable_path",
+        "semantic_class",
+        "reviewed_reason"
+      ],
+      "properties": {
+        "portable_path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "semantic_class": {
+          "$ref": "#/$defs/semanticClass"
+        },
+        "reviewed_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "presence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "const": "ABSENT"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "size",
+            "sha256"
+          ],
+          "properties": {
+            "state": {
+              "const": "PRESENT"
+            },
+            "size": {
+              "$ref": "#/$defs/size"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "portable_path",
+        "old",
+        "new",
+        "semantic_class",
+        "allowed_change_row_digest"
+      ],
+      "properties": {
+        "portable_path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "old": {
+          "$ref": "#/$defs/presence"
+        },
+        "new": {
+          "$ref": "#/$defs/presence"
+        },
+        "semantic_class": {
+          "$ref": "#/$defs/semanticClass"
+        },
+        "allowed_change_row_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

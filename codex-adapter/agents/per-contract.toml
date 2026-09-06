@@ -1,6 +1,6 @@
 name = "per-contract"
 description = "Per-contract focused analysis: maximum depth on a single contract/cluster"
-model = "gpt-5.4"
+model = "gpt-5.6-terra"
 
 developer_instructions = """
             You are a Per-Contract Agent. Read your full methodology from:

@@ -138,9 +138,13 @@ def test_b1_floor_reconstructs_from_breadth_and_depth_no_loss_no_fabrication():
 
 
 def test_b1_floor_conservative_merge_only_collapses_exact_duplicates():
-    """Same finding emitted by two sources (same title+location) collapses to
-    ONE; a sibling finding at the SAME location but different title stays
-    separate (no over-merge that would drop a real finding)."""
+    """Disjoint producers survive pre-verification even when title/location
+    render identically; a later semantic-dedup/verifier may consolidate them.
+
+    Exact prose equality is not proof that two independently sourced candidates
+    share a root cause.  The floor is a recall-recovery boundary, so it may only
+    couple rows with a concrete shared provenance anchor.
+    """
     d = _mk()
     (d / "findings_inventory_chunk_a.md").write_text(
         "\n".join([
@@ -149,7 +153,8 @@ def test_b1_floor_conservative_merge_only_collapses_exact_duplicates():
             "**Location**: src/A.sol:L10",
             "**Source IDs**: AC-1",
             "",
-            # Same loc+title as AC-1 -> conservative duplicate, collapses.
+            # Same loc+title as AC-1, but disjoint provenance -> keep until
+            # semantic dedup/verification proves identity.
             "### Finding [TF-9]: Reentrancy in withdraw",
             "**Severity**: High",
             "**Location**: src/A.sol:L10",
@@ -167,10 +172,11 @@ def test_b1_floor_conservative_merge_only_collapses_exact_duplicates():
 
     n, _src = M.ensure_findings_inventory_floor(d)
 
-    # 3 raw -> 2 distinct (the exact dup collapses, the sibling stays).
-    assert n == 2
+    # All three survive the recall floor; this boundary does not infer semantic
+    # identity from duplicated prose alone.
+    assert n == 3
     inv = _inv(d)
-    # Both source IDs of the merged finding preserved (provenance, no loss).
+    # Both candidate provenance IDs are preserved (no pre-verify loss).
     assert "AC-1" in inv and "TF-9" in inv
     # The distinct sibling is NOT dropped.
     assert "AC-3" in inv

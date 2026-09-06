@@ -75,7 +75,10 @@ def test_backfill_makes_gate_pass():
         cov = (sp / "report_coverage.md").read_text(encoding="utf-8")
         for fid in ("H-3", "H-4", "H-5"):
             assert fid in cov
-        assert "DEFERRED" in cov
+        assert "HUMAN_REVIEW_DELIVERED" in cov
+        assert "DEFERRED" not in cov
+        assert (sp / "report_dropout_retention.json").is_file()
+        assert (sp / "report_semantic_report_dropouts.md").is_file()
         # nothing left UNACCOUNTED → gate passes
         assert "UNACCOUNTED" not in cov
 

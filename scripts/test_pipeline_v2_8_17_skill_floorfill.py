@@ -28,6 +28,24 @@ _HEADER = (
 )
 
 
+def test_instantiate_prompt_forbids_depth_only_breadth_floorfill():
+    prompt = (
+        Path(__file__).resolve().parent.parent
+        / "prompts"
+        / "shared"
+        / "v2"
+        / "phase2-instantiate.md"
+    ).read_text(encoding="utf-8")
+
+    assert "A depth-only skill MUST appear" in prompt
+    assert "MUST NOT appear in a breadth `Template` cell" in prompt
+    assert "Never use a depth-only skill for breadth floor-fill" in prompt
+    assert "Never route a depth-only injectable to breadth" in prompt
+    assert "`depth:state_trace` | `depth-state-trace`" in prompt
+    assert "`depth:edge_case` | `depth-edge-case`" in prompt
+    assert "Never write `depth_state_trace`, `depth_edge_case`" in prompt
+
+
 def _row(template: str, agent_id: str, focus: str, out: str) -> str:
     return (f"| AGENT | {template} | YES | {agent_id} | {focus} | "
             f"{out} | QUEUED |\n")
@@ -48,6 +66,35 @@ def _complex_inventory(sp: Path) -> None:
     for i in range(12):
         lines.append(f"| C{i} | src/C{i}.sol | 200 | YES |\n")
     (sp / "contract_inventory.md").write_text("".join(lines), encoding="utf-8")
+
+
+def _r60_enriched_medium_inventory(sp: Path) -> None:
+    rows = [
+        ("GatewayCrossChain.sol", "contracts/GatewayCrossChain.sol", 595),
+        ("GatewaySend.sol", "contracts/GatewaySend.sol", 409),
+        ("GatewayTransferNative.sol", "contracts/GatewayTransferNative.sol", 685),
+        ("IDODORouteProxy.sol", "contracts/interfaces/IDODORouteProxy.sol", 19),
+        ("IUniswapV2Factory.sol", "contracts/interfaces/IUniswapV2Factory.sol", 18),
+        ("IUniswapV2Router01.sol", "contracts/interfaces/IUniswapV2Router01.sol", 96),
+        ("IWETH9.sol", "contracts/interfaces/IWETH9.sol", 30),
+        ("AccountEncoder.sol", "contracts/libraries/AccountEncoder.sol", 54),
+        ("BytesHelperLib.sol", "contracts/libraries/BytesHelperLib.sol", 41),
+        ("SafeMath.sol", "contracts/libraries/SafeMath.sol", 17),
+        ("SwapDataHelperLib.sol", "contracts/libraries/SwapDataHelperLib.sol", 273),
+        ("TransferHelper.sol", "contracts/libraries/TransferHelper.sol", 28),
+        ("UniswapV2Library.sol", "contracts/libraries/UniswapV2Library.sol", 95),
+    ]
+    text = [
+        "# Contract Inventory\n\nPre-pass: 13 file(s) discovered.\n\n",
+        "| File | Path | Lines | Bytes |\n|---|---|---:|---:|\n",
+        *(f"| {name} | `{path}` | {lines} | 1 |\n" for name, path, lines in rows),
+        "\n## Recon Worker Addendum\n\n",
+        "| Entry point | Line | Access level | Notes |\n|---|---:|---|---|\n",
+        *(f"| function{i} | {1000 + i} | public | narrative |\n" for i in range(20)),
+    ]
+    (sp / "contract_inventory.md").write_text(
+        "".join(text), encoding="utf-8", newline="\n"
+    )
 
 
 # ---------------- helper-level ----------------
@@ -122,6 +169,21 @@ def test_schema_gate_general_floorfill_passes(tmp_path):
     issues = V._validate_spawn_manifest_schema(tmp_path)
     assert not any("fabricated skill template" in i for i in issues), issues
     assert not any("breadth tier floor" in i for i in issues), issues
+
+
+def test_r60_enriched_medium_inventory_does_not_promote_narrative_tables(
+    tmp_path: Path,
+):
+    _r60_enriched_medium_inventory(tmp_path)
+    rows = "".join(
+        _row("GENERAL", f"B{i}", f"focus_{i}", f"analysis_focus_{i}.md")
+        for i in range(1, 7)
+    )
+    _write_manifest(tmp_path, rows)
+
+    assert V._codebase_is_complex(tmp_path) is False
+    issues = V._validate_spawn_manifest_schema(tmp_path, "thorough", "evm")
+    assert not any("breadth tier floor" in issue for issue in issues), issues
 
 
 # ---------------- driver injection ----------------

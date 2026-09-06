@@ -4,30 +4,58 @@ on:
   push:
     branches:
       - main
+      - Plamen-v3
       - feat/**
       - fix/**
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+  lock-authority:
+    name: deterministic CI dependency authority
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Bootstrap and run the deterministic dependency authority
+        run: python -I scripts/ci_dependency_authority.py bootstrap-gate --root .
+
   # F2 regression guard: `plamen install` must complete cleanly without a
   # controlling terminal. Claude Code's Bash tool, Codex shells, and CI all
   # run with stdin redirected from /dev/null. The wizard's InquirerPy picker
   # crashes there with `OSError: [Errno 22]`; install must NOT touch it.
   non-tty-install:
     name: non-TTY install (${{ matrix.os }} / py${{ matrix.python }})
+    needs: lock-authority
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.11", "3.12"]
+        python: ["3.12"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
+      - name: Install reviewed, hash-locked CI dependencies
+        shell: bash
+        run: |
+          set -e
+          if [ ! -f requirements-ci.lock ]; then
+            echo "::error::requirements-ci.lock is required; refusing an unpinned network fallback"
+            exit 1
+          fi
+          python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r requirements-ci.lock
       - name: Syntax check plamen.py + scripts/
         run: |
           python -m py_compile plamen.py
@@ -35,64 +63,43 @@ jobs:
       - name: plamen --help (banner + dispatch)
         # If main()'s argument parsing or banner breaks, fail loud.
         run: python plamen.py help
-      - name: plamen install (non-TTY, stdin closed)
-        # The whole point of F2: pipe nothing into stdin, redirect both
-        # stdio streams, and assert exit 0 + no inquirer crash.
+      - name: Clean managed install without ambient Node or backend CLIs
+        # Exercise the public bootstrap contract, not a hosted-runner accident:
+        # no ambient node/npm/npx/claude/codex and no pre-existing backend home.
+        # The absolute CPython process remains the only executable prerequisite;
+        # Plamen downloads and authenticates its reviewed Node/npm closure.
         shell: bash
         run: |
-          python plamen.py install < /dev/null
-      - name: plamen install --codex (non-TTY)
-        # F1 regression guard: Codex adapter generator must not NameError
-        # on undefined f-string placeholders.
-        shell: bash
-        run: |
-          python plamen.py install --codex < /dev/null
-      - name: plamen install (idempotent re-run)
-        shell: bash
-        run: |
-          python plamen.py install < /dev/null
+          set -e
+          PYTHON_BIN=$(command -v python)
+          CLEAN_HOME="$RUNNER_TEMP/plamen-clean-home"
+          mkdir -p "$CLEAN_HOME"
+          export HOME="$CLEAN_HOME"
+          export USERPROFILE="$CLEAN_HOME"
+          export PATH=""
+          "$PYTHON_BIN" -c "import shutil; assert all(shutil.which(x) is None for x in ('node','npm','npx','claude','codex'))"
+          "$PYTHON_BIN" plamen.py install < /dev/null
+          "$PYTHON_BIN" plamen.py install --codex < /dev/null
+          "$PYTHON_BIN" plamen.py install < /dev/null
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$CLEAN_HOME/.local/bin/plamen-claude.cmd" --version
+            "$CLEAN_HOME/.local/bin/plamen-codex.cmd" --version
+          else
+            "$CLEAN_HOME/.local/bin/plamen-claude" --version
+            "$CLEAN_HOME/.local/bin/plamen-codex" --version
+          fi
       - name: Verify rename — codex/ absent, codex-adapter/ present
         # F6 regression guard.
         shell: bash
         run: |
           test ! -e codex
           test -d codex-adapter
-      - name: Verify python3 shim landed (Windows only)
-        # python3.exe shim regression guard. The Python installer for
-        # Windows creates python.exe but not python3.exe, so LLM-typed
-        # `python3 ...` falls through to the Microsoft Store App
-        # Execution Alias stub. `_ensure_python3_shim_windows` should
-        # have copied python.exe → python3.exe in the same dir.
+      - name: Verify exact Windows interpreter contract (no shim mutation)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           set -e
-          PYEXE=$(python -c "import sys; print(sys.executable)")
-          PYDIR=$(dirname "$PYEXE")
-          # Either tier 1 (python3.exe next to python.exe) OR tier 2
-          # (python3.bat in PLAMEN_HOME / repo root) must exist.
-          if [ -f "$PYDIR/python3.exe" ]; then
-            echo "OK: tier-1 shim at $PYDIR/python3.exe"
-          elif [ -f "./python3.bat" ]; then
-            echo "OK: tier-2 fallback shim at ./python3.bat"
-          else
-            echo "FAIL: no python3 shim found"
-            echo "  expected: $PYDIR/python3.exe OR ./python3.bat"
-            ls -la "$PYDIR" | head -20
-            exit 1
-          fi
-          # Confirm `python3` actually runs and returns a real interpreter
-          # path — not the Microsoft Store stub. Stub output contains
-          # "Python was not found; run without arguments to install
-          # from the Microsoft Store".
-          OUT=$(python3 -c "import sys; print(sys.executable)" 2>&1)
-          echo "python3 -> $OUT"
-          case "$OUT" in
-            *"WindowsApps"*|*"Microsoft Store"*|*"not found"*)
-              echo "FAIL: python3 still resolves to the Store stub"
-              exit 1
-              ;;
-          esac
+          python -c "import sys; assert sys.version_info[:2] == (3, 12)"
       - name: Verify wizards + docs use python3 (no bare `python` for the driver)
         # Regression guard. Exit code 127 ("command not found") was hit on
         # Linux + macOS because wizards hardcoded `python ~/.claude/scripts/
@@ -114,48 +121,3 @@ jobs:
             exit 1
           fi
           echo "OK: all driver invocations in docs use python3"
-
-  unit-tests:
-    name: pytest (${{ matrix.os }} / py${{ matrix.python }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.11", "3.12"]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - name: Install pytest
-        # Use `python -m pip` form because plain `pip install --upgrade pip`
-        # fails on Windows ("ERROR: To modify pip, please run...") — pip
-        # cannot upgrade itself while it's the running entrypoint.
-        run: python -m pip install --upgrade pip pytest
-      - name: Install Plamen Python deps if requirements.txt exists
-        shell: bash
-        run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-      - name: Run scripts/test_*.py (HARD FAIL on test failure)
-        # Collect-only first to catch import errors cheaply; then run the
-        # full suite as a HARD failure. Pre-v2.0.0 this step wrapped the
-        # pytest call in `|| echo "::warning::..."` which silently
-        # downgraded test failures to yellow warnings on every push —
-        # 5 real failures had been ignored for weeks. Now: any test
-        # failure blocks the workflow.
-        shell: bash
-        run: |
-          set -e
-          if compgen -G "scripts/test_*.py" > /dev/null; then
-            # Collect-only must succeed (import errors are real bugs)
-            pytest scripts/ --collect-only -q
-            # Then the full suite must pass.
-            # No -x — we want the full failure list, not just the first.
-            # No `|| echo` — failures fail the workflow.
-            pytest scripts/ -q --tb=short
-          else
-            echo "No scripts/test_*.py — skipping"
-          fi

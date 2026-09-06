@@ -70,18 +70,25 @@ def test_missing_section_returns_empty():
     assert M.first_section_table("# nothing here", r"breadth") == []
 
 
-def test_real_manifest_regression(tmp_path):
-    """The exact quarantined manifest, if present, must yield 8 agents."""
-    import glob
-    hits = glob.glob(
-        r"D:\Programming\Web3\Contests\Acme Crosschain Dex\2025-05-acme-cross-chain-dex"
-        r"\omni-chain-contracts\contracts\.scratchpad\_retry_quarantine\instantiate"
-        r"\spawn_manifest.md"
+def _eight_agent_manifest() -> str:
+    lines = [
+        "# Spawn Manifest",
+        "",
+        "## Breadth Agents",
+        "",
+        "| Row Type | Template | Required? | Agent ID | Focus Area | Expected Output | Status |",
+        "|----------|----------|-----------|----------|------------|-----------------|--------|",
+    ]
+    lines.extend(
+        f"| AGENT | GENERIC_{i:02d} | YES | B{i} | role_{i:02d} | analysis_role_{i:02d}.md | QUEUED |"
+        for i in range(1, 9)
     )
-    if not hits:
-        import pytest
-        pytest.skip("Manifest fixture not present on this machine")
-    md = Path(hits[0]).read_text(encoding="utf-8")
+    return "\n".join(lines) + "\n"
+
+
+def test_hermetic_eight_agent_manifest_regression():
+    """An eight-row manifest stays exact without machine-local audit data."""
+    md = _eight_agent_manifest()
     sm = C.SpawnManifest.from_markdown(md)
     assert sm.count() == 8
     assert len(sm.outputs()) == 8

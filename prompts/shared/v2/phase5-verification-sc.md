@@ -82,6 +82,11 @@ ecosystem toolchain (Foundry `forge`, Solana/Soroban `cargo`, Aptos/Sui Move
 `aptos`/`sui`, L1 Go/Rust `go`/`cargo`), and the DRIVER — not you — stamps the
 authoritative Evidence Tag from that run. Therefore:
 
+- Any `committed-invariant [CI-n]` newly emitted by a verifier has authority
+  `HUMAN_REVIEW_NEXT_RUN`. It is created after the current verification queue
+  was frozen and MUST NOT be claimed as current-run verified or current-run
+  fuzzed. The driver may preserve it for a later run or explicit human review.
+
 - A `[POC-PASS]` you write that is NOT backed by a test the executor can locate
   and run to a real pass is **automatically demoted to `[CODE-TRACE]` and your
   `Verdict:` is flipped `CONFIRMED → CONTESTED [INTEGRITY-DOWNGRADE]`.** Claiming
@@ -177,8 +182,9 @@ Class (`structural`/`integration`) with justification in your own ledger.
 
 ### Output
 
-For each assigned row, write ONLY that row's verifier artifact:
-`{SCRATCHPAD}/verify_<ID>.md`.
+For each assigned row, write exactly the verifier pair:
+`{SCRATCHPAD}/verify_<ID>.md` and
+`{SCRATCHPAD}/verify_<ID>.severity_proposal.json`.
 
 Every verifier file MUST include:
 
@@ -191,7 +197,8 @@ Return one compact line per row:
 
 `<ID>: <VERDICT> | <EVIDENCE_TAG> | <1-sentence justification>`
 
-SCOPE: Write ONLY the `verify_<ID>.md` files for IDs assigned in this shard's
+SCOPE: Write ONLY the `verify_<ID>.md` and matching
+`verify_<ID>.severity_proposal.json` files for IDs assigned in this shard's
 manifest. Do NOT read or write other verifier shards' files. Do NOT write
 any artifact outside this contract. Return your findings and stop.
 

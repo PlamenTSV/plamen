@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_candidate_universe.v1.schema.json",
+  "title": "Program Facts EVM candidate universe v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "build_input_snapshot_digest",
+    "detector_policy_id",
+    "candidates",
+    "unresolved_candidate_ids",
+    "unresolved_debt_ids",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_candidate_universe.v1"
+    },
+    "status": {
+      "enum": [
+        "COMPLETE",
+        "DEGRADED",
+        "UNAVAILABLE",
+        "FAILED",
+        "STALE"
+      ]
+    },
+    "build_input_snapshot_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "detector_policy_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate"
+      },
+      "maxItems": 100000
+    },
+    "unresolved_candidate_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "unresolved_debt_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    },
+    "buildSystem": {
+      "enum": [
+        "FOUNDRY",
+        "HARDHAT",
+        "SOLC_STANDARD_JSON",
+        "TRUFFLE",
+        "BROWNIE",
+        "APE",
+        "CUSTOM_REVIEWED"
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "semantic_root_id",
+        "build_system",
+        "config_file_ids",
+        "source_file_ids"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "semantic_root_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "build_system": {
+          "$ref": "#/$defs/buildSystem"
+        },
+        "config_file_ids": {
+          "$ref": "#/$defs/identifierSet"
+        },
+        "source_file_ids": {
+          "$ref": "#/$defs/identifierSet"
+        }
+      }
+    }
+  }
+}

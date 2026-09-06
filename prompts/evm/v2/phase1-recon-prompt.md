@@ -153,7 +153,7 @@ Write to `{SCRATCHPAD}/meta_buffer.md`:
 ## RAG: DEFERRED to Phase 4b.5
 
 Recon does not perform RAG queries in the V2 driver. Phase 4b.5 RAG
-Validation Sweep will populate this file with per-finding RAG scores
+External precedent research will later populate typed context proposals; it never supplies finding scores
 after depth analysis completes.
 ```
 

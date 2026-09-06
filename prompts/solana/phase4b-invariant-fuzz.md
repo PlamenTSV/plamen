@@ -221,7 +221,7 @@ For each violation, use standard finding format with [FUZZ-N] IDs:
 - Include counterexample call sequence from crash file debug output
 - Map to existing findings where applicable
 - Severity: use standard matrix (invariant violations on core accounting = High likelihood)
-- Evidence tag: [TRIDENT-FUZZ] (mechanical proof, same weight as [POC-PASS])
+- Evidence tag: [TRIDENT-FUZZ] (authenticated counterexample to the encoded oracle; proof scope is recorded separately)
 ```
 
 If NO violations found: write summary with 'No violations detected in {runs} iterations across {N} invariants' and return.

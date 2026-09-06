@@ -38,6 +38,7 @@ for SC ecosystems and L1 is loaded as overlay.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -57,6 +58,20 @@ from typing import Optional
 # this module's namespace for monkeypatching.
 import supply_chain_gate
 from supply_chain_gate import SupplyChainAbortError, gate_supply_chain
+import mechanical_successor_receipts as mechanical_successor_authority
+from mechanical_successor_receipts import (
+    MechanicalSuccessorError,
+    apply_mechanical_successor,
+)
+from owned_process_runner import run_owned_process as _run_owned_process
+
+PLAMEN_RUNTIME_ASSETS = (
+    {
+        "kind": "runtime-data",
+        "mode": "file",
+        "path": "rules/language-toolchain-registry.json",
+    },
+)
 
 
 # Per-file and per-phase budgets (overridable via env for ops scenarios).
@@ -1071,10 +1086,13 @@ def _run_test_for_finding(verify_path: Path, build_root: Path, language: str,
             profile = env["FOUNDRY_PROFILE"]  # already set in the parent env
         t0 = time.time()
         try:
-            proc = subprocess.run(
-                cmd, cwd=str(build_root), capture_output=True, text=True,
-                encoding="utf-8", errors="replace",
-                timeout=per_test_timeout_s, shell=False, env=env,
+            proc = _run_owned_process(
+                cmd,
+                cwd=str(build_root),
+                timeout=per_test_timeout_s,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
             )
             result.duration_s = time.time() - t0
             result.test_command_used = (
@@ -1139,15 +1157,12 @@ def _run_test_for_finding(verify_path: Path, build_root: Path, language: str,
 
     t0 = time.time()
     try:
-        proc = subprocess.run(
+        proc = _run_owned_process(
             cmd,
             cwd=str(build_root),
-            capture_output=True,
-            text=True,
             encoding="utf-8",
             errors="replace",
             timeout=effective_timeout_s,
-            shell=False,
             env=race_env,
         )
         result.duration_s = time.time() - t0
@@ -1356,7 +1371,137 @@ def _annotate_verify_file(verify_path: Path, result: ExecResult) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _write_manifest(results: list[ExecResult], scratchpad: Path) -> None:
+def _result_rows_execution_equivalent(
+    prior_rows: object, current_rows: list[dict]
+) -> bool:
+    """Return true when only non-semantic timing telemetry changed.
+
+    Duration is preserved separately in a content-addressed execution record.
+    It must not invalidate an immutable successor proving the same test file,
+    function, command, status, output, tag, and race mode.
+    """
+
+    if not isinstance(prior_rows, list) or len(prior_rows) != len(current_rows):
+        return False
+
+    def stable(row: object) -> object:
+        if not isinstance(row, dict):
+            return row
+        return {key: value for key, value in row.items() if key != "duration_s"}
+
+    return [stable(row) for row in prior_rows] == [
+        stable(row) for row in current_rows
+    ]
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _authoritative_successor_result(
+    manifest_path: Path, executed_result: dict
+) -> dict:
+    """Resolve the exact row retained by the immutable canonical manifest."""
+
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return executed_result
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return executed_result
+    matches = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("finding_id") == executed_result.get("finding_id")
+        and row.get("verify_file") == executed_result.get("verify_file")
+    ]
+    if len(matches) != 1:
+        return executed_result
+    prior = matches[0]
+    if _result_rows_execution_equivalent([prior], [executed_result]):
+        return prior
+    return executed_result
+
+
+def _write_exact_execution_evidence(
+    scratchpad: Path,
+    *,
+    executed_result: dict,
+    authoritative_result: dict,
+    manifest_path: Path,
+    successor_receipt_path: Path,
+    run_identity: str,
+    driver_identity: str,
+) -> Path:
+    """Persist the exact rerun without mutating established successor proof."""
+
+    manifest_raw = manifest_path.read_bytes()
+    successor_raw = successor_receipt_path.read_bytes()
+    unsigned = {
+        "schema_version": "plamen.mechanical_execution_evidence.v1",
+        "run_identity": run_identity,
+        "driver_identity": driver_identity,
+        "executor_identity": "sha256:"
+        + hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest(),
+        "successor_identity": "sha256:"
+        + hashlib.sha256(
+            Path(mechanical_successor_authority.__file__).resolve().read_bytes()
+        ).hexdigest(),
+        "executed_result": executed_result,
+        "authoritative_result_sha256": hashlib.sha256(
+            _canonical_json_bytes(authoritative_result)
+        ).hexdigest(),
+        "mechanical_manifest_file": manifest_path.name,
+        "mechanical_manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "successor_receipt_file": successor_receipt_path.name,
+        "successor_receipt_sha256": hashlib.sha256(successor_raw).hexdigest(),
+    }
+    record_digest = hashlib.sha256(_canonical_json_bytes(unsigned)).hexdigest()
+    payload = {**unsigned, "record_digest": record_digest}
+    raw = _canonical_json_bytes(payload)
+    evidence_dir = Path(scratchpad) / "mechanical_execution_evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    path = evidence_dir / f"{record_digest}.json"
+    if path.exists():
+        if path.read_bytes() != raw:
+            raise MechanicalSuccessorError(
+                "content-addressed mechanical execution evidence collision"
+            )
+        return path
+    temp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        with temp.open("xb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temp, path)
+        except FileExistsError:
+            if path.read_bytes() != raw:
+                raise MechanicalSuccessorError(
+                    "racing mechanical execution evidence disagrees"
+                )
+        except OSError as exc:
+            raise MechanicalSuccessorError(
+                f"atomic mechanical execution evidence creation failed: {exc}"
+            ) from exc
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+    return path
+
+
+def _write_manifest(results: list[ExecResult], scratchpad: Path) -> Path:
     counts: dict[str, int] = {}
     for r in results:
         counts[r.status] = counts.get(r.status, 0) + 1
@@ -1374,7 +1519,7 @@ def _write_manifest(results: list[ExecResult], scratchpad: Path) -> None:
     ]
     for status in (
         "PASS", "FAIL", "COMPILE_FAIL", "TIMEOUT",
-        "NO_TEST_MATCH", "NO_TEST_FILE",
+        "NO_TEST_MATCH", "NO_TEST_FILE", "AMBIGUOUS",
         "TOOLCHAIN_UNAVAILABLE", "BUILD_FAILED", "EXEC_ERROR", "SKIPPED",
     ):
         lines.append(f"| {status} | {counts.get(status, 0)} |")
@@ -1396,22 +1541,136 @@ def _write_manifest(results: list[ExecResult], scratchpad: Path) -> None:
     )
 
     # JSON sidecar for downstream programmatic consumption
-    (scratchpad / "mechanical_verify_manifest.json").write_text(
-        json.dumps(
-            {
-                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "counts": counts,
-                "results": [asdict(r) for r in results],
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    manifest_json = scratchpad / "mechanical_verify_manifest.json"
+    result_rows = [asdict(r) for r in results]
+    # Successor receipts bind the exact JSON manifest bytes.  Preserve an
+    # existing manifest when its evidence rows and counts are unchanged so an
+    # exact replay cannot be invalidated solely by a regenerated timestamp.
+    preserve_existing = False
+    if manifest_json.exists():
+        try:
+            prior = json.loads(manifest_json.read_text(encoding="utf-8"))
+            preserve_existing = (
+                isinstance(prior, dict)
+                and prior.get("counts") == counts
+                and _result_rows_execution_equivalent(
+                    prior.get("results"), result_rows
+                )
+            )
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            preserve_existing = False
+    if not preserve_existing:
+        next_payload = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "counts": counts,
+            "results": result_rows,
+        }
+        # Never orphan an already-issued immutable receipt by replacing the
+        # exact manifest bytes it binds.  A genuinely different rerun is
+        # retained as a content-addressed pending generation and surfaced as
+        # DEGRADED when the current successor cannot accept it.
+        try:
+            established_receipts = [
+                entry
+                for entry in Path(scratchpad).iterdir()
+                if entry.name.casefold().startswith("verify_")
+                and entry.name.casefold().endswith(
+                    ".mechanical_successor.receipt.json"
+                )
+            ]
+        except OSError:
+            established_receipts = []
+        if manifest_json.exists() and established_receipts:
+            pending_raw = _canonical_json_bytes(next_payload)
+            pending_digest = hashlib.sha256(pending_raw).hexdigest()
+            pending_path = Path(scratchpad) / (
+                f"mechanical_verify_manifest.pending.{pending_digest}.json"
+            )
+            if pending_path.exists():
+                if pending_path.read_bytes() != pending_raw:
+                    raise MechanicalSuccessorError(
+                        "content-addressed pending manifest collision"
+                    )
+            else:
+                pending_path.write_bytes(pending_raw)
+        else:
+            manifest_json.write_text(
+                json.dumps(next_payload, indent=2),
+                encoding="utf-8",
+            )
 
     # v2.0.8 (P3.1): write verdict_manifest.json — the canonical
     # machine-readable evidence-truth record that cross-references the
     # verifier's prose Evidence Tag claim against this mechanical execution.
     _write_verdict_manifest(results, scratchpad)
+    return manifest_json
+
+
+def _mechanical_successor_execution_identity(
+    scratchpad: Path,
+    *,
+    run_identity: Optional[str] = None,
+    driver_identity: Optional[str] = None,
+) -> tuple[str, str]:
+    """Resolve the run and exact driver bytes bound by successor receipts.
+
+    Production runs carry a UUID in ``_v2_checkpoint.json``.  The explicit
+    keyword parameters are retained for isolated tests and recovery tooling;
+    ordinary driver callers need no signature change.  ``test-unbound`` is a
+    loud compatibility identity for isolated legacy callers with no
+    checkpoint, never an invented production UUID.
+    """
+    run = str(run_identity or "").strip()
+    if not run:
+        checkpoint = Path(scratchpad) / "_v2_checkpoint.json"
+        try:
+            payload = json.loads(checkpoint.read_text(encoding="utf-8-sig"))
+            if isinstance(payload, dict):
+                run = str(payload.get("run_id") or "").strip()
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            run = ""
+    if not run:
+        run = "test-unbound"
+
+    driver = str(driver_identity or "").strip()
+    if not driver:
+        driver_path = Path(__file__).resolve().with_name("plamen_driver.py")
+        try:
+            driver_bytes = driver_path.read_bytes()
+        except OSError:
+            # A packaged executor without the driver beside it is still bound
+            # to exact code bytes, but the fallback remains distinguishable
+            # from the normal plamen_driver.py authority in its receipt audit.
+            driver_bytes = Path(__file__).resolve().read_bytes()
+        driver = "sha256:" + hashlib.sha256(driver_bytes).hexdigest()
+    return run, driver
+
+
+def _write_successor_authority_summary(
+    scratchpad: Path,
+    *,
+    run_identity: str,
+    driver_identity: str,
+    committed: int,
+    rejections: list[dict[str, str]],
+) -> None:
+    """Persist haltless-but-loud authority debt for human review."""
+    out = Path(scratchpad) / "mechanical_successor_authority.json"
+    payload = {
+        "schema_version": "plamen.mechanical_successor_authority_summary.v1",
+        "status": "DEGRADED" if rejections else "CLEAN",
+        "run_identity": run_identity,
+        "driver_identity": driver_identity,
+        "committed_count": committed,
+        "rejected_count": len(rejections),
+        "rejections": rejections,
+    }
+    temp = out.with_suffix(out.suffix + ".tmp")
+    temp.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temp.replace(out)
 
 
 # ---------------------------------------------------------------------------
@@ -1768,10 +2027,13 @@ def _prewarm_build(build_root: Path, language: str, registry: dict,
             if resolved:
                 cmd[0] = resolved
         t0 = time.time()
-        proc = subprocess.run(
-            cmd, cwd=str(build_root), capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=max(1, int(timeout_s)), shell=False, env=env,
+        proc = _run_owned_process(
+            cmd,
+            cwd=str(build_root),
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1, int(timeout_s)),
+            env=env,
         )
         dt = time.time() - t0
         if proc.returncode == 0:
@@ -1826,10 +2088,13 @@ def _prewarm_cargo_test_targets(build_root: Path, language: str, registry: dict,
         # test target and warms the cache; per-finding feature validity is handled
         # later in `_apply_cargo_workspace_fixups`.
         t0 = time.time()
-        proc = subprocess.run(
-            cmd, cwd=str(build_root), capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=max(1, int(timeout_s)), shell=False, env=env,
+        proc = _run_owned_process(
+            cmd,
+            cwd=str(build_root),
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1, int(timeout_s)),
+            env=env,
         )
         dt = time.time() - t0
         if proc.returncode == 0:
@@ -1845,7 +2110,9 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
                                   language: str, *,
                                   per_test_timeout_s: Optional[int] = None,
                                   phase_budget_s: Optional[int] = None,
-                                  registry: Optional[dict] = None) -> dict:
+                                  registry: Optional[dict] = None,
+                                  run_identity: Optional[str] = None,
+                                  driver_identity: Optional[str] = None) -> dict:
     """Execute mechanical PoC verification for every verify_*.md in scratchpad.
 
     Returns a summary dict (also written to mechanical_verify_manifest.json):
@@ -1870,6 +2137,13 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
     per_test_timeout_s = per_test_timeout_s or _DEFAULT_PER_TEST_TIMEOUT_S
     phase_budget_s = phase_budget_s or _DEFAULT_PHASE_BUDGET_S
     registry = registry or _load_registry()
+    successor_run_identity, successor_driver_identity = (
+        _mechanical_successor_execution_identity(
+            Path(scratchpad),
+            run_identity=run_identity,
+            driver_identity=driver_identity,
+        )
+    )
 
     # Resolve actual language (caller may pass empty string when config absent)
     lang = (language or "").lower().strip()
@@ -1896,6 +2170,14 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
         return {"status": "no_verify_files", "counts": {}, "files_annotated": 0,
                 "elapsed_s": 0.0}
 
+    # Resolve the build root before the toolchain pre-check as well as before
+    # execution. P1-E must be able to materialize visible, candidate-bound
+    # non-execution debt for TOOLCHAIN_UNAVAILABLE without guessing a source
+    # or oracle binding.
+    build_root = _read_recon_build_root(scratchpad, lang) or _find_build_root(
+        Path(project_root), lang
+    )
+
     # Toolchain pre-check — if the binary is absent, short-circuit gracefully.
     bin_name = _toolchain_binary_for(lang)
     if bin_name and shutil.which(bin_name) is None:
@@ -1906,8 +2188,25 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
             for f in verify_files
         ]
         _write_manifest(results, scratchpad)
+        try:
+            from execution_scope_runtime import (
+                materialize_execution_scope_assessments,
+            )
+
+            p1e_scope = materialize_execution_scope_assessments(
+                Path(scratchpad), build_root=build_root
+            )
+        except Exception as exc:
+            p1e_scope = {
+                "status": "DEGRADED",
+                "materialized": 0,
+                "issues": [
+                    f"P1E_RUNTIME_DEGRADED:{type(exc).__name__}:{exc}"
+                ],
+            }
         return {"status": "toolchain_unavailable", "counts": {"TOOLCHAIN_UNAVAILABLE": len(results)},
-                "files_annotated": 0, "elapsed_s": 0.0}
+                "files_annotated": 0, "elapsed_s": 0.0,
+                "p1e_execution_scope": p1e_scope}
 
     # Resolve the build root once — the directory that owns the build
     # manifest (foundry.toml etc.), which is often a PARENT of the audit
@@ -1915,10 +2214,6 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
     # Recon's authoritative chosen build root (from build_status.md) wins when
     # present — the heuristic is the fallback for runs where recon emitted no
     # (or a stale) choice.
-    build_root = _read_recon_build_root(scratchpad, lang) or _find_build_root(
-        Path(project_root), lang
-    )
-
     # ITEM H2: fail-closed supply-chain gate. Runs ONCE for the whole phase,
     # BEFORE the pre-warm build and BEFORE the per-finding test loop below —
     # both invoke the TARGET repo's own build/test toolchain against its
@@ -1940,7 +2235,6 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
     race_bug_class_map = _load_race_bug_class_map(scratchpad, lang)
 
     results: list[ExecResult] = []
-    annotated = 0
     t_start = time.time()
     for vf in verify_files:
         if time.time() - t_start > phase_budget_s:
@@ -1958,18 +2252,87 @@ def run_phase5b_mechanical_verify(scratchpad: Path, project_root: Path,
             bug_class_map=race_bug_class_map,
         )
         r.recommended_tag = _recommended_tag(r.status)
-        if _annotate_verify_file(vf, r):
-            annotated += 1
         results.append(r)
 
-    _write_manifest(results, scratchpad)
+    # The exact result set must exist before any verifier Markdown mutation:
+    # every successor receipt binds the immutable JSON manifest bytes plus its
+    # own canonical result row.  This also makes a crash at either successor
+    # write boundary deterministically repairable.
+    manifest_path = _write_manifest(results, scratchpad)
+    annotated = 0
+    successor_receipts = 0
+    authority_rejections: list[dict[str, str]] = []
+    by_file = {r.verify_file: r for r in results}
+    for vf in verify_files:
+        r = by_file.get(vf.name)
+        if r is None:
+            continue
+        try:
+            executed_result = asdict(r)
+            authoritative_result = _authoritative_successor_result(
+                manifest_path, executed_result
+            )
+            outcome = apply_mechanical_successor(
+                vf,
+                authoritative_result,
+                manifest_path,
+                run_identity=successor_run_identity,
+                driver_identity=successor_driver_identity,
+            )
+            _write_exact_execution_evidence(
+                Path(scratchpad),
+                executed_result=executed_result,
+                authoritative_result=authoritative_result,
+                manifest_path=manifest_path,
+                successor_receipt_path=outcome.receipt_path,
+                run_identity=successor_run_identity,
+                driver_identity=successor_driver_identity,
+            )
+            if outcome.transformed_written:
+                annotated += 1
+            successor_receipts += 1
+        except (MechanicalSuccessorError, OSError, UnicodeError, ValueError) as exc:
+            # Haltless / repair-then-degrade: do not discard the mechanical
+            # execution result, but never mutate unverifiable source bytes.
+            authority_rejections.append(
+                {
+                    "finding_id": r.finding_id,
+                    "verify_file": r.verify_file,
+                    "reason": str(exc),
+                }
+            )
+    _write_successor_authority_summary(
+        Path(scratchpad),
+        run_identity=successor_run_identity,
+        driver_identity=successor_driver_identity,
+        committed=successor_receipts,
+        rejections=authority_rejections,
+    )
+    try:
+        from execution_scope_runtime import materialize_execution_scope_assessments
+
+        p1e_scope = materialize_execution_scope_assessments(
+            Path(scratchpad), build_root=build_root
+        )
+    except Exception as exc:
+        # Repair-then-degrade: immutable execution evidence remains available
+        # for recovery, but no proof upgrade or negative severity cap may rely
+        # on a missing P1-E assessment.
+        p1e_scope = {
+            "status": "DEGRADED",
+            "materialized": 0,
+            "issues": [f"P1E_RUNTIME_DEGRADED:{type(exc).__name__}:{exc}"],
+        }
     counts: dict[str, int] = {}
     for r in results:
         counts[r.status] = counts.get(r.status, 0) + 1
     return {
-        "status": "ok",
+        "status": "degraded" if authority_rejections else "ok",
         "counts": counts,
         "files_annotated": annotated,
+        "successor_receipts": successor_receipts,
+        "authority_rejections": len(authority_rejections),
+        "p1e_execution_scope": p1e_scope,
         "build_root": str(build_root),
         "prewarm_ok": prewarm_ok,
         "prewarm_note": prewarm_note,

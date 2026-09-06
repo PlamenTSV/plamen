@@ -427,19 +427,21 @@ def test_retry_hint_mentions_graph():
 
 
 def test_depth_retry_hint_keeps_initial_confidence_scoring_in_scope():
-    """Retry hint must not forbid the scoring file the depth gate requires."""
+    """Retry hint routes confidence work without granting artifact writes."""
     hint = V._generate_depth_retry_hint([
         "confidence_scores.md",
         "graph-artifact consumption: depth_token_flow references only 0/4",
     ])
     ok = (
         "confidence_scores.md" in hint
-        and "Initial confidence scoring is part of the depth phase" in hint
-        and "Phase 4b Confidence Scoring Agent" in hint
+        and "transient routing proposal" in hint
+        and "Do not create or modify confidence_scores.md" in hint
+        and "driver publishes the canonical artifact after the wave" in hint
+        and "Phase 4b Confidence Scoring Agent" not in hint
         and "verification, scoring, or report work" not in hint
         and "final_scoring" in hint
     )
-    check("retry hint does not forbid required confidence scoring", ok, hint)
+    check("retry hint preserves driver-owned confidence routing", ok, hint)
 
 
 def test_stale_depth_retry_hint_is_sanitized_on_read():
@@ -458,10 +460,11 @@ def test_stale_depth_retry_hint_is_sanitized_on_read():
     ok = (
         "verification, scoring, or report work" not in hint
         and "final_scoring" in hint
-        and "Initial confidence scoring is part of the depth phase" in hint
-        and "confidence_scores.md" in hint
+        and "Transient confidence routing is part of the depth phase" in hint
+        and "do not create or modify confidence_scores.md" in hint
+        and "driver publishes the canonical artifact after the wave" in hint
     )
-    check("stale depth retry hint sanitized on read", ok, hint)
+    check("stale depth retry hint sanitized to driver-owned routing", ok, hint)
 
 
 # --------------------------------------------------------------------------

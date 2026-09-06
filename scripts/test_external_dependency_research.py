@@ -256,6 +256,7 @@ def _install_fake_slither_module(monkeypatch, contracts):
     resolves to a Slither() that returns `contracts` with zero compiler/solc
     dependency. Restored automatically by the `monkeypatch` fixture."""
     fake_module = types.ModuleType("slither")
+    fake_module.__file__ = __file__
 
     class _FakeSlitherClass:
         def __init__(self, _target):
@@ -263,6 +264,25 @@ def _install_fake_slither_module(monkeypatch, contracts):
 
     fake_module.Slither = _FakeSlitherClass
     monkeypatch.setitem(sys.modules, "slither", fake_module)
+    rp = _rp()
+    monkeypatch.setattr(
+        rp,
+        "_capture_python_provider_authority",
+        lambda *_args, **_kwargs: {
+            "schema": "plamen.runtime-tool-identity.v2",
+            "tool_id": "slither",
+            "identity_kind": "python_distribution",
+            "module_origin": __file__,
+            "authority_status": "MATCH",
+            "deterministic_provider_authority": True,
+            "authority_digest": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_provider_authority_replays",
+        lambda *_args, **_kwargs: True,
+    )
 
 
 def test_mechanical_graph_json_has_nonempty_callees_for_known_call_edge(tmp_path, monkeypatch):
@@ -302,18 +322,55 @@ def test_mechanical_graph_json_has_nonempty_callees_for_known_call_edge(tmp_path
     assert functions["Vault.deposit"]["callers"] == ["withdraw"], functions["Vault.deposit"]
 
 
+def test_slither_graph_excludes_preserved_medusa_harness(tmp_path, monkeypatch):
+    rp = _rp()
+    root, sp = _proj(tmp_path)
+    _sol(root, "Vault.sol", "contract Vault { function deposit() external {} }\n")
+    _sol(
+        root,
+        ".medusa-tests/LegacyHarness.sol",
+        "contract LegacyHarness { function primedExploit() external {} }\n",
+    )
+
+    vault = _FakeContract("Vault")
+    vault.functions_declared = [_FakeFunction("deposit", vault, "Vault.sol", 1)]
+    harness = _FakeContract("LegacyHarness")
+    harness.functions_declared = [
+        _FakeFunction(
+            "primedExploit", harness, ".medusa-tests/LegacyHarness.sol", 1
+        )
+    ]
+    _install_fake_slither_module(monkeypatch, [vault, harness])
+
+    before = (root / ".medusa-tests" / "LegacyHarness.sol").read_bytes()
+    status = rp._bake_evm_slither_graph(sp, root)
+    assert status == "WRITTEN", status
+    graph = json.loads(
+        (sp / "_mechanical_graph.json").read_text(encoding="utf-8")
+    )
+    assert "Vault.deposit" in graph["functions"]
+    assert not any(
+        "LegacyHarness" in identity or row.get("bare") == "primedExploit"
+        for identity, row in graph["functions"].items()
+    )
+    assert (root / ".medusa-tests" / "LegacyHarness.sol").read_bytes() == before
+
+
 def test_scip_graph_writer_source_still_serializes_callees():
-    """Regression guard (no SCIP toolchain dependency): `_scip_to_graph_artifacts`
+    """Regression guard (no SCIP toolchain dependency): the SCIP renderer
     must keep serializing `"callees"` into the functions dict it writes to
     `_mechanical_graph.json` — a static source check so this doesn't silently
     regress if the function body is edited without a SCIP-index fixture."""
     rp = _rp()
     src = Path(rp.__file__).read_text(encoding="utf-8")
-    start = src.index("def _scip_to_graph_artifacts(")
+    # The public wrapper now stages and atomically publishes the graph set;
+    # serialization remains in the pure implementation it invokes.  Inspect
+    # that implementation rather than accidentally testing wrapper layout.
+    start = src.index("def _scip_to_graph_artifacts_impl(")
     end = src.index("\ndef ", start + 1)
     body = src[start:end]
     assert '"callees": sorted(callees.get(fn, []))' in body, (
-        "_scip_to_graph_artifacts no longer serializes callees into "
+        "_scip_to_graph_artifacts_impl no longer serializes callees into "
         "_mechanical_graph.json"
     )
 

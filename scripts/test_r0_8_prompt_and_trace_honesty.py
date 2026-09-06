@@ -455,7 +455,6 @@ def test_digest_bound_sidecar_rows_must_match_embedded_rows_verbatim(tmp_path):
 @pytest.mark.parametrize(
     "evidence",
     (
-        "src/State.sol:42",
         "src/State.sol, line 42",
         "src/State.sol L42",
         "[TRACE: reached revert at L42]",
@@ -473,6 +472,9 @@ def test_tag_is_accepted_only_when_it_embeds_resolvable_file_lline(tmp_path):
     _write_findings(tmp_path)
     assert V._step_trace_evidence_has_citation(
         "[TRACE: src/State.sol:L42 reached revert]", tmp_path
+    )
+    assert V._step_trace_evidence_has_citation(
+        "[TRACE: src/State.sol:42 reached revert]", tmp_path
     )
 
 

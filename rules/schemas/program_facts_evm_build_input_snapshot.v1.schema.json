@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_build_input_snapshot.v1.schema.json",
+  "title": "Program Facts EVM build input snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "run_id",
+    "run_generation",
+    "source_snapshot_digest",
+    "content_pack",
+    "source_file_ids",
+    "config_file_ids",
+    "unresolved_debt_ids",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_build_input_snapshot.v1"
+    },
+    "status": {
+      "enum": [
+        "CAPTURED",
+        "UNAVAILABLE",
+        "FAILED",
+        "STALE"
+      ]
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source_snapshot_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "content_pack": {
+      "$ref": "#/$defs/contentPack"
+    },
+    "source_file_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "config_file_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "unresolved_debt_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    },
+    "contentPack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "digest",
+        "size_bytes"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "program-facts-build-input"
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        }
+      }
+    }
+  }
+}

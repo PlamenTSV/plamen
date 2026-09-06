@@ -1,0 +1,7 @@
+-r requirements-runtime-core.in
+
+# Exact direct dependencies declared by the vendored slither-mcp 2.3.2 source.
+fastmcp>=2.14.0,<3
+slither-analyzer>=0.11.5,<0.12
+crytic-compile>=0.3.11,<0.4
+sentry-sdk>=2.49.0,<3

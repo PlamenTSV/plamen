@@ -7,6 +7,7 @@ description: "Trigger Protocol has migration patterns (reinitializer, V2/V3, dep
 
 > **Trigger**: Protocol has migration patterns (reinitializer, V2/V3, deprecated, upgrade, legacy)
 > **Covers**: Token type mismatches, stranded assets, interface incompatibilities
+> **Inject Into**: Breadth agents
 
 ## Trigger Patterns
 

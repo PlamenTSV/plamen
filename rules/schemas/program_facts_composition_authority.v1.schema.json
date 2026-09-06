@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_composition_authority.v1.schema.json",
+  "title": "Program Facts composition authority v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "authority_state",
+    "release_id",
+    "execution_authority_digest",
+    "components",
+    "component_set_digest",
+    "authority_digest",
+    "consumer_activation",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_composition_authority.v1"
+    },
+    "authority_state": {
+      "enum": [
+        "PROVISIONAL_REVIEW_ONLY",
+        "FROZEN_CANDIDATE_COMPOSITION_SEMANTICS"
+      ]
+    },
+    "release_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "execution_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      },
+      "minItems": 1,
+      "maxItems": 100000
+    },
+    "component_set_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "consumer_activation": {
+      "const": false
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "portablePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._/-]+$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

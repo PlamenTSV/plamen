@@ -138,10 +138,12 @@ class TestAutoExcludedNotAcknowledged:
         assert "PERT-01" not in ack, (
             "AUTO_EXCLUDED IDs must not enter the acknowledged set"
         )
-        assert "INV-001" in ack
+        assert "INV-001" not in ack, (
+            "bare PROMOTED renderer prose is not delivery authority"
+        )
 
-    def test_real_excluded_still_acknowledged(self, scratchpad: Path):
-        """Rows with plain EXCLUDED disposition should still be acknowledged."""
+    def test_plain_excluded_is_not_acknowledged(self, scratchpad: Path):
+        """Typed report-disposition authority, not renderer prose, owns exclusion."""
         (scratchpad / "report_coverage.md").write_text(
             textwrap.dedent("""\
                 # Report Coverage
@@ -155,7 +157,7 @@ class TestAutoExcludedNotAcknowledged:
             encoding="utf-8",
         )
         ack = _collect_report_coverage_acknowledged_ids(scratchpad)
-        assert "INV-001" in ack
+        assert "INV-001" not in ack
 
 
 # ---------------------------------------------------------------------------

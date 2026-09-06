@@ -304,7 +304,7 @@ def test_preflight_only_runs_for_claude_pty_supervised_phases(
 
 
 import pty_exec as _ptx  # noqa: E402
-from plamen_types import plamen_home  # noqa: E402
+from plamen_types import PLAMEN_HAIKU_MODEL, plamen_home  # noqa: E402
 
 
 def _production_pty_argv(model="sonnet", session_id="prod-sid",
@@ -352,6 +352,7 @@ def test_810_probe_argv_carries_isolation_set(tmp_path):
     assert "--strict-mcp-config" in argv and "--mcp-config" in argv
     assert "--settings" in argv
     assert "--no-chrome" in argv
+    assert argv[argv.index("--model") + 1] == PLAMEN_HAIKU_MODEL
     assert argv[-1].startswith("Read and fully execute every instruction in ")
     # two --add-dir (tmp scratchpad + plamen_home), mirroring production.
     assert argv.count("--add-dir") == 2

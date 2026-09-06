@@ -79,17 +79,16 @@ def test_axis2_names_k_omits_j_emits_exactly_one_vargap_for_j(tmp_path: Path):
          "  }\n}\n")
     _write_graph(sp, {"Vault.withdraw": {"bare": "withdraw", "loc": "Vault.sol:L5",
                                         "callers": []}})
-    # Names 5 of 6 boundary members (0, 1, min, empty, self); omits MAX.
+    # The exact uint type requires zero/one/max.  Associate each addressed
+    # value with the parameter and omit max.
     _write_inv(sp, _finding(
         "INV-001", "Vault.sol:L5", "CONFIRMED",
-        "Verified at zero amount; verified at one wei; enforces a minimum "
-        "threshold; verified with an empty balance; verified for self "
-        "transfers; safe otherwise."))
+        "Verified amount at zero; verified amount at one; safe otherwise."))
     out = eg.compute_boundary_input_candidates(sp)
     members = [c["key"].rsplit(":", 1)[-1] for c in out]
-    assert members == ["MAX"], out
-    assert "MAX" in out[0]["title"]
-    for named in ("0", "1", "min", "empty", "self"):
+    assert members == ["max"], out
+    assert "max" in out[0]["title"]
+    for named in ("zero", "one"):
         assert not any(c["key"].endswith(f":{named}") for c in out)
 
 
@@ -105,8 +104,8 @@ def test_axis2_all_named_no_gap(tmp_path: Path):
                                         "callers": []}})
     _write_inv(sp, _finding(
         "INV-001", "Vault.sol:L5", "CONFIRMED",
-        "Verified at zero amount; one wei; a minimum threshold; an empty "
-        "balance; self transfers; and the maximum uint256 value; safe."))
+        "Verified amount at zero, amount at one, and amount at the maximum "
+        "uint256 value; safe."))
     assert eg.compute_boundary_input_candidates(sp) == []
 
 
@@ -169,7 +168,7 @@ def test_axis2_non_confirmed_verdict_is_noop(tmp_path: Path):
 def test_axis2_bound_overflow_capped_not_flooded(tmp_path: Path):
     eg = _eg()
     root, sp = _proj(tmp_path)
-    n = 5  # 5 findings x 6 missing boundaries each = 30 potential candidates
+    n = 5  # 5 findings x 3 uint boundaries each = 15 potential candidates
     lines = ["contract Vault {"]
     blocks = []
     functions = {}
@@ -185,7 +184,7 @@ def test_axis2_bound_overflow_capped_not_flooded(tmp_path: Path):
     _write_inv(sp, *blocks)
     out = eg.compute_boundary_input_candidates(sp)
     assert len(out) == eg._MAX_PER_DERIVER
-    assert len(out) < n * len(eg._BOUNDARY_MEMBERS)
+    assert len(out) <= n * 3  # no universal cross-type boundary explosion
 
 
 # ─────────────────────────────────────────────────────────────────────────────

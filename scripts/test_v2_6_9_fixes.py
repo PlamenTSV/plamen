@@ -1,4 +1,4 @@
-"""Tests for v2.6.9 fixes: skeptic-judge DOWNGRADE + mechanical dedup fallback."""
+"""Tests for proposal-only skeptic challenges + mechanical dedup fallback."""
 from __future__ import annotations
 
 import re
@@ -10,6 +10,11 @@ import pytest
 import plamen_validators as V
 import plamen_mechanical as M
 from plamen_types import plamen_home
+from semantic_dedup_authority import extract_finding_records
+
+
+def _live_ids(text: str) -> set[str]:
+    return set(extract_finding_records(text))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -17,7 +22,7 @@ from plamen_types import plamen_home
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestSkepticJudgeDowngrade:
-    """_collect_judge_downgrade_map + _write_mechanical_report_index integration."""
+    """Legacy Markdown proposals cannot directly alter report severity."""
 
     def _write_judge(self, tmp_path: Path, content: str) -> None:
         (tmp_path / "skeptic_judge_decisions.md").write_text(
@@ -38,7 +43,7 @@ class TestSkepticJudgeDowngrade:
             | INV-004 | High | Medium | UNRESOLVED | reason |
         """))
         result = V._collect_judge_downgrade_map(tmp_path)
-        assert result == {"INV-002": "Medium", "INV-003": "Low"}
+        assert result == {}
 
     def test_empty_file(self, tmp_path):
         self._write_judge(tmp_path, "")
@@ -64,7 +69,7 @@ class TestSkepticJudgeDowngrade:
             | INV-006 | High | low | DOWNGRADE | reason |
         """))
         result = V._collect_judge_downgrade_map(tmp_path)
-        assert result == {"INV-005": "Medium", "INV-006": "Low"}
+        assert result == {}
 
     def test_l1_judge_format(self, tmp_path):
         """Parse a representative format from an L1 Codex audit."""
@@ -81,13 +86,7 @@ class TestSkepticJudgeDowngrade:
             | INV-012 | High | Low | DOWNGRADE | reason six |
         """))
         result = V._collect_judge_downgrade_map(tmp_path)
-        assert len(result) == 3
-        assert result["INV-002"] == "Medium"
-        assert result["INV-003"] == "Medium"
-        assert result["INV-012"] == "Low"
-        assert "INV-001" not in result  # KEEP
-        assert "INV-004" not in result  # KEEP
-        assert "INV-011" not in result  # UNRESOLVED
+        assert result == {}
 
     def test_malformed_rows_skipped(self, tmp_path):
         self._write_judge(tmp_path, dedent("""\
@@ -99,7 +98,7 @@ class TestSkepticJudgeDowngrade:
             | INV-002 | High | Medium | DOWNGRADE | reason |
         """))
         result = V._collect_judge_downgrade_map(tmp_path)
-        assert result == {"INV-001": "Medium", "INV-002": "Medium"}
+        assert result == {}
 
     # -- Integration with _write_mechanical_report_index --
 
@@ -138,26 +137,27 @@ class TestSkepticJudgeDowngrade:
                 lines.append(f"| {fid} | {orig} | {final} | {dec} | reason |")
             self._write_judge(tmp_path, "\n".join(lines))
 
-    def test_downgrade_applied_in_report_index(self, tmp_path):
+    def test_downgrade_proposal_does_not_change_report_index(self, tmp_path):
         self._make_report_index_scratchpad(tmp_path, downgrades=[
             ("INV-002", "High", "Medium", "DOWNGRADE"),
         ])
         count = M._write_mechanical_report_index(tmp_path)
         assert count > 0
         text = (tmp_path / "report_index.md").read_text(encoding="utf-8")
-        # INV-001 should remain High, INV-002 should be Medium
+        # Both remain High until separate typed adjudication authorizes a change.
         lines = [l for l in text.splitlines() if l.strip().startswith("|")]
         inv002_line = [l for l in lines if "INV-002" in l]
         assert inv002_line, "INV-002 should be in report_index.md"
-        assert "Medium" in inv002_line[0] or "M-" in inv002_line[0]
+        assert "High" in inv002_line[0] and "H-" in inv002_line[0]
+        assert "Medium" not in inv002_line[0]
 
-    def test_downgrade_produces_adjustment_tag(self, tmp_path):
+    def test_downgrade_proposal_produces_no_adjustment_tag(self, tmp_path):
         self._make_report_index_scratchpad(tmp_path, downgrades=[
             ("INV-002", "High", "Medium", "DOWNGRADE"),
         ])
         M._write_mechanical_report_index(tmp_path)
         text = (tmp_path / "report_index.md").read_text(encoding="utf-8")
-        assert "SKEPTIC-DOWNGRADE" in text
+        assert "SKEPTIC-DOWNGRADE" not in text
 
     def test_keep_not_applied(self, tmp_path):
         self._make_report_index_scratchpad(tmp_path, downgrades=[
@@ -233,19 +233,6 @@ class TestMechanicalDedupFallback:
             content, encoding="utf-8",
         )
 
-    def _write_queue(self, tmp_path: Path, ids: list[str]) -> None:
-        lines = [
-            "# Verification Queue",
-            "",
-            "| Finding ID | Title | Severity | Location |",
-            "|------------|-------|----------|----------|",
-        ]
-        for fid in ids:
-            lines.append(f"| {fid} | Bug {fid} | High | file.rs:L10 |")
-        (tmp_path / "verification_queue.md").write_text(
-            "\n".join(lines), encoding="utf-8",
-        )
-
     def _write_inventory(self, tmp_path: Path, ids: list[str]) -> None:
         lines = [
             "# Findings Inventory",
@@ -267,15 +254,15 @@ class TestMechanicalDedupFallback:
             |-----------|-----------|-------------|-----------|-----------|
             | INV-001: Bug One | INV-002: Bug Two | 0.30 | source-ID subset (D-1 ⊂ D-1, D-2) | Yes |
         """))
-        self._write_queue(tmp_path, ["INV-001", "INV-002", "INV-003"])
+        self._write_inventory(tmp_path, ["INV-001", "INV-002", "INV-003"])
         n = M._apply_mechanical_dedup_from_pairs(tmp_path, "semantic_dedup")
         assert n == 1
         dec = (tmp_path / "dedup_decisions.md").read_text(encoding="utf-8")
         assert "MECHANICAL_MERGE" in dec
         assert "MECHANICAL_FALLBACK" in dec
-        deduped = (tmp_path / "verification_queue_deduped.md").read_text(encoding="utf-8")
+        deduped = (tmp_path / "findings_inventory_deduped.md").read_text(encoding="utf-8")
         # INV-001 is the subset → absorbed
-        assert "INV-001" not in deduped
+        assert "INV-001" not in _live_ids(deduped)
         assert "INV-002" in deduped
         assert "INV-003" in deduped
 
@@ -287,7 +274,7 @@ class TestMechanicalDedupFallback:
             |-----------|-----------|-------------|-----------|-----------|
             | INV-005: Parent bug | INV-006: PERT variant | 0.45 | PERT lineage (shared depth source IDs) | Yes |
         """))
-        self._write_queue(tmp_path, ["INV-005", "INV-006"])
+        self._write_inventory(tmp_path, ["INV-005", "INV-006"])
         n = M._apply_mechanical_dedup_from_pairs(tmp_path, "semantic_dedup")
         assert n == 1
 
@@ -299,7 +286,7 @@ class TestMechanicalDedupFallback:
             |-----------|-----------|-------------|-----------|-----------|
             | INV-001: Bug | INV-002: Bug | 0.80 | source-ID subset (D-1 ⊂ D-1, D-2) | No |
         """))
-        self._write_queue(tmp_path, ["INV-001", "INV-002"])
+        self._write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(tmp_path, "semantic_dedup")
         assert n == 0
 
@@ -311,7 +298,7 @@ class TestMechanicalDedupFallback:
             |-----------|-----------|-------------|-----------|-----------|
             | INV-001: Bug | INV-002: Bug | 0.90 | title overlap 0.90 | Yes |
         """))
-        self._write_queue(tmp_path, ["INV-001", "INV-002"])
+        self._write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(tmp_path, "semantic_dedup")
         assert n == 0
 
@@ -323,7 +310,7 @@ class TestMechanicalDedupFallback:
             |-----------|-----------|-------------|-----------|-----------|
             | INV-001: Bug | INV-002: Bug | 0.10 | location overlap (L10-15 vs L12-18) | Yes |
         """))
-        self._write_queue(tmp_path, ["INV-001", "INV-002"])
+        self._write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(tmp_path, "semantic_dedup")
         assert n == 0
 
@@ -349,7 +336,7 @@ class TestMechanicalDedupFallback:
         n = M._apply_mechanical_dedup_from_pairs(tmp_path, "sc_semantic_dedup")
         assert n == 1
         deduped = (tmp_path / "findings_inventory_deduped.md").read_text(encoding="utf-8")
-        assert "INV-001" not in deduped
+        assert "INV-001" not in _live_ids(deduped)
         assert "INV-002" in deduped
 
     def test_multi_merge_no_double_absorb(self, tmp_path):
@@ -362,7 +349,7 @@ class TestMechanicalDedupFallback:
             | INV-001: Bug | INV-002: Bug | 0.30 | source-ID subset (D-1 ⊂ D-1, D-2) | Yes |
             | INV-001: Bug | INV-003: Bug | 0.30 | PERT lineage (shared depth source IDs) | Yes |
         """))
-        self._write_queue(tmp_path, ["INV-001", "INV-002", "INV-003"])
+        self._write_inventory(tmp_path, ["INV-001", "INV-002", "INV-003"])
         n = M._apply_mechanical_dedup_from_pairs(tmp_path, "semantic_dedup")
         # INV-001 absorbed once (into INV-002), second pair skipped
         assert n == 1
@@ -376,7 +363,7 @@ class TestMechanicalDedupFallback:
             |-----------|-----------|-------------|-----------|-----------|
             | INV-001: Bug | INV-002: Bug | 0.60 | source-ID subset (D-1 ⊂ D-1, D-2) + location overlap (L10-15 vs L12-18) | Yes |
         """))
-        self._write_queue(tmp_path, ["INV-001", "INV-002"])
+        self._write_inventory(tmp_path, ["INV-001", "INV-002"])
         n = M._apply_mechanical_dedup_from_pairs(tmp_path, "semantic_dedup")
         assert n == 1
 
@@ -387,23 +374,21 @@ class TestMechanicalDedupFallback:
 
 class TestPromptDowngradeRule:
 
-    def test_downgrade_rule_exists(self):
+    def test_skeptic_rule_is_proposal_only(self):
         path = plamen_home() / "rules" / "phase6-report-prompts.md"
-        if not path.exists():
-            pytest.skip("phase6-report-prompts.md not found")
+        assert path.is_file(), "report authority prompt is required packaging"
         text = path.read_text(encoding="utf-8")
-        assert "SKEPTIC-DOWNGRADE" in text
-        assert "DOWNGRADE" in text
-        # Rule 7 should reference the aggregate file
-        assert "skeptic_judge_decisions.md" in text
+        assert "skeptic artifacts are proposal-only" in text
+        assert "absent/stale/ambiguous authority preserves severity and body placement" in text
+        assert "MUST NOT lower severity, exclude, refute, merge, or close" in text
+        assert "skeptic_judge_decisions.md" not in text
 
-    def test_downgrade_priority_documented(self):
-        """DOWNGRADE should be after UNRESOLVED and before PoC caps."""
+    def test_challenge_boundary_precedes_poc_caps(self):
         path = plamen_home() / "rules" / "phase6-report-prompts.md"
-        if not path.exists():
-            pytest.skip("phase6-report-prompts.md not found")
+        assert path.is_file(), "report authority prompt is required packaging"
         text = path.read_text(encoding="utf-8")
-        unresolved_pos = text.find("UNRESOLVED/PARTIAL")
-        downgrade_pos = text.find("Skeptic-judge DOWNGRADE")
-        poc_pos = text.find("PoC-fail caps")
-        assert unresolved_pos < downgrade_pos < poc_pos
+        unresolved_pos = text.find("**UNRESOLVED/PARTIAL**")
+        challenge_pos = text.find("**Skeptic boundary**")
+        poc_pos = text.find("**PoC-fail proposal boundary**")
+        assert min(unresolved_pos, challenge_pos, poc_pos) >= 0
+        assert unresolved_pos < challenge_pos < poc_pos

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_generation_transition.v1.schema.json",
+  "title": "Program Facts generation transition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "state",
+    "run_id",
+    "run_generation",
+    "transaction_id",
+    "generation_id",
+    "prior_active_state",
+    "publication_arm_digest",
+    "generation_manifest_digest",
+    "phase_io_precommit_digest",
+    "transaction_digest",
+    "consumer_activation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_generation_transition.v1"
+    },
+    "state": {
+      "enum": [
+        "PREPARED",
+        "COMMITTED",
+        "ABORTED",
+        "FAILED"
+      ]
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "transaction_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "generation_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "prior_active_state": {
+      "enum": [
+        "ABSENT",
+        "PRESENT"
+      ]
+    },
+    "publication_arm_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "generation_manifest_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "phase_io_precommit_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "transaction_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "consumer_activation": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    }
+  }
+}

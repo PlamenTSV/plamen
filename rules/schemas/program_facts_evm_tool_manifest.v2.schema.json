@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_tool_manifest.v2.schema.json",
+  "title": "Program Facts EVM tool manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "analysis_release_state",
+    "authority",
+    "platform",
+    "components",
+    "distributions",
+    "manifest_digest",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_tool_manifest.v2"
+    },
+    "analysis_release_state": {
+      "enum": [
+        "PROVISIONAL_REVIEW_ONLY",
+        "FROZEN_CANDIDATE_EXECUTION_SEMANTICS"
+      ]
+    },
+    "authority": {
+      "const": "PINNED_TOOL_IDENTITY_NO_EXECUTION_AUTHORITY"
+    },
+    "platform": {
+      "$ref": "#/$defs/platform"
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      },
+      "minItems": 1,
+      "maxItems": 10000
+    },
+    "distributions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/distribution"
+      },
+      "minItems": 1,
+      "maxItems": 10000
+    },
+    "manifest_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:+/-]*$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "portablePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._/-]+$"
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "architecture"
+      ],
+      "properties": {
+        "os": {
+          "enum": [
+            "WINDOWS",
+            "LINUX",
+            "MACOS"
+          ]
+        },
+        "architecture": {
+          "enum": [
+            "AMD64",
+            "ARM64"
+          ]
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/portablePath"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/size"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "artifact_filename",
+        "artifact_sha256"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+        },
+        "artifact_filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+        },
+        "artifact_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

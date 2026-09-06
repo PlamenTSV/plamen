@@ -28,22 +28,22 @@ import plamen_prompt as PR
 
 class TestP04_SkepticPhantom:
 
-    def test_report_prompts_unresolved_uses_glob_pattern(self):
-        """UNRESOLVED references should use skeptic_*.md/judge_*.md glob, not aggregate."""
+    def test_skeptic_prose_is_proposal_only_not_phantom_aggregate_authority(self):
         path = plamen_home() / "rules" / "phase6-report-prompts.md"
-        if not path.exists():
-            pytest.skip("phase6-report-prompts.md not found")
+        assert path.is_file(), "report authority prompt is required packaging"
         text = path.read_text(encoding="utf-8")
-        assert "skeptic_*.md" in text or "judge_*.md" in text
+        assert "skeptic artifacts are proposal-only" in text
+        assert "distinct typed adjudicator" in text
+        assert "validated report-authoritative ledger" in text
+        assert "skeptic_judge_decisions.md" not in text
 
-    def test_report_prompts_downgrade_uses_aggregate(self):
-        """DOWNGRADE rule should reference skeptic_judge_decisions.md aggregate."""
+    def test_nonbody_requires_typed_full_claim_authority_or_defaults_to_body(self):
         path = plamen_home() / "rules" / "phase6-report-prompts.md"
-        if not path.exists():
-            pytest.skip("phase6-report-prompts.md not found")
+        assert path.is_file(), "report authority prompt is required packaging"
         text = path.read_text(encoding="utf-8")
-        assert "DOWNGRADE" in text
-        assert "SKEPTIC-DOWNGRADE" in text
+        assert "Disposition Authority Contract (MANDATORY)" in text
+        assert "full-claim typed refutation or zero-harm decision" in text
+        assert "defaults to BODY at upstream severity" in text
 
 
 # ═══════════════════════════════════════════════════════════════════════

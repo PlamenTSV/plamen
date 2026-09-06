@@ -78,7 +78,7 @@ class TestPrewarmBuild:
             seen["cwd"] = kw.get("cwd")
             return _FakeProc(returncode=0)
 
-        monkeypatch.setattr(MV.subprocess, "run", _fake_run)
+        monkeypatch.setattr(MV, "_run_owned_process", _fake_run)
         ok, note = MV._prewarm_build(tmp_path, "evm", {}, 2400)
         assert ok is True
         assert "warm ok" in note
@@ -89,13 +89,13 @@ class TestPrewarmBuild:
         def _boom(cmd, **kw):
             raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 1))
 
-        monkeypatch.setattr(MV.subprocess, "run", _boom)
+        monkeypatch.setattr(MV, "_run_owned_process", _boom)
         ok, note = MV._prewarm_build(tmp_path, "evm", {}, 5)
         assert ok is False
         assert "exceeded" in note  # cache left as-is, loop proceeds
 
     def test_nonzero_build_is_non_fatal(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(MV.subprocess, "run",
+        monkeypatch.setattr(MV, "_run_owned_process",
                             lambda cmd, **kw: _FakeProc(returncode=1))
         ok, note = MV._prewarm_build(tmp_path, "evm", {}, 60)
         assert ok is False
@@ -109,7 +109,7 @@ class TestPrewarmBuild:
 
     def test_non_evm_uses_registry_build_command(self, monkeypatch, tmp_path):
         seen = {}
-        monkeypatch.setattr(MV.subprocess, "run",
+        monkeypatch.setattr(MV, "_run_owned_process",
                             lambda cmd, **kw: seen.update(cmd=cmd) or _FakeProc(0))
         reg = {"l1_rust": {"build_command": "cargo build --all-targets"}}
         ok, note = MV._prewarm_build(tmp_path, "l1_rust", reg, 60)
@@ -121,7 +121,7 @@ class TestPrewarmBuild:
         def _explode(cmd, **kw):
             raise ValueError("unexpected")
 
-        monkeypatch.setattr(MV.subprocess, "run", _explode)
+        monkeypatch.setattr(MV, "_run_owned_process", _explode)
         ok, note = MV._prewarm_build(tmp_path, "evm", {}, 60)
         assert ok is False
         assert "error" in note

@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_terminal_wtx_roster.v1.schema.json",
+  "title": "Program Facts terminal WTx roster v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "run_generation",
+    "execution_authority_digest",
+    "build_plan_digest",
+    "expected_wtx_children_digest",
+    "expected_child_count",
+    "terminal_child_count",
+    "rows",
+    "roster_body_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_terminal_wtx_roster.v1"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "execution_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_plan_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "expected_wtx_children_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "expected_child_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4096
+    },
+    "terminal_child_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4096
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/row"
+      },
+      "maxItems": 4096
+    },
+    "roster_body_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "physicalPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_role",
+        "producer_output_identity",
+        "physical_path",
+        "size",
+        "sha256",
+        "ledger_output_row_digest"
+      ],
+      "properties": {
+        "semantic_role": {
+          "$ref": "#/$defs/identifier"
+        },
+        "producer_output_identity": {
+          "$ref": "#/$defs/identifier"
+        },
+        "physical_path": {
+          "$ref": "#/$defs/physicalPath"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1073741824
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "ledger_output_row_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_variant_id",
+        "producer_work_unit_id",
+        "producer_attempt_identity",
+        "terminal_artifacts"
+      ],
+      "properties": {
+        "selected_variant_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "producer_work_unit_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "producer_attempt_identity": {
+          "$ref": "#/$defs/identifier"
+        },
+        "terminal_artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact"
+          },
+          "minItems": 1,
+          "maxItems": 32
+        }
+      }
+    }
+  }
+}

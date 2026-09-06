@@ -52,8 +52,7 @@ def _patch_homes(monkeypatch, m, claude_home, plamen_home, codex_home):
 
 
 def test_codex_only_manifest_written_and_readable(monkeypatch):
-    """No ~/.claude dir: manifest still written (codex + plamen homes) and
-    _installed_version() returns the current VERSION."""
+    """Codex records committed authority outside the immutable runtime root."""
     m = _load()
     with tempfile.TemporaryDirectory() as root:
         claude_home = os.path.join(root, ".claude")  # intentionally NOT created
@@ -64,17 +63,37 @@ def test_codex_only_manifest_written_and_readable(monkeypatch):
         _patch_homes(monkeypatch, m, claude_home, plamen_home, codex_home)
 
         assert not os.path.isdir(claude_home)
-        m._write_install_manifest()
+        generation = {
+            "schema": m._CODEX_INSTALL_SCHEMA,
+            "transaction_id": "a" * 32,
+            "source_manifest_sha256": "b" * 64,
+            "runtime_manifest_sha256": "c" * 64,
+            "adapter_manifest_sha256": "d" * 64,
+            "plamen_root": plamen_home,
+        }
+        monkeypatch.setattr(
+            m,
+            "_toolchain_runtime_bundle_sha256",
+            lambda _root, **_kwargs: "e" * 64,
+        )
+        m._write_install_manifest(
+            package_root=plamen_home,
+            committed_generation=generation,
+        )
 
-        # Codex + PLAMEN_HOME manifests exist; Claude one does not.
+        # Backend metadata is outside the receipt-exact runtime generation.
         codex_manifest = os.path.join(codex_home, m._PLAMEN_MANIFEST)
         plamen_manifest = os.path.join(plamen_home, m._PLAMEN_MANIFEST)
         claude_manifest = os.path.join(claude_home, m._PLAMEN_MANIFEST)
         assert os.path.isfile(codex_manifest)
-        assert os.path.isfile(plamen_manifest)
+        assert not os.path.exists(plamen_manifest)
         assert not os.path.isfile(claude_manifest)
 
-        assert json.load(open(codex_manifest))["version"] == m.VERSION
+        recorded = json.load(open(codex_manifest))
+        assert recorded["version"] == m.VERSION
+        assert recorded["plamen_home"] == plamen_home
+        assert recorded["runtime_bundle_sha256"] == "e" * 64
+        assert recorded["committed_generation"] == generation
         # The whole point: version is now discoverable on a Codex-only box.
         assert m._installed_version() == m.VERSION
 

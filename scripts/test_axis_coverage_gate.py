@@ -398,33 +398,71 @@ def test_identity_cue_fires_on_cross_language_evm_worded_block(tmp_path):
 
 # ── skip-when-clean ──────────────────────────────────────────────────────────
 
-def test_skip_when_no_gaps_true(tmp_path, monkeypatch):
-    # Import the driver helper; monkeypatch the gate to report zero gaps.
+def test_skip_when_no_gaps_true(tmp_path):
     import plamen_driver as D
-    root, sp = _proj(tmp_path)
-    monkeypatch.setattr(
-        "enumeration_gate.compute_axis_coverage_gaps", lambda _sp: [])
-    assert D._axis_coverage_has_no_gaps(sp) is True
+    from test_axis_driver_transaction_red_p0_i import _axis_phase, _config
+    from test_axis_population_provider_p0_i import _project, _write_graph
+
+    project, sp = _project(tmp_path)
+    _write_graph(
+        sp,
+        {
+            "Unit.quiet(uint256)": {
+                "bare": "quiet",
+                "loc": "contracts/Unit.sol:L2",
+                "callers": [],
+            }
+        },
+    )
+    worklist, issues = D._prepare_axis_disposition_worklist(
+        phase=_axis_phase(),
+        config=_config(project),
+        scratchpad=sp,
+    )
+    assert issues == []
+    assert worklist["clean_empty"] is True
+    assert D._axis_coverage_has_no_obligations(sp) is True
 
 
-def test_skip_when_gaps_present_false(tmp_path, monkeypatch):
+def test_skip_when_gaps_present_false(tmp_path):
     import plamen_driver as D
-    root, sp = _proj(tmp_path)
-    monkeypatch.setattr(
-        "enumeration_gate.compute_axis_coverage_gaps",
-        lambda _sp: [{"function": "f", "loc": "x", "axis": "theft", "lang": "sol"}])
-    assert D._axis_coverage_has_no_gaps(sp) is False
+    from test_axis_driver_transaction_red_p0_i import _axis_phase, _config
+    from test_axis_population_provider_p0_i import _project, _write_graph
+
+    project, sp = _project(tmp_path)
+    _write_graph(
+        sp,
+        {
+            "Unit.quiet(uint256)": {
+                "bare": "quiet",
+                "loc": "contracts/Unit.sol:L2",
+                "callers": ["one", "two"],
+            }
+        },
+    )
+    worklist, issues = D._prepare_axis_disposition_worklist(
+        phase=_axis_phase(),
+        config=_config(project),
+        scratchpad=sp,
+    )
+    assert issues == []
+    assert worklist["count"] > 0
+    assert D._axis_coverage_has_no_obligations(sp) is False
 
 
 def test_skip_conservative_false_on_exception(tmp_path, monkeypatch):
     import plamen_driver as D
     root, sp = _proj(tmp_path)
 
-    def _boom(_sp):
+    def _boom(_path):
         raise RuntimeError("boom")
-    monkeypatch.setattr("enumeration_gate.compute_axis_coverage_gaps", _boom)
+    monkeypatch.setattr(
+        D.axis_disposition_authority,
+        "load_axis_worklist_v2",
+        _boom,
+    )
     # Conservative: on failure DO NOT skip (recall over cost).
-    assert D._axis_coverage_has_no_gaps(sp) is False
+    assert D._axis_coverage_has_no_obligations(sp) is False
 
 
 # ── promotion parity (Source IDs: AXISGAP, idempotent) ───────────────────────
@@ -560,7 +598,10 @@ def test_phase_registered_thorough_only_soft():
     assert p is not None, "SC missing axis_coverage phase"
     assert p.critical is False
     assert p.model == "sonnet"
-    assert p.expected_artifacts == ["axis_coverage_findings.md"]
+    assert p.expected_artifacts == [
+        "axis_coverage_findings.md",
+        "axis_coverage_dispositions.json",
+    ]
     assert p.modes == {"thorough"}
     assert p.base_timeout_s == 3600
 
@@ -577,11 +618,14 @@ def test_phase_ordered_after_4b7_before_dedup_chain():
         f"dedup={i_dedup} chain={i_chain}")
 
 
-def test_driver_dispatches_skip_validator_and_promotion():
+def test_driver_dispatches_typed_planning_finalization_and_promotion():
     src = (SCRIPTS_DIR / "plamen_driver.py").read_text(encoding="utf-8")
-    assert "_axis_coverage_has_no_gaps(scratchpad)" in src
-    assert "_validate_axis_coverage(scratchpad" in src
-    assert "promote_axis_findings_to_inventory(scratchpad)" in src
+    assert "_prepare_axis_disposition_worklist(" in src
+    assert "_axis_coverage_has_no_obligations(scratchpad)" in src
+    assert "_finalize_axis_coverage_boundary(" in src
+    assert "_axis_coverage_has_no_gaps(scratchpad)" not in src
+    assert "_validate_axis_coverage(scratchpad" not in src
+    assert "promote_axis_findings_to_inventory(scratchpad)" not in src
 
 
 def test_axisgap_source_id_cataloged():

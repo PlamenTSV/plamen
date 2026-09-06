@@ -143,14 +143,25 @@ def test_nonzero_expected_count_rejects(tmp_path: Path):
     sp = tmp_path / ".scratchpad"
     sp.mkdir()
     (sp / "body_manifests").mkdir()
-    # Queue with one Medium finding assigned to medium_c shard.
+    # Forty-one Medium findings deterministically split into three shards at
+    # the production cap of 20, so report_medium_c is necessarily non-empty.
+    queue_lines = [
+        "| Queue # | Finding ID | Severity | Title |",
+        "|---------|------------|----------|-------|",
+    ]
+    queue_lines.extend(
+        f"| {i} | INV-{i:03d} | Medium | synthetic {i} |"
+        for i in range(1, 42)
+    )
     _write(
         sp / "verification_queue.md",
-        "| Queue # | Finding ID | Severity | Title |\n"
-        "|---------|------------|----------|-------|\n"
-        "| 1 | INV-X | Medium | example |\n",
+        "\n".join(queue_lines) + "\n",
     )
-    _write(sp / "verify_INV-X.md", "**Severity**: Medium\n**Verdict**: CONFIRMED\n")
+    for i in range(1, 42):
+        _write(
+            sp / f"verify_INV-{i:03d}.md",
+            "**Severity**: Medium\n**Verdict**: CONFIRMED\n",
+        )
     # Body file with marker — but the queue contradicts the empty-tier claim.
     _write(sp / "report_medium_c.md", _AUTHENTIC_NOTE_BODY("report_medium_c"))
     # The cross-check uses `_expected_tier_assignment_count`. The exact
@@ -158,14 +169,10 @@ def test_nonzero_expected_count_rejects(tmp_path: Path):
     # important assertion is "if assignment count is non-zero, reject."
     # We test that path explicitly through the helper.
     count = V._expected_tier_assignment_count(sp, "report_medium_c")
-    if count is not None and count == 0:
-        # Routing didn't put INV-X here; nothing to assert about non-zero
-        # rejection on this specific fixture. Skip rather than false-pass.
-        import pytest
-        pytest.skip(
-            f"Fixture didn't produce non-zero assignment for medium_c "
-            f"(got {count}); test path requires routing to populate this shard"
-        )
+    assert count is not None and count > 0, (
+        "fixture must deterministically populate report_medium_c; "
+        f"got {count}"
+    )
     assert not V._empty_tier_sidecar_valid(
         sp, "report_medium_c", "report_medium_c.md"
     ), "Non-zero expected count must reject empty-tier acceptance"

@@ -7,6 +7,7 @@ description: "Type Thought-template (instantiate before use) - Research basis In
 
 > **Type**: Thought-template (instantiate before use)
 > **Research basis**: Insider threat modeling, keeper/bot abuse vectors
+> **Inject Into**: Breadth agents, depth-state-trace
 
 ## Trigger Patterns
 ```
@@ -143,7 +144,10 @@ For each function callable by {ROLE_NAME}:
 
 ### Step 6b: Admin/Privileged Function Griefability (EXHAUSTIVE)
 
-**MANDATORY**: Use Slither (`list_functions` with role modifiers, `analyze_modifiers`) to enumerate ALL privileged functions. Do NOT rely on manual scanning -- manual scanning misses functions. Validate your count against the Slither output.
+**MANDATORY**: Enumerate ALL privileged functions from the provided function
+and modifier inventories, then cross-check every role restriction against the
+assigned source scope. Do NOT rely on an unverified manual scan -- it can miss
+functions. Validate the inventory count against the source cross-check.
 
 Extend griefability analysis beyond the semi-trusted role to ALL admin/privileged functions:
 
@@ -154,7 +158,7 @@ For each function callable by DEFAULT_ADMIN_ROLE or equivalent:
 | {admin_fn} | {preconditions} | YES/NO | YES/NO | {impact if griefed} |
 
 **Enumeration completeness check**:
-- [ ] Slither `list_functions` count for role-restricted functions: {N}
+- [ ] Inventory-backed count for role-restricted functions: {N}
 - [ ] Functions analyzed in this table: {M}
 - [ ] If M < N -> INCOMPLETE -- analyze missing functions before proceeding
 

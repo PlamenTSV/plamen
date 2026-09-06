@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
+from collections import Counter
 import hashlib
 import json
 import logging
@@ -8,13 +10,33 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+
+from bounded_artifact_io import (
+    BoundedNamespaceCaptureError,
+    read_bounded_regular_bytes,
+    retain_bounded_regular_namespace,
+)
+from artifact_ledger import (
+    ArtifactLedgerError,
+    authorize_deterministic_work_unit_reexecution,
+    read_artifact_ledger,
+    record_work_unit_artifacts,
+    record_work_unit_inputs,
+    semantic_input_prebind_producer_authority_issues,
+    stored_committed_work_unit_authority_issues,
+    validate_work_unit_artifacts,
+    validate_work_unit_inputs,
+    write_artifact_ledger,
+)
+from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
 
 from coverage_shortfalls import (
     coverage_shortfalls_projection,
@@ -22,14 +44,73 @@ from coverage_shortfalls import (
     shortfall,
     unknown_shortfall,
 )
+from finding_producer_registry import (
+    ProducerResolutionError,
+    classify_producer_id as _classify_producer_id,
+    producer_for_artifact as _registered_producer_for_artifact,
+    producer_numeric_id_pattern as _registered_numeric_id_pattern,
+    producer_read_id_pattern as _registered_producer_read_id_pattern,
+    producer_patterns as _registered_producer_patterns,
+    read_registered_enumeration_obligations as _read_registered_enumeration_obligations,
+    read_registered_typed_actions as _read_registered_typed_actions,
+    render_delivery_human_review_projection as _render_delivery_human_review_projection,
+    resolve_effective_scopes as _resolve_effective_scopes,
+)
+from skill_selection_authority import strip_recon_transport_markers
+from security_obligation_authority import (
+    read_queueable_security_obligations as _read_queueable_security_obligations,
+    write_security_obligation_authority as _write_security_obligation_authority,
+)
+from report_evidence_authority import (
+    ReportEvidenceError as _ReportEvidenceError,
+    materialize_report_evidence_runtime as _materialize_report_evidence_runtime,
+    project_report_evidence_markdown as _project_report_evidence_markdown,
+    validate_report_evidence_bundle as _validate_report_evidence_bundle,
+)
+from report_mutation_transaction import (
+    ReportMutationTransactionError as _ReportMutationTransactionError,
+    apply_report_mutation_transaction as _apply_report_mutation_transaction,
+    capture_report_transaction_inputs as _capture_report_transaction_inputs,
+    recover_report_mutation_transaction as _recover_report_mutation_transaction,
+    report_mutation_transaction_state as _report_mutation_transaction_state,
+)
+from preverify_inventory_successor import (
+    DELIVERY_RECEIPT_NAME as PREVERIFY_DELIVERY_SUCCESSOR_NAME,
+    FINAL_RECEIPT_NAME as PREVERIFY_INVENTORY_SUCCESSOR_NAME,
+    validate_preverify_successor_payloads,
+)
+from preverify_projection_authority import (
+    resolve_active_preverify_projection,
+    PreverifyProjectionAuthorityError,
+    successor_projection_present,
+)
+from niche_lifecycle_authority import (
+    NicheLifecycleAuthorityError as _NicheLifecycleAuthorityError,
+    action_denominator_records as _niche_lifecycle_action_records,
+    commit_niche_lifecycle_generation as _commit_niche_lifecycle_generation,
+    load_current_niche_lifecycle as _load_current_niche_lifecycle,
+    niche_lifecycle_context as _niche_lifecycle_context,
+    _discard_niche_inventory_publication_capability,
+    _publish_niche_inventory_with_capability as _issue_niche_inventory_publication_capability,
+    projection_binding as _niche_lifecycle_projection_binding,
+    validate_projection_binding as _validate_niche_lifecycle_projection,
+)
+from operational_markdown import operational_markdown_view
+from plamen_markdown import mapped_headings
 
 from plamen_types import *  # noqa: F403,F401
+import plamen_parsers as _parsers
 from plamen_parsers import *  # noqa: F403,F401
 from plamen_parsers import (
+    FINDING_ARTIFACT_MAX_BYTES as _SHARED_FINDING_ARTIFACT_MAX_BYTES,
+    FindingArtifactLimitError as _FindingArtifactLimitError,
+    _EXPLICIT_FINDING_HEADING_RE,
+    _canonical_finding_blocks,
     _OPTIONAL_FINDING_METADATA_FIELDS,
     _OPTIONAL_FINDING_METADATA_LABELS,
     _QUALITY_CLASS_TITLES,
     _queue_rows_from_inventory_with_exclusions,
+    _read_finding_artifact_bytes,
     _write_queue_subset_manifest,
     classify_quality_observation,
 )
@@ -37,14 +118,23 @@ from plamen_validators import *  # noqa: F403,F401
 from plamen_validators import (  # explicit private helpers used by SC index repair
     _collect_judge_unresolved_ids,
     _expected_report_index_severities,
+    _inventory_structural_source_referents,
+    _promote_injectable_rows,
+    _reconcile_skill_manifest_sources,
     _report_index_adjustment_reason_present,
+    _verifier_output_has_completion_authority,
+    _verification_runtime_debt_coverage,
 )
 
 __all__ = [
+    "CanonicalMergeAuthorityError",
     "_ATTENTION_REPAIR_MAX_ITEMS",
+    "_records_from_inventory_text",
+    "enforce_material_harm_floor",
     "_apply_location_recovery",
     "_apply_mechanical_dedup_from_pairs",
     "_apply_merges_to_inventory",
+    "_extract_dedup_absorbed_ids",
     "apply_llm_dedup_decisions",
     "_apply_llm_group_decisions",
     "_parse_dedup_group_lines",
@@ -84,6 +174,7 @@ __all__ = [
     "_location_recovery_needed",
     "_normalize_breadth_outputs",
     "_merge_recon_worker_shards",
+    "validate_recon_direct_retry_launch_authority",
     "_patch_report_index_with_recovered",
     "_path_security_weight",
     "_prepare_attention_repair",
@@ -109,6 +200,7 @@ __all__ = [
     "_render_inventory_from_merged_entries",
     "ensure_findings_inventory_floor",
     "_write_mechanical_report_index",
+    "read_niche_identity_debt_sidecar",
     "promote_niche_to_inventory",
     "promote_blind_spot_to_inventory",
     "strip_codex_prepass_markers",
@@ -123,6 +215,7 @@ __all__ = [
     "write_inventory_chunk_placeholder",
     "write_report_tier_placeholder",
     "compute_promotion_orphans",
+    "promotion_reconciled_subjects",
     "route_promotion_orphans",
 ]
 
@@ -141,17 +234,29 @@ _RECON_CANONICAL_OUTPUTS = (
     "build_status.md",
 )
 
+_L1_RECON_CANONICAL_OUTPUTS = (
+    "recon_summary.md",
+    "threat_model.md",
+    "subsystem_map.md",
+    "attack_surface.md",
+    "trust_boundaries.md",
+    "template_recommendations.md",
+    "scope_leftover.md",
+)
+
 _PREPASS_MARKER = "<!-- plamen-prepass v1: mechanical pre-pass output; safe to overwrite while marker is present -->"
 
 
 def _strip_recon_worker_markers(text: str) -> str:
-    """Remove worker lifecycle comments before embedding shard evidence."""
-    text = re.sub(
-        r"(?m)^\s*<!--\s*(?:PLAMEN_[A-Z_]+|RECON_ROLE|EXPECTED_OUTPUT):.*?-->\s*$",
-        "",
-        text,
-    )
-    return text.strip()
+    """Remove worker transport comments while preserving typed authority.
+
+    P1-J: ``PLAMEN_SIGNALS`` is not lifecycle decoration.  The prior broad
+    ``PLAMEN_*`` regex deleted the only exact-polarity skill-selection channel
+    during canonical merge.  The shared helper uses a closed transport-marker
+    allowlist and retains even malformed signals for loud downstream debt.
+    """
+    stripped, _receipt = strip_recon_transport_markers(text)
+    return stripped.strip()
 
 
 def _strip_prepass_marker(text: str) -> str:
@@ -209,7 +314,233 @@ def strip_codex_prepass_markers(scratchpad: Path) -> list[str]:
     return stripped
 
 
-def _merge_recon_worker_shards(scratchpad: Path, config: dict) -> list[str]:
+def _render_l1_recon_worker_shards(
+    scratchpad: Path,
+    config: dict,
+) -> list[str]:
+    """Project isolated L1 recon leaves into the stable L1 handoff schema."""
+    mode = str(config.get("mode") or "core").lower()
+    jobs = (
+        (
+            ("l1_threat_fork", "recon_l1_threat_fork.md"),
+            ("l1_subsystem_attack_trust", "recon_l1_subsystem_attack_trust.md"),
+            ("l1_build_templates", "recon_l1_build_templates.md"),
+        )
+        if mode == "light"
+        else (
+            ("l1_threat_fork", "recon_l1_threat_fork.md"),
+            ("l1_subsystem_scope", "recon_l1_subsystem_scope.md"),
+            ("l1_attack_trust", "recon_l1_attack_trust.md"),
+            ("l1_build_static", "recon_l1_build_static.md"),
+            ("l1_templates_patterns", "recon_l1_templates_patterns.md"),
+        )
+    )
+    shards: dict[str, str] = {}
+    transforms: list[dict[str, Any]] = []
+    for role, name in jobs:
+        path = scratchpad / name
+        raw = ""
+        if path.is_file():
+            try:
+                raw = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                raw = ""
+        stripped, transform = strip_recon_transport_markers(raw)
+        shards[role] = stripped.strip()
+        transforms.append({"source": name, "role": role, **transform})
+
+    transform_receipt = {
+        "schema": "plamen.recon_signal_transform_set.v1",
+        "pipeline": "l1",
+        "mode": mode,
+        "ecosystem": str(config.get("language") or "unknown"),
+        "transforms": sorted(transforms, key=lambda row: row["source"]),
+    }
+    transform_receipt["artifact_sha256"] = hashlib.sha256(
+        json.dumps(
+            transform_receipt,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest().upper()
+    (scratchpad / "recon_signal_transform_receipt.json").write_text(
+        json.dumps(
+            transform_receipt,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _join(*roles: str) -> str:
+        parts = [shards.get(role, "").strip() for role in roles]
+        return "\n\n".join(part for part in parts if part)
+
+    threat = _join("l1_threat_fork")
+    subsystem = _join("l1_subsystem_scope", "l1_subsystem_attack_trust")
+    attack_trust = _join("l1_attack_trust", "l1_subsystem_attack_trust")
+    build = _join("l1_build_static", "l1_build_templates")
+    templates = _join("l1_templates_patterns", "l1_build_templates")
+
+    def _body_or_debt(body: str, label: str) -> str:
+        if body.strip():
+            return body.strip()
+        return (
+            f"No {label} shard evidence was committed. This is explicit recon "
+            "debt and must not be interpreted as evidence of safety or coverage."
+        )
+
+    def _write(name: str, title: str, sections: list[tuple[str, str]]) -> None:
+        chunks = [f"# {title}", ""]
+        for section_title, body in sections:
+            chunks.extend(
+                [
+                    f"## {section_title}",
+                    "",
+                    _body_or_debt(body, section_title.lower()),
+                    "",
+                ]
+            )
+        text = "\n".join(chunks).rstrip() + "\n"
+        if len(text.encode("utf-8", errors="ignore")) < 120:
+            text += (
+                "\n## Handoff Status\n\n"
+                "This deterministic projection preserves the available L1 recon "
+                "evidence and exposes missing worker evidence as explicit debt.\n"
+            )
+        (scratchpad / name).write_text(text, encoding="utf-8", newline="\n")
+
+    _write(
+        "threat_model.md",
+        "L1 Threat Model",
+        [
+            ("Consensus, Fork, Safety, and Liveness Evidence", threat),
+            (
+                "Unresolved Assumption Policy",
+                "Every externally defined or unconfirmed premise remains "
+                "unresolved until a later evidence-producing phase confirms it.",
+            ),
+        ],
+    )
+    _write(
+        "subsystem_map.md",
+        "L1 Subsystem Map",
+        [
+            ("Subsystem and Source Denominator", subsystem),
+            (
+                "Composition Boundary",
+                "Downstream analysis must trace state and control across every "
+                "cited subsystem seam rather than treating modules in isolation.",
+            ),
+        ],
+    )
+    _write(
+        "attack_surface.md",
+        "L1 Attack Surface",
+        [("Externally Reachable and Composed Surfaces", attack_trust)],
+    )
+    _write(
+        "trust_boundaries.md",
+        "L1 Trust Boundaries",
+        [
+            ("Privilege, Peer, Input, and Persistence Boundaries", attack_trust),
+            (
+                "Threat-Model Cross-Reference",
+                threat,
+            ),
+        ],
+    )
+    _write(
+        "template_recommendations.md",
+        "L1 Template Recommendations",
+        [
+            ("Risk-Pattern and Skill Signals", templates),
+            ("Build and Static Capability Context", build),
+        ],
+    )
+    _write(
+        "scope_leftover.md",
+        "Scope Leftover",
+        [
+            ("Worker Scope Evidence", subsystem),
+            (
+                "Mechanical Leftover Roster",
+                "| File | LOC | Reason | Acknowledged |\n"
+                "|---|---:|---|---|\n"
+                "\n"
+                "No leftover row is fabricated by the merge. Coverage gates may "
+                "append mechanically enumerated uncited files for human review.",
+            ),
+        ],
+    )
+
+    summary = [
+        "# L1 Recon Summary",
+        "",
+        "## Run Context",
+        "",
+        "- Pipeline: l1",
+        f"- Mode: {mode}",
+        f"- Language: {config.get('language', 'unknown')}",
+        f"- Project root: `{config.get('project_root') or ''}`",
+        "",
+        "## Transactional Worker Coverage",
+        "",
+    ]
+    for role, name in jobs:
+        path = scratchpad / name
+        size = 0
+        if path.is_file():
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+        state = f"present ({size} bytes)" if size else "missing (explicit debt)"
+        summary.append(f"- `{role}` -> `{name}`: {state}")
+    summary.extend(
+        [
+            "",
+            "## Canonical Handoff",
+            "",
+            "The Python driver deterministically projected isolated, "
+            "single-writer recon leaves into the seven L1 canonical artifacts. "
+            "Transport markers were removed, machine-readable selection signals "
+            "were preserved, and absent evidence was surfaced as debt rather than "
+            "converted into a safety conclusion.",
+            "",
+            "## Build and Primitive Capability Evidence",
+            "",
+            _body_or_debt(build, "build/static capability"),
+            "",
+            "## Threat and Fork-Safety Evidence",
+            "",
+            _body_or_debt(threat, "threat/fork"),
+            "",
+            "## Subsystem, Attack, and Trust Evidence",
+            "",
+            _body_or_debt(
+                "\n\n".join(part for part in (subsystem, attack_trust) if part),
+                "subsystem/attack/trust",
+            ),
+            "",
+            "## Template and Pattern Evidence",
+            "",
+            _body_or_debt(templates, "template/pattern"),
+            "",
+        ]
+    )
+    (scratchpad / "recon_summary.md").write_text(
+        "\n".join(summary).rstrip() + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return list(_L1_RECON_CANONICAL_OUTPUTS)
+
+
+def _render_recon_worker_shards(scratchpad: Path, config: dict) -> list[str]:
     """Merge driver-owned recon worker shards into canonical recon artifacts.
 
     The worker-pool architecture deliberately forbids recon workers from
@@ -223,6 +554,9 @@ def _merge_recon_worker_shards(scratchpad: Path, config: dict) -> list[str]:
     than replaced. That keeps Slither/OpenGrep/parser-derived inventories as the
     authority when present and uses the LLM shards as contextual analysis.
     """
+    if str(config.get("pipeline") or "sc").lower() == "l1":
+        return _render_l1_recon_worker_shards(scratchpad, config)
+
     shard_names = (
         "recon_build_static.md",
         "recon_design_context.md",
@@ -230,16 +564,38 @@ def _merge_recon_worker_shards(scratchpad: Path, config: dict) -> list[str]:
         "recon_templates_patterns.md",
     )
     shards: dict[str, str] = {}
+    signal_transforms: list[dict[str, Any]] = []
     for name in shard_names:
         path = scratchpad / name
         if not path.exists():
             continue
         try:
-            shards[name] = _strip_recon_worker_markers(
-                path.read_text(encoding="utf-8", errors="replace")
-            )
+            raw = path.read_text(encoding="utf-8", errors="replace")
+            stripped, transform = strip_recon_transport_markers(raw)
+            shards[name] = stripped.strip()
+            signal_transforms.append({"source": name, **transform})
         except Exception:
             shards[name] = ""
+
+    # Durable, timestamp-free transform proof.  A future signal family cannot
+    # be silently stripped because each shard records exact before/after block
+    # parity.  Missing mode-specific shards are absence, not invented empties.
+    transform_receipt = {
+        "schema": "plamen.recon_signal_transform_set.v1",
+        "pipeline": str(config.get("pipeline") or "sc"),
+        "mode": str(config.get("mode") or "core"),
+        "ecosystem": str(config.get("language") or "unknown"),
+        "transforms": sorted(signal_transforms, key=lambda row: row["source"]),
+    }
+    transform_receipt["artifact_sha256"] = hashlib.sha256(
+        json.dumps(
+            transform_receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest().upper()
+    (scratchpad / "recon_signal_transform_receipt.json").write_text(
+        json.dumps(transform_receipt, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
 
     # Light mode has two merged roles. Map them into the four conceptual
     # buckets so the canonical synthesis below is mode-independent.
@@ -437,6 +793,1263 @@ def _merge_recon_worker_shards(scratchpad: Path, config: dict) -> list[str]:
     ])
     _write("recon_summary.md", "\n".join(summary_parts))
     return list(_RECON_CANONICAL_OUTPUTS)
+
+
+_RECON_TRANSFORM_RECEIPT = "recon_signal_transform_receipt.json"
+_CANONICAL_MERGE_TIMEOUT_SECONDS = 30
+_CANONICAL_RETRY_ROOT = "_canonical_retry_generation/recon"
+
+
+class CanonicalMergeAuthorityError(RuntimeError):
+    """The deterministic recon merge could not establish typed authority."""
+
+
+def _canonical_merge_stable_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _canonical_merge_dimensions(config: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    pipeline = str(config.get("pipeline") or "sc").strip().lower()
+    mode = str(config.get("mode") or "core").strip().lower()
+    language = str(config.get("language") or "unknown").strip().lower()
+    ecosystem = {"solidity": "evm", "ethereum": "evm"}.get(language, language)
+    backend = str(config.get("cli_backend") or "claude").strip().lower()
+    return pipeline, mode, ecosystem, backend
+
+
+def _canonical_merge_input_names(pipeline: str, mode: str) -> tuple[str, ...]:
+    if pipeline == "l1":
+        return (
+            (
+                "recon_l1_threat_fork.md",
+                "recon_l1_subsystem_attack_trust.md",
+                "recon_l1_build_templates.md",
+            )
+            if mode == "light"
+            else (
+                "recon_l1_threat_fork.md",
+                "recon_l1_subsystem_scope.md",
+                "recon_l1_attack_trust.md",
+                "recon_l1_build_static.md",
+                "recon_l1_templates_patterns.md",
+            )
+        )
+    return (
+        (
+            "recon_build_static.md",
+            "recon_inventory_surface.md",
+        )
+        if mode == "light"
+        else (
+            "recon_build_static.md",
+            "recon_design_context.md",
+            "recon_inventory_surface.md",
+            "recon_templates_patterns.md",
+        )
+    )
+
+
+def _canonical_merge_output_names(pipeline: str) -> tuple[str, ...]:
+    canonical = (
+        _L1_RECON_CANONICAL_OUTPUTS
+        if pipeline == "l1"
+        else _RECON_CANONICAL_OUTPUTS
+    )
+    return (*canonical, _RECON_TRANSFORM_RECEIPT)
+
+
+def _canonical_merge_capture(
+    scratchpad: Path,
+    project_root: Path,
+    config: Mapping[str, Any],
+    input_names: tuple[str, ...],
+) -> dict[str, Any]:
+    worker_inputs: dict[str, str] = {}
+    for name in input_names:
+        path = scratchpad / name
+        if not path.is_file() or path.is_symlink():
+            raise CanonicalMergeAuthorityError(
+                f"canonical merge input is absent or unsafe: {name}"
+            )
+        raw = path.read_bytes()
+        if not raw:
+            raise CanonicalMergeAuthorityError(
+                f"canonical merge input is empty: {name}"
+            )
+        worker_inputs[name] = hashlib.sha256(raw).hexdigest()
+    source_root = project_root / "src"
+    source_records = {
+        path.relative_to(source_root).as_posix(): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in sorted(source_root.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    } if source_root.is_dir() else {}
+    source_capture_digest = _canonical_merge_stable_digest(source_records)
+    config_digest = _canonical_merge_stable_digest(dict(config))
+    input_set_digest = _canonical_merge_stable_digest({
+        "worker_inputs": worker_inputs,
+        "source_capture_digest": source_capture_digest,
+        "config_digest": config_digest,
+    })
+    return {
+        "worker_inputs": worker_inputs,
+        "source_capture_digest": source_capture_digest,
+        "config_digest": config_digest,
+        "input_set_digest": input_set_digest,
+    }
+
+
+def _canonical_merge_receipt_capture(scratchpad: Path) -> Mapping[str, Any] | None:
+    path = scratchpad / _RECON_TRANSFORM_RECEIPT
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        return None
+    capture = payload.get("authority_capture") if isinstance(payload, Mapping) else None
+    return capture if isinstance(capture, Mapping) else None
+
+
+def _canonical_merge_published_records(
+    scratchpad: Path,
+    output_names: tuple[str, ...],
+    capture: Mapping[str, Any],
+) -> dict[str, dict[str, Any]] | None:
+    """Authenticate an all-new post-publish/pre-commit generation."""
+
+    receipt_path = scratchpad / _RECON_TRANSFORM_RECEIPT
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        return None
+    if not isinstance(receipt, dict) or receipt.get("authority_capture") != capture:
+        return None
+    stored_receipt_digest = receipt.get("artifact_sha256")
+    unsigned = dict(receipt)
+    unsigned.pop("artifact_sha256", None)
+    expected_receipt_digest = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest().upper()
+    if stored_receipt_digest != expected_receipt_digest:
+        return None
+    output_hashes = receipt.get("canonical_output_sha256")
+    canonical_names = output_names[:-1]
+    if not isinstance(output_hashes, dict) or set(output_hashes) != set(canonical_names):
+        return None
+    records: dict[str, dict[str, Any]] = {}
+    for name in output_names:
+        path = scratchpad / name
+        if not path.is_file() or path.is_symlink():
+            return None
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if name != _RECON_TRANSFORM_RECEIPT and output_hashes.get(name) != digest:
+            return None
+        records[f"scratchpad:{name}"] = {
+            "sha256": digest,
+            "size": len(raw),
+        }
+    return records
+
+
+def _canonical_merge_bound_generation_state(
+    scratchpad: Path,
+    prior: Mapping[str, Any],
+    output_names: tuple[str, ...],
+) -> str:
+    """Classify a bound generation as all-old, all-new, or mixed."""
+
+    prestates = prior.get("output_prestates")
+    if not isinstance(prestates, Mapping):
+        return "mixed"
+    old = 0
+    new = 0
+    for name in output_names:
+        identity = f"scratchpad:{name}"
+        prestate = prestates.get(identity)
+        if not isinstance(prestate, Mapping):
+            return "mixed"
+        path = scratchpad / name
+        exists = path.is_file() and not path.is_symlink()
+        existed = prestate.get("existed") is True
+        if not exists and not existed:
+            old += 1
+            continue
+        if exists and existed:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if digest == prestate.get("sha256"):
+                old += 1
+                continue
+        new += 1
+    if old == len(output_names):
+        return "all_old"
+    if new == len(output_names):
+        return "all_new"
+    return "mixed"
+
+
+def _canonical_retry_regular_bytes(path: Path, *, label: str) -> bytes:
+    if not path.is_file() or path.is_symlink():
+        raise CanonicalMergeAuthorityError(
+            f"canonical retry {label} is absent or unsafe"
+        )
+    raw = path.read_bytes()
+    if not raw or len(raw) > 16 * 1024 * 1024:
+        raise CanonicalMergeAuthorityError(
+            f"canonical retry {label} is empty or unbounded"
+        )
+    return raw
+
+
+def _canonical_retry_plan(
+    scratchpad: Path,
+    *,
+    run_id: str,
+    output_names: tuple[str, ...],
+) -> tuple[dict[str, Any], bytes] | None:
+    path = scratchpad / "recon_retry_plan.json"
+    if not path.exists():
+        return None
+    raw = _canonical_retry_regular_bytes(path, label="plan")
+    try:
+        plan = json.loads(raw.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise CanonicalMergeAuthorityError(
+            f"canonical retry plan is not JSON: {exc}"
+        ) from exc
+    required = plan.get("required_output_schema") if isinstance(plan, dict) else None
+    failures = plan.get("failed_predicates") if isinstance(plan, dict) else None
+    required_names = {
+        str(row.get("pattern") or "")
+        for row in required
+        if isinstance(row, Mapping)
+    } if isinstance(required, list) else set()
+    canonical_names = set(output_names[:-1])
+    if (
+        not isinstance(plan, dict)
+        or plan.get("schema") != "plamen.retry-plan/v1"
+        or plan.get("run_id") != run_id
+        or plan.get("phase_name") != "recon"
+        or plan.get("work_unit_id") != "phase"
+        or plan.get("attempt") != 2
+        or plan.get("semantic_retry") is not True
+        or required_names != canonical_names
+        or not isinstance(failures, list)
+        or not failures
+        or any(
+            not isinstance(row, Mapping)
+            or not str(row.get("gate_id") or "").startswith("recon.")
+            or row.get("contract_digest") != plan.get("contract_digest")
+            for row in failures
+        )
+    ):
+        raise CanonicalMergeAuthorityError(
+            "canonical retry plan does not authorize this exact recon generation"
+        )
+    return plan, raw
+
+
+def _canonical_retry_bundle_records(
+    bundle: Path,
+    manifest: Mapping[str, Any],
+    *,
+    output_names: tuple[str, ...],
+) -> tuple[tuple[str, ...], dict[str, bytes]]:
+    expected_candidates = set(output_names[:-1])
+    expected_predecessors = set(output_names)
+    candidates = manifest.get("candidate_records")
+    predecessors = manifest.get("predecessor_records")
+    if (
+        not isinstance(candidates, Mapping)
+        or set(candidates) != expected_candidates
+        or not isinstance(predecessors, Mapping)
+        or set(predecessors) != expected_predecessors
+    ):
+        raise CanonicalMergeAuthorityError(
+            "canonical retry bundle output denominator is malformed"
+        )
+    candidate_bytes: dict[str, bytes] = {}
+    for directory, rows in (("candidate", candidates), ("predecessor", predecessors)):
+        for name, record in rows.items():
+            raw = _canonical_retry_regular_bytes(
+                bundle / directory / str(name),
+                label=f"bundle {directory}/{name}",
+            )
+            if (
+                not isinstance(record, Mapping)
+                or record.get("sha256") != hashlib.sha256(raw).hexdigest()
+                or record.get("size") != len(raw)
+            ):
+                raise CanonicalMergeAuthorityError(
+                    f"canonical retry bundle bytes changed: {directory}/{name}"
+                )
+            if directory == "candidate":
+                candidate_bytes[str(name)] = raw
+    plan_raw = _canonical_retry_regular_bytes(
+        bundle / "retry_plan.json", label="bundled plan"
+    )
+    if manifest.get("retry_plan_sha256") != hashlib.sha256(plan_raw).hexdigest():
+        raise CanonicalMergeAuthorityError("canonical retry bundled plan changed")
+    prompt_raw = _canonical_retry_regular_bytes(
+        bundle / "prompt.md", label="bundled prompt"
+    )
+    transcript_raw = _canonical_retry_regular_bytes(
+        bundle / "transcript.log", label="bundled transcript"
+    )
+    if (
+        manifest.get("prompt_sha256") != hashlib.sha256(prompt_raw).hexdigest()
+        or manifest.get("transcript_sha256")
+        != hashlib.sha256(transcript_raw).hexdigest()
+    ):
+        raise CanonicalMergeAuthorityError(
+            "canonical retry supervised-attempt evidence changed"
+        )
+    manifest_name = bundle.relative_to(bundle.parents[2]).as_posix()
+    input_names = tuple(manifest.get("input_names") or ())
+    expected_inputs = tuple(
+        [
+            *(f"{manifest_name}/candidate/{name}" for name in output_names[:-1]),
+            *(f"{manifest_name}/predecessor/{name}" for name in output_names),
+            f"{manifest_name}/retry_plan.json",
+            f"{manifest_name}/prompt.md",
+            f"{manifest_name}/transcript.log",
+            f"{manifest_name}/manifest.json",
+        ]
+    )
+    if input_names != expected_inputs:
+        raise CanonicalMergeAuthorityError(
+            "canonical retry bundle input denominator changed"
+        )
+    return input_names, candidate_bytes
+
+
+def _canonical_retry_generation(
+    *,
+    scratchpad: Path,
+    ledger: Mapping[str, Any],
+    prior: Mapping[str, Any],
+    contract: Any,
+    run_id: str,
+    output_names: tuple[str, ...],
+    supervised_attempt: int | None = None,
+) -> dict[str, Any] | None:
+    """Return a sealed retry projection, or a pending quarantine sentinel."""
+
+    plan_result = _canonical_retry_plan(
+        scratchpad, run_id=run_id, output_names=output_names
+    )
+    if plan_result is None:
+        return None
+    plan, plan_raw = plan_result
+    evidence_attempt = (
+        supervised_attempt
+        if type(supervised_attempt) is int
+        else plan.get("attempt")
+    )
+    if type(evidence_attempt) is not int or evidence_attempt < 2:
+        raise CanonicalMergeAuthorityError(
+            "canonical retry supervised attempt ordinal is invalid"
+        )
+    expected_identities = tuple(f"scratchpad:{name}" for name in output_names)
+    historical_issues = stored_committed_work_unit_authority_issues(
+        ledger,
+        work_unit_key=contract.key,
+        run_id=run_id,
+        expected_artifact_identities=expected_identities,
+    )
+    if historical_issues:
+        raise CanonicalMergeAuthorityError(
+            "canonical retry predecessor authority does not replay: "
+            + "; ".join(historical_issues)
+        )
+    commit = prior.get("commit_authority")
+    prior_attempt = commit.get("attempt_ordinal") if isinstance(commit, Mapping) else None
+    if type(prior_attempt) is not int or prior_attempt < 1:
+        raise CanonicalMergeAuthorityError(
+            "canonical retry predecessor attempt is invalid"
+        )
+    attempt = prior_attempt + 1
+    bundle_relative = f"{_CANONICAL_RETRY_ROOT}/attempt-{attempt}"
+    bundle = scratchpad / bundle_relative
+    manifest_path = bundle / "manifest.json"
+    if manifest_path.exists():
+        raw = _canonical_retry_regular_bytes(manifest_path, label="bundle manifest")
+        try:
+            manifest = json.loads(raw.decode("utf-8"))
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise CanonicalMergeAuthorityError(
+                f"canonical retry bundle manifest is not JSON: {exc}"
+            ) from exc
+        unsigned = dict(manifest) if isinstance(manifest, dict) else {}
+        claimed = unsigned.pop("manifest_sha256", None)
+        if (
+            claimed != _canonical_merge_stable_digest(unsigned)
+            or manifest.get("schema") != "plamen.canonical-retry-generation.v1"
+            or manifest.get("run_id") != run_id
+            or manifest.get("attempt_ordinal") != attempt
+            or manifest.get("supervised_attempt_ordinal") != evidence_attempt
+            or manifest.get("predecessor_work_unit_key") != contract.key
+            or manifest.get("predecessor_receipt_digest")
+            != (commit.get("receipt_digest") if isinstance(commit, Mapping) else None)
+        ):
+            raise CanonicalMergeAuthorityError(
+                "canonical retry bundle manifest authority is invalid"
+            )
+        inputs, candidate_bytes = _canonical_retry_bundle_records(
+            bundle, manifest, output_names=output_names
+        )
+        return {
+            "state": "ready",
+            "attempt": attempt,
+            "bundle": bundle,
+            "bundle_relative": bundle_relative,
+            "manifest": manifest,
+            "input_names": inputs,
+            "candidate_bytes": candidate_bytes,
+        }
+
+    prior_records = prior.get("artifacts")
+    if not isinstance(prior_records, Mapping):
+        raise CanonicalMergeAuthorityError(
+            "canonical retry predecessor records are absent"
+        )
+    quarantine = scratchpad / "_retry_quarantine" / "recon"
+    predecessor_sources: dict[str, Path] = {}
+    for name in output_names:
+        source = (
+            scratchpad / name
+            if name == _RECON_TRANSFORM_RECEIPT
+            else quarantine / name
+        )
+        raw = _canonical_retry_regular_bytes(
+            source, label=f"predecessor {name}"
+        )
+        record = prior_records.get(f"scratchpad:{name}")
+        if (
+            not isinstance(record, Mapping)
+            or record.get("sha256") != hashlib.sha256(raw).hexdigest()
+            or record.get("size") != len(raw)
+        ):
+            raise CanonicalMergeAuthorityError(
+                f"canonical retry predecessor bytes changed: {name}"
+            )
+        predecessor_sources[name] = source
+
+    present = {
+        name: (scratchpad / name).is_file() and not (scratchpad / name).is_symlink()
+        for name in output_names[:-1]
+    }
+    if not any(present.values()):
+        return {"state": "pending"}
+    if not all(present.values()):
+        raise CanonicalMergeAuthorityError(
+            "canonical retry candidate generation is partial"
+        )
+    prompt_path = scratchpad / f"_prompt_recon.attempt{evidence_attempt}.md"
+    transcript_path = scratchpad / f"_stdio_recon.attempt{evidence_attempt}.log"
+    prompt_raw = _canonical_retry_regular_bytes(
+        prompt_path, label="supervised attempt prompt"
+    )
+    transcript_raw = _canonical_retry_regular_bytes(
+        transcript_path, label="supervised attempt transcript"
+    )
+    prompt_text = prompt_raw.decode("utf-8", errors="replace")
+    transcript_text = transcript_raw.decode("utf-8", errors="replace")
+    transcript_paths = {
+        str(scratchpad),
+        str(scratchpad).replace("\\", "\\\\"),
+        scratchpad.as_posix(),
+    }
+    if (
+        "# RETRY ATTEMPT (driver-detected gate failure on previous attempt)"
+        not in prompt_text
+        or str(scratchpad) not in prompt_text
+        or not any(path in transcript_text for path in transcript_paths)
+        or len(transcript_raw) < 500
+        or any(name not in transcript_text for name in output_names[:-1])
+        or not any(
+            marker in transcript_text
+            for marker in (
+                '\"stop_reason\":\"end_turn\"',
+                '\"type\":\"turn.completed\"',
+                "DONE: Recon retry",
+            )
+        )
+    ):
+        raise CanonicalMergeAuthorityError(
+            "canonical retry lacks a completed supervised direct-attempt transcript"
+        )
+    candidate_bytes = {
+        name: _canonical_retry_regular_bytes(
+            scratchpad / name, label=f"candidate {name}"
+        )
+        for name in output_names[:-1]
+    }
+    if all(
+        hashlib.sha256(raw).hexdigest()
+        == prior_records[f"scratchpad:{name}"].get("sha256")
+        for name, raw in candidate_bytes.items()
+    ):
+        raise CanonicalMergeAuthorityError(
+            "canonical retry candidate did not produce a new generation"
+        )
+
+    parent = bundle.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".attempt-{attempt}-", dir=parent))
+    try:
+        (stage / "candidate").mkdir()
+        (stage / "predecessor").mkdir()
+        candidate_records: dict[str, dict[str, Any]] = {}
+        predecessor_records: dict[str, dict[str, Any]] = {}
+        for name, raw in candidate_bytes.items():
+            (stage / "candidate" / name).write_bytes(raw)
+            candidate_records[name] = {
+                "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)
+            }
+        for name, source in predecessor_sources.items():
+            raw = source.read_bytes()
+            (stage / "predecessor" / name).write_bytes(raw)
+            predecessor_records[name] = {
+                "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)
+            }
+        (stage / "retry_plan.json").write_bytes(plan_raw)
+        (stage / "prompt.md").write_bytes(prompt_raw)
+        (stage / "transcript.log").write_bytes(transcript_raw)
+        input_names = tuple(
+            [
+                *(f"{bundle_relative}/candidate/{name}" for name in output_names[:-1]),
+                *(f"{bundle_relative}/predecessor/{name}" for name in output_names),
+                f"{bundle_relative}/retry_plan.json",
+                f"{bundle_relative}/prompt.md",
+                f"{bundle_relative}/transcript.log",
+                f"{bundle_relative}/manifest.json",
+            ]
+        )
+        unsigned = {
+            "schema": "plamen.canonical-retry-generation.v1",
+            "run_id": run_id,
+            "attempt_ordinal": attempt,
+            "supervised_attempt_ordinal": evidence_attempt,
+            "predecessor_work_unit_key": contract.key,
+            "predecessor_receipt_digest": commit.get("receipt_digest"),
+            "retry_plan_sha256": hashlib.sha256(plan_raw).hexdigest(),
+            "prompt_sha256": hashlib.sha256(prompt_raw).hexdigest(),
+            "transcript_sha256": hashlib.sha256(transcript_raw).hexdigest(),
+            "retry_plan_contract_digest": plan.get("contract_digest"),
+            "candidate_records": candidate_records,
+            "predecessor_records": predecessor_records,
+            "input_names": list(input_names),
+        }
+        manifest = {
+            **unsigned,
+            "manifest_sha256": _canonical_merge_stable_digest(unsigned),
+        }
+        (stage / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(stage, bundle)
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=False)
+    inputs, sealed_candidates = _canonical_retry_bundle_records(
+        bundle, manifest, output_names=output_names
+    )
+    return {
+        "state": "ready",
+        "attempt": attempt,
+        "bundle": bundle,
+        "bundle_relative": bundle_relative,
+        "manifest": manifest,
+        "input_names": inputs,
+        "candidate_bytes": sealed_candidates,
+    }
+
+
+def _restore_canonical_retry_predecessor(
+    scratchpad: Path,
+    retry: Mapping[str, Any],
+    output_names: tuple[str, ...],
+) -> None:
+    bundle = Path(retry["bundle"])
+    quarantine = scratchpad / "_retry_quarantine" / "recon"
+    for name in output_names:
+        expected = retry["manifest"]["predecessor_records"][name]
+        destination = scratchpad / name
+        if (
+            destination.is_file()
+            and not destination.is_symlink()
+            and destination.stat().st_size == expected["size"]
+            and hashlib.sha256(destination.read_bytes()).hexdigest()
+            == expected["sha256"]
+        ):
+            continue
+        quarantined = quarantine / name
+        if quarantined.is_file() and not quarantined.is_symlink():
+            os.replace(quarantined, destination)
+            continue
+        raw = _canonical_retry_regular_bytes(
+            bundle / "predecessor" / name,
+            label=f"restored predecessor {name}",
+        )
+        temporary = destination.with_name(f".{destination.name}.retry-predecessor")
+        temporary.write_bytes(raw)
+        os.replace(temporary, destination)
+        if (
+            destination.stat().st_size != expected["size"]
+            or hashlib.sha256(destination.read_bytes()).hexdigest()
+            != expected["sha256"]
+        ):
+            raise CanonicalMergeAuthorityError(
+                f"canonical retry predecessor restore changed bytes: {name}"
+            )
+
+
+def _committed_canonical_retry_generation(
+    scratchpad: Path,
+    prior: Mapping[str, Any],
+    output_names: tuple[str, ...],
+) -> dict[str, Any] | None:
+    manifest = prior.get("contract_manifest")
+    immutable = manifest.get("immutable_inputs") if isinstance(manifest, Mapping) else None
+    candidates = [
+        str(identity).removeprefix("scratchpad:")
+        for identity in immutable or ()
+        if str(identity).startswith(f"scratchpad:{_CANONICAL_RETRY_ROOT}/")
+        and str(identity).endswith("/manifest.json")
+    ]
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise CanonicalMergeAuthorityError(
+            "committed canonical retry bundle denominator is ambiguous"
+        )
+    bundle = scratchpad / Path(candidates[0]).parent
+    raw = _canonical_retry_regular_bytes(
+        bundle / "manifest.json", label="committed bundle manifest"
+    )
+    try:
+        retry_manifest = json.loads(raw.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise CanonicalMergeAuthorityError(
+            f"committed canonical retry manifest is not JSON: {exc}"
+        ) from exc
+    unsigned = dict(retry_manifest) if isinstance(retry_manifest, dict) else {}
+    claimed = unsigned.pop("manifest_sha256", None)
+    if (
+        claimed != _canonical_merge_stable_digest(unsigned)
+        or retry_manifest.get("schema")
+        != "plamen.canonical-retry-generation.v1"
+    ):
+        raise CanonicalMergeAuthorityError(
+            "committed canonical retry manifest integrity failed"
+        )
+    extra_inputs, candidate_bytes = _canonical_retry_bundle_records(
+        bundle, retry_manifest, output_names=output_names
+    )
+    stored_names = tuple(str(value).removeprefix("scratchpad:") for value in immutable)
+    if not set(extra_inputs).issubset(set(stored_names)):
+        raise CanonicalMergeAuthorityError(
+            "committed canonical retry contract omitted sealed inputs"
+        )
+    return {
+        "state": "ready",
+        "attempt": retry_manifest.get("attempt_ordinal"),
+        "bundle": bundle,
+        "bundle_relative": bundle.relative_to(scratchpad).as_posix(),
+        "manifest": retry_manifest,
+        "input_names": extra_inputs,
+        "candidate_bytes": candidate_bytes,
+        "contract_input_names": stored_names,
+    }
+
+
+def _record_canonical_merge_drift_debt(
+    *,
+    scratchpad: Path,
+    contract: Any,
+    capture: Mapping[str, Any],
+) -> None:
+    ledger = read_artifact_ledger(scratchpad)
+    old = ledger.get("work_units", {}).get(contract.key)
+    if not isinstance(old, dict):
+        raise CanonicalMergeAuthorityError(
+            "canonical merge drift has no committed predecessor"
+        )
+    commit = old.get("commit_authority")
+    old_attempt = commit.get("attempt_ordinal") if isinstance(commit, Mapping) else None
+    if type(old_attempt) is not int or old_attempt < 1:
+        raise CanonicalMergeAuthorityError(
+            "canonical merge predecessor attempt authority is invalid"
+        )
+    attempt_ordinal = old_attempt + 1
+    attempt_identity = f"{contract.key}/attempt-{attempt_ordinal}"
+    binding = {
+        "producer_attempt_identity": attempt_identity,
+        "attempt_ordinal": attempt_ordinal,
+        "input_set_digest": capture["input_set_digest"],
+        "config_digest": capture["config_digest"],
+        "source_capture_digest": capture["source_capture_digest"],
+    }
+    binding["attempted_authority_digest"] = _canonical_merge_stable_digest(binding)
+    disposition = {
+        **binding,
+        "schema": "plamen.recon-mutation-disposition.v1",
+        "state": "FAILED",
+        "reason_codes": ["CANONICAL_INPUT_AUTHORITY_CHANGED"],
+    }
+    old["semantic_status"] = "INVALID"
+    old["execution_state"] = "FAILED"
+    ledger["work_units"][attempt_identity] = {
+        **binding,
+        "work_unit_key": attempt_identity,
+        "semantic_status": "DEBT",
+        "execution_state": "FAILED",
+        "durable_disposition": disposition,
+    }
+    write_artifact_ledger(scratchpad, ledger)
+
+
+def validate_recon_direct_retry_launch_authority(
+    scratchpad: Path,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate that a direct recon fallback is an armed retry, not drift."""
+
+    root = Path(scratchpad)
+    project_root = Path(str(config.get("project_root") or ""))
+    run_id = str(config.get("_run_id") or config.get("run_id") or "").strip()
+    if not run_id or not project_root.is_dir():
+        raise CanonicalMergeAuthorityError(
+            "direct recon retry requires current run and project authority"
+        )
+    pipeline, mode, ecosystem, backend = _canonical_merge_dimensions(config)
+    input_names = _canonical_merge_input_names(pipeline, mode)
+    output_names = _canonical_merge_output_names(pipeline)
+    contract = resolve_phase_io_contract(
+        pipeline=pipeline,
+        mode=mode,
+        ecosystem=ecosystem,
+        backend=backend,
+        phase="recon",
+        work_unit_id="canonical_merge",
+        exact_inputs=input_names,
+        exact_outputs=output_names,
+        exact_writer="DRIVER",
+    )
+    plan_result = _canonical_retry_plan(
+        root, run_id=run_id, output_names=output_names
+    )
+    if plan_result is None:
+        raise CanonicalMergeAuthorityError(
+            "direct recon fallback is not armed by a retry plan"
+        )
+    plan, plan_raw = plan_result
+    ledger = read_artifact_ledger(root)
+    prior = ledger.get("work_units", {}).get(contract.key)
+    if (
+        not isinstance(prior, Mapping)
+        or prior.get("semantic_status") != "ACTIVE"
+        or prior.get("execution_state") != "OUTPUT_COMMITTED"
+    ):
+        raise CanonicalMergeAuthorityError(
+            "direct recon retry has no active committed predecessor"
+        )
+    commit = prior.get("commit_authority")
+    prior_attempt = (
+        commit.get("attempt_ordinal") if isinstance(commit, Mapping) else None
+    )
+    if (
+        type(prior_attempt) is not int
+        or plan.get("attempt") != prior_attempt + 1
+    ):
+        raise CanonicalMergeAuthorityError(
+            "direct recon retry plan ordinal does not follow its predecessor"
+        )
+    receipt_path = root / _RECON_TRANSFORM_RECEIPT
+    receipt_raw = _canonical_retry_regular_bytes(
+        receipt_path, label="predecessor receipt"
+    )
+    try:
+        receipt = json.loads(receipt_raw.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise CanonicalMergeAuthorityError(
+            "direct recon retry predecessor receipt is malformed"
+        ) from exc
+    if (
+        not isinstance(receipt, Mapping)
+        or isinstance(receipt.get("retry_generation"), Mapping)
+        or (
+            isinstance(receipt.get("authority_capture"), Mapping)
+            and isinstance(
+                receipt["authority_capture"].get("retry_generation"), Mapping
+            )
+        )
+    ):
+        raise CanonicalMergeAuthorityError(
+            "direct recon retry cannot supersede an already committed retry"
+        )
+    prior_records = prior.get("artifacts")
+    if not isinstance(prior_records, Mapping):
+        raise CanonicalMergeAuthorityError(
+            "direct recon retry predecessor records are absent"
+        )
+    quarantine = root / "_retry_quarantine" / "recon"
+    authenticated_predecessors: dict[str, dict[str, Any]] = {}
+    for name in output_names:
+        source = (
+            receipt_path
+            if name == _RECON_TRANSFORM_RECEIPT
+            else quarantine / name
+        )
+        raw = _canonical_retry_regular_bytes(
+            source, label=f"launch predecessor {name}"
+        )
+        record = prior_records.get(f"scratchpad:{name}")
+        observed = {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size": len(raw),
+        }
+        if (
+            not isinstance(record, Mapping)
+            or record.get("sha256") != observed["sha256"]
+            or record.get("size") != observed["size"]
+        ):
+            raise CanonicalMergeAuthorityError(
+                f"direct recon retry predecessor bytes changed: {name}"
+            )
+        authenticated_predecessors[name] = observed
+    return {
+        "semantic_attempt": int(plan["attempt"]),
+        "predecessor_attempt": prior_attempt,
+        "predecessor_receipt_digest": (
+            commit.get("receipt_digest") if isinstance(commit, Mapping) else None
+        ),
+        "retry_plan_sha256": hashlib.sha256(plan_raw).hexdigest(),
+        "predecessor_set_digest": _canonical_merge_stable_digest(
+            authenticated_predecessors
+        ),
+    }
+
+
+def _merge_recon_worker_shards(
+    scratchpad: Path,
+    config: dict,
+    *,
+    failure_injector: Callable[..., None] | None = None,
+    supervised_attempt: int | None = None,
+) -> list[str]:
+    """Atomically publish the registered canonical DRIVER merge denominator."""
+
+    scratchpad = Path(scratchpad)
+    project_root = Path(str(config.get("project_root") or ""))
+    run_id = str(config.get("_run_id") or config.get("run_id") or "").strip()
+    if not run_id or not project_root.is_dir():
+        raise CanonicalMergeAuthorityError(
+            "canonical merge requires current run_id and project_root"
+        )
+    pipeline, mode, ecosystem, backend = _canonical_merge_dimensions(config)
+    input_names = _canonical_merge_input_names(pipeline, mode)
+    output_names = _canonical_merge_output_names(pipeline)
+    contract = resolve_phase_io_contract(
+        pipeline=pipeline,
+        mode=mode,
+        ecosystem=ecosystem,
+        backend=backend,
+        phase="recon",
+        work_unit_id="canonical_merge",
+        exact_inputs=input_names,
+        exact_outputs=output_names,
+        exact_writer="DRIVER",
+    )
+    launch = LaunchSpec(
+        work_unit_key=contract.key,
+        pipeline=contract.pipeline,
+        mode=contract.mode,
+        ecosystem=contract.ecosystem,
+        backend=contract.backend,
+        model="driver",
+        timeout_s=_CANONICAL_MERGE_TIMEOUT_SECONDS,
+        exec_mode="python",
+        tool_policy=(),
+    )
+    ledger = read_artifact_ledger(scratchpad)
+    prior = ledger.get("work_units", {}).get(contract.key)
+    retry_generation = (
+        _committed_canonical_retry_generation(scratchpad, prior, output_names)
+        if isinstance(prior, Mapping)
+        else None
+    )
+    if retry_generation is not None:
+        input_names = tuple(retry_generation["contract_input_names"])
+        contract = resolve_phase_io_contract(
+            pipeline=pipeline,
+            mode=mode,
+            ecosystem=ecosystem,
+            backend=backend,
+            phase="recon",
+            work_unit_id="canonical_merge",
+            exact_inputs=input_names,
+            exact_outputs=output_names,
+            exact_writer="DRIVER",
+        )
+        launch = LaunchSpec(
+            work_unit_key=contract.key,
+            pipeline=contract.pipeline,
+            mode=contract.mode,
+            ecosystem=contract.ecosystem,
+            backend=contract.backend,
+            model="driver",
+            timeout_s=_CANONICAL_MERGE_TIMEOUT_SECONDS,
+            exec_mode="python",
+            tool_policy=(),
+        )
+    capture = _canonical_merge_capture(
+        scratchpad, project_root, config, input_names
+    )
+    if retry_generation is not None:
+        capture["retry_generation"] = {
+            "attempt_ordinal": retry_generation["attempt"],
+            "manifest_sha256": retry_generation["manifest"]["manifest_sha256"],
+            "candidate_records": retry_generation["manifest"]["candidate_records"],
+        }
+        capture["input_set_digest"] = _canonical_merge_stable_digest(capture)
+    if failure_injector is not None:
+        failure_injector("after_capture")
+    if (
+        isinstance(prior, Mapping)
+        and prior.get("semantic_status") == "ACTIVE"
+        and prior.get("execution_state") == "OUTPUT_COMMITTED"
+    ):
+        input_issues = validate_work_unit_inputs(
+            scratchpad, project_root, contract, launch, run_id=run_id
+        )
+        output_issues = validate_work_unit_artifacts(
+            scratchpad,
+            project_root,
+            contract,
+            launch,
+            run_id=run_id,
+            actor="DRIVER",
+        )
+        stored_capture = _canonical_merge_receipt_capture(scratchpad)
+        if not input_issues and not output_issues and stored_capture == capture:
+            return list(output_names[:-1])
+        retry_generation = _canonical_retry_generation(
+            scratchpad=scratchpad,
+            ledger=ledger,
+            prior=prior,
+            contract=contract,
+            run_id=run_id,
+            output_names=output_names,
+            supervised_attempt=supervised_attempt,
+        )
+        if retry_generation is None:
+            _record_canonical_merge_drift_debt(
+                scratchpad=scratchpad,
+                contract=contract,
+                capture=capture,
+            )
+            return []
+        if retry_generation.get("state") == "pending":
+            # The driver has quarantined the exact committed generation and
+            # armed a supervised retry, but that retry has not returned a full
+            # candidate denominator yet. Preserve the old owner and let the
+            # direct attempt execute; absence is not input-authority drift.
+            return []
+        _restore_canonical_retry_predecessor(
+            scratchpad, retry_generation, output_names
+        )
+        base_issues = validate_work_unit_artifacts(
+            scratchpad,
+            project_root,
+            contract,
+            launch,
+            run_id=run_id,
+            actor="DRIVER",
+        )
+        if base_issues:
+            raise CanonicalMergeAuthorityError(
+                "canonical retry could not restore its committed predecessor: "
+                + "; ".join(base_issues)
+            )
+        input_names = (*input_names, *tuple(retry_generation["input_names"]))
+        contract = resolve_phase_io_contract(
+            pipeline=pipeline,
+            mode=mode,
+            ecosystem=ecosystem,
+            backend=backend,
+            phase="recon",
+            work_unit_id="canonical_merge",
+            exact_inputs=input_names,
+            exact_outputs=output_names,
+            exact_writer="DRIVER",
+        )
+        launch = LaunchSpec(
+            work_unit_key=contract.key,
+            pipeline=contract.pipeline,
+            mode=contract.mode,
+            ecosystem=contract.ecosystem,
+            backend=contract.backend,
+            model="driver",
+            timeout_s=_CANONICAL_MERGE_TIMEOUT_SECONDS,
+            exec_mode="python",
+            tool_policy=(),
+        )
+        try:
+            authorization = authorize_deterministic_work_unit_reexecution(
+                scratchpad,
+                project_root,
+                contract,
+                launch,
+                run_id=run_id,
+            )
+        except ArtifactLedgerError as exc:
+            raise CanonicalMergeAuthorityError(
+                f"canonical retry reexecution authorization failed: {exc}"
+            ) from exc
+        if not isinstance(authorization, Mapping):
+            raise CanonicalMergeAuthorityError(
+                "canonical retry did not establish input-driven reexecution authority"
+            )
+        capture = _canonical_merge_capture(
+            scratchpad, project_root, config, input_names
+        )
+        capture["retry_generation"] = {
+            "attempt_ordinal": retry_generation["attempt"],
+            "manifest_sha256": retry_generation["manifest"]["manifest_sha256"],
+            "candidate_records": retry_generation["manifest"]["candidate_records"],
+        }
+        capture["input_set_digest"] = _canonical_merge_stable_digest(capture)
+        ledger = read_artifact_ledger(scratchpad)
+        prior = ledger.get("work_units", {}).get(contract.key)
+
+    resuming_bound = bool(
+        isinstance(prior, Mapping)
+        and prior.get("semantic_status") == "INPUTS_BOUND"
+        and prior.get("execution_state") == "INPUTS_BOUND_PREEXECUTION"
+    )
+    if resuming_bound:
+        input_issues = validate_work_unit_inputs(
+            scratchpad, project_root, contract, launch, run_id=run_id
+        )
+        if input_issues:
+            raise CanonicalMergeAuthorityError(
+                "canonical merge bound input replay failed: "
+                + "; ".join(input_issues)
+            )
+        armed = prior
+    else:
+        try:
+            armed = record_work_unit_inputs(
+                scratchpad,
+                project_root,
+                contract,
+                launch,
+                run_id=run_id,
+            )
+        except ArtifactLedgerError as exc:
+            raise CanonicalMergeAuthorityError(
+                f"canonical merge input arm failed: {exc}"
+            ) from exc
+    if (
+        armed.get("semantic_status") != "INPUTS_BOUND"
+        or armed.get("execution_state") != "INPUTS_BOUND_PREEXECUTION"
+    ):
+        raise CanonicalMergeAuthorityError(
+            "canonical merge did not establish a clean preexecution arm"
+        )
+    if failure_injector is not None:
+        failure_injector("after_arm")
+
+    bound_state = _canonical_merge_bound_generation_state(
+        scratchpad, armed, output_names
+    )
+    if bound_state == "mixed":
+        raise CanonicalMergeAuthorityError(
+            "canonical merge recovery observed a mixed output generation"
+        )
+    recovered_records = (
+        _canonical_merge_published_records(
+            scratchpad, output_names, capture
+        )
+        if bound_state == "all_new"
+        else None
+    )
+    if bound_state == "all_new" and recovered_records is None:
+        raise CanonicalMergeAuthorityError(
+            "canonical merge recovery could not authenticate published outputs"
+        )
+
+    if recovered_records is not None:
+        try:
+            committed = record_work_unit_artifacts(
+                scratchpad,
+                project_root,
+                contract,
+                launch,
+                run_id=run_id,
+                actor="DRIVER",
+                expected_output_records=recovered_records,
+            )
+        except ArtifactLedgerError as exc:
+            raise CanonicalMergeAuthorityError(
+                f"canonical merge recovery commit failed: {exc}"
+            ) from exc
+        if (
+            committed.get("semantic_status") != "ACTIVE"
+            or committed.get("execution_state") != "OUTPUT_COMMITTED"
+        ):
+            raise CanonicalMergeAuthorityError(
+                "canonical merge recovery was not ACTIVE/OUTPUT_COMMITTED"
+            )
+        return list(output_names[:-1])
+
+    # Keep the private transaction basename deliberately short.  The retry
+    # contract stages nested paths such as
+    # ``_canonical_retry_generation/recon/attempt-2/candidate/``; with a
+    # perfectly valid 150+ character audit root, the former descriptive
+    # prefix pushed the longest candidate to exactly 260 characters on
+    # Windows.  ``Path.write_bytes`` then failed with ENOENT before canonical
+    # adoption even though every candidate existed.  The random suffix still
+    # provides transaction isolation, while the compact prefix preserves the
+    # same-volume atomic publication boundary below legacy MAX_PATH.
+    stage = Path(tempfile.mkdtemp(prefix=".cm-", dir=scratchpad))
+    try:
+        for name in (*input_names, *output_names[:-1]):
+            source = scratchpad / name
+            if source.is_file() and not source.is_symlink():
+                target = stage / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+        if retry_generation is not None:
+            rendered = list(output_names[:-1])
+            for name, raw in retry_generation["candidate_bytes"].items():
+                (stage / name).write_bytes(raw)
+            # Produce the registered transform receipt shape first; candidate
+            # markdown bytes replace only its canonical postimages below.
+            if pipeline == "l1":
+                _render_l1_recon_worker_shards(stage, config)
+            else:
+                _render_recon_worker_shards(stage, config)
+            for name, raw in retry_generation["candidate_bytes"].items():
+                (stage / name).write_bytes(raw)
+        elif pipeline == "l1":
+            rendered = _render_l1_recon_worker_shards(stage, config)
+        else:
+            rendered = _render_recon_worker_shards(stage, config)
+        if tuple(rendered) != output_names[:-1]:
+            raise CanonicalMergeAuthorityError(
+                "canonical renderer output denominator/order drift"
+            )
+        # These additive, deterministic transforms are part of the canonical
+        # renderer, not validation side effects.  Running them against the
+        # private stage before hashing/publication keeps the artifact ledger,
+        # transform receipt, retry quarantine, and root bytes on one exact
+        # generation.  The validator calls remain idempotent read checks.
+        canonical_normalization = {
+            "skill_manifest_promotions": _reconcile_skill_manifest_sources(stage),
+            "injectable_promotions": _promote_injectable_rows(stage, ecosystem),
+        }
+        receipt_path = stage / _RECON_TRANSFORM_RECEIPT
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if retry_generation is not None:
+            receipt["retry_generation"] = {
+                "attempt_ordinal": retry_generation["attempt"],
+                "manifest_sha256": retry_generation["manifest"]["manifest_sha256"],
+            }
+        receipt["authority_capture"] = dict(capture)
+        receipt["canonical_normalization"] = canonical_normalization
+        receipt["canonical_output_sha256"] = {
+            name: hashlib.sha256((stage / name).read_bytes()).hexdigest()
+            for name in output_names[:-1]
+        }
+        receipt.pop("artifact_sha256", None)
+        receipt["artifact_sha256"] = hashlib.sha256(
+            json.dumps(
+                receipt,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest().upper()
+        receipt_path.write_text(
+            json.dumps(receipt, indent=2, sort_keys=True, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        staged_bytes = {
+            name: (stage / name).read_bytes() for name in output_names
+        }
+        if any(not raw for raw in staged_bytes.values()):
+            raise CanonicalMergeAuthorityError(
+                "canonical renderer produced an empty output"
+            )
+        if failure_injector is not None:
+            failure_injector("after_stage")
+        for name in output_names:
+            os.replace(stage / name, scratchpad / name)
+        if failure_injector is not None:
+            failure_injector("after_publish")
+        if failure_injector is not None:
+            failure_injector("before_commit")
+        expected_records = {
+            f"scratchpad:{name}": {
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+            }
+            for name, raw in staged_bytes.items()
+        }
+        committed = record_work_unit_artifacts(
+            scratchpad,
+            project_root,
+            contract,
+            launch,
+            run_id=run_id,
+            actor="DRIVER",
+            expected_output_records=expected_records,
+        )
+        if (
+            committed.get("semantic_status") != "ACTIVE"
+            or committed.get("execution_state") != "OUTPUT_COMMITTED"
+        ):
+            raise CanonicalMergeAuthorityError(
+                "canonical merge commit was not ACTIVE/OUTPUT_COMMITTED"
+            )
+        issues = validate_work_unit_artifacts(
+            scratchpad,
+            project_root,
+            contract,
+            launch,
+            run_id=run_id,
+            actor="DRIVER",
+        )
+        if issues:
+            raise CanonicalMergeAuthorityError(
+                "canonical merge committed replay failed: "
+                + "; ".join(issues)
+            )
+    except ArtifactLedgerError as exc:
+        raise CanonicalMergeAuthorityError(
+            f"canonical merge transaction failed: {exc}"
+        ) from exc
+    finally:
+        shutil.rmtree(stage, ignore_errors=False)
+    return list(output_names[:-1])
 
 
 def _synthesize_components_audited(scratchpad: Path) -> str:
@@ -748,6 +2361,12 @@ def _inventory_location_map(scratchpad: Path) -> dict[str, str]:
             ):
                 out[key] = loc
 
+    if successor_projection_present(scratchpad):
+        # The immutable records projection is already the exact structured
+        # representation of the frozen inventory.  Never enrich it from a
+        # later mutable canonical file.
+        return out
+
     inv = scratchpad / "findings_inventory.md"
     if not inv.exists():
         return out
@@ -763,7 +2382,10 @@ def _inventory_location_map(scratchpad: Path) -> dict[str, str]:
         fid = _normalize_finding_id(block.get("id", "")) or block.get("id", "")
         if fid:
             keys.append(fid)
-        for sid in _extract_finding_ids_from_text(block.get("source_ids", "")):
+        for sid in sorted(
+            _extract_finding_ids_from_text(block.get("source_ids", "")),
+            key=lambda value: (value.casefold(), value),
+        ):
             keys.append(sid)
         for key in keys:
             norm = _normalize_finding_id(key) or key
@@ -787,8 +2409,15 @@ def _records_from_inventory_text(text: str) -> list[dict[str, object]]:
             continue
         raw = block.get("block", "")
         source_ids = []
-        for sid in _extract_finding_ids_from_text(block.get("source_ids", "")):
-            norm = _normalize_finding_id(sid) or sid
+        for sid in sorted(
+            _extract_finding_ids_from_text(block.get("source_ids", "")),
+            key=lambda value: (value.casefold(), value),
+        ):
+            # The extractor already returns canonical upper-case tokens from
+            # the registry grammar.  Generic finding normalization rewrites
+            # underscores to hyphens and would corrupt content-addressed or
+            # role-bearing producer identities (for example DXRE-* lineage).
+            norm = sid.upper()
             if norm and norm not in source_ids:
                 source_ids.append(norm)
         severity = _severity_name_from_text(raw, {})
@@ -817,6 +2446,35 @@ def _records_from_inventory_text(text: str) -> list[dict[str, object]]:
             fallback="",
             max_chars=3000,
         )
+        primary_artifact = _field_from_markdown(
+            raw, ("Primary Artifact", "Source Artifact", "Artifact")
+        )
+        producer = None
+        scope_debt: list[str] = []
+        if primary_artifact:
+            try:
+                producer = _registered_producer_for_artifact(
+                    Path(primary_artifact).name,
+                    consumer="pre_dedup_promotion",
+                )
+            except ProducerResolutionError as exc:
+                scope_debt.append(str(exc))
+        scopes = _resolve_effective_scopes(
+            producer=producer,
+            evidence_scope=(
+                _field_from_markdown(raw, ("Evidence Scope",))
+                or _field_from_markdown(raw, ("Effective Evidence Scope",))
+            ),
+            proof_scope=(
+                _field_from_markdown(raw, ("Proof Scope",))
+                or _field_from_markdown(raw, ("Effective Proof Scope",))
+            ),
+            harm_scope=(
+                _field_from_markdown(raw, ("Harm Scope",))
+                or _field_from_markdown(raw, ("Effective Harm Scope",))
+            ),
+        )
+        scope_debt.extend(str(value) for value in scopes["scope_debt"])
         records.append({
             "inventory_id": fid,
             "source_ids": source_ids,
@@ -828,6 +2486,11 @@ def _records_from_inventory_text(text: str) -> list[dict[str, object]]:
             "root_cause": root_cause,
             "description": description,
             "impact": impact,
+            "primary_artifact": primary_artifact,
+            "effective_evidence_scope": scopes["effective_evidence_scope"],
+            "effective_proof_scope": scopes["effective_proof_scope"],
+            "effective_harm_scope": scopes["effective_harm_scope"],
+            "scope_debt": scope_debt,
             "raw_block_len": len(raw),
         })
         seen.add(fid)
@@ -840,22 +2503,46 @@ def _write_finding_records_from_inventory(scratchpad: Path) -> int:
     if not inv.exists():
         return 0
     try:
-        text = _llm_norm(inv.read_text(encoding="utf-8", errors="replace"))
+        inventory_raw = read_bounded_regular_bytes(inv, 64 * 1024 * 1024)
+        text = _llm_norm(inventory_raw.decode("utf-8", errors="replace"))
     except Exception:
         return 0
     records = _records_from_inventory_text(text)
     if not records:
         return 0
     payload = {
-        "schema_version": "plamen.finding_records.v1",
+        "schema_version": "plamen.finding_records.v2",
         "source": "findings_inventory.md",
+        "source_sha256": hashlib.sha256(inventory_raw).hexdigest(),
         "records": records,
     }
     try:
-        (scratchpad / "finding_records.json").write_text(
-            json.dumps(payload, indent=2),
-            encoding="utf-8",
-        )
+        target = scratchpad / "finding_records.json"
+        encoded = (
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=scratchpad,
+            prefix=".finding_records.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
     except Exception:
         return 0
     return len(records)
@@ -901,6 +2588,10 @@ _CANONICAL_ID_PRODUCER_PATTERNS: tuple[str, ...] = (
     "cross_batch_consistency.md",
     "report_index.md",
 )
+_CANONICAL_ID_PRODUCER_PATTERNS = tuple(dict.fromkeys(
+    _CANONICAL_ID_PRODUCER_PATTERNS
+    + _registered_producer_patterns("canonical_identity")
+))
 
 _CANONICAL_ID_SKIP_PREFIXES: tuple[str, ...] = (
     "_prompt_", "_stdio_", "_continuation_", "_retry_", "_canonical_",
@@ -974,6 +2665,75 @@ def _producer_artifact_paths_for_identity(scratchpad: Path) -> list[Path]:
 
 def _canonical_identity_records_from_artifact(path: Path) -> list[dict[str, Any]]:
     try:
+        producer = _registered_producer_for_artifact(
+            path.name, consumer="canonical_identity"
+        )
+    except ProducerResolutionError:
+        producer = None
+    if producer is not None and getattr(
+        producer, "artifact_format", "MARKDOWN_FINDINGS"
+    ) != "MARKDOWN_FINDINGS":
+        try:
+            actions = _read_registered_typed_actions(
+                path, consumer="canonical_identity"
+            )
+        except Exception:
+            # Exact delivery reconciliation owns the typed parse debt.  Do not
+            # invent a partial canonical identity from malformed JSON.
+            return []
+        typed_records: list[dict[str, Any]] = []
+        for action in actions:
+            title = f"Exploration additive action {action.action_id}"
+            parts = {
+                "artifact": path.name,
+                "local_id": action.action_id,
+                "action_identity": action.action_identity,
+                "obligation_id": action.obligation_id,
+                "source_finding": action.source_finding,
+                "axis": action.axis,
+                "instance": action.instance,
+                "evidence_sha256": hashlib.sha256(
+                    action.evidence.encode("utf-8")
+                ).hexdigest(),
+                "rationale_sha256": hashlib.sha256(
+                    action.rationale.encode("utf-8")
+                ).hexdigest(),
+            }
+            digest = _canonical_finding_hash(parts)
+            referenced = sorted({
+                match.group(1).upper()
+                for value in (action.source_finding, action.evidence, action.rationale)
+                for match in _INTERNAL_FINDING_ID_RE.finditer(value)
+                if match.group(1).upper() != action.action_id.upper()
+            })
+            typed_records.append({
+                "canonical_id": "CID-" + digest[:16].upper(),
+                "fingerprint": "sha256:" + digest,
+                "artifact": path.name,
+                "offset": action.lineage_source_line,
+                "local_id": action.action_id,
+                "local_id_raw": action.action_id,
+                "action_identity": action.action_identity,
+                "source_identity": (
+                    f"{path.name}:{action.action_identity}"
+                ),
+                "title": title,
+                "severity": "Unknown",
+                "location": "",
+                "root_cause": "",
+                "source_ids_text": (
+                    f"{action.source_finding}, {action.obligation_id}"
+                ),
+                "referenced_ids": referenced,
+                "raw_block_len": (
+                    len(action.evidence.encode("utf-8"))
+                    + len(action.rationale.encode("utf-8"))
+                ),
+                "proof_scope": action.proof_scope,
+                "requires_independent_consumer": True,
+            })
+        return typed_records
+    try:
         text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return []
@@ -990,7 +2750,11 @@ def _canonical_identity_records_from_artifact(path: Path) -> list[dict[str, Any]
         root_cause = _field_from_markdown(block, ("Root Cause", "Cause", "Invariant Broken"))
         source_ids = _field_from_markdown(
             block,
-            ("Source IDs", "Source ID", "Sources", "Constituent Findings", "Internal Finding IDs"),
+            (
+                "Source IDs", "Source ID", "Sources", "Constituent Findings",
+                "Internal Finding IDs", "Source Identity", "Proposal ID",
+                "Source Obligation ID", "Source Work Item ID",
+            ),
         )
         parts = {
             "artifact": path.name,
@@ -1114,16 +2878,35 @@ def _load_finding_record_maps(
     scratchpad: Path,
 ) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
     """Return maps keyed by inventory ID and original source IDs."""
-    path = scratchpad / "finding_records.json"
-    inv = scratchpad / "findings_inventory.md"
-    if inv.exists() and (not path.exists() or path.stat().st_mtime < inv.stat().st_mtime):
-        _write_finding_records_from_inventory(scratchpad)
-    if not path.exists():
-        return {}, {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return {}, {}
+    if successor_projection_present(scratchpad):
+        try:
+            payload = resolve_active_preverify_projection(
+                scratchpad
+            )["records_payload"]
+        except (PreverifyProjectionAuthorityError, KeyError, TypeError) as exc:
+            logging.getLogger(__name__).warning(
+                "authenticated frozen finding records unavailable: %s",
+                exc,
+            )
+            raise PreverifyProjectionAuthorityError(
+                "authenticated frozen finding-record denominator is "
+                f"unavailable: {exc}"
+            ) from exc
+    else:
+        path = scratchpad / "finding_records.json"
+        inv = scratchpad / "findings_inventory.md"
+        if inv.exists() and (
+            not path.exists() or path.stat().st_mtime < inv.stat().st_mtime
+        ):
+            _write_finding_records_from_inventory(scratchpad)
+        if not path.exists():
+            return {}, {}
+        try:
+            payload = json.loads(
+                path.read_text(encoding="utf-8", errors="replace")
+            )
+        except Exception:
+            return {}, {}
     records = payload.get("records", [])
     if not isinstance(records, list):
         return {}, {}
@@ -1358,8 +3141,8 @@ def _synth_report_section_from_verify(
         suffixes.append("[UNRESOLVED - needs human review]")
     header_suffix = (" " + " ".join(suffixes)) if suffixes else ""
     unresolved_note = (
-        "\n**Human review**: Skeptic-Judge marked this finding UNRESOLVED/PARTIAL; "
-        "severity was retained/demoted per report policy and the finding remains "
+        "\n**Human review**: a verifier or skeptic proposed a negative/unresolved disposition; "
+        "severity was retained pending independent closure authority and the finding remains "
         "in the body.\n"
         if unresolved else ""
     )
@@ -1382,7 +3165,12 @@ def _synth_report_section_from_verify(
         fallback=(
             queue_row.get("impact", "").strip()
             or str(record.get("impact", "") if record else "").strip()
-            or "Verifier evidence ties the cited code path to the assigned severity; review the code trace and severity rationale for exploitability details."
+            or (
+                "Impact remains unverified because the assigned verifier work "
+                "did not complete; preserve the proposed severity for human review."
+                if stub_recovered
+                else "Verifier evidence ties the cited code path to the assigned severity; review the code trace and severity rationale for exploitability details."
+            )
         ),
         max_chars=2500,
     )
@@ -1390,21 +3178,33 @@ def _synth_report_section_from_verify(
         verify_text,
         ("PoC Result", "Execution Output", "Test Output", "Proof"),
         ("PoC Result", "Execution Output", "Test Output", "Proof", "Reproduction"),
-        fallback="No executable PoC was recorded; verifier relied on code trace evidence.",
+        fallback=(
+            "Verification was not executed or did not produce an authenticated result."
+            if stub_recovered
+            else "No executable PoC was recorded; verifier relied on code trace evidence."
+        ),
         max_chars=2500,
     )
     recommendation = _field_or_section(
         verify_text,
         ("Recommendation", "Suggested Fix", "Fix", "Mitigation"),
         ("Suggested Fix", "Recommendation", "Mitigation", "Fix"),
-        fallback="Apply the verifier-recommended mitigation and add a regression test for the cited path.",
+        fallback=(
+            "Human review is required before prescribing a fix; first validate the retained mechanism and its affected path."
+            if stub_recovered
+            else "Apply the verifier-recommended mitigation and add a regression test for the cited path."
+        ),
         max_chars=3000,
     )
     severity_rationale = _field_or_section(
         verify_text,
         ("Severity Rationale", "Severity rationale"),
         ("Severity Rationale", "Exploitability", "Precondition", "Preconditions"),
-        fallback=f"Verified `{bug_class}` finding with {evidence_tag} evidence.",
+        fallback=(
+            f"Provisional `{bug_class}` severity retained pending verification."
+            if stub_recovered
+            else f"Verified `{bug_class}` finding with {evidence_tag} evidence."
+        ),
         max_chars=1800,
     )
     description = _sanitize_client_body(description)
@@ -1438,9 +3238,13 @@ def _synth_report_section_from_verify(
     )
 
     confidence_parts = []
-    if evidence_tag and evidence_tag not in ("N/A", "unknown"):
+    if not stub_recovered and evidence_tag and evidence_tag not in ("N/A", "unknown"):
         confidence_parts.append(f"PoC: {_sanitize_client_body(evidence_tag)}")
-    confidence_level = "HIGH" if has_mechanical_proof(evidence_tag or "") else "MEDIUM"
+    confidence_level = (
+        "UNVERIFIED"
+        if stub_recovered
+        else "HIGH" if has_mechanical_proof(evidence_tag or "") else "MEDIUM"
+    )
     confidence_line = f"**Confidence**: {confidence_level}"
     if confidence_parts:
         confidence_line += f" ({', '.join(confidence_parts)})"
@@ -1469,6 +3273,34 @@ def _synth_report_section_from_verify(
     ]).replace("\n\n\n", "\n\n").strip()
 
 
+def _report_candidate_universe_rows(
+    scratchpad: Path,
+) -> list[dict[str, Any]]:
+    """Return the exact report-time candidate denominator.
+
+    The typed work-item sidecar is the cutover boundary.  Once it exists,
+    report consumers must authenticate and enumerate the immutable base plus
+    post-verification delta universe; a malformed or missing delta is an error,
+    never permission to fall back to lossy Markdown.  Runs predating the typed
+    sidecar retain their legacy queue projection.
+
+    This helper is intentionally report-only.  Pre-verification and
+    verification producers must continue to consume the frozen base queue.
+    The import stays local to avoid coupling the large mechanical module to the
+    post-verification authority during pre-report module initialization.
+    """
+    from post_verify_candidate_delta import (
+        current_report_candidate_universe_legacy_rows,
+        report_candidate_universe_requires_typed_authority,
+    )
+
+    if report_candidate_universe_requires_typed_authority(Path(scratchpad)):
+        return current_report_candidate_universe_legacy_rows(
+            Path(scratchpad)
+        )
+    return parse_verification_queue_rows(Path(scratchpad))
+
+
 def _repair_report_body_from_assignments(body: str, scratchpad: Path) -> str:
     """Append missing assigned report sections and apply UNRESOLVED flags."""
     assignments, _source = get_tier_assignments(scratchpad)
@@ -1477,7 +3309,7 @@ def _repair_report_body_from_assignments(body: str, scratchpad: Path) -> str:
 
     queue_rows = {
         (r.get("finding id") or "").strip(): r
-        for r in parse_verification_queue_rows(scratchpad)
+        for r in _report_candidate_universe_rows(scratchpad)
         if (r.get("finding id") or "").strip()
     }
     unresolved_ids = _collect_judge_unresolved_ids(scratchpad)
@@ -1742,6 +3574,26 @@ def _repair_report_body_from_manifest(scratchpad: Path, phase_name: str) -> int:
             _synth_report_section_from_manifest_row(scratchpad, row),
         )
         repaired += 1
+    evidence_bundle_path = scratchpad / "report_evidence_records.json"
+    if evidence_bundle_path.exists():
+        try:
+            evidence_bundle = _validate_report_evidence_bundle(
+                json.loads(evidence_bundle_path.read_text(encoding="utf-8"))
+            )
+            projected = _project_report_evidence_markdown(body, evidence_bundle)
+            if projected != body:
+                body = projected
+                repaired += 1
+        except (OSError, UnicodeError, json.JSONDecodeError, _ReportEvidenceError) as exc:
+            debt_path = scratchpad / "report_evidence_runtime_debt.md"
+            debt_path.write_text(
+                "# Report Evidence Runtime Debt\n\n"
+                "The typed evidence projection could not be applied before report "
+                "assembly. The finding body remains present, but evidence assurance "
+                "requires human review.\n\n"
+                f"- Failure class: `{type(exc).__name__}`\n",
+                encoding="utf-8",
+            )
     if repaired:
         body_path.write_text(body.rstrip() + "\n", encoding="utf-8")
     return repaired
@@ -1989,7 +3841,233 @@ def _finalize_report_tier_section(section: str, id_to_title: dict) -> str:
 _HUMAN_REVIEW_SOURCES: tuple[tuple[str, str], ...] = (
     ("report_semantic_retention_risks.md", "Retention / obligation coverage"),
     ("report_semantic_severity_repairs.md", "Severity-provenance adjustments"),
+    ("chain_composition_coverage_gaps.md", "Chain-composition coverage gaps"),
+    (
+        "depth_finalization_human_review.md",
+        "Depth recall-postprocessor finalization",
+    ),
 )
+
+
+def _delivered_lifecycle_work_ids(scratchpad: Path) -> set[str]:
+    """Return internal IDs with both active records and a material body."""
+
+    try:
+        payload = json.loads(
+            (scratchpad / "report_records.json").read_text(
+                encoding="utf-8", errors="strict"
+            )
+        )
+    except Exception:
+        return set()
+    body = ""
+    for name in (
+        "report_critical_high.md", "report_medium.md", "report_medium_a.md",
+        "report_medium_b.md", "report_low_info.md", "report_low_info_a.md",
+        "report_low_info_b.md",
+    ):
+        path = scratchpad / name
+        if path.is_file():
+            try:
+                body += "\n" + path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+    delivered: set[str] = set()
+    for row in payload.get("active") or [] if isinstance(payload, dict) else []:
+        if not isinstance(row, dict) or row.get("report_blocked") is True:
+            continue
+        report_id = str(row.get("report_id") or "").strip().upper()
+        if not report_id or re.search(
+            rf"(?im)^\s*#{{2,6}}\s+\[?{re.escape(report_id)}\]?\b", body
+        ) is None:
+            continue
+        values = [
+            row.get("finding_id"),
+            *(row.get("candidate_ids") or []),
+            *(row.get("absorbed_finding_ids") or []),
+        ]
+        for value in values:
+            for match in _INTERNAL_ID_RE.finditer(str(value or "")):
+                delivered.add(match.group(1).upper())
+    return delivered
+
+
+def _security_obligation_appendix_projection(scratchpad: Path) -> str:
+    """Render client-safe retention from typed JSON and its PhaseIO receipt.
+
+    The Markdown sidecar is a cache only. Deletion or tampering is reported,
+    then the authoritative JSON is projected deterministically so retention
+    cannot silently disappear or leak exact internal SOT aliases.
+    """
+
+    trace_names = (
+        "security_obligation_lifecycle.json",
+        "security_obligation_authority.json",
+        "mandatory_reverification_denominator.json",
+        "mandatory_reverification_assignment.json",
+        "mandatory_reverification_completion.json",
+    )
+    if not any((scratchpad / name).exists() for name in trace_names):
+        # Repositories/runs that predate or never armed P1-C do not acquire a
+        # synthetic warning merely because another report appendix is built.
+        return ""
+    try:
+        import security_obligation_lifecycle as lifecycle
+        from artifact_ledger import read_artifact_ledger
+
+        ledger = read_artifact_ledger(scratchpad)
+        units = [
+            row
+            for row in ledger.get("work_units", {}).values()
+            if isinstance(row, dict)
+            and str(row.get("work_unit_key") or "").endswith(
+                "/report_index/security_obligation_lifecycle.final"
+            )
+            and row.get("semantic_status") == "ACTIVE"
+        ]
+        if len(units) != 1:
+            raise ValueError("exact lifecycle PhaseIO transaction is unavailable")
+        unit = units[0]
+        authority_path = scratchpad / lifecycle.AUTHORITY_FILE
+        authority_identity = f"scratchpad:{lifecycle.AUTHORITY_FILE}"
+        binding = ledger.get("artifact_bindings", {}).get(authority_identity)
+        artifact = (unit.get("artifacts") or {}).get(authority_identity)
+        raw = authority_path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if (
+            not isinstance(binding, dict)
+            or not isinstance(artifact, dict)
+            or binding.get("owner_key") != unit.get("work_unit_key")
+            or artifact.get("owner_key") != unit.get("work_unit_key")
+            or binding.get("status") != "ACTIVE"
+            or binding.get("sha256") != digest
+            or artifact.get("sha256") != digest
+        ):
+            raise ValueError("lifecycle JSON lacks current PhaseIO ownership")
+        expected = {
+            str(identity).split(":", 1)[1]: str(row.get("sha256") or "")
+            for identity, row in (unit.get("input_bindings") or {}).items()
+            if str(identity).startswith("scratchpad:")
+            and isinstance(row, dict)
+            and re.fullmatch(r"[0-9a-f]{64}", str(row.get("sha256") or ""))
+        }
+        recorded = json.loads(raw.decode("utf-8", errors="strict"))
+        lifecycle._validate_payload(recorded)
+        rebuilt = lifecycle.build_security_obligation_lifecycle(
+            scratchpad, expected_input_sha256=expected
+        )
+        if recorded != rebuilt or recorded.get("run_id") != unit.get("run_id"):
+            raise ValueError("lifecycle JSON is stale for current exact inputs")
+
+        cache_warning = ""
+        cache_path = scratchpad / lifecycle.REPORT_RETENTION_FILE
+        cache_identity = f"scratchpad:{lifecycle.REPORT_RETENTION_FILE}"
+        cache_binding = ledger.get("artifact_bindings", {}).get(cache_identity)
+        try:
+            cache_sha = hashlib.sha256(cache_path.read_bytes()).hexdigest()
+        except OSError:
+            cache_sha = ""
+        if (
+            not isinstance(cache_binding, dict)
+            or cache_binding.get("owner_key") != unit.get("work_unit_key")
+            or cache_binding.get("sha256") != cache_sha
+        ):
+            cache_warning = (
+                "\n\n**Projection cache status**: STALE_OR_MISSING; regenerated "
+                "from authoritative lifecycle JSON."
+            )
+
+        delivered = _delivered_lifecycle_work_ids(scratchpad)
+        identity_counts: Counter[str] = Counter()
+        for row in recorded.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            for value in {
+                str(row.get("assigned_work_item_id") or "").upper(),
+                str(row.get("candidate_id") or "").upper(),
+            } - {""}:
+                identity_counts[value] += 1
+        retained = []
+        for row in recorded.get("rows") or []:
+            if not isinstance(row, dict) or row.get("state") == lifecycle.AUTHORIZED_NEGATIVE:
+                continue
+            work_ids = {
+                str(row.get("assigned_work_item_id") or "").upper(),
+                str(row.get("candidate_id") or "").upper(),
+            } - {""}
+            if (
+                row.get("state")
+                in {lifecycle.VERIFIED_CONFIRMED, lifecycle.VERIFIED_CONTESTED}
+                and work_ids
+                and work_ids & delivered
+                and all(identity_counts[value] == 1 for value in work_ids)
+            ):
+                continue
+            retained.append(row)
+        authority_issues = [str(issue) for issue in recorded.get("issues") or []]
+        if (
+            not retained
+            and not cache_warning
+            and recorded.get("status") == "COMPLETE"
+            and not authority_issues
+        ):
+            return ""
+        lines = [
+            "### Security obligation lifecycle retention",
+            "",
+            "This methodology-coverage surface is not a finding, severity, proof, or negative decision.",
+            "",
+            f"**Lifecycle status**: {recorded.get('status', 'UNKNOWN')}",
+            f"**Retained coverage obligations**: {len(retained)}",
+        ]
+        if retained:
+            lines.extend((
+                "",
+                "| Coverage reference | State | Scope | Required action | Debt |",
+                "|---|---|---|---|---|",
+            ))
+            for row in retained:
+                alias = str(row.get("alias_id") or "")
+                opaque = hashlib.sha256(alias.encode("utf-8")).hexdigest()[:12].upper()
+                state = str(row.get("state") or "UNKNOWN").replace("|", "/")
+                symbol = str(row.get("symbol") or "").replace("|", "/")
+                scope = (
+                    f"methodology coverage for `{symbol}`"
+                    if symbol else "methodology coverage"
+                )
+                debt = ", ".join(str(item) for item in row.get("debt_reasons") or [])
+                debt = debt.replace("|", "/") or "none"
+                lines.append(
+                    f"| coverage-ref-{opaque} | {state} | {scope} | "
+                    f"HUMAN_REVIEW_OR_VERIFIED_BODY | {debt} |"
+                )
+        if authority_issues or recorded.get("status") != "COMPLETE":
+            lines.extend(("", "**Lifecycle authority debt**:", ""))
+            if authority_issues:
+                for ordinal, issue in enumerate(authority_issues, 1):
+                    safe = re.sub(
+                        r"\bSOT-[0-9A-Fa-f]{24}\b",
+                        lambda match: "coverage-ref-" + hashlib.sha256(
+                            match.group(0).encode("utf-8")
+                        ).hexdigest()[:12].upper(),
+                        issue,
+                    )
+                    safe = _render_actionable_coverage_references(
+                        safe, scratchpad
+                    ).replace("\n", " ").replace("|", "/")
+                    lines.append(f"- debt-{ordinal:03d}: {safe}")
+            else:
+                lines.append(
+                    "- lifecycle status is degraded without a row-local closure; "
+                    "bounded human review is required."
+                )
+        return "\n".join(lines) + cache_warning
+    except Exception as exc:
+        return (
+            "### Security obligation lifecycle retention\n\n"
+            "**Status**: UNKNOWN — authoritative lifecycle/PhaseIO replay "
+            f"failed ({type(exc).__name__}). Human review is required."
+        )
 
 
 def _coverage_report_reference_map(scratchpad: Path) -> dict[str, str]:
@@ -2117,6 +4195,109 @@ def _build_human_review_appendix(scratchpad: Path) -> str:
     blocks: list[str] = []
     ordered: list[tuple[str, str]] = list(_HUMAN_REVIEW_SOURCES)
     known = {n for n, _ in ordered}
+    lifecycle_projection = _security_obligation_appendix_projection(scratchpad).strip()
+    if lifecycle_projection:
+        blocks.append(lifecycle_projection)
+    # The JSON/PhaseIO projection above is authoritative; never consume the
+    # mutable Markdown cache through the generic source loop.
+    known.add("security_obligation_report_retention.md")
+    # Registered producer delivery is a typed JSON authority. Its Markdown
+    # file is only a cache: deleting/staling that cache must not erase DXRE or
+    # other producer review obligations from the delivered appendix.
+    delivery_projection_name = "report_semantic_finding_delivery.md"
+    known.add(delivery_projection_name)
+    delivery_receipt = scratchpad / "finding_delivery_receipt.json"
+    delivery_successor = scratchpad / PREVERIFY_DELIVERY_SUCCESSOR_NAME
+    final_successor = scratchpad / PREVERIFY_INVENTORY_SUCCESSOR_NAME
+    if delivery_successor.exists() or final_successor.exists():
+        try:
+            final_payload = json.loads(
+                final_successor.read_text(encoding="utf-8", errors="strict")
+            )
+            successor_payload = json.loads(
+                delivery_successor.read_text(
+                    encoding="utf-8", errors="strict"
+                )
+            )
+            validate_preverify_successor_payloads(
+                scratchpad,
+                final_payload=final_payload,
+                delivery_payload=successor_payload,
+                run_id=str(final_payload.get("run_id") or ""),
+            )
+            delivery_payload = successor_payload["delivery_payload"]
+            delivery_text = _render_delivery_human_review_projection(
+                delivery_payload
+            ).strip()
+            if delivery_text:
+                delivery_text = re.sub(
+                    r"(?m)\A#\s+[^\n]*\n+", "", delivery_text
+                ).strip()
+                blocks.append(
+                    "### Registered Finding Delivery Debt\n\n" + delivery_text
+                )
+        except Exception as exc:
+            blocks.append(
+                "### Registered Finding Delivery Debt\n\n"
+                "**Status**: UNKNOWN — authoritative receipt could not be "
+                f"projected ({type(exc).__name__})."
+            )
+    elif delivery_receipt.exists():
+        try:
+            delivery_payload = json.loads(
+                delivery_receipt.read_text(encoding="utf-8", errors="strict")
+            )
+            delivery_text = _render_delivery_human_review_projection(
+                delivery_payload
+            ).strip()
+            if delivery_text:
+                delivery_text = re.sub(
+                    r"(?m)\A#\s+[^\n]*\n+", "", delivery_text
+                ).strip()
+                blocks.append(
+                    "### Registered Finding Delivery Debt\n\n" + delivery_text
+                )
+        except Exception as exc:
+            blocks.append(
+                "### Registered Finding Delivery Debt\n\n"
+                "**Status**: UNKNOWN - authoritative receipt could not be "
+                f"projected ({type(exc).__name__})."
+            )
+    # The JSON journal, not its Markdown projection, is authoritative. A
+    # missing/deleted projection must not erase a postprocessor failure from
+    # the delivered report appendix.
+    finalization_receipt = scratchpad / "depth_finalization_receipt.json"
+    if finalization_receipt.exists():
+        try:
+            payload = json.loads(
+                finalization_receipt.read_text(encoding="utf-8", errors="replace")
+            )
+            processors = payload.get("processors", {}) if isinstance(payload, dict) else {}
+            failed = [
+                (name, row)
+                for name, row in processors.items()
+                if not isinstance(row, dict) or row.get("status") != "COMPLETE"
+            ] if isinstance(processors, dict) else [("journal", {"error": "invalid processors"})]
+            if failed or payload.get("status") == "DEGRADED_HUMAN_REVIEW":
+                lines = [
+                    "### Depth recall-postprocessor finalization",
+                    "",
+                    f"**Status**: {payload.get('status', 'UNKNOWN')}",
+                    "",
+                    "| Processor | State | Error |",
+                    "|---|---|---|",
+                ]
+                for name, row in failed:
+                    state = str(row.get("status", "UNKNOWN")).replace("|", "/")
+                    error = str(row.get("error", "outcome incomplete")).replace("|", "/")
+                    lines.append(f"| {name} | {state} | {error} |")
+                blocks.append("\n".join(lines))
+        except Exception as exc:
+            blocks.append(
+                "### Depth recall-postprocessor finalization\n\n"
+                "**Status**: UNKNOWN — authoritative receipt could not be "
+                f"parsed ({type(exc).__name__})."
+            )
     # The structured JSON ledger is authoritative. Consume its in-memory
     # projection directly so a failed/stale Markdown cache cannot hide debt.
     coverage_name = "report_semantic_coverage_shortfalls.md"
@@ -2148,12 +4329,22 @@ def _build_human_review_appendix(scratchpad: Path) -> str:
     except Exception:
         pass
     for name, label in ordered:
+        if (
+            name == "depth_finalization_human_review.md"
+            and finalization_receipt.exists()
+        ):
+            continue
         p = scratchpad / name
         if not p.exists():
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace").strip()
         except Exception:
+            continue
+        if (
+            name == "chain_composition_coverage_gaps.md"
+            and re.search(r"(?im)^\*\*Status\*\*:\s*COMPLETE\s*$", text)
+        ):
             continue
         # Drop a leading H1 the source carries; keep the substantive body.
         text = re.sub(r"(?m)\A#\s+[^\n]*\n+", "", text).strip()
@@ -2899,6 +5090,14 @@ def _dedup_report_sections(body: str) -> list[dict]:
     records: list[dict] = []
     for i, hm in enumerate(headers):
         end = headers[i + 1].start() if i + 1 < len(headers) else len(body or "")
+        # A severity/tier H2 belongs to document structure, not to the finding
+        # immediately above it.  Including it in the survivor section causes
+        # consolidation content to be appended *after* the next tier heading,
+        # so the receipt says "absorbed into H-xx" while Markdown presents it
+        # under Medium/Low.  Stop at the first intervening non-finding H2.
+        next_h2 = re.search(r"(?m)^##\s+(?!\s*\[)", (body or "")[hm.end() : end])
+        if next_h2:
+            end = hm.end() + next_h2.start()
         section = (body or "")[hm.start():end]
         rid = _normalize_report_id(hm.group(2))
         locs = {m.group(0).strip("`") for m in _DEDUP_LOCATION_TOKEN_RE.finditer(section)}
@@ -2970,58 +5169,6 @@ def _dedup_title_jaccard(a: str, b: str) -> float:
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / len(ta | tb)
-
-
-def _dedup_source_ids_by_report_id(scratchpad: Path) -> dict[str, set[str]]:
-    """Back-join each report ID to its internal/source-ID set.
-
-    Recovers the source-ID dimension the client report lacks, via
-    report_index.md Master Finding Index "Internal Hypothesis" column
-    (parse_report_index_assignments) plus finding_mapping.md.
-    """
-    out: dict[str, set[str]] = {}
-    try:
-        rows = parse_report_index_assignments(scratchpad)
-    except Exception:
-        rows = []
-    # Directional hypothesis alias -> constituent source IDs.  The alias is a
-    # lookup key only; including it in the value set lets two report findings
-    # appear related merely because prose repeated the same hypothesis label.
-    fmap: dict[str, set[str]] = {}
-    fm_path = scratchpad / "finding_mapping.md"
-    if fm_path.exists():
-        try:
-            fm_text = fm_path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            fm_text = ""
-        for mapping_row in parse_finding_mapping_rows(fm_text):
-            source_ids = {
-                str(source_id).upper()
-                for source_id in mapping_row.get("source_ids", ())
-            }
-            for hypothesis_id in mapping_row.get("hypothesis_ids", ()):
-                alias = str(hypothesis_id).upper()
-                fmap.setdefault(alias, set()).update(
-                    source_id for source_id in source_ids if source_id != alias
-                )
-    for row in rows:
-        rid = _normalize_report_id(str(row.get("report_id", "") or ""))
-        if not rid:
-            continue
-        internal = str(row.get("finding_id", "") or row.get("internal", "") or "")
-        src: set[str] = set()
-        for tok in _INTERNAL_FINDING_ID_RE.findall(internal):
-            tok = tok.upper()
-            constituents = fmap.get(tok)
-            if constituents:
-                src.update(constituents)
-            else:
-                # A standalone internal ID remains its own source identity.
-                # Mapped hypothesis aliases are lookup-only and stay out.
-                src.add(tok)
-        if src:
-            out.setdefault(rid, set()).update(src)
-    return out
 
 
 _DEDUP_AGGREGATE_SUPPRESS_THRESHOLD = 6
@@ -4307,13 +6454,15 @@ def _reconcile_exec_summary_count(text: str) -> str:
 def enforce_material_harm_floor(
     audit_text: str, disposition: dict[str, tuple[str, str]]
 ) -> tuple[str, list[tuple[str, str, str, str, str]]]:
-    """Relocate APPENDIX-dispositioned body sections to an Appendix table.
+    """Relocate APPENDIX-dispositioned body sections to a lossless Appendix.
 
     The load-bearing backstop. For every report ID dispositioned APPENDIX that
     STILL has a `### [X-NN]` (or `## [X-NN]`) finding section in the report
     BODY (the region before the first `## Appendix` heading):
       - remove the standalone section, and
-      - add one row to `## Appendix C: Quality & Hardening Observations`.
+      - add one row to `## Appendix C: Quality & Hardening Observations`, and
+      - retain the complete original finding content under an Appendix-detail
+        heading that is not counted as a BODY finding.
 
     GUARANTEES (recall-safe):
       (a) after the move the body contains ONLY BODY ids;
@@ -4349,6 +6498,7 @@ def enforce_material_harm_floor(
 
     records = _dedup_report_sections(head)
     moved_rows: list[tuple[str, str, str, str, str]] = []
+    moved_details: list[str] = []
     blocks_to_remove: list[str] = []
     moved_ids: set[str] = set()
     for rec in records:
@@ -4367,6 +6517,14 @@ def enforce_material_harm_floor(
         loc_cell = ", ".join(f"`{l}`" for l in locs) if locs else ""
         reason = appendix.get(rid) or "pure quality/hardening (no demonstrated harm)"
         moved_rows.append((rid, sev, title, loc_cell, reason))
+        moved_details.append(
+            re.sub(
+                rf"(?im)^#{{2,3}}\s+\[{re.escape(rid)}\]\s*",
+                f"### Appendix observation [{rid}] ",
+                own,
+                count=1,
+            ).strip()
+        )
         blocks_to_remove.append(own)
         moved_ids.add(rid)
 
@@ -4405,6 +6563,7 @@ def enforce_material_harm_floor(
         return f"| {rid} | {sev} | {title} | {loc} | {reason} |"
 
     body_rows = "\n".join(_fmt(r) for r in moved_rows)
+    detail_blocks = "\n\n".join(moved_details)
     intro = (
         "_The items below are quality / hardening / observability observations "
         "with no demonstrated security consequence. They were routed out of the "
@@ -4422,12 +6581,12 @@ def enforce_material_harm_floor(
             sect = m.group(0).rstrip("\n")
             if "| ID | Severity |" not in sect:
                 sect = sect + "\n\n" + appendix_header.rstrip("\n")
-            sect = sect + "\n" + body_rows + "\n"
+            sect = sect + "\n" + body_rows + "\n\n" + detail_blocks + "\n"
             tail = tail[: m.start()] + sect + tail[m.end():]
         else:
-            tail = tail.rstrip("\n") + "\n\n" + _FLOOR_APPENDIX_HEADING + "\n\n" + intro + "\n\n" + appendix_header + body_rows + "\n"
+            tail = tail.rstrip("\n") + "\n\n" + _FLOOR_APPENDIX_HEADING + "\n\n" + intro + "\n\n" + appendix_header + body_rows + "\n\n" + detail_blocks + "\n"
     else:
-        tail = tail.rstrip("\n") + "\n\n---\n\n" + _FLOOR_APPENDIX_HEADING + "\n\n" + intro + "\n\n" + appendix_header + body_rows + "\n"
+        tail = tail.rstrip("\n") + "\n\n---\n\n" + _FLOOR_APPENDIX_HEADING + "\n\n" + intro + "\n\n" + appendix_header + body_rows + "\n\n" + detail_blocks + "\n"
 
     new_text = head.rstrip("\n") + "\n\n" + tail.lstrip("\n")
     new_text = re.sub(r"\n{4,}", "\n\n\n", new_text)
@@ -4510,12 +6669,9 @@ def apply_material_harm_floor(scratchpad: Path, project_root: str) -> dict:
 _PROMO_MAX_FILES = 60           # bound files scanned per run (recall-safe cap)
 _PROMO_MAX_PER_FILE = 12        # bound candidates harvested per feeder file
 _PROMO_MAX_PER_RUN = 30         # global bound on emitted candidates per run
-# A harvested feeder block whose location already sits within this many lines of a
-# promoted finding (in findings_inventory.md) is treated as ALREADY-PROMOTED (it was
-# consolidated under a report ID), NOT a pipeline-loss orphan. Tolerates the line drift
-# consolidation introduces. Precision guard: prevents re-flagging already-reported
-# findings whose raw depth-agent ID (DE-N/DA2-N) is not carried in the coverage seed
-# (the seed tracks hypothesis/report IDs only, with no locations).
+# Historical location-proximity helpers retain this window only for diagnostic
+# duplicate nomination. Neither proximity nor equal location/shape suppresses
+# a subject; only the full cryptographic subject establishes exact identity.
 _PROMO_LOC_WINDOW = 30
 _PROMO_LOC_RE = re.compile(
     r"([A-Za-z0-9_][A-Za-z0-9_./\-]*\.(?:rs|sol|move|go|py|cairo)):L?(\d+)(?:\s*-\s*L?(\d+))?",
@@ -4538,6 +6694,9 @@ _PROMO_FEEDER_GLOBS: tuple = (
     "skill_execution_gaps.md",
     "checklist*.md",
 )
+_PROMO_FEEDER_GLOBS = tuple(dict.fromkeys(
+    _PROMO_FEEDER_GLOBS + _registered_producer_patterns("late_harvest")
+))
 
 # Artifacts Gate P must never re-harvest: its own output (prevents a
 # harvest-loop on the ledgers/receipts it writes) plus report/inventory
@@ -4614,6 +6773,9 @@ _PROMO_NEG_DISPOSITION_RE = re.compile(
 # candidates (exactly where a suppressed real bug hides per orchestrator-
 # rules.md's own EXCLUSION SOURCE RULE).
 _PROMO_DUP_REFERENT_RE = re.compile(r"(?i)\bdup(?:licate)?\s+of\b")
+_PROMO_DUP_REFERENT_ID_RE = re.compile(
+    r"(?i)\bdup(?:licate)?\s+of\s+\[?([A-Za-z][A-Za-z0-9_-]*-\d+)\]?"
+)
 
 _PROMO_EXCLUDED_STUB_RE = re.compile(
     r"(?im)^\s*EXCLUDED\s*\[([A-Za-z0-9_\-]+)\]\s*(.*)$"
@@ -4621,15 +6783,180 @@ _PROMO_EXCLUDED_STUB_RE = re.compile(
 
 _PROMO_ID_TOKEN_RE = re.compile(r"^\[?([A-Za-z]{1,10}-?\d+)\]?")
 
+_PROMO_SUBJECT_SCHEMA = "plamen.gate_p.subject.v1"
+_PROMO_SUBJECT_FIELD_RE = re.compile(
+    r"(?im)^\s*\*\*Promotion Subject SHA256\*\*:\s*([0-9a-f]{64})\s*$"
+)
+_PROMO_RECEIPT_SUBJECT_RE = re.compile(
+    r"(?im)^\s*PROMOGAP-SUBJECT-SHA256:\s*([0-9a-f]{64})\s*$"
+)
+
+
+def _promo_atomic_write_text(path: Path, text: str) -> None:
+    """Publish one Gate-P text artifact atomically within its directory."""
+
+    target = Path(path)
+    encoded = text.encode("utf-8")
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _promo_canonical_location(value: object) -> str:
+    location = re.sub(r"\s+", " ", str(value or "").strip())
+    return location.strip("`").replace("\\", "/")
+
+
+def _promo_subject_from_components(
+    *,
+    producer_key: str,
+    source_artifact: str,
+    source_artifact_sha256: str,
+    record_sha256: str,
+    location: str,
+    shape: str,
+) -> str:
+    payload = {
+        "location": _promo_canonical_location(location),
+        "producer_key": str(producer_key or "UNREGISTERED_MARKDOWN"),
+        "record_sha256": str(record_sha256).lower(),
+        "schema": _PROMO_SUBJECT_SCHEMA,
+        "shape": str(shape or ""),
+        "source_artifact": str(source_artifact or ""),
+        "source_artifact_sha256": str(source_artifact_sha256).lower(),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _promo_bind_subject_identity(
+    cand: dict,
+    *,
+    source_artifact_sha256: str,
+    producer_key: str,
+) -> str:
+    """Bind a harvested record to one stable, replayable Gate-P subject.
+
+    Neither a producer-local ID nor a location/shape tuple is an identity.
+    The subject includes the producing contract, the exact source artifact
+    bytes, the exact extracted record bytes, the canonical location, and the
+    record shape.  The full SHA-256 is retained; no prefix is authoritative.
+    """
+
+    record_bytes = cand.pop("_record_bytes", None)
+    if not isinstance(record_bytes, bytes):
+        record_bytes = str(cand.get("text", "") or "").encode(
+            "utf-8", errors="surrogatepass"
+        )
+    record_sha256 = hashlib.sha256(record_bytes).hexdigest()
+    location = _promo_canonical_location(cand.get("location", ""))
+    cand["location"] = location
+    producer_identity = str(producer_key or "UNREGISTERED_MARKDOWN")
+    subject = _promo_subject_from_components(
+        producer_key=producer_identity,
+        source_artifact=str(cand.get("source_file", "") or ""),
+        source_artifact_sha256=source_artifact_sha256,
+        record_sha256=record_sha256,
+        location=location,
+        shape=str(cand.get("shape", "") or ""),
+    )
+    cand.update({
+        "producer_key": producer_identity,
+        "source_artifact_sha256": str(source_artifact_sha256).lower(),
+        "record_sha256": record_sha256,
+        "subject_sha256": subject,
+    })
+    return subject
+
+
+def promotion_reconciled_subjects(scratchpad: Path) -> set[str]:
+    """Return exact source subjects already retained one-to-one in inventory.
+
+    The inventory reconciliation receipt is accepted only when its deterministic
+    validator reproduces it from current bytes.  Only ``RETAINED`` rows qualify;
+    merge/refutation/debt proposals never suppress Gate P.  This keeps ordinary
+    delivered findings from consuming the orphan cap without falling back to a
+    producer-local ID or location similarity.
+    """
+
+    root = Path(scratchpad)
+    receipt_path = root / "inventory_reconciliation.json"
+    if not receipt_path.is_file():
+        return set()
+    try:
+        from inventory_reconciliation import validate_inventory_reconciliation
+
+        if validate_inventory_reconciliation(root):
+            return set()
+        payload = json.loads(
+            read_bounded_regular_bytes(
+                receipt_path, 64 * 1024 * 1024
+            ).decode("utf-8")
+        )
+    except Exception:
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    subjects: set[str] = set()
+    for row in payload.get("candidates") or ():
+        if not isinstance(row, dict):
+            continue
+        if (
+            row.get("disposition") != "RETAINED"
+            or not row.get("target_inventory_id")
+        ):
+            continue
+        source_sha256 = str(row.get("source_sha256") or "").lower()
+        record_sha256 = str(row.get("source_block_sha256") or "").lower()
+        if not (
+            re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+            and re.fullmatch(r"[0-9a-f]{64}", record_sha256)
+        ):
+            continue
+        producer_key = str(row.get("producer_key") or "")
+        if producer_key.startswith("UNREGISTERED_"):
+            producer_key = "UNREGISTERED_MARKDOWN"
+        subjects.add(_promo_subject_from_components(
+            producer_key=producer_key,
+            source_artifact=str(row.get("source_artifact") or ""),
+            source_artifact_sha256=source_sha256,
+            record_sha256=record_sha256,
+            location=str(row.get("source_location") or ""),
+            shape="finding_block",
+        ))
+    return subjects
+
 
 def _promo_seed_ids(scratchpad: Path) -> tuple[set[str], dict[str, str]]:
-    """Parse ``report_index_coverage_seed.md`` -> ``({all IDs}, {ID: verdict})``.
+    """Parse the preverify promotion seed (or legacy report seed fallback).
 
     The caller treats a MISSING seed file as the no-op advisory condition
     (mirrors `enumeration_gate._load_graph` returning ``None``): Gate P has no
     reconciliation ledger to check orphans against, so it does not harvest.
     """
-    p = Path(scratchpad) / "report_index_coverage_seed.md"
+    root = Path(scratchpad)
+    p = root / "promotion_coverage_seed.md"
+    if not p.is_file():
+        p = root / "report_index_coverage_seed.md"
     if not p.exists():
         return set(), {}
     try:
@@ -4645,9 +6972,29 @@ def _promo_seed_ids(scratchpad: Path) -> tuple[set[str], dict[str, str]]:
         fid = m.group(1).strip().upper()
         if not fid or not re.search(r"[A-Za-z]", fid) or fid == "FINDING/HYP ID":
             continue
+        if re.fullmatch(r"[0-9A-F]{64}", fid):
+            continue  # subject table, never a producer-local finding ID
         ids.add(fid)
         verdicts[fid] = m.group(3).strip()
     return ids, verdicts
+
+
+def _promo_seed_subjects(scratchpad: Path) -> set[str]:
+    root = Path(scratchpad)
+    path = root / "promotion_coverage_seed.md"
+    if not path.is_file():
+        return set()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    return {
+        value.lower()
+        for value in re.findall(
+            r"(?im)^\s*\|\s*([0-9a-f]{64})\s*\|\s*DELIVERED\s*\|\s*$",
+            text,
+        )
+    }
 
 
 def _promo_covered_locations(scratchpad: Path) -> dict[str, list[tuple[int, int]]]:
@@ -4682,12 +7029,10 @@ def _promo_covered_locations(scratchpad: Path) -> dict[str, list[tuple[int, int]
 
 
 def _promo_location_is_covered(cand: dict, covered: dict) -> bool:
-    """True if ANY ``file:line`` reference in the candidate's location/title/text
-    overlaps (within ``_PROMO_LOC_WINDOW``) a promoted finding's location in the same
-    file — i.e. the candidate was already consolidated into a reported finding.
+    """Diagnostic-only location-overlap nomination.
 
-    Recall-safe: with no covered map (inventory absent) this returns False, so nothing
-    is suppressed. Precision guard only.
+    This helper is not suppression authority. Only a full Gate-P subject may
+    establish exact record identity; semantic equivalence belongs downstream.
     """
     if not covered:
         return False
@@ -4720,17 +7065,21 @@ def _promo_shape_ok(text: str) -> tuple[bool, str]:
         return False, ""
     # reject methodology / meta / bookkeeping section headers (never a finding)
     first_line = next((ln for ln in text.splitlines() if ln.strip()), "")
-    if _PROMO_META_HEADING_RE.search(first_line):
+    heading_text = re.sub(r"^\s*#{1,6}\s*", "", first_line).strip()
+    if _PROMO_META_HEADING_RE.fullmatch(heading_text):
         return False, ""
     # reject blocks that conclude NO issue (no-finding / correct-usage). REFUTED
     # blocks are NOT rejected here — they are real findings that were disproven, and
     # _promo_disposition routes them to Appendix A (excluded), preserving the trail.
-    if _PROMO_NEG_DISPOSITION_RE.search(text):
-        return False, ""
     loc_m = _PROMO_LOCATION_RE.search(text)
     if not loc_m:
         return False, ""
-    if not _PROMO_MECHANISM_CUE_RE.search(text):
+    # A producer-authored no-finding/safe statement is a proposal to review,
+    # not authority for the found-then-lost recovery gate to suppress it.
+    if not _PROMO_MECHANISM_CUE_RE.search(text) and not (
+        _PROMO_NEG_DISPOSITION_RE.search(text)
+        or _PROMO_REFUTED_RE.search(text)
+    ):
         return False, ""
     return True, loc_m.group(0).strip()
 
@@ -4758,15 +7107,15 @@ def _promo_split_heading_blocks(text: str) -> list[dict]:
     the strict internal-ID catalog, so it never silently drops a
     finding-shaped block over an unrecognized ID prefix.
     """
-    try:
-        text = _llm_norm(text)
-    except Exception:
-        pass
-    lines = text.splitlines()
+    # Keep line endings while slicing. The record is the exact heading block
+    # with only outer delimiter whitespace removed; the independent whole-
+    # artifact digest still binds line-ending and surrounding-byte changes.
+    lines = text.splitlines(keepends=True)
     starts: list[tuple[int, str]] = []
     in_fence = False
     fence_marker: str | None = None
-    for idx, line in enumerate(lines):
+    for idx, exact_line in enumerate(lines):
+        line = exact_line.rstrip("\r\n")
         stripped = line.lstrip()
         if stripped.startswith("```") or stripped.startswith("~~~"):
             marker = stripped[:3]
@@ -4784,8 +7133,9 @@ def _promo_split_heading_blocks(text: str) -> list[dict]:
     out: list[dict] = []
     for i, (start, heading_line) in enumerate(starts):
         end = starts[i + 1][0] if i + 1 < len(starts) else len(lines)
-        block = "\n".join(lines[start:end]).strip()
-        hm = _PROMO_HEADING_RE.match(heading_line)
+        record_text = "".join(lines[start:end])
+        block = record_text.strip()
+        hm = _PROMO_HEADING_RE.match(heading_line.rstrip("\r\n"))
         raw_title = hm.group(1) if hm else heading_line
         idm = _PROMO_BLOCK_ID_RE.search(raw_title)
         orig_id = idm.group(1).strip().upper() if idm else ""
@@ -4793,7 +7143,11 @@ def _promo_split_heading_blocks(text: str) -> list[dict]:
         if idm:
             title = title.replace(idm.group(0), "").strip()
         title = re.sub(r"^\s*[:=\-–—#]+\s*", "", title).strip()
-        out.append({"id": orig_id, "title": title, "block": block})
+        out.append({
+            "id": orig_id,
+            "title": title,
+            "block": block,
+        })
     return out
 
 
@@ -4810,6 +7164,30 @@ def _promo_harvest_finding_blocks(path: Path, text: str) -> list[dict]:
         block_text = b.get("block", "") or ""
         ok, loc = _promo_shape_ok(block_text)
         if not ok:
+            orig_id = (b.get("id") or "").strip().upper()
+            first_line = next(
+                (line for line in block_text.splitlines() if line.strip()), ""
+            )
+            heading_text = re.sub(r"^\s*#{1,6}\s*", "", first_line).strip()
+            if (
+                orig_id
+                and len(block_text.strip()) >= _PROMO_MIN_TEXT_LEN
+                and not _PROMO_META_HEADING_RE.fullmatch(heading_text)
+            ):
+                out.append({
+                    "source_file": path.name,
+                    "shape": "finding_shape_debt",
+                    "orig_id": orig_id,
+                    "title": b.get("title") or "Unparsed finding candidate",
+                    "location": "UNKNOWN",
+                    "text": block_text,
+                    "shape_debt": True,
+                    "proof_scope": "NONE",
+                    "requires_independent_consumer": True,
+                    "_record_bytes": block_text.encode(
+                        "utf-8", errors="surrogatepass"
+                    ),
+                })
             continue
         location = ""
         try:
@@ -4824,6 +7202,9 @@ def _promo_harvest_finding_blocks(path: Path, text: str) -> list[dict]:
             "title": b.get("title") or "Untitled finding",
             "location": location,
             "text": block_text,
+            "_record_bytes": block_text.encode(
+                "utf-8", errors="surrogatepass"
+            ),
         })
     return out
 
@@ -4876,6 +7257,7 @@ def _promo_harvest_table_rows(path: Path, text: str) -> list[dict]:
             # kept for classification/hashing, which benefit from full
             # context.
             "desc": title_cell,
+            "_record_bytes": line.encode("utf-8", errors="surrogatepass"),
         })
     return out
 
@@ -4892,8 +7274,7 @@ def _promo_harvest_excluded_stubs(path: Path, text: str) -> list[dict]:
     for m in _PROMO_EXCLUDED_STUB_RE.finditer(text):
         stub_id = m.group(1).strip()
         rest = (m.group(2) or "").strip()
-        if _PROMO_DUP_REFERENT_RE.search(rest):
-            continue  # cites a real referent -> legitimate dedup, not orphan
+        alias_match = _PROMO_DUP_REFERENT_ID_RE.search(rest)
         ok, loc = _promo_shape_ok(rest)
         out.append({
             "source_file": path.name,
@@ -4903,40 +7284,158 @@ def _promo_harvest_excluded_stubs(path: Path, text: str) -> list[dict]:
             "location": loc,
             "text": rest,
             "content_bearing": ok,
+            "alias_proposal": bool(alias_match),
+            "alias_target": alias_match.group(1).upper() if alias_match else "",
+            "_record_bytes": m.group(0).encode(
+                "utf-8", errors="surrogatepass"
+            ),
         })
     return out
 
 
-def _promo_disposition(cand: dict) -> tuple[str, str]:
-    """Decide BODY / APPENDIX_C / APPENDIX_A for one harvested candidate.
+def _promo_harvest_registered_typed_actions(path: Path) -> list[dict]:
+    """Adapt typed generator actions directly; never round-trip through Markdown."""
 
-    Reuses the EXISTING material-harm classifier (`classify_body_or_appendix`)
-    — this is the routing choice that fixes v2.8.9's noise: the promotion
-    signal is the classifier, not ID-pattern presence.
+    out: list[dict] = []
+    producer = _registered_producer_for_artifact(
+        path.name, consumer="late_harvest"
+    )
+    if producer is not None and getattr(producer, "action_contract", "") == (
+        "ENUMERATION_OBLIGATION"
+    ):
+        for obligation in _read_registered_enumeration_obligations(
+            path, consumer="late_harvest"
+        ):
+            candidate = {
+                "source_file": path.name,
+                "shape": "typed_enumeration_obligation",
+                "orig_id": obligation.action_id,
+                "action_identity": obligation.action_identity,
+                "source_identity": f"{path.name}:{obligation.action_identity}",
+                "title": f"Unresolved exploration obligation {obligation.action_id}",
+                "location": "",
+                "text": "",
+                "desc": "",
+                "proof_scope": "NONE",
+                "requires_independent_consumer": True,
+            }
+            candidate["_record_bytes"] = json.dumps(
+                asdict(obligation),
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            out.append(candidate)
+        return out
+    for action in _read_registered_typed_actions(path, consumer="late_harvest"):
+        text = "\n".join(
+            value for value in (action.evidence, action.rationale) if value
+        )
+        location_match = _PROMO_LOCATION_RE.search(text)
+        candidate = {
+            "source_file": path.name,
+            "shape": "typed_generator_action",
+            "orig_id": action.action_id,
+            "action_identity": action.action_identity,
+            "source_identity": f"{path.name}:{action.action_identity}",
+            "title": (
+                f"Exploration additive action: {action.instance}"
+                if action.instance
+                else f"Exploration additive action {action.action_id}"
+            ),
+            "location": location_match.group(0).strip() if location_match else "",
+            "text": text,
+            "desc": text,
+            "proof_scope": action.proof_scope,
+            "requires_independent_consumer": True,
+        }
+        candidate["_record_bytes"] = json.dumps(
+            asdict(action),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        out.append(candidate)
+    return out
+
+
+def _promo_disposition(cand: dict) -> tuple[str, str]:
+    """Return BODY plus the retention reason for one harvested candidate.
+
+    Material-harm and producer-negative classifications are proposal evidence
+    only: without replayable terminal authority, every active path is reopened
+    for independent verification rather than routed to an appendix.
     """
     text = cand.get("text", "") or ""
     title = cand.get("title", "") or ""
-    if cand.get("shape") == "excluded_stub" and not cand.get("content_bearing", True):
+    if cand.get("shape") == "typed_generator_action":
         return (
-            "APPENDIX_A",
-            "referent-less exclusion with no recoverable content — flagged "
-            "for human review, not dropped",
+            "BODY",
+            "typed unverified generator output routed to independent verification",
         )
-    if _PROMO_REFUTED_RE.search(f"{title}\n{text}"):
-        return ("APPENDIX_A", "verifier-refuted")
+    if cand.get("shape") == "typed_enumeration_obligation":
+        return (
+            "BODY",
+            "unresolved enumeration work lacks completion authority; retained "
+            "for independent review",
+        )
+    if cand.get("alias_proposal"):
+        return (
+            "BODY",
+            "textual alias proposal lacks applied lossless-equivalence authority; "
+            "retained for verification",
+        )
+    if cand.get("shape") == "excluded_stub" and not cand.get("content_bearing", True):
+        cand["shape_debt"] = True
+        return (
+            "BODY",
+            "content-less exclusion lacks terminal authority; retained as "
+            "verification and human-review debt",
+        )
+    if cand.get("shape_debt"):
+        return (
+            "BODY",
+            "candidate identity failed heuristic shape parsing; retained as "
+            "location/methodology repair debt",
+        )
+    negative_text = f"{title}\n{text}"
+    if (
+        _PROMO_REFUTED_RE.search(negative_text)
+        or _PROMO_NEG_DISPOSITION_RE.search(negative_text)
+    ):
+        cand["negative_proposal"] = True
+        cand["negative_proposal_kind"] = "REFUTATION_PROPOSAL"
+        return (
+            "BODY",
+            "producer negative proposal lacks replayable terminal authority; "
+            "reopened for independent verification",
+        )
     verdict = ""
     try:
         verdict = _field_from_markdown(text, ("Verdict", "Final Verdict", "Status"))
     except Exception:
         verdict = ""
     if verdict and re.search(r"(?i)refut|false.?positive", verdict):
-        return ("APPENDIX_A", "verifier-refuted")
+        cand["negative_proposal"] = True
+        cand["negative_proposal_kind"] = "REFUTATION_PROPOSAL"
+        return (
+            "BODY",
+            "structured negative proposal lacks replayable terminal authority; "
+            "reopened for independent verification",
+        )
     try:
         disp, reason = classify_body_or_appendix(title, "", text, verdict)
     except Exception:
         disp, reason = ("BODY", "default (classifier error — recall-safe)")
     if disp == "APPENDIX":
-        return ("APPENDIX_C", reason)
+        cand["zero_harm_proposal"] = True
+        return (
+            "BODY",
+            "zero-harm classifier proposal lacks typed terminal authority; "
+            f"retained for verification ({reason})",
+        )
     return ("BODY", reason)
 
 
@@ -4952,24 +7451,25 @@ def _write_promotion_orphans_md(
         "promoted to body-at-severity directly. Recall-safe: nothing harvested "
         "here is dropped.",
         "",
-        f"- Files scanned: {files_scanned} | Already-tracked (report-ID "
-        f"present in the coverage seed): {already_tracked} | Orphans: "
+        f"- Files scanned: {files_scanned} | Exact delivered/repeated subjects "
+        f"excluded: {already_tracked} | Orphans: "
         f"{len(orphans)}",
         "",
-        "| Candidate | Source | Shape | Orig ID | Location | Disposition | Reason |",
-        "|-----------|--------|-------|---------|----------|--------------|--------|",
+        "| Candidate | Subject SHA256 | Source | Shape | Orig ID | Location | Disposition | Reason |",
+        "|-----------|----------------|--------|-------|---------|----------|--------------|--------|",
     ]
     for c in orphans:
         title = re.sub(r"\s+", " ", c.get("title", "")).replace("|", "/").strip()[:80]
         reason = re.sub(r"\s+", " ", c.get("reason", "")).replace("|", "/").strip()
         loc = (c.get("location") or "-").replace("|", "/")
         lines.append(
-            f"| {c['candidate_id']} | {c['source_file']} | {c['shape']} | "
+            f"| {c['candidate_id']} | `{c.get('subject_sha256', '')}` | "
+            f"{c['source_file']} | {c['shape']} | "
             f"{c.get('orig_id', '') or '-'} | `{loc}` | "
             f"{c.get('disposition', '')} | {title} — {reason} |"
         )
     if not orphans:
-        lines.append("| (none) | | | | | | no orphans found |")
+        lines.append("| (none) | | | | | | | no orphans found |")
     try:
         (scratchpad / "promotion_orphans.md").write_text(
             "\n".join(lines) + "\n", encoding="utf-8"
@@ -4984,12 +7484,12 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
     Scans every feeder artifact (`depth_*`, `blind_spot_*`, `analysis_*`,
     `*_percontract_*`, checklists, exclusion stubs) for finding-SHAPED
     content — a real `file:Lnnn` location + a generic defect-mechanism cue +
-    enough descriptive text — and reconciles each candidate's own ID (when it
-    has one) against `report_index_coverage_seed.md`. A candidate whose own
-    ID is already in the seed is ALREADY TRACKED by the normal report
-    pipeline and is not re-promoted. Everything else is an ORPHAN: it is
-    classified BODY / APPENDIX_C / APPENDIX_A via the existing material-harm
-    classifier and written to `promotion_orphans.md`.
+    enough descriptive text. Each extracted record receives a full SHA-256
+    subject bound to producer, source-artifact bytes, record bytes, location,
+    and shape. Producer-local IDs and location/shape similarity are never
+    suppression authority. Exact repeated subjects alone are collapsed;
+    every other candidate is classified BODY / APPENDIX_C / APPENDIX_A and
+    written to `promotion_orphans.md`.
 
     No-op advisory when `report_index_coverage_seed.md` is absent (mirrors
     `enumeration_gate.py`'s graph-absent no-op) — recall-safe: nothing is
@@ -4997,7 +7497,9 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
     per-run caps) so it can never flood. Never raises.
     """
     scratchpad = Path(scratchpad)
-    seed_path = scratchpad / "report_index_coverage_seed.md"
+    seed_path = scratchpad / "promotion_coverage_seed.md"
+    if not seed_path.exists():
+        seed_path = scratchpad / "report_index_coverage_seed.md"
     if not seed_path.exists():
         try:
             replace_producer_shortfalls(
@@ -5007,7 +7509,10 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
                     producer="promotion_gate",
                     scope="promotion-provider",
                     kind="PROVIDER_UNAVAILABLE",
-                    detail="promotion completeness cannot reconcile without report_index_coverage_seed.md",
+                    detail=(
+                        "promotion completeness cannot reconcile without "
+                        "promotion_coverage_seed.md or report_index_coverage_seed.md"
+                    ),
                 )],
             )
         except Exception:
@@ -5015,7 +7520,19 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
         return []
     cap_rows: list[dict] = []
     try:
-        seed_ids, _seed_verdicts = _promo_seed_ids(scratchpad)
+        # The seed proves phase readiness, not record identity.  Its local IDs
+        # are deliberately never used as suppression authority.
+        _seed_ids, _seed_verdicts = _promo_seed_ids(scratchpad)
+        # The seed contains prior Gate-P delivery subjects.  Ordinary raw
+        # discoveries that the exact inventory reconciliation already proves
+        # were retained one-to-one must join the same denominator; otherwise
+        # Gate P re-harvests already-delivered findings and can spend its
+        # bounded orphan budget on duplicates.  Only a currently replayable
+        # RETAINED row contributes here.
+        delivered_subjects = (
+            _promo_seed_subjects(scratchpad)
+            | promotion_reconciled_subjects(scratchpad)
+        )
     except Exception as exc:
         try:
             replace_producer_shortfalls(
@@ -5035,11 +7552,9 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
         except Exception:
             pass
         return []
-    # Location-based reconciliation against the consolidated promoted set. The coverage
-    # seed tracks hypothesis/report IDs (GRP-NN/H-N) with NO locations and never the raw
-    # depth-agent IDs (DE-N/DA2-N) the feeders carry, so an ID-only check re-flags every
-    # already-consolidated finding as a false orphan. Matching the harvested block's
-    # location against inventory locations catches those consolidations. Never raises.
+    # Read inventory locations only as non-authoritative diagnostic telemetry.
+    # Location overlap never suppresses a candidate; semantic dedup downstream
+    # decides equivalence after Gate P has delivered the stable subject.
     try:
         covered_locs = _promo_covered_locations(scratchpad)
     except Exception as exc:
@@ -5075,7 +7590,12 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
                 ),
             ))
             continue
-    all_files = files
+    # Glob declaration order and filesystem enumeration order are not part of
+    # the result. Canonicalize before bounded caps and candidate numbering.
+    all_files = sorted(
+        seen_paths,
+        key=lambda item: (item.name.casefold(), item.name),
+    )
     files = all_files[:_PROMO_MAX_FILES]
     if len(all_files) > _PROMO_MAX_FILES:
         cap_rows.append(shortfall(
@@ -5092,11 +7612,58 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
 
     orphans: list[dict] = []
     already_tracked = 0
-    seen_locations: set[tuple] = set()  # intra-run dedup across harvesters
+    seen_subjects: set[str] = set()  # exact-subject dedup across harvesters
     run_cap_seen = False
     for p in files:
         try:
-            text = _llm_norm(p.read_text(encoding="utf-8", errors="replace"))
+            registered = _registered_producer_for_artifact(
+                p.name, consumer="late_harvest"
+            )
+        except ProducerResolutionError:
+            registered = None
+        try:
+            source_bytes = read_bounded_regular_bytes(p, 64 * 1024 * 1024)
+        except Exception as exc:
+            cap_rows.append(unknown_shortfall(
+                producer="promotion_gate",
+                scope=f"feeder:{p.name}",
+                kind="PROVIDER_FAILED",
+                detail=(
+                    "promotion feeder exact bytes could not be read and were not "
+                    f"harvested ({type(exc).__name__})"
+                ),
+                samples=[p.name],
+            ))
+            continue
+        source_artifact_sha256 = hashlib.sha256(source_bytes).hexdigest()
+        producer_key = str(
+            getattr(registered, "key", "") or "UNREGISTERED_MARKDOWN"
+        )
+        if registered is not None and getattr(
+            registered, "artifact_format", "MARKDOWN_FINDINGS"
+        ) != "MARKDOWN_FINDINGS":
+            try:
+                harvested = _promo_harvest_registered_typed_actions(p)
+            except Exception as exc:
+                cap_rows.append(unknown_shortfall(
+                    producer="promotion_gate",
+                    scope=f"feeder:{p.name}:typed-adapter",
+                    kind="PROVIDER_FAILED",
+                    detail=(
+                        "typed promotion feeder could not be validated "
+                        f"({type(exc).__name__})"
+                    ),
+                    samples=[p.name],
+                ))
+                continue
+            text = ""
+        else:
+            harvested = []
+        try:
+            if registered is None or getattr(
+                registered, "artifact_format", "MARKDOWN_FINDINGS"
+            ) == "MARKDOWN_FINDINGS":
+                text = source_bytes.decode("utf-8", errors="replace")
         except Exception as exc:
             cap_rows.append(unknown_shortfall(
                 producer="promotion_gate",
@@ -5109,20 +7676,22 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
                 samples=[p.name],
             ))
             continue
-        harvested: list[dict] = []
         harvest_failed = False
-        try:
-            harvested.extend(_promo_harvest_finding_blocks(p, text))
-        except Exception:
-            harvest_failed = True
-        try:
-            harvested.extend(_promo_harvest_table_rows(p, text))
-        except Exception:
-            harvest_failed = True
-        try:
-            harvested.extend(_promo_harvest_excluded_stubs(p, text))
-        except Exception:
-            harvest_failed = True
+        if registered is None or getattr(
+            registered, "artifact_format", "MARKDOWN_FINDINGS"
+        ) == "MARKDOWN_FINDINGS":
+            try:
+                harvested.extend(_promo_harvest_finding_blocks(p, text))
+            except Exception:
+                harvest_failed = True
+            try:
+                harvested.extend(_promo_harvest_table_rows(p, text))
+            except Exception:
+                harvest_failed = True
+            try:
+                harvested.extend(_promo_harvest_excluded_stubs(p, text))
+            except Exception:
+                harvest_failed = True
         if harvest_failed:
             cap_rows.append(unknown_shortfall(
                 producer="promotion_gate",
@@ -5131,17 +7700,22 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
                 detail="one or more promotion feeder harvesters failed",
                 samples=[p.name],
             ))
+        for cand in harvested:
+            _promo_bind_subject_identity(
+                cand,
+                source_artifact_sha256=source_artifact_sha256,
+                producer_key=producer_key,
+            )
+        harvested.sort(key=lambda cand: cand["subject_sha256"])
+
         per_file = 0
         for cand_idx, cand in enumerate(harvested):
-            orig_id = cand.get("orig_id", "")
-            if orig_id and orig_id in seed_ids:
+            subject = cand["subject_sha256"]
+            if subject in delivered_subjects:
                 already_tracked += 1
-                continue  # already accounted for by the normal report pipeline
-            if _promo_location_is_covered(cand, covered_locs):
+                continue
+            if subject in seen_subjects:
                 already_tracked += 1
-                continue  # consolidated under a report ID at this location (not a loss)
-            dedup_key = (cand["source_file"], cand.get("location", ""), cand["shape"])
-            if dedup_key in seen_locations:
                 continue
             # Only an ELIGIBLE, untracked, uncovered, non-duplicate orphan can
             # prove the orphan budget overflowed. Raw candidate-shaped rows do
@@ -5176,7 +7750,7 @@ def compute_promotion_orphans(scratchpad: Path) -> list[dict]:
                     ))
                     run_cap_seen = True
                 break
-            seen_locations.add(dedup_key)
+            seen_subjects.add(subject)
             try:
                 disp, reason = _promo_disposition(cand)
             except Exception:
@@ -5308,15 +7882,19 @@ def _append_inventory_blocks(inv_text: str, header: str, lines: list[str]) -> st
     with an empty `lines` list is a safe no-op-shaped append (idempotency is
     enforced upstream, not here).
     """
-    text = (inv_text or "").rstrip("\n")
+    text = inv_text or ""
     if header:
-        text += header if header.startswith("\n") else ("\n\n" + header.lstrip("\n"))
+        text += (
+            header
+            if header.startswith("\n")
+            else ("\n\n" + header.lstrip("\n"))
+        )
     else:
         text += "\n\n"
     body = "\n".join(lines).rstrip("\n")
     if body:
         text += body
-    return text.rstrip("\n") + "\n"
+    return text if text.endswith("\n") else text + "\n"
 
 
 def route_promotion_orphans(scratchpad: Path, orphans: "list[dict] | None" = None) -> dict:
@@ -5361,36 +7939,59 @@ def route_promotion_orphans(scratchpad: Path, orphans: "list[dict] | None" = Non
         return result
 
     receipt_path = scratchpad / "promotion_gate_receipt.md"
-    seen: set = set()
+    seen: set[str] = set()
     if receipt_path.exists():
         try:
-            seen = set(re.findall(
-                r"\bPROMOGAP-KEY:\s*(\S+)",
+            seen.update(_PROMO_RECEIPT_SUBJECT_RE.findall(
                 receipt_path.read_text(encoding="utf-8", errors="replace"),
             ))
         except Exception:
-            seen = set()
+            pass
+    # Crash recovery does not depend on receipt publication: the canonical
+    # inventory carries the same subject.  If the process dies after the
+    # atomic inventory replace but before receipt replace, resume still sees
+    # the completed append and cannot duplicate it.
+    inventory_path = scratchpad / "findings_inventory.md"
+    if inventory_path.exists():
+        try:
+            seen.update(_PROMO_SUBJECT_FIELD_RE.findall(
+                inventory_path.read_bytes().decode(
+                    "utf-8", errors="replace"
+                )
+            ))
+        except Exception:
+            pass
 
     body_cands: list[dict] = []
     all_body: list[dict] = []
+    pending_body_subjects: set[str] = set()
     appc_rows: list[dict] = []
     appa_rows: list[dict] = []
     for cand in orphans:
         disp = cand.get("disposition", "BODY")
-        try:
-            digest = hashlib.sha1(
-                cand.get("text", "").encode("utf-8", "replace")
-            ).hexdigest()[:10]
-        except Exception:
-            digest = "0"
-        cand["_promo_key"] = (
-            f"{cand.get('source_file','')}:{cand.get('location','')}:"
-            f"{cand.get('shape','')}:{digest}"
-        )
+        subject = str(cand.get("subject_sha256", "") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", subject):
+            # Caller-supplied candidates still receive the same canonical
+            # identity contract; an absent source digest remains explicit.
+            subject = _promo_bind_subject_identity(
+                cand,
+                source_artifact_sha256=str(
+                    cand.get("source_artifact_sha256", "")
+                    or hashlib.sha256(b"").hexdigest()
+                ),
+                producer_key=str(
+                    cand.get("producer_key", "") or "UNREGISTERED_MARKDOWN"
+                ),
+            )
+        cand["_promo_key"] = subject
         if disp == "BODY":
             all_body.append(cand)
-            if cand["_promo_key"] not in seen:
+            if (
+                cand["_promo_key"] not in seen
+                and cand["_promo_key"] not in pending_body_subjects
+            ):
                 body_cands.append(cand)
+                pending_body_subjects.add(cand["_promo_key"])
         elif disp == "APPENDIX_C":
             appc_rows.append(cand)
         else:
@@ -5400,10 +8001,12 @@ def route_promotion_orphans(scratchpad: Path, orphans: "list[dict] | None" = Non
     result["appendix_a"] = len(appa_rows)
 
     if body_cands:
-        inv_path = scratchpad / "findings_inventory.md"
+        inv_path = inventory_path
         if inv_path.exists():
             try:
-                inv_text = inv_path.read_text(encoding="utf-8", errors="replace")
+                inv_text = inv_path.read_bytes().decode(
+                    "utf-8", errors="replace"
+                )
             except Exception:
                 inv_text = None
             if inv_text is not None:
@@ -5431,15 +8034,56 @@ def route_promotion_orphans(scratchpad: Path, orphans: "list[dict] | None" = Non
                     except Exception:
                         sev = "Medium"
                     loc = cand.get("location") or "UNKNOWN"
+                    if cand.get("shape") == "typed_generator_action":
+                        source_lines = [
+                            f"**Source IDs**: [{cand.get('orig_id', '')}]",
+                            f"**Primary Artifact**: {cand.get('source_file', '')}",
+                            f"**Source Identity**: {cand.get('source_identity', '')}",
+                            "**Proof Scope**: UNVERIFIED_GENERATOR_OUTPUT",
+                            "**Effective Proof Scope**: ANALYTICAL",
+                            "**Effective Harm Scope**: UNPROVEN",
+                        ]
+                    else:
+                        source_lines = [
+                            f"**Source IDs**: PROMOGAP ({cand.get('shape','')} orphan "
+                            f"from {cand.get('source_file','')}; content-shaped "
+                            "promotion-completeness gap — mechanically harvested, "
+                            "verifier to confirm or refute)"
+                        ]
+                    if cand.get("negative_proposal"):
+                        source_lines.extend([
+                            "**Negative Proposal**: REFUTATION_PROPOSAL "
+                            "(non-authoritative producer assessment)",
+                            "**Mandatory Verification**: true",
+                        ])
+                    if cand.get("zero_harm_proposal"):
+                        source_lines.extend([
+                            "**Zero-Harm Proposal**: NONTERMINAL_CLASSIFIER_PROPOSAL",
+                            "**Mandatory Verification**: true",
+                        ])
+                    if cand.get("alias_proposal"):
+                        source_lines.extend([
+                            f"**Alias Proposal**: {cand.get('alias_target') or 'UNRESOLVED'} "
+                            "(no applied equivalence authority)",
+                            "**Mandatory Verification**: true",
+                        ])
+                    if cand.get("shape_debt"):
+                        source_lines.extend([
+                            "**Promotion Shape Debt**: unresolved location or "
+                            "mechanism encoding",
+                            "**Mandatory Verification**: true",
+                        ])
                     appended_lines.extend([
                         f"### Finding [{inv_id}]: {title}",
                         f"**Severity**: {sev}",
                         f"**Location**: `{loc}`",
+                        f"**Promotion Subject SHA256**: {cand['subject_sha256']}",
+                        f"**Promotion Source Artifact SHA256**: "
+                        f"{cand['source_artifact_sha256']}",
+                        f"**Promotion Record SHA256**: {cand['record_sha256']}",
+                        f"**Promotion Producer**: {cand['producer_key']}",
                         "**Preferred Tag**: [CODE-TRACE]",
-                        f"**Source IDs**: PROMOGAP ({cand.get('shape','')} orphan "
-                        f"from {cand.get('source_file','')}; content-shaped "
-                        "promotion-completeness gap — mechanically harvested, "
-                        "verifier to confirm or refute)",
+                        *source_lines,
                         "**Verdict**: NEEDS_VERIFICATION",
                         f"**Root Cause**: {cand.get('reason', '')}",
                         f"**Description**: {_strip_md(cand.get('desc') or cand.get('text', ''))[:1200]}",
@@ -5463,23 +8107,36 @@ def route_promotion_orphans(scratchpad: Path, orphans: "list[dict] | None" = Non
                         else header
                     )
                     try:
-                        inv_path.write_text(
+                        _promo_atomic_write_text(
+                            inv_path,
                             _append_inventory_blocks(inv_text, hdr, appended_lines),
-                            encoding="utf-8",
                         )
                         result["emitted_to_inventory"] = len(new_keys)
                         seen.update(new_keys)
-                        rlines = ["# Promotion Gate Receipt", ""]
-                        rlines += [f"PROMOGAP-KEY: {k}" for k in sorted(seen)]
-                        receipt_path.write_text(
-                            "\n".join(rlines) + "\n", encoding="utf-8"
-                        )
                     except Exception as exc:
                         log.warning(f"[promotion-gate] inventory append failed: {exc!r}")
                     try:
                         _write_finding_records_from_inventory(scratchpad)
                     except Exception:
                         pass
+
+    if seen:
+        try:
+            rlines = [
+                "# Promotion Gate Receipt",
+                "",
+                "**Schema**: plamen.gate_p.receipt.v2",
+                "",
+            ]
+            rlines += [
+                f"PROMOGAP-SUBJECT-SHA256: {subject}"
+                for subject in sorted(seen)
+            ]
+            _promo_atomic_write_text(receipt_path, "\n".join(rlines) + "\n")
+        except Exception as exc:
+            # Inventory subjects are the crash-safe authority; the receipt is
+            # a deterministic projection and may be reconstructed on resume.
+            log.warning(f"[promotion-gate] receipt write failed: {exc!r}")
 
     try:
         _write_promotion_routing_md(scratchpad, all_body, appc_rows, appa_rows)
@@ -5641,6 +8298,24 @@ def _report_dedup_coverage_gaps(scratchpad: Path) -> list[tuple[str, str]]:
     exists so a silently-skipped duplicate is logged for the operator instead of
     vanishing (recall/precision honesty; recall-safe by construction). Returns []
     when either file is absent (advisory)."""
+    try:
+        from plamen_validators import _report_dedup_exact_pair_coverage_detail
+
+        detail = _report_dedup_exact_pair_coverage_detail(scratchpad)
+        if not detail.get("ledger_issues"):
+            gaps: list[tuple[str, str]] = []
+            for pair_key in detail.get("missing_pair_keys", []):
+                parts = str(pair_key).split("~", 1)
+                if len(parts) == 2:
+                    gaps.append((parts[0], parts[1]))
+            return gaps
+    except Exception as exc:
+        log.warning(
+            "[report_dedup] typed exact-pair coverage unavailable; "
+            "using legacy Markdown projection fallback: %r",
+            exc,
+        )
+
     candidates = _report_dedup_candidate_pairs_from_hint(scratchpad)
     if not candidates:
         return []
@@ -5658,7 +8333,12 @@ def _report_dedup_coverage_gaps(scratchpad: Path) -> list[tuple[str, str]]:
     ]
 
 
-def _dedup_report_python(scratchpad: Path, project_root: str) -> bool:
+def _dedup_report_python(
+    scratchpad: Path,
+    project_root: str,
+    *,
+    run_id: str = "test-unbound",
+) -> bool:
     """Cross-tier report dedup. Python-native, NEVER loses content.
 
     Idempotent: a report with no cross-tier candidate pairs is a no-op (the
@@ -5668,6 +8348,21 @@ def _dedup_report_python(scratchpad: Path, project_root: str) -> bool:
     """
     audit_path = Path(project_root) / "AUDIT_REPORT.md"
     mapping_path = scratchpad / "report_dedup_mapping.md"
+    candidate_relative = "report_dedup.canonical_candidate.md"
+    exact_inputs = (
+        "report_dedup_agent_decisions.md",
+        "report_dedup_candidate_pairs.md",
+        "report_dedup_candidate_pairs.json",
+        "report_index.md",
+        "finding_mapping.md",
+        "semantic_dedup_applied_receipt.json",
+        "semantic_dedup_supplemental_applied_receipt.json",
+        "findings_inventory.md",
+        "verification_queue.md",
+    )
+    input_snapshot = _capture_report_transaction_inputs(
+        scratchpad, exact_inputs
+    )
 
     def _write_mapping(lines: list[str]) -> None:
         try:
@@ -5675,27 +8370,151 @@ def _dedup_report_python(scratchpad: Path, project_root: str) -> bool:
         except Exception as exc:
             log.warning(f"[report_dedup] mapping write failed: {exc!r}")
 
+    # A crash after the canonical atomic replace must recover from the armed
+    # payload, not re-run dedup against its own postimage.  Pre-ARM orphans have
+    # no manifest and fall through to deterministic recomputation; their exact
+    # preimage/payload files are create-once and therefore cannot be clobbered.
+    transaction_phase = "report_dedup"
+    try:
+        _report_mutation_transaction_state(
+            scratchpad=scratchpad,
+            run_id=str(run_id or "test-unbound"),
+            phase=transaction_phase,
+        )
+        recovered = _recover_report_mutation_transaction(
+            scratchpad=scratchpad,
+            project_root=Path(project_root),
+            run_id=str(run_id or "test-unbound"),
+            phase=transaction_phase,
+            report_candidate_sidecar=candidate_relative,
+        )
+    except _ReportMutationTransactionError as exc:
+        log.warning(f"[report_dedup] transaction recovery refused: {exc}")
+        return False
+    if recovered is not None:
+        log.info("[report_dedup] recovered exact armed report transaction")
+        return True
+
     if not audit_path.exists():
         _write_mapping([
             "# Report Dedup Mapping", "",
-            "_AUDIT_REPORT.md not present — no-op._",
+            "_AUDIT_REPORT.md not present — transaction unavailable; retained as debt._",
         ])
-        log.warning("[report_dedup] AUDIT_REPORT.md missing — no-op")
-        return True
+        log.warning("[report_dedup] AUDIT_REPORT.md missing — transaction debt")
+        return False
 
     try:
-        original = audit_path.read_text(encoding="utf-8", errors="replace")
+        original = audit_path.read_text(encoding="utf-8", errors="strict")
     except Exception as exc:
         _write_mapping(["# Report Dedup Mapping", "", f"_read failed: {exc!r}_"])
         log.warning(f"[report_dedup] read failed: {exc!r}")
-        return True
+        return False
 
-    # ALWAYS snapshot the untouched original first (data-loss safety).
-    pre_path = scratchpad / "AUDIT_REPORT.pre-dedup.md"
-    try:
-        pre_path.write_text(original, encoding="utf-8")
-    except Exception as exc:
-        log.warning(f"[report_dedup] pre-dedup snapshot failed: {exc!r}")
+    def _commit_dedup(
+        candidate: str,
+        mapping_lines: list[str],
+        *,
+        evaluated_candidate: str | None = None,
+        authority_candidates: list[dict] | None = None,
+        authority_decisions: list[dict] | None = None,
+        retained_projection_ids: set[str] | None = None,
+        authority_source_ids: dict[str, set[str]] | None = None,
+        semantic_aliases: dict[str, dict[str, str]] | None = None,
+    ) -> bool:
+        """Arm applied authority + sidecars, then replace the report."""
+        try:
+            import report_dedup_authority as report_alias_authority
+
+            receipt_payload = report_alias_authority.build_receipt(
+                pre_report=original,
+                post_report=candidate,
+                exact_inputs=input_snapshot,
+                candidates=authority_candidates or [],
+                decisions=authority_decisions or [],
+                source_ids_by_report_id=authority_source_ids or {},
+                retained_projection_ids=retained_projection_ids or set(),
+                semantic_aliases=semantic_aliases or {},
+            )
+            receipt_bytes = report_alias_authority.canonical_receipt_bytes(
+                receipt_payload
+            )
+        except Exception as exc:
+            # Repair-then-degrade: no authority defect may strand the report or
+            # partially hide an identity.  Retain the exact original and issue
+            # a no-op receipt which disposes every proposal as KEEP_SEPARATE.
+            log.warning(
+                "[report_dedup] applied alias authority vetoed candidate; "
+                "retaining original report: %r",
+                exc,
+            )
+            candidate = original
+            fallback_decisions = [
+                {
+                    "keep": str(row.get("keep", "")),
+                    "absorb": str(row.get("absorb", "")),
+                    "signals": list(row.get("signals", [])),
+                    "decision": "KEEP_SEPARATE",
+                    "reason": "applied-alias-authority-veto",
+                }
+                for row in (authority_candidates or [])
+            ]
+            mapping_lines = list(mapping_lines) + [
+                "",
+                "## APPLIED ALIAS AUTHORITY: VETO",
+                "_Candidate report retained unchanged; every consolidation "
+                "proposal remains KEEP_SEPARATE._",
+            ]
+            try:
+                receipt_payload = report_alias_authority.build_receipt(
+                    pre_report=original,
+                    post_report=original,
+                    exact_inputs=input_snapshot,
+                    candidates=authority_candidates or [],
+                    decisions=fallback_decisions,
+                    source_ids_by_report_id=authority_source_ids or {},
+                    retained_projection_ids=set(),
+                    semantic_aliases=semantic_aliases or {},
+                )
+                receipt_bytes = report_alias_authority.canonical_receipt_bytes(
+                    receipt_payload
+                )
+            except Exception as fallback_exc:
+                log.warning(
+                    "[report_dedup] no-op alias receipt could not be built; "
+                    "canonical report remains untouched: %r",
+                    fallback_exc,
+                )
+                return False
+        mapping = ("\n".join(mapping_lines).rstrip("\n") + "\n").encode("utf-8")
+        candidate_bytes = candidate.encode("utf-8")
+        try:
+            _apply_report_mutation_transaction(
+                scratchpad=scratchpad,
+                project_root=Path(project_root),
+                run_id=str(run_id or "test-unbound"),
+                phase=transaction_phase,
+                post_report=candidate_bytes,
+                exact_inputs=exact_inputs,
+                expected_inputs=input_snapshot,
+                sidecars={
+                    "AUDIT_REPORT.pre-dedup.md": original.encode("utf-8"),
+                    candidate_relative: candidate_bytes,
+                    "AUDIT_REPORT.deduped.md": (
+                        evaluated_candidate.encode("utf-8")
+                        if evaluated_candidate is not None
+                        else candidate_bytes
+                    ),
+                    "report_dedup_mapping.md": mapping,
+                    "report_dedup_applied_alias_receipt.json": receipt_bytes,
+                },
+            )
+        except (OSError, UnicodeError, _ReportMutationTransactionError) as exc:
+            log.warning(
+                f"[report_dedup] durable transaction refused ({exc!r}); "
+                "canonical report retained/recoverable"
+            )
+            return False
+        return True
 
     # --- F1: Quality-Observations retabulation (RETABULATION, never a drop) ---
     # Move unambiguously cosmetic Low/Info `###` sections into a single
@@ -5706,10 +8525,8 @@ def _dedup_report_python(scratchpad: Path, project_root: str) -> bool:
     # cross-tier / no-location MERGES and QO reclassifications that the
     # mechanical signals below cannot pair (missing/coarse locations, different
     # provenance). Advisory only: a missing/garbage file degrades to mechanical-
-    # only. Agent MERGE pairs are executed through the SAME zero-loss embed +
-    # whole-report data-loss gate as mechanical merges, so a wrong agent merge
-    # can never drop a finding (worst case: a cosmetic regrouping the pre-dedup
-    # snapshot lets a human compare).
+    # only. Agent MERGE rows are proposals: zero-loss embedding alone does not
+    # prove semantic equivalence and cannot remove a standalone report identity.
     agent_merge_pairs: list[tuple[str, str]] = []
     agent_qo_ids: set[str] = set()
     try:
@@ -5768,7 +8585,7 @@ def _dedup_report_python(scratchpad: Path, project_root: str) -> bool:
         qo_rows = []
 
     records = _dedup_report_sections(working)
-    src_by_id = _dedup_source_ids_by_report_id(scratchpad)
+    src_by_id = _parsers._dedup_source_ids_by_report_id(scratchpad)
     pairs = _dedup_report_candidate_pairs(records, src_by_id)
 
     # Append agent-proposed MERGE pairs as candidates. Only pairs whose BOTH
@@ -5902,6 +8719,69 @@ def _dedup_report_python(scratchpad: Path, project_root: str) -> bool:
         decisions.append({**p, "decision": "KEEP_SEPARATE",
                           "reason": "weak-signal-only (" + ",".join(p["signals"]) + ")"})
 
+    # P0-AC: all LLM/similarity/subset outputs above are proposals.  Removing a
+    # standalone report identity additionally requires exact current source
+    # identity, normalized only through the immutable semantic applied-receipt
+    # chain.  Zero-loss text embedding by itself is not equivalence authority.
+    semantic_aliases: dict[str, dict[str, str]] = {}
+    semantic_authority_valid = True
+    try:
+        import semantic_dedup_authority as semantic_authority
+
+        receipt_present = any(
+            (scratchpad / name).is_file()
+            for name in (
+                semantic_authority.PRIMARY_RECEIPT_NAME,
+                semantic_authority.SUPPLEMENTAL_RECEIPT_NAME,
+            )
+        )
+        if receipt_present:
+            semantic_aliases = semantic_authority.load_applied_aliases(scratchpad)
+    except Exception as exc:
+        semantic_authority_valid = False
+        semantic_aliases = {}
+        log.warning(
+            "[report_dedup] semantic applied-alias chain is invalid; all "
+            "consolidation proposals remain KEEP_SEPARATE: %r",
+            exc,
+        )
+
+    try:
+        import report_dedup_authority as report_alias_authority
+
+        for decision in decisions:
+            if decision.get("decision") != "MERGE":
+                continue
+            if semantic_authority_valid:
+                allowed, authority_reason = (
+                    report_alias_authority.source_identity_equivalent(
+                        str(decision.get("keep", "")),
+                        str(decision.get("absorb", "")),
+                        src_by_id,
+                        semantic_aliases=semantic_aliases,
+                    )
+                )
+            else:
+                allowed, authority_reason = (
+                    False,
+                    "SEMANTIC_ALIAS_AUTHORITY_INVALID",
+                )
+            if allowed:
+                decision["reason"] = authority_reason
+            else:
+                decision["decision"] = "KEEP_SEPARATE"
+                decision["reason"] = authority_reason
+    except Exception as exc:
+        log.warning(
+            "[report_dedup] report alias authority unavailable; all proposals "
+            "remain KEEP_SEPARATE: %r",
+            exc,
+        )
+        for decision in decisions:
+            if decision.get("decision") == "MERGE":
+                decision["decision"] = "KEEP_SEPARATE"
+                decision["reason"] = "REPORT_ALIAS_AUTHORITY_UNAVAILABLE"
+
     merges = [d for d in decisions if d["decision"] == "MERGE"]
 
     # --- write decisions-only mapping ---------------------------------------
@@ -5927,50 +8807,72 @@ def _dedup_report_python(scratchpad: Path, project_root: str) -> bool:
             f"{';'.join(d['signals'])} | {d['reason']} |"
         )
 
+    def _commit_authorized(
+        candidate: str,
+        mapping_lines: list[str],
+        *,
+        evaluated_candidate: str | None = None,
+    ) -> bool:
+        return _commit_dedup(
+            candidate,
+            mapping_lines,
+            evaluated_candidate=evaluated_candidate,
+            authority_candidates=pairs,
+            authority_decisions=decisions,
+            retained_projection_ids={row[0] for row in qo_rows},
+            authority_source_ids=src_by_id,
+            semantic_aliases=semantic_aliases,
+        )
+
     if not merges:
         if not qo_rows:
             # Idempotent no-op: leave AUDIT_REPORT.md untouched.
-            _write_mapping(map_lines + ["", "_No cross-tier merges, no QO retabulation — report unchanged (identity)._"])
+            ok = _commit_authorized(
+                original,
+                map_lines + [
+                    "",
+                    "_No cross-tier merges, no QO retabulation — report unchanged (identity)._",
+                ],
+            )
             log.info(
                 f"[report_dedup] no cross-tier merges "
                 f"({len(pairs)} candidates) — report unchanged"
             )
-            return True
+            return ok
         # QO-only change: promote `working` after the data-loss gate confirms
         # the retabulation lost nothing relative to the true original.
         lost_qo = _dedup_data_loss_gate(original, working)
         if lost_qo:
-            _write_mapping(map_lines + [
-                "", f"## DATA-LOSS GATE: VETO ({len(lost_qo)} item(s) lost)",
-                "_QO retabulation dropped content — original report retained as delivered._",
-                "",
-                *[f"- LOST {item}" for item in lost_qo[:50]],
-            ])
+            ok = _commit_authorized(
+                original,
+                map_lines + [
+                    "", f"## DATA-LOSS GATE: VETO ({len(lost_qo)} item(s) lost)",
+                    "_QO retabulation dropped content — original report retained as delivered._",
+                    "",
+                    *[f"- LOST {item}" for item in lost_qo[:50]],
+                ],
+                evaluated_candidate=working,
+            )
             log.warning(
                 f"[report_dedup] QO-only data-loss gate VETO "
                 f"({len(lost_qo)} lost item(s)) — original retained"
             )
-            return True
-        try:
-            audit_path.write_text(working, encoding="utf-8")
-        except Exception as exc:
-            log.warning(f"[report_dedup] QO-only promote failed ({exc!r}) — original retained")
-            return True
-        try:
-            (scratchpad / "AUDIT_REPORT.deduped.md").write_text(working, encoding="utf-8")
-        except Exception as exc:
-            log.warning(f"[report_dedup] QO-only deduped write failed: {exc!r}")
-        _write_mapping(map_lines + [
-            "", "## DATA-LOSS GATE: PASS",
-            f"_Promoted QO-retabulated report ({len(qo_rows)} cosmetic Low/Info "
-            f"finding(s) moved to Quality Observations; no cross-tier merges). "
-            f"Original snapshot at AUDIT_REPORT.pre-dedup.md._",
-        ])
+            return ok
+        ok = _commit_authorized(
+            working,
+            map_lines + [
+                "", "## DATA-LOSS GATE: PASS",
+                f"_Promoted QO-retabulated report ({len(qo_rows)} cosmetic Low/Info "
+                f"finding(s) moved to Quality Observations; no cross-tier merges). "
+                f"Original snapshot at AUDIT_REPORT.pre-dedup.md. On an exact "
+                f"resume the committed postimage is reused and the report unchanged._",
+            ],
+        )
         log.info(
             f"[report_dedup] promoted QO-retabulated report: "
             f"{len(qo_rows)} retabulation(s), data-loss gate passed"
         )
-        return True
+        return ok
 
     # --- build deduped body: append absorbed content into survivor, drop
     #     absorbed section. Survivor keeps highest severity (it already is the
@@ -6032,49 +8934,43 @@ def _dedup_report_python(scratchpad: Path, project_root: str) -> bool:
 
     deduped = re.sub(r"\n{4,}", "\n\n\n", deduped)
 
-    # --- write deduped side artifact ----------------------------------------
-    ded_path = scratchpad / "AUDIT_REPORT.deduped.md"
-    try:
-        ded_path.write_text(deduped, encoding="utf-8")
-    except Exception as exc:
-        log.warning(f"[report_dedup] deduped write failed: {exc!r}")
-
     # --- MECHANICAL DATA-LOSS GATE ------------------------------------------
     lost = _dedup_data_loss_gate(original, deduped)
     if lost:
         # VETO: keep the original AUDIT_REPORT.md as delivered, leave deduped
         # as a side artifact, log a warning. NEVER auto-degrade the real report.
-        _write_mapping(map_lines + [
-            "", f"## DATA-LOSS GATE: VETO ({len(lost)} item(s) lost)",
-            "_Deduped output dropped content — original report retained as delivered._",
-            "",
-            *[f"- LOST {item}" for item in lost[:50]],
-        ])
+        ok = _commit_authorized(
+            original,
+            map_lines + [
+                "", f"## DATA-LOSS GATE: VETO ({len(lost)} item(s) lost)",
+                "_Deduped output dropped content — original report retained as delivered._",
+                "",
+                *[f"- LOST {item}" for item in lost[:50]],
+            ],
+            evaluated_candidate=deduped,
+        )
         log.warning(
             f"[report_dedup] data-loss gate VETO ({len(lost)} lost item(s)) — "
             f"original AUDIT_REPORT.md retained, deduped kept as side artifact"
         )
-        return True
+        return ok
 
     # --- gate passed → promote deduped to delivered report -------------------
-    try:
-        audit_path.write_text(deduped, encoding="utf-8")
-    except Exception as exc:
-        log.warning(
-            f"[report_dedup] promote failed ({exc!r}) — original retained"
-        )
-        return True
-    _write_mapping(map_lines + [
-        "", "## DATA-LOSS GATE: PASS",
-        f"_Promoted deduped report ({len(merges)} cross-tier merge(s), "
-        f"{len(qo_rows)} QO retabulation(s)). "
-        f"Original snapshot at AUDIT_REPORT.pre-dedup.md._",
-    ])
+    ok = _commit_authorized(
+        deduped,
+        map_lines + [
+            "", "## DATA-LOSS GATE: PASS",
+            f"_Promoted deduped report ({len(merges)} cross-tier merge(s), "
+            f"{len(qo_rows)} QO retabulation(s)). "
+            f"Original snapshot at AUDIT_REPORT.pre-dedup.md. On an exact "
+            f"resume the committed postimage is reused and the report unchanged._",
+        ],
+    )
     log.info(
         f"[report_dedup] promoted deduped report: {len(merges)} cross-tier "
         f"merge(s), {len(qo_rows)} QO retabulation(s), data-loss gate passed"
     )
-    return True
+    return ok
 
 
 def _report_index_unresolved_report_ids(
@@ -6610,7 +9506,19 @@ def ensure_findings_inventory_floor(scratchpad: Path) -> tuple[int, int]:
     # (1) Structured inventory chunks — richest source, parse first.
     for p in sorted(scratchpad.glob("findings_inventory_chunk_*.md")):
         n_sources += 1
-        entries.extend(_parse_inventory_chunk(p))
+        for entry in _parse_inventory_chunk(p):
+            identity_values = [
+                entry.get("local_id"),
+                *(entry.get("source_ids", []) or []),
+                entry.get("source_action_id"),
+            ]
+            if any(
+                str(value or "").strip()
+                and not _normalize_finding_id(str(value or "").strip())
+                for value in identity_values
+            ):
+                continue
+            entries.append(entry)
 
     # (2) Breadth analysis passes (analysis_*.md, incl. rescan/percontract),
     # (3) depth agent findings (depth_*_findings.md), and (4) blind-spot scanner +
@@ -6626,6 +9534,24 @@ def ensure_findings_inventory_floor(scratchpad: Path) -> tuple[int, int]:
         for p in sorted(scratchpad.glob(pattern)):
             n_sources += 1
             for blk in _parse_depth_finding_blocks(p):
+                # The recall floor is not an identity-resolution boundary.
+                # Parser debt/quarantine and content-less methodology rows stay
+                # in their source/debt artifacts; they cannot mint inventory
+                # Source IDs or Action IDs merely because inventory is empty.
+                if str(blk.get("_content_bearing", "")).lower() != "true":
+                    continue
+                if str(blk.get("_identity_debt", "")).strip():
+                    continue
+                if str(blk.get("_identity_quarantine", "")).lower() == "true":
+                    continue
+                if str(blk.get("_identity_status", "REGISTERED")).upper() in {
+                    "UNKNOWN_WELL_FORMED",
+                    "MALFORMED",
+                    "PRODUCER_LOCAL_ID_MISMATCH",
+                }:
+                    continue
+                if str(blk.get("_local_id_valid", "true")).lower() == "false":
+                    continue
                 # _parse_depth_finding_blocks emits `id`; the merge helper keys
                 # provenance off `local_id` / `source_ids`. Adapt without losing
                 # the originating finding ID.
@@ -6702,96 +9628,2414 @@ def ensure_findings_inventory_floor(scratchpad: Path) -> tuple[int, int]:
     return n_rendered, n_sources
 
 
-# v2.x: Niche finding ID prefixes recognized by promote_niche_to_inventory.
-# Match the headings produced by niche agents in niche_*_findings.md files.
-# Standard prefixes: NSC (semantic consistency), NDA (dimensional analysis),
-# NEC (event completeness), NSGI (semantic gap investigator), and any future
-# NXX-NN form a niche agent may emit. Driver call site: after depth phase
-# completion, before sc_semantic_dedup runs.
-_NICHE_FINDING_HEADING_RE = re.compile(
-    r"^#{2,4}\s*Finding\s*\[\s*(?P<id>[A-Z]{2,6}-\d+)\s*\]\s*:\s*(?P<title>.+?)\s*$",
-    re.MULTILINE,
+# Canonical unresolved-debt artifact consumed by the depth postprocessor gate.
+_NICHE_IDENTITY_DEBT_NAME = "niche_identity_debt.json"
+_NICHE_IDENTITY_DEBT_SCHEMA = "plamen.niche_identity_debt.v2"
+_NICHE_FINDING_ARTIFACT_MAX_BYTES = _SHARED_FINDING_ARTIFACT_MAX_BYTES
+_NICHE_SOURCE_NAMESPACE_MAX_BYTES = 64 * 1024 * 1024
+_NICHE_IDENTITY_DEBT_EXACT_BLOCK_MAX_BYTES = 64 * 1024
+_NICHE_IDENTITY_DEBT_SEMANTIC_FIELD_MAX_BYTES = 16 * 1024
+_NICHE_IDENTITY_DEBT_SIDECAR_MAX_BYTES = 8 * 1024 * 1024
+_NICHE_SOURCE_NAME_RE = re.compile(
+    r"niche_[A-Za-z0-9_.-]+_findings\.md"
 )
-
-# Heuristics for filtering false-positive "finding-shaped" sections produced
-# by methodology / processing sections inside niche files (e.g., the
-# "## Processing Protocol Execution" preamble that lists checks but is not
-# itself a finding). Real findings have ALL of these fields within ~50 lines
-# of the heading: Severity, Location, Description, Impact.
-_NICHE_REQUIRED_FIELDS = ("Severity", "Location", "Description")
+_NICHE_CURRENT_INPUT_NAME_RE = re.compile(
+    r"(?:niche_[A-Za-z0-9_.-]+_findings\.md|findings_inventory\.md)"
+)
+_WINDOWS_REPARSE_POINT = 0x400
 
 
-def _parse_niche_findings(scratchpad: Path) -> list[dict[str, str]]:
+def _niche_name_sort_key(value: str) -> tuple[str, str]:
+    return value.casefold(), value
+
+# Public compatibility alias for the explicit subset of the shared canonical
+# block grammar. Niche parsing itself consumes ``_canonical_finding_blocks`` so
+# unadorned registered IDs and normalized HTML headings share one denominator.
+_NICHE_FINDING_HEADING_RE = _EXPLICIT_FINDING_HEADING_RE
+
+
+def _enumerate_niche_source_paths(scratchpad: Path) -> list[Path]:
+    """Enumerate the complete, root-bound canonical niche source namespace."""
+
+    root = Path(scratchpad)
+    root_stat = root.lstat()
+    root_attributes = int(
+        getattr(root_stat, "st_file_attributes", 0) or 0
+    )
+    if (
+        stat.S_ISLNK(root_stat.st_mode)
+        or root_attributes & _WINDOWS_REPARSE_POINT
+        or not stat.S_ISDIR(root_stat.st_mode)
+    ):
+        raise ValueError("niche source root must be a real directory")
+    root_resolved = root.resolve(strict=True)
+    paths: list[Path] = []
+    seen_casefold: set[str] = set()
+    for candidate in root.iterdir():
+        name = candidate.name
+        if not _NICHE_SOURCE_NAME_RE.fullmatch(name):
+            continue
+        try:
+            name.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise ValueError("niche source name must be ASCII") from exc
+        folded = name.casefold()
+        if folded in seen_casefold:
+            raise ValueError(f"niche source casefold alias: {name}")
+        seen_casefold.add(folded)
+        source_stat = candidate.lstat()
+        attributes = int(
+            getattr(source_stat, "st_file_attributes", 0) or 0
+        )
+        if (
+            Path(name).name != name
+            or stat.S_ISLNK(source_stat.st_mode)
+            or attributes & _WINDOWS_REPARSE_POINT
+            or not stat.S_ISREG(source_stat.st_mode)
+        ):
+            raise ValueError(f"niche source must be a regular non-link: {name}")
+        if int(getattr(source_stat, "st_nlink", 0) or 0) != 1:
+            raise ValueError(
+                f"niche source link alias rejected (nlink != 1): {name}"
+            )
+        if (
+            candidate.parent.resolve(strict=True) != root_resolved
+            or candidate.resolve(strict=True).parent != root_resolved
+        ):
+            raise ValueError(f"niche source escaped root: {name}")
+        paths.append(candidate)
+    return sorted(paths, key=lambda value: _niche_name_sort_key(value.name))
+
+
+def _read_niche_source_bytes(path: Path) -> bytes:
+    return read_bounded_regular_bytes(
+        path,
+        _NICHE_FINDING_ARTIFACT_MAX_BYTES,
+        require_single_link=True,
+    )
+
+
+def _niche_source_snapshot(path: Path) -> dict[str, Any]:
+    raw = _read_niche_source_bytes(path)
+    return {
+        "source_file": path.name,
+        "source_sha256": hashlib.sha256(raw).hexdigest(),
+        "source_size_bytes": len(raw),
+    }
+
+
+def _parse_niche_findings(
+    scratchpad: Path,
+    *,
+    _retained_capture: Any = None,
+) -> list[dict[str, Any]]:
     """Parse all niche_*_findings.md files into structured finding entries.
 
     Each niche agent writes findings in the standard finding-output-format.md
     template (## Finding [NSC-N]: Title + **Severity** / **Location** / etc).
-    This parser is conservative: it requires the standard required fields to
-    be present near the heading, rejecting methodology preambles and tables.
+    Every heading accepted by the shared producer grammar is retained in the
+    action denominator. Registered candidates missing substantive fields become
+    typed schema debt; only complete, registered actions may be promoted.
 
-    Returns a list of dicts with keys: source_file, source_id, title, severity,
-    location, preferred_tag, description, impact, evidence, raw_block.
+    Returns a list of dicts with source metadata, normalized identity status,
+    typed identity debt/quarantine fields, and the parsed finding body.
     """
-    entries: list[dict[str, str]] = []
-    for niche_path in sorted(scratchpad.glob("niche_*_findings.md")):
+    if _retained_capture is None:
+        with retain_bounded_regular_namespace(
+            Path(scratchpad),
+            _NICHE_SOURCE_NAME_RE,
+            per_file_limit=_NICHE_FINDING_ARTIFACT_MAX_BYTES,
+            total_limit=_NICHE_SOURCE_NAMESPACE_MAX_BYTES,
+            max_members=128,
+            require_single_link=True,
+        ) as retained:
+            return _parse_niche_findings(
+                scratchpad, _retained_capture=retained
+            )
+    retained = _retained_capture
+    entries: list[dict[str, Any]] = []
+    for source_name in retained.namespace:
+        niche_path = Path(scratchpad) / source_name
         try:
-            text = niche_path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            continue
-        matches = list(_NICHE_FINDING_HEADING_RE.finditer(text))
-        for i, m in enumerate(matches):
-            start = m.start()
-            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-            block = text[start:end]
-            # Require all key fields present to filter out non-finding sections
-            if not all(f"**{field}**" in block for field in _NICHE_REQUIRED_FIELDS):
+            raw_source = retained.files[source_name].raw
+            general_actions = _parsers._parse_depth_finding_blocks(
+                niche_path,
+                _captured_bytes=raw_source,
+            )
+        except _FindingArtifactLimitError:
+            raise
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"NICHE_SOURCE_UNREADABLE: {niche_path.name}"
+            ) from exc
+        registered_producer = _registered_producer_for_artifact(
+            niche_path.name,
+            consumer="pre_dedup_promotion",
+        )
+        source_sha256 = hashlib.sha256(raw_source).hexdigest()
+        for general_action in general_actions:
+            source_byte_start = int(
+                general_action.get("_source_byte_start", -1)
+            )
+            source_byte_end = int(
+                general_action.get("_source_byte_end", -1)
+            )
+            if not 0 <= source_byte_start < source_byte_end <= len(raw_source):
+                raise RuntimeError(
+                    "NICHE_ACTION_RAW_RANGE_INVALID: general parser action "
+                    f"{niche_path.name}:{general_action.get('id', '')} has "
+                    "no exact nonempty physical-byte range"
+                )
+            raw_block_bytes = raw_source[source_byte_start:source_byte_end]
+            source_block_sha256 = hashlib.sha256(raw_block_bytes).hexdigest()
+            if (
+                general_action.get("_source_size_bytes") != len(raw_source)
+                or general_action.get("_source_sha256") != source_sha256
+                or general_action.get("_source_block_size_bytes")
+                != len(raw_block_bytes)
+                or general_action.get("_source_block_sha256")
+                != source_block_sha256
+            ):
+                raise RuntimeError(
+                    "NICHE_ACTION_RAW_RANGE_INVALID: general parser source "
+                    f"binding drift for {niche_path.name}"
+                )
+            raw_id = str(
+                general_action.get("_raw_id")
+                or general_action.get("id")
+                or ""
+            ).strip()
+            identity = _classify_producer_id(
+                raw_id,
+                producer=registered_producer,
+            )
+            fid = str(general_action.get("id") or "").strip().upper()
+            fid = fid or identity.normalized_id or raw_id.upper()
+            if not fid:
                 continue
-            fid = m.group("id").strip()
-            title = m.group("title").strip()
-            sev_match = re.search(
-                r"\*\*Severity\*\*\s*:\s*([A-Za-z]+)", block, re.IGNORECASE
+            identity_status = str(
+                general_action.get("_identity_status") or identity.status
             )
-            loc_match = re.search(
-                r"\*\*Location\*\*\s*:\s*(.+?)(?=\n\*\*|\n\n|$)",
-                block, re.IGNORECASE | re.DOTALL,
+            identity_debt = str(
+                general_action.get("_identity_debt") or identity.identity_debt
             )
-            tag_match = re.search(
-                r"\*\*Preferred\s*Tag\*\*\s*:\s*(\[[A-Z\-]+\])",
-                block, re.IGNORECASE,
+            local_id_valid = str(
+                general_action.get("_local_id_valid") or ""
+            ).lower() == "true"
+            if registered_producer is not None and local_id_valid:
+                identity_status = "REGISTERED"
+                identity_debt = ""
+            elif registered_producer is not None and not local_id_valid:
+                identity_status = (
+                    identity_status or "PRODUCER_LOCAL_ID_MISMATCH"
+                )
+                identity_debt = (
+                    identity_debt or "PRODUCER_LOCAL_ID_MISMATCH"
+                )
+            title = str(general_action.get("title") or "").strip() or fid
+            severity = str(general_action.get("severity") or "").strip()
+            location = str(general_action.get("location") or "").strip()
+            preferred_tag = str(
+                general_action.get("preferred_tag") or ""
+            ).strip()
+            if preferred_tag and not preferred_tag.startswith("["):
+                preferred_tag = f"[{preferred_tag.strip('[]')}]"
+            description_full = str(
+                general_action.get("description") or ""
+            ).strip()
+            impact_full = str(general_action.get("_impact") or "").strip()
+            missing_required_fields = sorted(
+                str(field_name)
+                for field_name in general_action.get(
+                    "_missing_required_fields", []
+                )
+                if str(field_name)
             )
-            desc_match = re.search(
-                r"\*\*Description\*\*\s*:\s*(.+?)(?=\n\*\*[A-Z]|\n##|\Z)",
-                block, re.IGNORECASE | re.DOTALL,
+            if missing_required_fields and not identity_debt:
+                identity_status = "FINDING_BLOCK_SCHEMA_DEBT"
+                identity_debt = "MISSING_REQUIRED_FINDING_FIELDS"
+            description_full = description_full or title
+            impact_full = (
+                impact_full or "Impact requires verifier confirmation."
             )
-            impact_match = re.search(
-                r"\*\*Impact\*\*\s*:\s*(.+?)(?=\n\*\*[A-Z]|\n##|\Z)",
-                block, re.IGNORECASE | re.DOTALL,
+            block = str(
+                general_action.get("_normalized_source_block")
+                or raw_block_bytes.decode("utf-8", errors="replace")
+            ).strip()
+            source_action_identity = _niche_source_action_identity(
+                source_file=niche_path.name,
+                source_sha256=source_sha256,
+                normalized_local_id=fid,
+                source_byte_start=source_byte_start,
+                source_byte_end=source_byte_end,
+                source_block_sha256=source_block_sha256,
             )
             entries.append({
                 "source_file": niche_path.name,
+                "source_sha256": source_sha256,
+                "source_size_bytes": len(raw_source),
+                "source_byte_start": source_byte_start,
+                "source_byte_end": source_byte_end,
+                "source_block_sha256": source_block_sha256,
+                "source_block_size_bytes": len(raw_block_bytes),
+                "exact_block_capture": (
+                    "FULL"
+                    if len(raw_block_bytes) <= _NICHE_IDENTITY_DEBT_EXACT_BLOCK_MAX_BYTES
+                    else "OMITTED_OVERSIZE"
+                ),
+                "exact_block_bytes_b64": (
+                    base64.b64encode(raw_block_bytes).decode("ascii")
+                    if len(raw_block_bytes) <= _NICHE_IDENTITY_DEBT_EXACT_BLOCK_MAX_BYTES
+                    else ""
+                ),
+                "raw_id": raw_id,
+                "normalized_id": identity.normalized_id,
+                "normalized_local_id": fid,
                 "source_id": fid,
+                "source_action_identity": source_action_identity,
+                "identity_status": identity_status,
+                "identity_debt": identity_debt,
+                "missing_required_fields": missing_required_fields,
+                "identity_authority": "false",
+                "identity_quarantine": "true" if identity_debt else "false",
                 "title": title,
-                "severity": (sev_match.group(1).strip() if sev_match else "Medium"),
-                "location": (
-                    _norm_loc(loc_match.group(1).strip()) if loc_match else "UNKNOWN"
-                ),
-                "preferred_tag": (
-                    tag_match.group(1).strip() if tag_match else "[CODE-TRACE]"
-                ),
+                "severity": severity or "Medium",
+                "location": _norm_loc(location) if location else "UNKNOWN",
+                "preferred_tag": preferred_tag or "[CODE-TRACE]",
                 "description": (
-                    _strip_md(desc_match.group(1).strip())[:1500]
-                    if desc_match else title
+                    description_full[:1500]
                 ),
+                "description_full": description_full,
                 "impact": (
-                    _strip_md(impact_match.group(1).strip())[:800]
-                    if impact_match else "Impact requires verifier confirmation."
+                    impact_full[:800]
                 ),
+                "impact_full": impact_full,
                 "raw_block": block,
+                "action_shape": str(
+                    general_action.get("_action_shape") or "UNKNOWN"
+                ),
             })
+    retained.revalidate()
     return entries
 
 
-def promote_niche_to_inventory(scratchpad: Path) -> tuple[int, int]:
+def _niche_identity_debt_digest(payload: dict[str, Any]) -> str:
+    """Return the deterministic digest for a record or artifact body."""
+
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _niche_source_action_identity(
+    *,
+    source_file: str,
+    source_sha256: str,
+    normalized_local_id: str,
+    source_byte_start: int,
+    source_byte_end: int,
+    source_block_sha256: str,
+) -> str:
+    payload = {
+        "schema_version": "plamen.niche_source_action.v1",
+        "source_file": source_file,
+        "source_sha256": source_sha256,
+        "normalized_local_id": normalized_local_id,
+        "source_byte_start": source_byte_start,
+        "source_byte_end": source_byte_end,
+        "source_block_sha256": source_block_sha256,
+    }
+    return "NACT-" + _niche_identity_debt_digest(payload)[:24].upper()
+
+
+def _niche_action_record(entry: dict[str, Any]) -> dict[str, Any]:
+    """Project every parsed niche action into the complete denominator."""
+
+    record: dict[str, Any] = {
+        "source_file": str(entry.get("source_file") or ""),
+        "source_sha256": str(entry.get("source_sha256") or "").lower(),
+        "source_size_bytes": int(entry.get("source_size_bytes") or 0),
+        "normalized_local_id": str(
+            entry.get("normalized_local_id") or entry.get("source_id") or ""
+        ),
+        "raw_id": str(entry.get("raw_id") or ""),
+        "source_byte_start": int(entry.get("source_byte_start") or 0),
+        "source_byte_end": int(entry.get("source_byte_end") or 0),
+        "source_block_sha256": str(
+            entry.get("source_block_sha256") or ""
+        ).lower(),
+        "source_block_size_bytes": int(
+            entry.get("source_block_size_bytes") or 0
+        ),
+        "exact_block_capture": str(entry.get("exact_block_capture") or ""),
+        "exact_block_bytes_b64": str(
+            entry.get("exact_block_bytes_b64") or ""
+        ),
+        "source_action_identity": str(
+            entry.get("source_action_identity") or ""
+        ),
+        "identity_status": str(entry.get("identity_status") or ""),
+        "identity_debt": str(entry.get("identity_debt") or ""),
+        "missing_required_fields": sorted(
+            str(value)
+            for value in entry.get("missing_required_fields", [])
+            if str(value)
+        ),
+        "supersedes_source_action_identities": sorted(
+            str(value)
+            for value in entry.get("supersedes_source_action_identities", [])
+            if str(value)
+        ),
+        "action_status": "DEBT" if entry.get("identity_debt") else "CLEAN",
+        "quarantine": bool(entry.get("identity_debt")),
+    }
+    record["action_record_sha256"] = _niche_identity_debt_digest(record)
+    return record
+
+
+def _niche_action_set_digest(actions: list[dict[str, Any]]) -> str:
+    return _niche_identity_debt_digest({"actions": actions})
+
+
+_NICHE_ACTION_BINDING_FIELDS = (
+    "source_file",
+    "source_sha256",
+    "source_size_bytes",
+    "normalized_local_id",
+    "raw_id",
+    "source_byte_start",
+    "source_byte_end",
+    "source_block_sha256",
+    "source_block_size_bytes",
+    "source_action_identity",
+)
+
+
+def _niche_action_bindings(
+    actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project the immutable occurrence binding for exact multiset parity."""
+
+    return sorted(
+        (
+            {field: action.get(field) for field in _NICHE_ACTION_BINDING_FIELDS}
+            for action in actions
+        ),
+        key=lambda record: (
+            str(record.get("source_file") or ""),
+            int(record.get("source_byte_start") or 0),
+            int(record.get("source_byte_end") or 0),
+            str(record.get("normalized_local_id") or ""),
+            str(record.get("source_action_identity") or ""),
+        ),
+    )
+
+
+def _niche_live_action_denominator_digest(
+    actions: list[dict[str, Any]],
+) -> str:
+    return _niche_identity_debt_digest(
+        {"bindings": _niche_action_bindings(actions)}
+    )
+
+
+def _niche_source_namespace_digest(names: list[str]) -> str:
+    return _niche_identity_debt_digest({"source_namespace": names})
+
+
+def _niche_lifecycle_set_digest(records: list[dict[str, Any]]) -> str:
+    return _niche_identity_debt_digest({"lifecycle_records": records})
+
+
+def _niche_removed_action_records(
+    source_errors: list[dict[str, Any]],
+    lifecycle_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            dict(record)
+            for record in (*source_errors, *lifecycle_records)
+            if record.get("status")
+            in {"SOURCE_ACTION_REMOVED", "DELIVERED_ACTION_REMOVED"}
+        ],
+        key=lambda record: (
+            str(record.get("source_action_identity") or ""),
+            str(record.get("status") or ""),
+            str(record.get("record_sha256") or ""),
+        ),
+    )
+
+
+def _niche_removed_action_set_digest(
+    source_errors: list[dict[str, Any]],
+    lifecycle_records: list[dict[str, Any]],
+) -> str:
+    return _niche_identity_debt_digest({
+        "removed_actions": _niche_removed_action_records(
+            source_errors, lifecycle_records
+        )
+    })
+
+
+def _reconcile_niche_action_drift(
+    scratchpad: Path,
+    entries: list[dict[str, Any]],
+    *,
+    prior: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    """Turn same-source/local-ID byte drift into persistent typed debt."""
+
+    if prior is None:
+        prior = read_niche_identity_debt_sidecar(
+            scratchpad,
+            _validate_live_sources=False,
+        )
+    prior_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for record in (prior or {}).get("actions", []):
+        key = (
+            str(record.get("source_file") or ""),
+            str(record.get("normalized_local_id") or "").upper(),
+        )
+        prior_by_key.setdefault(key, []).append(dict(record))
+    inventory_path = Path(scratchpad) / "findings_inventory.md"
+    if inventory_path.exists():
+        try:
+            inventory_text = read_bounded_regular_bytes(
+                inventory_path,
+                _NICHE_FINDING_ARTIFACT_MAX_BYTES,
+                require_single_link=True,
+            ).decode("utf-8", errors="replace")
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                "NICHE_INVENTORY_CAPTURE_UNSAFE: findings_inventory.md"
+            ) from exc
+        for record in _inventory_niche_action_bindings(inventory_text):
+            key = (
+                str(record["source_file"]),
+                str(record["normalized_local_id"]).upper(),
+            )
+            if all(
+                prior_record.get("source_action_identity")
+                != record["source_action_identity"]
+                for prior_record in prior_by_key.get(key, [])
+            ):
+                prior_by_key.setdefault(key, []).append(record)
+
+    reconciled: list[dict[str, Any]] = []
+    for original in entries:
+        entry = dict(original)
+        key = (
+            str(entry.get("source_file") or ""),
+            str(entry.get("normalized_local_id") or "").upper(),
+        )
+        prior_rows = prior_by_key.get(key, [])
+        current_identity = str(entry.get("source_action_identity") or "")
+        exact_prior = next(
+            (
+                row for row in prior_rows
+                if row.get("source_action_identity") == current_identity
+            ),
+            None,
+        )
+        if exact_prior and exact_prior.get("supersedes_source_action_identities"):
+            entry["supersedes_source_action_identities"] = sorted(
+                {
+                    str(value)
+                    for value in exact_prior.get(
+                        "supersedes_source_action_identities", []
+                    )
+                    if str(value)
+                }
+            )
+        prior_drift = bool(
+            exact_prior
+            and exact_prior.get("identity_debt")
+            == "SOURCE_ACTION_CONTENT_DRIFT"
+        )
+        changed_from_prior = bool(
+            prior_rows
+            and all(
+                row.get("source_action_identity") != current_identity
+                for row in prior_rows
+            )
+        )
+        if prior_drift or changed_from_prior:
+            entry["supersedes_source_action_identities"] = sorted(
+                {
+                    str(row.get("source_action_identity") or "")
+                    for row in prior_rows
+                    if row.get("source_action_identity") != current_identity
+                }
+            )
+            if not entry.get("identity_debt"):
+                entry["identity_status"] = "SOURCE_ACTION_CONTENT_DRIFT"
+                entry["identity_debt"] = "SOURCE_ACTION_CONTENT_DRIFT"
+                entry["identity_quarantine"] = "true"
+        reconciled.append(entry)
+    return reconciled
+
+
+def _bounded_niche_semantic(value: object) -> tuple[str, dict[str, Any]]:
+    """Bound one UTF-8 semantic field while retaining recovery identity."""
+
+    text = str(value or "")
+    raw = text.encode("utf-8", errors="replace")
+    truncated = len(raw) > _NICHE_IDENTITY_DEBT_SEMANTIC_FIELD_MAX_BYTES
+    bounded = raw[:_NICHE_IDENTITY_DEBT_SEMANTIC_FIELD_MAX_BYTES]
+    if truncated:
+        text = bounded.decode("utf-8", errors="ignore")
+    return text, {
+        "truncated": truncated,
+        "utf8_bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _niche_identity_debt_record(entry: dict[str, Any]) -> dict[str, Any]:
+    """Project one quarantined parser row into the canonical debt schema."""
+
+    bounded_semantics: dict[str, str] = {}
+    semantic_metadata: dict[str, Any] = {}
+    for field_name, value in (
+        ("title", entry.get("title")),
+        ("severity", entry.get("severity")),
+        ("location", entry.get("location")),
+        ("description", entry.get("description_full")),
+        ("impact", entry.get("impact_full")),
+    ):
+        bounded, metadata = _bounded_niche_semantic(value)
+        bounded_semantics[field_name] = bounded
+        semantic_metadata[f"{field_name}_truncated"] = metadata["truncated"]
+        semantic_metadata[f"{field_name}_utf8_bytes"] = metadata["utf8_bytes"]
+        semantic_metadata[f"{field_name}_sha256"] = metadata["sha256"]
+    record: dict[str, Any] = {
+        "source_file": str(entry.get("source_file") or ""),
+        "source_sha256": str(entry.get("source_sha256") or "").lower(),
+        "source_size_bytes": int(entry.get("source_size_bytes") or 0),
+        "source_byte_start": int(entry.get("source_byte_start") or 0),
+        "source_byte_end": int(entry.get("source_byte_end") or 0),
+        "source_block_sha256": str(
+            entry.get("source_block_sha256") or ""
+        ).lower(),
+        "source_block_size_bytes": int(
+            entry.get("source_block_size_bytes") or 0
+        ),
+        "exact_block_capture": str(entry.get("exact_block_capture") or ""),
+        "exact_block_bytes_b64": str(
+            entry.get("exact_block_bytes_b64") or ""
+        ),
+        "raw_id": str(entry.get("raw_id") or ""),
+        "normalized_id": str(entry.get("normalized_id") or ""),
+        "normalized_local_id": str(
+            entry.get("normalized_local_id") or entry.get("source_id") or ""
+        ),
+        "source_action_identity": str(
+            entry.get("source_action_identity") or ""
+        ),
+        "supersedes_source_action_identities": sorted(
+            str(value)
+            for value in entry.get("supersedes_source_action_identities", [])
+            if str(value)
+        ),
+        **bounded_semantics,
+        **semantic_metadata,
+        "identity_status": str(entry.get("identity_status") or ""),
+        "identity_debt": str(entry.get("identity_debt") or ""),
+        "missing_required_fields": sorted(
+            str(value)
+            for value in entry.get("missing_required_fields", [])
+            if str(value)
+        ),
+        "resolution_status": "UNRESOLVED",
+        "required_action": (
+            "RECONCILE_SOURCE_ACTION_DRIFT"
+            if entry.get("identity_debt") == "SOURCE_ACTION_CONTENT_DRIFT"
+            else (
+                "REPAIR_FINDING_BLOCK_SCHEMA"
+                if entry.get("identity_debt") == "MISSING_REQUIRED_FINDING_FIELDS"
+                else "RECONCILE_PRODUCER_IDENTITY"
+            )
+        ),
+        "identity_authority": False,
+        "proof_authority": "NONE",
+        "drop_authority": False,
+        "clean_authority": False,
+        "quarantine": True,
+    }
+    record_sha256 = _niche_identity_debt_digest(record)
+    record["record_sha256"] = record_sha256
+    record["debt_id"] = f"NID-{record_sha256[:24].upper()}"
+    return record
+
+
+def _niche_identity_source_error(path: Path) -> dict[str, Any]:
+    """Create bounded typed debt for a source that cannot be safely read."""
+
+    try:
+        stat_result = path.lstat()
+        source_size = int(stat_result.st_size)
+        stat_identity = {
+            "source_file": path.name,
+            "source_size_bytes": source_size,
+            "source_mtime_ns": int(stat_result.st_mtime_ns),
+        }
+    except OSError:
+        source_size = -1
+        stat_identity = {
+            "source_file": path.name,
+            "source_size_bytes": source_size,
+            "source_mtime_ns": 0,
+        }
+    record: dict[str, Any] = {
+        **stat_identity,
+        "source_limit_bytes": _NICHE_FINDING_ARTIFACT_MAX_BYTES,
+        "source_sha256": "",
+        "source_hash_status": "UNAVAILABLE_OVER_LIMIT",
+        "status": "SOURCE_OVER_LIMIT",
+        "identity_debt": "SOURCE_ARTIFACT_OVER_LIMIT",
+        "required_action": "REDUCE_AND_REVIEW_SOURCE_ARTIFACT",
+        "resolution_status": "UNRESOLVED",
+        "identity_authority": False,
+        "proof_authority": "NONE",
+        "drop_authority": False,
+        "clean_authority": False,
+        "quarantine": True,
+    }
+    record_sha256 = _niche_identity_debt_digest(record)
+    record["record_sha256"] = record_sha256
+    record["debt_id"] = f"NIDSRC-{record_sha256[:24].upper()}"
+    return record
+
+
+def _niche_capture_corruption_error(detail: object) -> dict[str, Any]:
+    """Create blocking haltless debt when no safe source snapshot can commit."""
+
+    bounded, metadata = _bounded_niche_semantic(detail)
+    record: dict[str, Any] = {
+        "source_file": "<niche-source-namespace>",
+        "source_size_bytes": 0,
+        "source_mtime_ns": 0,
+        "source_limit_bytes": _NICHE_FINDING_ARTIFACT_MAX_BYTES,
+        "source_sha256": "",
+        "source_hash_status": "UNAVAILABLE_UNSAFE_CAPTURE",
+        "status": "SOURCE_CAPTURE_CORRUPTION",
+        "identity_debt": "SOURCE_CAPTURE_CORRUPTION",
+        "required_action": "RECAPTURE_AND_RECONCILE_SOURCE_NAMESPACE",
+        "resolution_status": "UNRESOLVED",
+        "identity_authority": False,
+        "proof_authority": "NONE",
+        "drop_authority": False,
+        "clean_authority": False,
+        "quarantine": True,
+        "detail": bounded,
+        "detail_truncated": metadata["truncated"],
+        "detail_utf8_bytes": metadata["utf8_bytes"],
+        "detail_sha256": metadata["sha256"],
+    }
+    record_sha256 = _niche_identity_debt_digest(record)
+    record["record_sha256"] = record_sha256
+    record["debt_id"] = f"NIDSRC-{record_sha256[:24].upper()}"
+    return record
+
+
+def _niche_undelivered_clean_action_error(
+    action: dict[str, Any],
+) -> dict[str, Any]:
+    """Project a clean-but-not-inventory-delivered action as blocking debt."""
+
+    record: dict[str, Any] = {
+        field: action.get(field) for field in _NICHE_ACTION_BINDING_FIELDS
+    }
+    record.update({
+        "exact_block_capture": str(
+            action.get("exact_block_capture") or "LEGACY_UNAVAILABLE"
+        ),
+        "exact_block_bytes_b64": str(
+            action.get("exact_block_bytes_b64") or ""
+        ),
+        "prior_action_record_sha256": str(
+            action.get("action_record_sha256") or ""
+        ),
+        "status": "UNDELIVERED_CLEAN_ACTION",
+        "identity_debt": "UNDELIVERED_CLEAN_ACTION",
+        "required_action": "DELIVER_ACTION_TO_INVENTORY_OR_HUMAN_REVIEW",
+        "resolution_status": "UNRESOLVED",
+        "identity_authority": False,
+        "proof_authority": "NONE",
+        "drop_authority": False,
+        "clean_authority": False,
+        "quarantine": True,
+    })
+    record_sha256 = _niche_identity_debt_digest(record)
+    record["record_sha256"] = record_sha256
+    record["debt_id"] = f"NIDSRC-{record_sha256[:24].upper()}"
+    return record
+
+
+def _niche_identity_missing_source_error(
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist a prior live source that disappeared or was renamed."""
+
+    record: dict[str, Any] = {
+        "source_file": str(snapshot.get("source_file") or ""),
+        "source_size_bytes": int(snapshot.get("source_size_bytes") or 0),
+        "source_sha256": str(snapshot.get("source_sha256") or "").lower(),
+        "status": "SOURCE_MISSING",
+        "identity_debt": "SOURCE_ARTIFACT_MISSING_OR_RENAMED",
+        "required_action": "RESTORE_OR_RECONCILE_SOURCE_ARTIFACT",
+        "resolution_status": "UNRESOLVED",
+        "identity_authority": False,
+        "proof_authority": "NONE",
+        "drop_authority": False,
+        "clean_authority": False,
+        "quarantine": True,
+    }
+    record_sha256 = _niche_identity_debt_digest(record)
+    record["record_sha256"] = record_sha256
+    record["debt_id"] = f"NIDSRC-{record_sha256[:24].upper()}"
+    return record
+
+
+def _niche_removed_action_source_error(
+    action: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist an undelivered prior action that vanished from live parsing."""
+
+    record: dict[str, Any] = {
+        field: action.get(field) for field in _NICHE_ACTION_BINDING_FIELDS
+    }
+    record.update({
+        "exact_block_capture": str(
+            action.get("exact_block_capture") or "LEGACY_UNAVAILABLE"
+        ),
+        "exact_block_bytes_b64": str(
+            action.get("exact_block_bytes_b64") or ""
+        ),
+        "prior_action_record_sha256": str(
+            action.get("action_record_sha256")
+            or action.get("prior_action_record_sha256")
+            or ""
+        ),
+        "status": "SOURCE_ACTION_REMOVED",
+        "identity_debt": "SOURCE_ACTION_REMOVED",
+        "required_action": "RESTORE_OR_RECONCILE_SOURCE_ACTION",
+        "resolution_status": "UNRESOLVED",
+        "identity_authority": False,
+        "proof_authority": "NONE",
+        "drop_authority": False,
+        "clean_authority": False,
+        "quarantine": True,
+    })
+    record_sha256 = _niche_identity_debt_digest(record)
+    record["record_sha256"] = record_sha256
+    record["debt_id"] = f"NIDSRC-{record_sha256[:24].upper()}"
+    return record
+
+
+def _niche_delivered_action_lifecycle_record(
+    action: dict[str, Any],
+    inventory_referents: set[str],
+) -> dict[str, Any]:
+    """Retain a nonblocking audit trail for a delivered vanished action."""
+
+    record: dict[str, Any] = {
+        field: action.get(field) for field in _NICHE_ACTION_BINDING_FIELDS
+    }
+    record.update({
+        "exact_block_capture": str(
+            action.get("exact_block_capture") or "LEGACY_UNAVAILABLE"
+        ),
+        "exact_block_bytes_b64": str(
+            action.get("exact_block_bytes_b64") or ""
+        ),
+        "prior_action_record_sha256": str(
+            action.get("action_record_sha256")
+            or action.get("prior_action_record_sha256")
+            or ""
+        ),
+        "status": "DELIVERED_ACTION_REMOVED",
+        "blocking": False,
+        "inventory_referents": sorted(inventory_referents),
+        "proof_authority": "NONE",
+        "drop_authority": False,
+        "clean_authority": False,
+    })
+    record_sha256 = _niche_identity_debt_digest(record)
+    record["record_sha256"] = record_sha256
+    record["lifecycle_id"] = f"NIDLIFE-{record_sha256[:24].upper()}"
+    return record
+
+
+def _reconcile_niche_removed_actions(
+    scratchpad: Path,
+    entries: list[dict[str, Any]],
+    prior: Optional[dict[str, Any]],
+    *,
+    delivered: Optional[dict[str, set[str]]] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Reconcile the prior action multiset without granting disappearance authority."""
+
+    current_identities = {
+        str(entry.get("source_action_identity") or "") for entry in entries
+    }
+    # A producer-authored supersession is evidence, never lifecycle authority.
+    # Only the independent typed disposition channel may resolve a committed
+    # historical action.  Until that producer exists, disappearance remains a
+    # tombstone even when a replacement action names the old identity.
+    retained_identities = current_identities
+    delivered = dict(delivered or {})
+    blocking: dict[str, dict[str, Any]] = {}
+    lifecycle: dict[str, dict[str, Any]] = {}
+
+    for prior_error in (prior or {}).get("source_errors", []):
+        if prior_error.get("status") != "SOURCE_ACTION_REMOVED":
+            continue
+        identity = str(prior_error.get("source_action_identity") or "")
+        if identity and identity not in retained_identities:
+            if identity in delivered:
+                row = _niche_delivered_action_lifecycle_record(
+                    prior_error, delivered[identity]
+                )
+                lifecycle[identity] = row
+            else:
+                blocking[identity] = dict(prior_error)
+    for prior_row in (prior or {}).get("lifecycle_records", []):
+        identity = str(prior_row.get("source_action_identity") or "")
+        if identity and identity not in retained_identities:
+            if identity in delivered:
+                lifecycle[identity] = _niche_delivered_action_lifecycle_record(
+                    prior_row, delivered[identity]
+                )
+            else:
+                blocking[identity] = _niche_removed_action_source_error(
+                    prior_row
+                )
+    for prior_action in (prior or {}).get("actions", []):
+        identity = str(prior_action.get("source_action_identity") or "")
+        if not identity or identity in retained_identities:
+            continue
+        if identity in delivered:
+            lifecycle[identity] = _niche_delivered_action_lifecycle_record(
+                prior_action, delivered[identity]
+            )
+            blocking.pop(identity, None)
+        elif identity not in lifecycle:
+            blocking[identity] = _niche_removed_action_source_error(prior_action)
+    return list(blocking.values()), list(lifecycle.values())
+
+
+def _niche_removed_action_binding_valid(record: dict[str, Any]) -> bool:
+    source_file = str(record.get("source_file") or "")
+    source_sha256 = str(record.get("source_sha256") or "")
+    block_sha256 = str(record.get("source_block_sha256") or "")
+    local_id = str(record.get("normalized_local_id") or "")
+    start = record.get("source_byte_start")
+    end = record.get("source_byte_end")
+    source_size = record.get("source_size_bytes")
+    block_size = record.get("source_block_size_bytes")
+    if (
+        Path(source_file).name != source_file
+        or not _NICHE_SOURCE_NAME_RE.fullmatch(source_file)
+        or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+        or not re.fullmatch(r"[0-9a-f]{64}", block_sha256)
+        or not local_id
+        or not isinstance(start, int)
+        or not isinstance(end, int)
+        or not isinstance(source_size, int)
+        or not isinstance(block_size, int)
+        or start < 0
+        or end <= start
+        or end > source_size
+        or block_size != end - start
+        or record.get("source_action_identity")
+        != _niche_source_action_identity(
+            source_file=source_file,
+            source_sha256=source_sha256,
+            normalized_local_id=local_id,
+            source_byte_start=start,
+            source_byte_end=end,
+            source_block_sha256=block_sha256,
+        )
+        or not re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(record.get("prior_action_record_sha256") or ""),
+        )
+    ):
+        return False
+    capture = str(record.get("exact_block_capture") or "")
+    encoded = str(record.get("exact_block_bytes_b64") or "")
+    if capture == "FULL":
+        try:
+            captured = base64.b64decode(encoded, validate=True)
+        except Exception:
+            return False
+        return (
+            len(captured) == block_size
+            and hashlib.sha256(captured).hexdigest() == block_sha256
+        )
+    if capture == "OMITTED_OVERSIZE":
+        return not encoded and block_size > _NICHE_IDENTITY_DEBT_EXACT_BLOCK_MAX_BYTES
+    return capture == "LEGACY_UNAVAILABLE" and not encoded
+
+
+def read_niche_identity_debt_sidecar(
+    scratchpad: Path,
+    *,
+    _validate_live_sources: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Read and validate the canonical unresolved niche identity-debt artifact.
+
+    A caller must treat any validation error or positive
+    ``blocking_debt_count`` as non-clean postprocessor state.  The artifact and
+    its records deliberately carry no proof, drop, or clean authority. Public
+    replay also authenticates every source snapshot and raw block against the
+    current scratchpad. The private structural-only mode exists solely so a
+    rerun can convert stale clean actions into explicit current drift debt.
+    """
+
+    lifecycle_current: Optional[dict[str, Any]] = None
+    path = Path(scratchpad) / _NICHE_IDENTITY_DEBT_NAME
+    if not path.exists():
+        return None
+    try:
+        projection_bytes = read_bounded_regular_bytes(
+            path,
+            _NICHE_IDENTITY_DEBT_SIDECAR_MAX_BYTES,
+            require_single_link=True,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: unsafe or unreadable "
+            f"projection: {exc}"
+        ) from exc
+    try:
+        payload = json.loads(projection_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: unreadable JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: non-object")
+    if payload.get("schema_version") != _NICHE_IDENTITY_DEBT_SCHEMA:
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: schema")
+    artifact_sha256 = str(payload.get("artifact_sha256") or "").lower()
+    unsigned_payload = {
+        key: value for key, value in payload.items() if key != "artifact_sha256"
+    }
+    if artifact_sha256 != _niche_identity_debt_digest(unsigned_payload):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: artifact hash")
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: candidates")
+    actions = payload.get("actions")
+    if not isinstance(actions, list):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: actions")
+    source_errors = payload.get("source_errors")
+    if not isinstance(source_errors, list):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source errors")
+    lifecycle_records = payload.get("lifecycle_records")
+    if lifecycle_records is None and not _validate_live_sources:
+        lifecycle_records = []
+    if not isinstance(lifecycle_records, list):
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: lifecycle records"
+        )
+    if payload.get("denominator_complete") is not True:
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: incomplete denominator"
+        )
+    if payload.get("action_count") != len(actions):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: action count")
+    if payload.get("action_set_sha256") != _niche_action_set_digest(actions):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: action set hash")
+    if payload.get("candidate_count") != len(candidates):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: count")
+    if payload.get("source_error_count", 0) != len(source_errors):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source error count")
+    if payload.get("blocking_debt_count") != len(candidates) + len(source_errors):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: debt count")
+    lifecycle_count = payload.get("lifecycle_count")
+    if lifecycle_count is None and not _validate_live_sources:
+        lifecycle_count = len(lifecycle_records)
+    if lifecycle_count != len(lifecycle_records):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: lifecycle count")
+    lifecycle_set_sha256 = payload.get("lifecycle_set_sha256")
+    if lifecycle_set_sha256 is None and not _validate_live_sources:
+        lifecycle_set_sha256 = _niche_lifecycle_set_digest(lifecycle_records)
+    if lifecycle_set_sha256 != _niche_lifecycle_set_digest(lifecycle_records):
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: lifecycle set hash"
+        )
+    removed_action_records = _niche_removed_action_records(
+        source_errors, lifecycle_records
+    )
+    removed_action_count = payload.get("removed_action_count")
+    if removed_action_count is None and not _validate_live_sources:
+        removed_action_count = len(removed_action_records)
+    if removed_action_count != len(removed_action_records):
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: removed action count"
+        )
+    removed_action_set_sha256 = payload.get("removed_action_set_sha256")
+    if removed_action_set_sha256 is None and not _validate_live_sources:
+        removed_action_set_sha256 = _niche_removed_action_set_digest(
+            source_errors, lifecycle_records
+        )
+    if removed_action_set_sha256 != _niche_removed_action_set_digest(
+        source_errors, lifecycle_records
+    ):
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: removed action set hash"
+        )
+    if (
+        payload.get("clean_authority") is not False
+        or payload.get("drop_authority") is not False
+        or payload.get("proof_authority") != "NONE"
+    ):
+        raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: authority")
+    seen_action_identities: set[str] = set()
+    for action in actions:
+        if not isinstance(action, dict):
+            raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: action")
+        action_record_sha256 = str(
+            action.get("action_record_sha256") or ""
+        ).lower()
+        unsigned_action = {
+            key: value
+            for key, value in action.items()
+            if key != "action_record_sha256"
+        }
+        if action_record_sha256 != _niche_identity_debt_digest(unsigned_action):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: action record hash"
+            )
+        source_action_identity = str(
+            action.get("source_action_identity") or ""
+        )
+        if (
+            not re.fullmatch(r"NACT-[0-9A-F]{24}", source_action_identity)
+            or source_action_identity in seen_action_identities
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: action identity"
+            )
+        seen_action_identities.add(source_action_identity)
+        start = action.get("source_byte_start")
+        end = action.get("source_byte_end")
+        block_size = action.get("source_block_size_bytes")
+        source_size = action.get("source_size_bytes")
+        normalized_local_id = str(
+            action.get("normalized_local_id") or ""
+        )
+        source_file = str(action.get("source_file") or "")
+        if (
+            not isinstance(start, int)
+            or not isinstance(end, int)
+            or not isinstance(block_size, int)
+            or not isinstance(source_size, int)
+            or start < 0
+            or end <= start
+            or end > source_size
+            or block_size != end - start
+            or not normalized_local_id
+            or Path(source_file).name != source_file
+            or not re.fullmatch(r"niche_[A-Za-z0-9_.-]+_findings\.md", source_file)
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", str(action.get("source_sha256") or "")
+            )
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(action.get("source_block_sha256") or ""),
+            )
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: action byte range binding"
+            )
+        expected_identity = _niche_source_action_identity(
+            source_file=source_file,
+            source_sha256=str(action.get("source_sha256") or ""),
+            normalized_local_id=normalized_local_id,
+            source_byte_start=start,
+            source_byte_end=end,
+            source_block_sha256=str(
+                action.get("source_block_sha256") or ""
+            ),
+        )
+        if expected_identity != source_action_identity:
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: action identity binding"
+            )
+        has_debt = bool(action.get("identity_debt"))
+        if (
+            action.get("action_status") != ("DEBT" if has_debt else "CLEAN")
+            or action.get("quarantine") is not has_debt
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: action status"
+            )
+    # Range disjointness is a structural property of the projection itself,
+    # so reject it before immutable-CAS comparison.  This preserves precise
+    # diagnostics and prevents two action identities from claiming the same
+    # producer bytes even when every per-record digest was recomputed.
+    prior_end_by_source: dict[str, int] = {}
+    for action in sorted(
+        actions,
+        key=lambda item: (
+            str(item.get("source_file") or ""),
+            int(item.get("source_byte_start", -1)),
+            int(item.get("source_byte_end", -1)),
+        ),
+    ):
+        source_file = str(action.get("source_file") or "")
+        start = int(action.get("source_byte_start", -1))
+        prior_end = prior_end_by_source.get(source_file)
+        if prior_end is not None and start < prior_end:
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: action range overlap"
+            )
+        prior_end_by_source[source_file] = int(
+            action.get("source_byte_end", -1)
+        )
+    for record in candidates:
+        if not isinstance(record, dict):
+            raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: record")
+        record_sha256 = str(record.get("record_sha256") or "").lower()
+        unsigned_record = {
+            key: value
+            for key, value in record.items()
+            if key not in {"record_sha256", "debt_id"}
+        }
+        if record_sha256 != _niche_identity_debt_digest(unsigned_record):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: record hash"
+            )
+        if record.get("debt_id") != f"NID-{record_sha256[:24].upper()}":
+            raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: debt id")
+        if (
+            record.get("identity_authority") is not False
+            or record.get("clean_authority") is not False
+            or record.get("drop_authority") is not False
+            or record.get("proof_authority") != "NONE"
+            or record.get("resolution_status") != "UNRESOLVED"
+            or record.get("required_action") not in {
+                "RECONCILE_PRODUCER_IDENTITY",
+                "RECONCILE_SOURCE_ACTION_DRIFT",
+                "REPAIR_FINDING_BLOCK_SCHEMA",
+            }
+            or not record.get("identity_debt")
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: record authority"
+            )
+        start = record.get("source_byte_start")
+        end = record.get("source_byte_end")
+        size = record.get("source_block_size_bytes")
+        source_size = record.get("source_size_bytes")
+        source_file = str(record.get("source_file") or "")
+        if (
+            not isinstance(start, int)
+            or not isinstance(end, int)
+            or not isinstance(size, int)
+            or not isinstance(source_size, int)
+            or start < 0
+            or end <= start
+            or end > source_size
+            or size != end - start
+            or Path(source_file).name != source_file
+            or not re.fullmatch(r"niche_[A-Za-z0-9_.-]+_findings\.md", source_file)
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", str(record.get("source_sha256") or "")
+            )
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(record.get("source_block_sha256") or ""),
+            )
+        ):
+            raise RuntimeError(f"invalid {_NICHE_IDENTITY_DEBT_NAME}: byte range")
+        if record.get("source_action_identity") != _niche_source_action_identity(
+            source_file=source_file,
+            source_sha256=str(record.get("source_sha256") or ""),
+            normalized_local_id=str(
+                record.get("normalized_local_id") or ""
+            ),
+            source_byte_start=start,
+            source_byte_end=end,
+            source_block_sha256=str(
+                record.get("source_block_sha256") or ""
+            ),
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: debt action binding"
+            )
+        if record.get("exact_block_capture") == "FULL":
+            try:
+                captured = base64.b64decode(
+                    str(record.get("exact_block_bytes_b64") or ""),
+                    validate=True,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: block encoding"
+                ) from exc
+            if (
+                len(captured) != size
+                or hashlib.sha256(captured).hexdigest()
+                != record.get("source_block_sha256")
+            ):
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: block identity"
+                )
+        elif (
+            record.get("exact_block_capture") != "OMITTED_OVERSIZE"
+            or record.get("exact_block_bytes_b64")
+            or size <= _NICHE_IDENTITY_DEBT_EXACT_BLOCK_MAX_BYTES
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: block capture status"
+            )
+        for field_name in (
+            "title", "severity", "location", "description", "impact"
+        ):
+            field_bytes = str(record.get(field_name) or "").encode("utf-8")
+            original_bytes = record.get(f"{field_name}_utf8_bytes")
+            original_sha256 = str(
+                record.get(f"{field_name}_sha256") or ""
+            )
+            truncated = record.get(f"{field_name}_truncated")
+            if (
+                len(field_bytes) > _NICHE_IDENTITY_DEBT_SEMANTIC_FIELD_MAX_BYTES
+                or not isinstance(original_bytes, int)
+                or original_bytes < len(field_bytes)
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    original_sha256,
+                )
+                or not isinstance(truncated, bool)
+                or (
+                    not truncated
+                    and (
+                        original_bytes != len(field_bytes)
+                        or original_sha256
+                        != hashlib.sha256(field_bytes).hexdigest()
+                    )
+                )
+                or (truncated and original_bytes <= len(field_bytes))
+            ):
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: semantic bound"
+                )
+    for lifecycle_record in lifecycle_records:
+        if not isinstance(lifecycle_record, dict):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: lifecycle record"
+            )
+        record_sha256 = str(
+            lifecycle_record.get("record_sha256") or ""
+        ).lower()
+        unsigned_lifecycle = {
+            key: value
+            for key, value in lifecycle_record.items()
+            if key not in {"record_sha256", "lifecycle_id"}
+        }
+        identity = str(
+            lifecycle_record.get("source_action_identity") or ""
+        )
+        inventory_referents = lifecycle_record.get("inventory_referents")
+        if (
+            record_sha256 != _niche_identity_debt_digest(unsigned_lifecycle)
+            or lifecycle_record.get("lifecycle_id")
+            != f"NIDLIFE-{record_sha256[:24].upper()}"
+            or lifecycle_record.get("status") != "DELIVERED_ACTION_REMOVED"
+            or lifecycle_record.get("blocking") is not False
+            or lifecycle_record.get("clean_authority") is not False
+            or lifecycle_record.get("drop_authority") is not False
+            or lifecycle_record.get("proof_authority") != "NONE"
+            or not re.fullmatch(r"NACT-[0-9A-F]{24}", identity)
+            or not _niche_removed_action_binding_valid(lifecycle_record)
+            or not isinstance(inventory_referents, list)
+            or inventory_referents
+            != sorted({str(value) for value in inventory_referents})
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: lifecycle authority"
+            )
+    for source_error in source_errors:
+        if not isinstance(source_error, dict):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source error"
+            )
+        record_sha256 = str(source_error.get("record_sha256") or "").lower()
+        unsigned_error = {
+            key: value
+            for key, value in source_error.items()
+            if key not in {"record_sha256", "debt_id"}
+        }
+        status = str(source_error.get("status") or "")
+        if status == "SOURCE_OVER_LIMIT":
+            status_valid = (
+                source_error.get("required_action")
+                == "REDUCE_AND_REVIEW_SOURCE_ARTIFACT"
+                and source_error.get("identity_debt")
+                == "SOURCE_ARTIFACT_OVER_LIMIT"
+            )
+        elif status == "SOURCE_MISSING":
+            status_valid = (
+                source_error.get("required_action")
+                == "RESTORE_OR_RECONCILE_SOURCE_ARTIFACT"
+                and source_error.get("identity_debt")
+                == "SOURCE_ARTIFACT_MISSING_OR_RENAMED"
+                and Path(str(source_error.get("source_file") or "")).name
+                == str(source_error.get("source_file") or "")
+                and bool(
+                    re.fullmatch(
+                        r"niche_[A-Za-z0-9_.-]+_findings\.md",
+                        str(source_error.get("source_file") or ""),
+                    )
+                )
+                and isinstance(source_error.get("source_size_bytes"), int)
+                and int(source_error.get("source_size_bytes")) >= 0
+                and bool(
+                    re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        str(source_error.get("source_sha256") or ""),
+                    )
+                )
+            )
+        elif status == "SOURCE_ACTION_REMOVED":
+            source_file = str(source_error.get("source_file") or "")
+            normalized_local_id = str(
+                source_error.get("normalized_local_id") or ""
+            )
+            start = source_error.get("source_byte_start")
+            end = source_error.get("source_byte_end")
+            status_valid = (
+                source_error.get("required_action")
+                == "RESTORE_OR_RECONCILE_SOURCE_ACTION"
+                and source_error.get("identity_debt")
+                == "SOURCE_ACTION_REMOVED"
+                and Path(source_file).name == source_file
+                and bool(_NICHE_SOURCE_NAME_RE.fullmatch(source_file))
+                and isinstance(start, int)
+                and isinstance(end, int)
+                and start >= 0
+                and end > start
+                and isinstance(source_error.get("source_size_bytes"), int)
+                and end <= int(source_error.get("source_size_bytes") or 0)
+                and bool(normalized_local_id)
+                and source_error.get("source_action_identity")
+                == _niche_source_action_identity(
+                    source_file=source_file,
+                    source_sha256=str(
+                        source_error.get("source_sha256") or ""
+                    ),
+                    normalized_local_id=normalized_local_id,
+                    source_byte_start=start,
+                    source_byte_end=end,
+                    source_block_sha256=str(
+                        source_error.get("source_block_sha256") or ""
+                    ),
+                )
+                and _niche_removed_action_binding_valid(source_error)
+            )
+        elif status == "UNDELIVERED_CLEAN_ACTION":
+            status_valid = (
+                source_error.get("required_action")
+                == "DELIVER_ACTION_TO_INVENTORY_OR_HUMAN_REVIEW"
+                and source_error.get("identity_debt")
+                == "UNDELIVERED_CLEAN_ACTION"
+                and _niche_removed_action_binding_valid(source_error)
+            )
+        elif status == "SOURCE_CAPTURE_CORRUPTION":
+            detail = str(source_error.get("detail") or "")
+            detail_raw = detail.encode("utf-8")
+            original_size = source_error.get("detail_utf8_bytes")
+            detail_sha = str(source_error.get("detail_sha256") or "")
+            truncated = source_error.get("detail_truncated")
+            status_valid = (
+                source_error.get("required_action")
+                == "RECAPTURE_AND_RECONCILE_SOURCE_NAMESPACE"
+                and source_error.get("identity_debt")
+                == "SOURCE_CAPTURE_CORRUPTION"
+                and source_error.get("source_file")
+                == "<niche-source-namespace>"
+                and isinstance(original_size, int)
+                and original_size >= len(detail_raw)
+                and isinstance(truncated, bool)
+                and bool(re.fullmatch(r"[0-9a-f]{64}", detail_sha))
+                and (
+                    truncated
+                    or (
+                        original_size == len(detail_raw)
+                        and detail_sha == hashlib.sha256(detail_raw).hexdigest()
+                    )
+                )
+            )
+        else:
+            status_valid = False
+        if (
+            record_sha256 != _niche_identity_debt_digest(unsigned_error)
+            or source_error.get("debt_id")
+            != f"NIDSRC-{record_sha256[:24].upper()}"
+            or not status_valid
+            or source_error.get("clean_authority") is not False
+            or source_error.get("drop_authority") is not False
+            or source_error.get("proof_authority") != "NONE"
+            or source_error.get("resolution_status") != "UNRESOLVED"
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source error authority"
+            )
+    expected_snapshots = payload.get("source_snapshots")
+    if not isinstance(expected_snapshots, list):
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source snapshots"
+        )
+    snapshot_names: set[str] = set()
+    for snapshot in expected_snapshots:
+        if not isinstance(snapshot, dict):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source snapshots"
+            )
+        source_file = str(snapshot.get("source_file") or "")
+        if (
+            source_file in snapshot_names
+            or Path(source_file).name != source_file
+            or not _NICHE_SOURCE_NAME_RE.fullmatch(source_file)
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", str(snapshot.get("source_sha256") or "")
+            )
+            or not isinstance(snapshot.get("source_size_bytes"), int)
+            or int(snapshot.get("source_size_bytes") or 0) < 0
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source snapshots"
+            )
+        snapshot_names.add(source_file)
+    if expected_snapshots != sorted(
+        expected_snapshots,
+        key=lambda record: _niche_name_sort_key(str(record["source_file"])),
+    ):
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source snapshots"
+        )
+
+    source_namespace = payload.get("source_namespace")
+    if source_namespace is None and not _validate_live_sources:
+        source_namespace = sorted(snapshot_names, key=_niche_name_sort_key)
+    if (
+        not isinstance(source_namespace, list)
+        or source_namespace != sorted(
+            source_namespace, key=_niche_name_sort_key
+        )
+        or len(source_namespace) != len(set(source_namespace))
+        or len(source_namespace)
+        != len({str(name).casefold() for name in source_namespace})
+        or any(
+            not isinstance(name, str)
+            or Path(name).name != name
+            or not _NICHE_SOURCE_NAME_RE.fullmatch(name)
+            for name in source_namespace
+        )
+    ):
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source namespace"
+        )
+    source_namespace_sha256 = payload.get("source_namespace_sha256")
+    if source_namespace_sha256 is None and not _validate_live_sources:
+        source_namespace_sha256 = _niche_source_namespace_digest(
+            source_namespace
+        )
+    if source_namespace_sha256 != _niche_source_namespace_digest(
+        source_namespace
+    ):
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source namespace hash"
+        )
+    if not snapshot_names.issubset(set(source_namespace)):
+        raise RuntimeError(
+            f"invalid {_NICHE_IDENTITY_DEBT_NAME}: source snapshot namespace"
+        )
+    # Authenticate the mutable compatibility projection against the immutable
+    # lifecycle CAS before consulting the live producer namespace.  Otherwise
+    # a coordinated sidecar/source rewrite can be diagnosed merely as source
+    # drift and obscure the stronger fact that it does not match committed
+    # history.  Structural validation above still bounds every field supplied
+    # to the lifecycle validator.
+    if payload.get("lifecycle_authority_schema"):
+        try:
+            lifecycle_current = _validate_niche_lifecycle_projection(
+                Path(scratchpad),
+                payload,
+                project_root=Path(scratchpad).parent,
+            )
+        except _NicheLifecycleAuthorityError as exc:
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: identity-debt binding "
+                f"changed; live source/lifecycle authority projection: {exc}"
+            ) from exc
+    if _validate_live_sources:
+        root = Path(scratchpad)
+        try:
+            live_paths = _enumerate_niche_source_paths(root)
+        except Exception as exc:
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live source root"
+            ) from exc
+        live_namespace = [path.name for path in live_paths]
+        if live_namespace != source_namespace:
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live source namespace drift"
+            )
+        live_sources: dict[str, bytes] = {}
+        live_snapshots: list[dict[str, Any]] = []
+        oversized_names: set[str] = set()
+        for source_path in live_paths:
+            try:
+                if source_path.lstat().st_size > _NICHE_FINDING_ARTIFACT_MAX_BYTES:
+                    oversized_names.add(source_path.name)
+                    continue
+                source_bytes = _read_niche_source_bytes(source_path)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live source "
+                    f"missing or unreadable: {source_path.name}"
+                ) from exc
+            live_snapshots.append({
+                "source_file": source_path.name,
+                "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+                "source_size_bytes": len(source_bytes),
+            })
+            live_sources[source_path.name] = source_bytes
+        if live_snapshots != expected_snapshots:
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live source size/hash drift"
+            )
+        recorded_overlimit_names = {
+            str(record.get("source_file") or "")
+            for record in source_errors
+            if record.get("status") == "SOURCE_OVER_LIMIT"
+        }
+        if oversized_names != recorded_overlimit_names:
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live source over-limit drift"
+            )
+        if oversized_names and actions:
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live action denominator "
+                "cannot be complete with an over-limit source"
+            )
+        inventory_path = root / "findings_inventory.md"
+        try:
+            inventory_text = read_bounded_regular_bytes(
+                inventory_path,
+                _NICHE_FINDING_ARTIFACT_MAX_BYTES,
+                require_single_link=True,
+            ).decode("utf-8", errors="replace")
+        except (OSError, ValueError):
+            inventory_text = ""
+        historical_actions = (
+            [row["action_payload"] for row in lifecycle_current["action_history"]]
+            if lifecycle_current is not None
+            else actions
+        )
+        live_delivery_records = _validated_niche_delivery_records(
+            inventory_text,
+            historical_actions,
+            authority_records=(
+                lifecycle_current.get("delivery_records", [])
+                if lifecycle_current is not None
+                else ()
+            ),
+        )
+        live_inventory_referents = _inventory_niche_action_referents(
+            live_delivery_records
+        )
+        if (
+            lifecycle_current is not None
+            and live_delivery_records
+            != list(lifecycle_current.get("delivery_records", []))
+        ):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live typed delivery binding"
+            )
+        for lifecycle_record in lifecycle_records:
+            identity = str(
+                lifecycle_record.get("source_action_identity") or ""
+            )
+            if sorted(live_inventory_referents.get(identity, set())) != list(
+                lifecycle_record.get("inventory_referents") or []
+            ) or not live_inventory_referents.get(identity):
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live lifecycle delivery binding"
+                )
+
+        action_by_identity = {
+            str(action["source_action_identity"]): action
+            for action in actions
+        }
+        for record in (*actions, *candidates):
+            source_file = str(record.get("source_file") or "")
+            source_bytes = live_sources.get(source_file)
+            start = int(record.get("source_byte_start", -1))
+            end = int(record.get("source_byte_end", -1))
+            if source_bytes is None or not 0 <= start < end <= len(source_bytes):
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live raw block range"
+                )
+            raw_block = source_bytes[start:end]
+            if (
+                len(raw_block) != record.get("source_block_size_bytes")
+                or hashlib.sha256(raw_block).hexdigest()
+                != record.get("source_block_sha256")
+            ):
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live raw block "
+                    "slice/hash drift"
+                )
+            if record in candidates:
+                action = action_by_identity.get(
+                    str(record.get("source_action_identity") or "")
+                )
+                if action is None or any(
+                    action.get(field) != record.get(field)
+                    for field in (
+                        "source_file",
+                        "source_sha256",
+                        "source_size_bytes",
+                        "source_byte_start",
+                        "source_byte_end",
+                        "source_block_sha256",
+                        "source_block_size_bytes",
+                        "normalized_local_id",
+                    )
+                ):
+                    raise RuntimeError(
+                        f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live debt/action binding"
+                    )
+
+        prior_end_by_source: dict[str, int] = {}
+        for action in sorted(
+            actions,
+            key=lambda item: (
+                str(item.get("source_file") or ""),
+                int(item.get("source_byte_start", -1)),
+                int(item.get("source_byte_end", -1)),
+            ),
+        ):
+            source_file = str(action.get("source_file") or "")
+            start = int(action.get("source_byte_start", -1))
+            prior_end = prior_end_by_source.get(source_file)
+            if prior_end is not None and start < prior_end:
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live action range overlap"
+                )
+            prior_end_by_source[source_file] = int(
+                action.get("source_byte_end", -1)
+            )
+        if not oversized_names:
+            try:
+                live_entries = _parse_niche_findings(root)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live action denominator parse"
+                ) from exc
+            live_action_records = [
+                _niche_action_record(entry) for entry in live_entries
+            ]
+            if _niche_action_bindings(live_action_records) != _niche_action_bindings(
+                actions
+            ):
+                raise RuntimeError(
+                    f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live action denominator mismatch"
+                )
+        stored_live_digest = payload.get("live_action_denominator_sha256")
+        if stored_live_digest != _niche_live_action_denominator_digest(actions):
+            raise RuntimeError(
+                f"invalid {_NICHE_IDENTITY_DEBT_NAME}: live action denominator hash"
+            )
+    return payload
+
+
+def _write_niche_identity_debt_sidecar(
+    scratchpad: Path,
+    identity_debts: list[dict[str, Any]],
+    source_errors: Optional[list[dict[str, Any]]] = None,
+    *,
+    actions: Optional[list[dict[str, Any]]] = None,
+    source_namespace: Optional[list[str]] = None,
+    source_snapshots: Optional[list[dict[str, Any]]] = None,
+    lifecycle_records: Optional[list[dict[str, Any]]] = None,
+    lifecycle_authority: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Publish the complete current action denominator plus unresolved debt."""
+
+    by_debt_id: dict[str, dict[str, Any]] = {}
+    for entry in identity_debts:
+        record = _niche_identity_debt_record(entry)
+        by_debt_id[record["debt_id"]] = record
+    by_source_error_id: dict[str, dict[str, Any]] = {}
+    for record in source_errors or []:
+        by_source_error_id[str(record["debt_id"])] = dict(record)
+    candidates = sorted(
+        by_debt_id.values(),
+        key=lambda record: (
+            str(record["source_file"]),
+            str(record["source_sha256"]),
+            int(record["source_byte_start"]),
+            int(record["source_byte_end"]),
+            str(record["debt_id"]),
+        ),
+    )
+    merged_source_errors = sorted(
+        by_source_error_id.values(),
+        key=lambda record: (
+            str(record["source_file"]),
+            int(record["source_size_bytes"]),
+            str(record["debt_id"]),
+        ),
+    )
+    action_records = sorted(
+        (_niche_action_record(entry) for entry in (actions or [])),
+        key=lambda record: (
+            str(record["source_file"]),
+            int(record["source_byte_start"]),
+            str(record["normalized_local_id"]),
+            str(record["source_action_identity"]),
+        ),
+    )
+    if source_namespace is None or source_snapshots is None:
+        source_paths = _enumerate_niche_source_paths(Path(scratchpad))
+        if source_namespace is None:
+            source_namespace = [path.name for path in source_paths]
+        if source_snapshots is None:
+            source_snapshots = []
+            for source_path in source_paths:
+                try:
+                    source_snapshots.append(_niche_source_snapshot(source_path))
+                except ValueError:
+                    if source_path.lstat().st_size <= _NICHE_FINDING_ARTIFACT_MAX_BYTES:
+                        raise
+    namespace = sorted(
+        (str(value) for value in (source_namespace or [])),
+        key=_niche_name_sort_key,
+    )
+    snapshots = sorted(
+        (
+            {
+                "source_file": str(record.get("source_file") or ""),
+                "source_sha256": str(record.get("source_sha256") or ""),
+                "source_size_bytes": int(record.get("source_size_bytes") or 0),
+            }
+            for record in (source_snapshots or [])
+        ),
+        key=lambda record: _niche_name_sort_key(str(record["source_file"])),
+    )
+    lifecycle_rows = sorted(
+        (dict(record) for record in (lifecycle_records or [])),
+        key=lambda record: (
+            str(record.get("source_file") or ""),
+            str(record.get("source_action_identity") or ""),
+            str(record.get("lifecycle_id") or ""),
+        ),
+    )
+    payload: dict[str, Any] = {
+        "schema_version": _NICHE_IDENTITY_DEBT_SCHEMA,
+        "artifact_role": "CANONICAL_UNRESOLVED_IDENTITY_DEBT",
+        "required_consumer": "DEPTH_POSTPROCESSOR_IDENTITY_DEBT_GATE",
+        "required_action": "CONSUME_AND_RECONCILE_ALL_CANDIDATES",
+        "denominator_complete": True,
+        "action_count": len(action_records),
+        "action_set_sha256": _niche_action_set_digest(action_records),
+        "live_action_denominator_sha256": (
+            _niche_live_action_denominator_digest(action_records)
+        ),
+        "candidate_count": len(candidates),
+        "source_error_count": len(merged_source_errors),
+        "blocking_debt_count": len(candidates) + len(merged_source_errors),
+        "lifecycle_count": len(lifecycle_rows),
+        "lifecycle_set_sha256": _niche_lifecycle_set_digest(lifecycle_rows),
+        "removed_action_count": len(
+            _niche_removed_action_records(
+                merged_source_errors, lifecycle_rows
+            )
+        ),
+        "removed_action_set_sha256": _niche_removed_action_set_digest(
+            merged_source_errors, lifecycle_rows
+        ),
+        "clean_authority": False,
+        "proof_authority": "NONE",
+        "drop_authority": False,
+        "source_namespace": namespace,
+        "source_namespace_sha256": _niche_source_namespace_digest(namespace),
+        "source_snapshots": snapshots,
+        "actions": action_records,
+        "candidates": candidates,
+        "source_errors": merged_source_errors,
+        "lifecycle_records": lifecycle_rows,
+    }
+    if lifecycle_authority is not None:
+        payload.update(
+            _niche_lifecycle_projection_binding(lifecycle_authority)
+        )
+    payload["artifact_sha256"] = _niche_identity_debt_digest(payload)
+    rendered = json.dumps(
+        payload,
+        ensure_ascii=True,
+        allow_nan=False,
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+    if len(rendered.encode("utf-8")) > _NICHE_IDENTITY_DEBT_SIDECAR_MAX_BYTES:
+        raise RuntimeError(
+            "NICHE_IDENTITY_DEBT_SIDECAR_OVER_LIMIT: unresolved debt exceeds "
+            f"{_NICHE_IDENTITY_DEBT_SIDECAR_MAX_BYTES} bytes"
+        )
+    _promo_atomic_write_text(
+        Path(scratchpad) / _NICHE_IDENTITY_DEBT_NAME,
+        rendered,
+    )
+    return payload
+
+
+_INVENTORY_FINDING_HEADING_CONTENT_RE = re.compile(
+    r"^(?:Finding\s*)?\[\s*(INV-[0-9]+)\s*\](?:\s*[:\-].*)?$",
+    re.IGNORECASE,
+)
+
+
+def _operational_inventory_finding_blocks(
+    text: str,
+) -> list[tuple[str, str]]:
+    """Return real CommonMark inventory headings and their same-level blocks."""
+
+    source = str(text or "")
+    operational = operational_markdown_view(source)
+    headings = mapped_headings(source)
+    out: list[tuple[str, str]] = []
+    for index, heading in enumerate(headings):
+        match = _INVENTORY_FINDING_HEADING_CONTENT_RE.match(
+            str(heading["content"]).strip()
+        )
+        if match is None:
+            continue
+        end = len(source)
+        for later in headings[index + 1:]:
+            if int(later["level"]) <= int(heading["level"]):
+                end = int(later["start"])
+                break
+        out.append((
+            match.group(1).upper(),
+            operational[int(heading["start"]):end],
+        ))
+    return out
+
+
+def _operational_inventory_finding_records(
+    text: str,
+) -> list[dict[str, str]]:
+    """Return operational fields plus the exact authored block digest."""
+
+    source = str(text or "")
+    operational = operational_markdown_view(source)
+    headings = mapped_headings(source)
+    out: list[dict[str, str]] = []
+    for index, heading in enumerate(headings):
+        match = _INVENTORY_FINDING_HEADING_CONTENT_RE.match(
+            str(heading["content"]).strip()
+        )
+        if match is None:
+            continue
+        start = int(heading["start"])
+        end = len(source)
+        for later in headings[index + 1:]:
+            if int(later["level"]) <= int(heading["level"]):
+                end = int(later["start"])
+                break
+        exact = source[start:end].rstrip() + "\n"
+        out.append({
+            "inventory_id": match.group(1).upper(),
+            "operational_block": operational[start:end],
+            "inventory_block_sha256": hashlib.sha256(
+                exact.encode("utf-8", errors="strict")
+            ).hexdigest(),
+        })
+    return out
+
+
+def _operational_inventory_field(
+    block: str,
+    labels: tuple[str, ...],
+) -> str:
+    """Read one real, line-level bold field from an operational block."""
+
+    for label in labels:
+        match = re.search(
+            rf"(?im)^\s*(?:[-*]\s*)?\*\*{re.escape(label)}\*\*"
+            rf"\s*:\s*([^\r\n]+?)\s*$",
+            block,
+        )
+        if match is not None:
+            return match.group(1).strip().strip("`")
+    return ""
+
+
+def _niche_delivery_record(
+    action: Mapping[str, Any],
+    *,
+    inventory_id: str,
+    inventory_block_sha256: str,
+) -> dict[str, Any]:
+    record = {
+        "source_action_identity": str(action["source_action_identity"]),
+        "source_file": str(action["source_file"]),
+        "normalized_local_id": str(
+            action.get("normalized_local_id") or action.get("source_id") or ""
+        ),
+        "source_sha256": str(action["source_sha256"]),
+        "source_byte_start": int(action["source_byte_start"]),
+        "source_byte_end": int(action["source_byte_end"]),
+        "source_block_sha256": str(action["source_block_sha256"]),
+        "inventory_id": str(inventory_id).upper(),
+        "inventory_block_sha256": str(inventory_block_sha256),
+    }
+    record["delivery_record_sha256"] = _niche_identity_debt_digest(record)
+    return record
+
+
+def _validated_niche_delivery_records(
+    text: str,
+    actions: Sequence[Mapping[str, Any]],
+    *,
+    authority_records: Sequence[Mapping[str, Any]] = (),
+    newly_written_inventory_ids: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """Validate exact one-to-one delivery under typed producer authority.
+
+    Markdown is evidence only.  An otherwise exact block is delivery authority
+    only when its record was already committed in the lifecycle CAS or its
+    inventory ID was written by this invocation before the next CAS commit.
+    """
+
+    blocks = _operational_inventory_finding_records(text)
+    occurrences: dict[str, list[dict[str, str]]] = {}
+    for row in blocks:
+        identity = _operational_inventory_field(
+            row["operational_block"], ("Source Action Identity",)
+        ).strip().upper()
+        if re.fullmatch(r"NACT-[0-9A-F]{24}", identity):
+            occurrences.setdefault(identity, []).append(row)
+    prior = {
+        str(row.get("source_action_identity") or ""): dict(row)
+        for row in authority_records
+        if isinstance(row, Mapping)
+    }
+    new_ids = {str(value).upper() for value in newly_written_inventory_ids}
+    accepted: list[dict[str, Any]] = []
+    used_inventory: set[str] = set()
+    for action in actions:
+        identity = str(action.get("source_action_identity") or "")
+        candidates = occurrences.get(identity, [])
+        if len(candidates) != 1:
+            continue
+        row = candidates[0]
+        block = row["operational_block"]
+        artifact = Path(_operational_inventory_field(
+            block, ("Primary Artifact", "Source Artifact")
+        )).name
+        source_ids = _operational_inventory_field(
+            block, ("Source IDs", "Source ID")
+        )
+        local_ids = {
+            token.upper()
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]*-[0-9]+", source_ids)
+        }
+        source_hash = _operational_inventory_field(
+            block, ("Source Artifact Hash",)
+        ).lower()
+        if source_hash.startswith("sha256:"):
+            source_hash = source_hash[7:]
+        range_text = _operational_inventory_field(block, ("Source Byte Range",))
+        range_match = re.fullmatch(r"([0-9]+)-([0-9]+)", range_text)
+        block_hash = _operational_inventory_field(
+            block, ("Source Block SHA256",)
+        ).lower()
+        expected_local = str(
+            action.get("normalized_local_id") or action.get("source_id") or ""
+        ).upper()
+        if (
+            artifact != str(action.get("source_file") or "")
+            or expected_local not in local_ids
+            or source_hash != str(action.get("source_sha256") or "").lower()
+            or range_match is None
+            or int(range_match.group(1)) != int(action.get("source_byte_start", -1))
+            or int(range_match.group(2)) != int(action.get("source_byte_end", -1))
+            or block_hash != str(action.get("source_block_sha256") or "").lower()
+        ):
+            continue
+        candidate = _niche_delivery_record(
+            action,
+            inventory_id=row["inventory_id"],
+            inventory_block_sha256=row["inventory_block_sha256"],
+        )
+        old = prior.get(identity)
+        authorized = row["inventory_id"] in new_ids or old == candidate
+        if not authorized or row["inventory_id"] in used_inventory:
+            continue
+        used_inventory.add(row["inventory_id"])
+        accepted.append(candidate)
+    return sorted(
+        accepted,
+        key=lambda row: (row["source_action_identity"], row["inventory_id"]),
+    )
+
+
+def _inventory_niche_action_referents(
+    delivery_records: Sequence[Mapping[str, Any]],
+) -> dict[str, set[str]]:
+    """Project only typed, PhaseIO-committed delivery records."""
+
+    if isinstance(delivery_records, (str, bytes, bytearray)):
+        return {}
+    return {
+        str(row["source_action_identity"]): {str(row["inventory_id"]).upper()}
+        for row in delivery_records
+    }
+
+
+def _inventory_niche_action_bindings(text: str) -> list[dict[str, str]]:
+    """Recover exact niche action keys from structurally typed inventory rows."""
+
+    bindings: list[dict[str, str]] = []
+    for inventory_id, block in _operational_inventory_finding_blocks(text):
+        artifact = Path(
+            _operational_inventory_field(
+                block, ("Primary Artifact", "Source Artifact")
+            )
+        ).name
+        action_identity = _operational_inventory_field(
+            block, ("Source Action Identity",)
+        ).strip().upper()
+        source_ids = _operational_inventory_field(
+            block, ("Source IDs", "Source ID")
+        )
+        if (
+            not artifact.startswith("niche_")
+            or not re.fullmatch(r"NACT-[0-9A-F]{24}", action_identity)
+        ):
+            continue
+        producer = _registered_producer_for_artifact(
+            artifact,
+            consumer="pre_dedup_promotion",
+        )
+        source_pattern = (
+            _registered_producer_read_id_pattern(producer)
+            if producer is not None
+            else _PROMOTABLE_FEEDER_ID_PATTERN
+        )
+        local_ids = re.findall(
+            r"\b" + source_pattern + r"\b",
+            source_ids,
+            re.IGNORECASE,
+        )
+        if not local_ids:
+            continue
+        bindings.append(
+            {
+                "source_file": artifact,
+                "normalized_local_id": local_ids[0].upper(),
+                "source_action_identity": action_identity,
+                "inventory_id": inventory_id,
+            }
+        )
+    return bindings
+
+
+def _niche_current_run_id(scratchpad: Path, explicit: str = "") -> str:
+    run = str(explicit or "").strip()
+    if run:
+        return run
+    checkpoint = Path(scratchpad) / "_v2_checkpoint.json"
+    try:
+        value = json.loads(
+            read_bounded_regular_bytes(
+                checkpoint, 4 * 1024 * 1024, require_single_link=True
+            ).decode("utf-8", errors="strict")
+        )
+        if isinstance(value, dict):
+            run = str(value.get("run_id") or "").strip()
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        run = ""
+    if run:
+        return run
+    # Direct unit tests and legacy library callers do not own a driver
+    # checkpoint. Keep that compatibility path isolated to this scratchpad;
+    # production passes the canonical UUID explicitly at the driver boundary.
+    identity = os.path.normcase(
+        os.path.normpath(os.fspath(Path(scratchpad).resolve()))
+    )
+    return "standalone-" + hashlib.sha256(
+        identity.encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def _finalize_niche_lifecycle_authority(
+    scratchpad: Path,
+    *,
+    retained_capture: Any,
+    parsed_all: list[dict[str, Any]],
+    lifecycle_source_errors: list[dict[str, Any]],
+    lifecycle_records: list[dict[str, Any]],
+    project_root: Path,
+    run_id: str,
+    dimensions: dict[str, str],
+    delivery_records: Sequence[Mapping[str, Any]],
+    inventory_publication_capability: object | None = None,
+) -> dict[str, Any]:
+    """Commit the typed lifecycle, then publish its legacy projection."""
+
+    action_records = [
+        _niche_action_record(entry) for entry in parsed_all
+    ]
+    # The immutable lifecycle generation must be derived from one retained
+    # current-input view.  The long-lived source capture protects parsing and
+    # inventory mutation; this post-mutation capture then retains both that
+    # exact source namespace and the resulting inventory through PhaseIO/CAS
+    # publication.  A same-byte pathname replacement therefore cannot acquire
+    # idempotent authority merely because its content digest is unchanged.
+    with retain_bounded_regular_namespace(
+        Path(scratchpad),
+        _NICHE_CURRENT_INPUT_NAME_RE,
+        per_file_limit=_NICHE_FINDING_ARTIFACT_MAX_BYTES,
+        total_limit=(
+            _NICHE_SOURCE_NAMESPACE_MAX_BYTES
+            + _NICHE_FINDING_ARTIFACT_MAX_BYTES
+        ),
+        max_members=129,
+        require_single_link=True,
+    ) as current_inputs:
+        current_source_names = tuple(
+            name for name in current_inputs.namespace
+            if _NICHE_SOURCE_NAME_RE.fullmatch(name)
+        )
+        if current_source_names != tuple(retained_capture.namespace):
+            raise BoundedNamespaceCaptureError(
+                "source namespace changed before lifecycle current-input capture"
+            )
+        for name in current_source_names:
+            previous = retained_capture.files[name]
+            current = current_inputs.files[name]
+            if (
+                previous.raw != current.raw
+                or previous.sha256 != current.sha256
+                or previous.size != current.size
+                or previous.physical_identity != current.physical_identity
+            ):
+                raise BoundedNamespaceCaptureError(
+                    "source member changed before lifecycle current-input capture: "
+                    + name
+                )
+        inventory_file = current_inputs.files.get("findings_inventory.md")
+        inventory_bytes = (
+            inventory_file.raw if inventory_file is not None else None
+        )
+        current_inputs.revalidate()
+        authority = _commit_niche_lifecycle_generation(
+            Path(scratchpad),
+            project_root=Path(project_root),
+            run_id=run_id,
+            dimensions=dimensions,
+            retained_capture=current_inputs,
+            actions=action_records,
+            inventory_bytes=inventory_bytes,
+            delivery_records=delivery_records,
+            inventory_publication_capability=inventory_publication_capability,
+        )
+    action_history = {
+        row["source_action_identity"]: row["action_payload"]
+        for row in authority["action_history"]
+    }
+    source_errors_by_key = {
+        (
+            str(row.get("status") or ""),
+            str(row.get("source_action_identity") or row.get("debt_id") or ""),
+        ): dict(row)
+        for row in lifecycle_source_errors
+    }
+    lifecycle_by_identity = {
+        str(row.get("source_action_identity") or ""): dict(row)
+        for row in lifecycle_records
+    }
+    for transition in authority["transitions"]:
+        identity = transition["source_action_identity"]
+        payload = action_history.get(identity)
+        if payload is None:
+            raise RuntimeError(
+                "NICHE_LIFECYCLE_ACTION_HISTORY_MISSING: " + identity
+            )
+        if transition["state"] == "UNDELIVERED_CLEAN_ACTION":
+            row = _niche_undelivered_clean_action_error(payload)
+            source_errors_by_key[(row["status"], identity)] = row
+        elif transition["state"] == "SOURCE_ACTION_REMOVED":
+            row = _niche_removed_action_source_error(payload)
+            source_errors_by_key[(row["status"], identity)] = row
+            lifecycle_by_identity.pop(identity, None)
+        elif transition["state"] == "DELIVERED_ACTION_REMOVED":
+            row = _niche_delivered_action_lifecycle_record(
+                payload,
+                set(transition["inventory_referents"]),
+            )
+            lifecycle_by_identity[identity] = row
+            source_errors_by_key.pop(("SOURCE_ACTION_REMOVED", identity), None)
+        elif transition["state"] == "DELIVERED_CLEAN_ACTION":
+            source_errors_by_key.pop(
+                ("UNDELIVERED_CLEAN_ACTION", identity), None
+            )
+    source_namespace = list(retained_capture.namespace)
+    source_snapshots = [
+        {
+            "source_file": name,
+            "source_sha256": retained_capture.files[name].sha256,
+            "source_size_bytes": retained_capture.files[name].size,
+        }
+        for name in source_namespace
+    ]
+    identity_debts = [
+        entry for entry in parsed_all if entry.get("identity_debt")
+    ]
+    payload = _write_niche_identity_debt_sidecar(
+        Path(scratchpad),
+        identity_debts,
+        list(source_errors_by_key.values()),
+        actions=parsed_all,
+        source_namespace=source_namespace,
+        source_snapshots=source_snapshots,
+        lifecycle_records=list(lifecycle_by_identity.values()),
+        lifecycle_authority=authority,
+    )
+    try:
+        _validate_niche_lifecycle_projection(
+            Path(scratchpad), payload, project_root=Path(project_root)
+        )
+    except _NicheLifecycleAuthorityError as exc:
+        raise RuntimeError(
+            "NICHE_LIFECYCLE_PROJECTION_INVALID: " + str(exc)
+        ) from exc
+    return authority
+
+
+def _publish_niche_capture_blocking_projection(
+    scratchpad: Path,
+    detail: object,
+) -> None:
+    """Best-effort haltless debt when immutable lifecycle commit is impossible."""
+
+    try:
+        payload = _write_niche_identity_debt_sidecar(
+            Path(scratchpad),
+            [],
+            [_niche_capture_corruption_error(detail)],
+            actions=[],
+            source_namespace=[],
+            source_snapshots=[],
+            lifecycle_records=[],
+        )
+        payload["lifecycle_authority_status"] = "BLOCKED"
+        payload["artifact_sha256"] = _niche_identity_debt_digest({
+            key: value for key, value in payload.items()
+            if key != "artifact_sha256"
+        })
+        _promo_atomic_write_text(
+            Path(scratchpad) / _NICHE_IDENTITY_DEBT_NAME,
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+        )
+    except Exception:
+        # The original capture error remains the authoritative failure. This
+        # best-effort projection must never hide or replace it.
+        return
+
+
+def _publish_niche_overlimit_blocking_projection(scratchpad: Path) -> bool:
+    """Publish typed legacy debt when namespace capture fails only on size.
+
+    Oversized producer artifacts cannot enter the immutable lifecycle CAS
+    because their bytes were never captured.  They can still be represented
+    precisely as blocking compatibility debt, including an exact namespace and
+    bounded snapshots for every other member.  The projection carries no clean,
+    drop, or proof authority and is replaced only after a safe full recapture.
+    """
+
+    try:
+        root = Path(scratchpad)
+        source_paths = _enumerate_niche_source_paths(root)
+        overlimit = [
+            path for path in source_paths
+            if int(path.lstat().st_size) > _NICHE_FINDING_ARTIFACT_MAX_BYTES
+        ]
+        if not overlimit:
+            return False
+        snapshots: list[dict[str, Any]] = []
+        for path in source_paths:
+            if path in overlimit:
+                continue
+            raw = _read_niche_source_bytes(path)
+            snapshots.append({
+                "source_file": path.name,
+                "source_sha256": hashlib.sha256(raw).hexdigest(),
+                "source_size_bytes": len(raw),
+            })
+        payload = _write_niche_identity_debt_sidecar(
+            root,
+            [],
+            [_niche_identity_source_error(path) for path in overlimit],
+            actions=[],
+            source_namespace=[path.name for path in source_paths],
+            source_snapshots=snapshots,
+            lifecycle_records=[],
+        )
+        payload["lifecycle_authority_status"] = "BLOCKED"
+        payload["artifact_sha256"] = _niche_identity_debt_digest({
+            key: value for key, value in payload.items()
+            if key != "artifact_sha256"
+        })
+        _promo_atomic_write_text(
+            root / _NICHE_IDENTITY_DEBT_NAME,
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+        )
+        return True
+    except Exception:
+        return False
+
+
+def promote_niche_to_inventory(
+    scratchpad: Path,
+    *,
+    project_root: Optional[Path] = None,
+    run_id: str = "",
+    pipeline: str = "sc",
+    mode: str = "thorough",
+    ecosystem: str = "evm",
+    backend: str = "claude",
+    _retained_capture: Any = None,
+) -> tuple[int, int]:
     """Promote niche agent findings into findings_inventory.md as INV-* entries.
 
     Niche agents (semantic consistency, dimensional analysis, event
@@ -6802,38 +12046,306 @@ def promote_niche_to_inventory(scratchpad: Path) -> tuple[int, int]:
     are never verified or reported.
 
     This function appends niche findings to findings_inventory.md, continuing
-    the INV-NNN numbering. It is idempotent: a receipt file tracks already-
-    promoted niche source IDs so a re-run after retry does not duplicate.
+    the INV-NNN numbering. Idempotence comes only from typed delivery records
+    in the immutable lifecycle CAS; the Markdown receipt is diagnostic and
+    cannot certify a colliding/stale local ID or source-action identity.
 
     Call site: post-depth phase completion in plamen_driver.py, after
     _canonicalize_depth_iter_filenames but before sc_semantic_dedup runs.
 
     Returns (parsed_count, appended_count).
     """
+    root = Path(scratchpad)
+    project = Path(project_root) if project_root is not None else root.parent
+    current_run = _niche_current_run_id(root, run_id)
+    dimensions = {
+        "pipeline": str(pipeline or "sc").strip().lower(),
+        "mode": str(mode or "thorough").strip().lower(),
+        "ecosystem": str(ecosystem or "evm").strip().lower(),
+        "backend": str(backend or "claude").strip().lower(),
+        "phase": "depth",
+        "producer": "niche_promotion",
+    }
+    expected_context = _niche_lifecycle_context(
+        project_root=project,
+        run_id=current_run,
+        dimensions=dimensions,
+    )
+    if _retained_capture is None:
+        try:
+            # Reject a stale/cross-run chain before mutating inventory or any
+            # compatibility projection.
+            _load_current_niche_lifecycle(
+                root,
+                project_root=project,
+                expected_run_id=current_run,
+                expected_context=expected_context,
+            )
+            with retain_bounded_regular_namespace(
+                root,
+                _NICHE_SOURCE_NAME_RE,
+                per_file_limit=_NICHE_FINDING_ARTIFACT_MAX_BYTES,
+                total_limit=_NICHE_SOURCE_NAMESPACE_MAX_BYTES,
+                max_members=128,
+                require_single_link=True,
+            ) as retained:
+                return promote_niche_to_inventory(
+                    root,
+                    project_root=project,
+                    run_id=current_run,
+                    pipeline=dimensions["pipeline"],
+                    mode=dimensions["mode"],
+                    ecosystem=dimensions["ecosystem"],
+                    backend=dimensions["backend"],
+                    _retained_capture=retained,
+                )
+        except (
+            BoundedNamespaceCaptureError,
+            _NicheLifecycleAuthorityError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ) as exc:
+            if (
+                isinstance(exc, BoundedNamespaceCaptureError)
+                and "namespace member exceeds" in str(exc)
+                and _publish_niche_overlimit_blocking_projection(root)
+            ):
+                raise RuntimeError("SOURCE_OVER_LIMIT: " + str(exc)) from exc
+            _publish_niche_capture_blocking_projection(root, exc)
+            if "CROSS_RUN_REPLAY" in str(exc):
+                raise RuntimeError("CROSS_RUN_REPLAY") from exc
+            raise RuntimeError(
+                "NICHE_SOURCE_CAPTURE_OR_LIFECYCLE_CHANGED: " + str(exc)
+            ) from exc
+    retained_capture = _retained_capture
+    prior_authority = _load_current_niche_lifecycle(
+        root,
+        project_root=project,
+        expected_run_id=current_run,
+        expected_context=expected_context,
+    )
+    prior = read_niche_identity_debt_sidecar(
+        scratchpad,
+        _validate_live_sources=False,
+    )
+    if prior is None:
+        if prior_authority is not None:
+            # Reconstruct the historical inputs solely from the immutable CAS;
+            # the mutable sidecar is never needed to preserve a tombstone.
+            prior_actions = [
+                dict(row["action_payload"])
+                for row in prior_authority["action_history"]
+            ]
+            prior_source_errors: list[dict[str, Any]] = []
+            prior_lifecycle: list[dict[str, Any]] = []
+            by_identity = {
+                row["source_action_identity"]: row
+                for row in prior_authority["action_history"]
+            }
+            for transition in prior_authority["transitions"]:
+                payload = by_identity[transition["source_action_identity"]][
+                    "action_payload"
+                ]
+                if transition["state"] == "SOURCE_ACTION_REMOVED":
+                    prior_source_errors.append(
+                        _niche_removed_action_source_error(payload)
+                    )
+                elif transition["state"] == "UNDELIVERED_CLEAN_ACTION":
+                    prior_source_errors.append(
+                        _niche_undelivered_clean_action_error(payload)
+                    )
+                elif transition["state"] == "DELIVERED_ACTION_REMOVED":
+                    prior_lifecycle.append(
+                        _niche_delivered_action_lifecycle_record(
+                            payload,
+                            set(transition["inventory_referents"]),
+                        )
+                    )
+            prior = {
+                "actions": prior_actions,
+                "source_errors": prior_source_errors,
+                "lifecycle_records": prior_lifecycle,
+                "source_snapshots": prior_authority[
+                    "source_capture"
+                ]["source_snapshots"],
+            }
+    source_paths = [root / name for name in retained_capture.namespace]
+    source_namespace = [path.name for path in source_paths]
+    current_source_names = {path.name for path in source_paths}
+    lifecycle_source_errors = [
+        _niche_identity_missing_source_error(snapshot)
+        for snapshot in (prior or {}).get("source_snapshots", [])
+        if str(snapshot.get("source_file") or "") not in current_source_names
+    ]
+    for prior_error in (prior or {}).get("source_errors", []):
+        if (
+            prior_error.get("status") == "SOURCE_MISSING"
+            and str(prior_error.get("source_file") or "")
+            not in current_source_names
+        ):
+            lifecycle_source_errors.append(dict(prior_error))
+    source_snapshots: list[dict[str, Any]] = [
+        {
+            "source_file": name,
+            "source_sha256": retained_capture.files[name].sha256,
+            "source_size_bytes": retained_capture.files[name].size,
+        }
+        for name in source_namespace
+    ]
+    parsed_all = _reconcile_niche_action_drift(
+        scratchpad,
+        _parse_niche_findings(
+            scratchpad, _retained_capture=retained_capture
+        ),
+        prior=prior,
+    )
+    parsed_count = len(parsed_all)
+    identity_debts = [
+        entry for entry in parsed_all if entry.get("identity_debt")
+    ]
+    # Shape alone is never promotion authority. Registered, debt-free IDs may
+    # enter inventory; every other explicit finding stays quarantined below.
+    parsed = [
+        entry for entry in parsed_all
+        if entry.get("identity_status") == "REGISTERED"
+        and not entry.get("identity_debt")
+    ]
+
     inventory_path = scratchpad / "findings_inventory.md"
     if not inventory_path.exists():
-        return 0, 0
+        removed_action_errors, lifecycle_records = _reconcile_niche_removed_actions(
+            scratchpad, parsed_all, prior, delivered={}
+        )
+        lifecycle_source_errors.extend(removed_action_errors)
+        _finalize_niche_lifecycle_authority(
+            root,
+            retained_capture=retained_capture,
+            parsed_all=parsed_all,
+            lifecycle_source_errors=lifecycle_source_errors,
+            lifecycle_records=lifecycle_records,
+            project_root=project,
+            run_id=current_run,
+            dimensions=dimensions,
+            delivery_records=[],
+        )
+        return parsed_count, 0
+    try:
+        inventory_pre_bytes = read_bounded_regular_bytes(
+            inventory_path,
+            _NICHE_FINDING_ARTIFACT_MAX_BYTES,
+            require_single_link=True,
+        )
+        inv_text = inventory_pre_bytes.decode("utf-8", errors="replace")
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            "NICHE_INVENTORY_CAPTURE_UNSAFE: findings_inventory.md"
+        ) from exc
+    historical_action_payloads = (
+        [row["action_payload"] for row in prior_authority["action_history"]]
+        if prior_authority is not None
+        else list((prior or {}).get("actions", []))
+    )
+    prior_delivery_records = _validated_niche_delivery_records(
+        inv_text,
+        historical_action_payloads,
+        authority_records=(
+            prior_authority.get("delivery_records", [])
+            if prior_authority is not None
+            else ()
+        ),
+    )
+    structural_referents = _inventory_niche_action_referents(
+        prior_delivery_records
+    )
+    removed_action_errors, lifecycle_records = _reconcile_niche_removed_actions(
+        scratchpad, parsed_all, prior, delivered=structural_referents
+    )
+    lifecycle_source_errors.extend(removed_action_errors)
     receipt_path = scratchpad / "niche_promotion_receipt.md"
-    already_promoted: set[str] = set()
-    if receipt_path.exists():
-        try:
-            for line in receipt_path.read_text(encoding="utf-8", errors="replace").splitlines():
-                m = re.search(r"\b([A-Z]{2,6}-\d+)\s*->\s*INV-\d+", line)
-                if m:
-                    already_promoted.add(m.group(1))
-        except Exception:
-            pass
+    already_promoted: set[str] = set(structural_referents)
 
-    parsed = _parse_niche_findings(scratchpad)
-    new_entries = [e for e in parsed if e["source_id"] not in already_promoted]
+    def _identity_debt_receipt_lines() -> list[str]:
+        if not identity_debts:
+            return []
+        lines = ["", "## Identity Reconciliation Debt", ""]
+        lines.extend(
+            f"- {entry['source_action_identity']} | {entry['source_id']} | "
+            f"status={entry['identity_status']} | "
+            f"debt={entry['identity_debt']} | source={entry['source_file']} | "
+            "authority=false | quarantine=true"
+            for entry in identity_debts
+        )
+        return lines
+
+    # Only immutable typed delivery records are idempotence authority. Raw
+    # inventory structure and the Markdown receipt remain evidence, so a bare
+    # or mismatched Source Action Identity cannot suppress real promotion.
+    new_entries = [
+        entry for entry in parsed
+        if entry["source_action_identity"] not in already_promoted
+    ]
     if not new_entries:
-        return len(parsed), 0
+        # Rebuild the human-readable projection from the authenticated typed
+        # delivery records. The receipt itself never enters this decision.
+        recovered = [
+            (
+                entry["source_action_identity"],
+                entry["source_id"],
+                sorted(
+                    structural_referents.get(
+                        entry["source_action_identity"], set()
+                    )
+                )[0],
+            )
+            for entry in parsed
+            if structural_referents.get(entry["source_action_identity"])
+        ]
+        if recovered or identity_debts:
+            receipt_lines = [
+                "# Niche Promotion Receipt",
+                "",
+                f"Parsed niche findings: {parsed_count}",
+                f"Already promoted (structural recovery): {len(recovered)}",
+                "Newly appended this run: 0",
+                "",
+                "## Source-to-Inventory ID Mapping",
+                "",
+            ]
+            receipt_lines.extend(
+                f"- {action_identity} | {source_id} -> {inventory_id} "
+                "(recovered from exact Source Action Identity)"
+                for action_identity, source_id, inventory_id in recovered
+            )
+            receipt_lines.extend(_identity_debt_receipt_lines())
+            rendered = "\n".join(receipt_lines) + "\n"
+            if receipt_path.exists():
+                try:
+                    prior_text = receipt_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    receipt_path.write_text(
+                        prior_text.rstrip() + "\n\n## Re-Run\n\n" + rendered,
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    receipt_path.write_text(rendered, encoding="utf-8")
+            else:
+                receipt_path.write_text(rendered, encoding="utf-8")
+        _finalize_niche_lifecycle_authority(
+            root,
+            retained_capture=retained_capture,
+            parsed_all=parsed_all,
+            lifecycle_source_errors=lifecycle_source_errors,
+            lifecycle_records=lifecycle_records,
+            project_root=project,
+            run_id=current_run,
+            dimensions=dimensions,
+            delivery_records=prior_delivery_records,
+        )
+        return parsed_count, 0
 
     # Find highest existing INV-NNN to continue numbering
-    try:
-        inv_text = inventory_path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return len(parsed), 0
     max_inv = 0
     for m in re.finditer(r"\bINV-(\d+)\b", inv_text):
         try:
@@ -6844,6 +12356,7 @@ def promote_niche_to_inventory(scratchpad: Path) -> tuple[int, int]:
     # Build appended entries
     appended_lines: list[str] = []
     mapping_lines: list[str] = []
+    new_inventory_ids: set[str] = set()
     for idx, entry in enumerate(new_entries, start=1):
         inv_n = max_inv + idx
         title = entry["title"] or "Untitled niche finding"
@@ -6878,6 +12391,11 @@ def promote_niche_to_inventory(scratchpad: Path) -> tuple[int, int]:
             f"**Location**: {loc}",
             f"**Preferred Tag**: {tag}",
             f"**Source IDs**: {entry['source_id']} (niche-promoted from {entry['source_file']})",
+            f"**Primary Artifact**: {entry['source_file']}",
+            f"**Source Artifact Hash**: sha256:{entry['source_sha256']}",
+            f"**Source Byte Range**: {entry['source_byte_start']}-{entry['source_byte_end']}",
+            f"**Source Block SHA256**: {entry['source_block_sha256']}",
+            f"**Source Action Identity**: {entry['source_action_identity']}",
             f"**Verdict**: NEEDS_VERIFICATION",
             f"**Root Cause**: {title}",
             f"**Description**: {desc}",
@@ -6885,9 +12403,10 @@ def promote_niche_to_inventory(scratchpad: Path) -> tuple[int, int]:
             "",
         ])
         mapping_lines.append(
-            f"- {entry['source_id']} -> {inv_id} "
+            f"- {entry['source_action_identity']} | {entry['source_id']} -> {inv_id} "
             f"({entry['source_file']}: {title[:80]})"
         )
+        new_inventory_ids.add(inv_id.upper())
 
     # Append to inventory (preserve trailing newline behavior)
     section_header = (
@@ -6900,13 +12419,43 @@ def promote_niche_to_inventory(scratchpad: Path) -> tuple[int, int]:
     )
     existing = inv_text.rstrip()
     new_text = existing + section_header + "\n".join(appended_lines) + "\n"
-    inventory_path.write_text(new_text, encoding="utf-8")
+    if len(new_text.encode("utf-8")) > _NICHE_FINDING_ARTIFACT_MAX_BYTES:
+        raise RuntimeError(
+            "NICHE_INVENTORY_PUBLICATION_OVER_LIMIT: findings_inventory.md"
+        )
+    try:
+        current_inventory = read_bounded_regular_bytes(
+            inventory_path,
+            _NICHE_FINDING_ARTIFACT_MAX_BYTES,
+            require_single_link=True,
+        ).decode("utf-8", errors="replace")
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            "NICHE_INVENTORY_CAPTURE_UNSAFE: findings_inventory.md"
+        ) from exc
+    if current_inventory != inv_text:
+        raise RuntimeError(
+            "NICHE_INVENTORY_CAPTURE_CHANGED_BEFORE_PUBLICATION"
+        )
+    combined_action_payloads = {
+        str(row.get("source_action_identity") or ""): row
+        for row in historical_action_payloads
+    }
+    combined_action_payloads.update({
+        str(row.get("source_action_identity") or ""): row for row in parsed_all
+    })
+    delivery_records = _validated_niche_delivery_records(
+        new_text,
+        list(combined_action_payloads.values()),
+        authority_records=prior_delivery_records,
+        newly_written_inventory_ids=new_inventory_ids,
+    )
 
     # Receipt for idempotency
     receipt_lines = [
         "# Niche Promotion Receipt",
         "",
-        f"Parsed niche findings: {len(parsed)}",
+        f"Parsed niche findings: {parsed_count}",
         f"Already promoted (prior attempt): {len(already_promoted)}",
         f"Newly appended this run: {len(new_entries)}",
         "",
@@ -6914,6 +12463,7 @@ def promote_niche_to_inventory(scratchpad: Path) -> tuple[int, int]:
         "",
     ]
     receipt_lines.extend(mapping_lines)
+    receipt_lines.extend(_identity_debt_receipt_lines())
     receipt_lines.append("")
     # Preserve prior mappings across retries
     if receipt_path.exists():
@@ -6929,12 +12479,44 @@ def promote_niche_to_inventory(scratchpad: Path) -> tuple[int, int]:
     else:
         receipt_path.write_text("\n".join(receipt_lines), encoding="utf-8")
 
-    # Re-write finding records sidecar so downstream consumers see niche entries
+    inventory_publication_capability: object | None = None
+    try:
+        inventory_publication_capability = (
+            _issue_niche_inventory_publication_capability(
+                root,
+                project_root=project,
+                run_id=current_run,
+                dimensions=dimensions,
+                expected_pre_bytes=inventory_pre_bytes,
+                expected_post_bytes=new_text.encode("utf-8"),
+                max_bytes=_NICHE_FINDING_ARTIFACT_MAX_BYTES,
+            )
+        )
+        _finalize_niche_lifecycle_authority(
+            root,
+            retained_capture=retained_capture,
+            parsed_all=parsed_all,
+            lifecycle_source_errors=lifecycle_source_errors,
+            lifecycle_records=lifecycle_records,
+            project_root=project,
+            run_id=current_run,
+            dimensions=dimensions,
+            delivery_records=delivery_records,
+            inventory_publication_capability=inventory_publication_capability,
+        )
+    finally:
+        if inventory_publication_capability is not None:
+            _discard_niche_inventory_publication_capability(
+                inventory_publication_capability
+            )
+
+    # Re-write finding records only after the immutable delivery authority is
+    # current.  This mutable sidecar cannot certify the publication.
     try:
         _write_finding_records_from_inventory(scratchpad)
     except Exception:
         pass
-    return len(parsed), len(new_entries)
+    return parsed_count, len(new_entries)
 
 
 # Blind-spot scanner finding IDs: BLIND-A1, BLIND-B3, BLIND-C5 (per-scanner
@@ -6943,6 +12525,12 @@ def promote_niche_to_inventory(scratchpad: Path) -> tuple[int, int]:
 _BLIND_SPOT_HEADING_RE = re.compile(
     r"^#{2,4}\s*Finding\s*\[\s*(?P<id>BLIND-[A-Z]?\d+)\s*\]\s*:\s*(?P<title>.+?)\s*$",
     re.MULTILINE,
+)
+_BLIND_SPOT_REQUIRED_FIELDS = (
+    "Severity",
+    "Location",
+    "Description",
+    "Impact",
 )
 
 
@@ -6962,7 +12550,10 @@ def _parse_blind_spot_findings(scratchpad: Path) -> list[dict[str, str]]:
             start = m.start()
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
             block = text[start:end]
-            if not all(f"**{field}**" in block for field in _NICHE_REQUIRED_FIELDS):
+            if not all(
+                f"**{field}**" in block
+                for field in _BLIND_SPOT_REQUIRED_FIELDS
+            ):
                 continue
             fid = m.group("id").strip()
             title = m.group("title").strip()
@@ -7023,18 +12614,19 @@ def promote_blind_spot_to_inventory(scratchpad: Path) -> tuple[int, int]:
         return 0, 0
 
     receipt_path = scratchpad / "blind_spot_promotion_receipt.md"
+    structural_sources = set(_inventory_structural_source_referents(inv_text))
     already_promoted: set[str] = set()
     if receipt_path.exists():
         try:
             for line in receipt_path.read_text(encoding="utf-8", errors="replace").splitlines():
                 mm = re.search(r"\b(BLIND-[A-Z]?\d+)\s*->\s*INV-\d+", line)
-                if mm:
+                if mm and mm.group(1).upper() in structural_sources:
                     already_promoted.add(mm.group(1))
         except Exception:
             pass
 
     def _already_in_inventory(bid: str) -> bool:
-        return re.search(rf"\b{re.escape(bid)}\b", inv_text) is not None
+        return bid.upper() in structural_sources
 
     # LEAKED = a parsed BLIND id that is NOT already accounted in the inventory
     # (as a Source ID / heading) AND not already recovered on a prior attempt.
@@ -7125,50 +12717,7 @@ def promote_blind_spot_to_inventory(scratchpad: Path) -> tuple[int, int]:
 
 
 _ATTENTION_REPAIR_MAX_ITEMS = 32
-
-
-_SECURITY_OBLIGATION_RULES: tuple[dict[str, object], ...] = (
-    {
-        "class": "asset_binding",
-        "pattern": r"\b(?:asset|token|coin|amount|balance|transfer|swap|route|path|toToken|fromToken|target)\b",
-        "question": "Are asset-in, asset-out, recipient, and amount fields bound to trusted execution context before value moves?",
-    },
-    {
-        "class": "swap_execution",
-        "pattern": r"\b(?:swap|router|pool|pair|quote|min(?:imum)?(?:Amount)?Out|slippage|path|reserve)\b",
-        "question": "Can swap execution, pool selection, min-out checks, or approval/execution amounts diverge from the value path?",
-    },
-    {
-        "class": "refund_revert",
-        "pattern": r"\b(?:refund|revert|rollback|onRevert|failed|return(?:ed)?\s+funds?|fallback)\b",
-        "question": "Is the refund recipient derived from authenticated source context and the original asset custody path?",
-    },
-    {
-        "class": "cross_domain_message",
-        "pattern": r"\b(?:bridge|cross[-_ ]?chain|gateway|message|payload|decode|encode|source|sender|chainid|xcall|cpi)\b",
-        "question": "Are decoded message fields, source chain, and source sender authenticated before privileged state/value effects?",
-    },
-    {
-        "class": "native_wrapped_asset",
-        "pattern": r"\b(?:native|wrapped|wrap|unwrap|deposit|withdraw|msg\.value|payable|sentinel|WETH|W[ A-Z0-9_]*|gas token)\b",
-        "question": "Are native-asset and token-contract branches separated so approve/transfer/wrap/unwrap/accounting cannot mismatch?",
-    },
-    {
-        "class": "external_call_surface",
-        "pattern": r"\b(?:call|delegatecall|staticcall|callback|hook|receiver|external\s+call|arbitrary\s+target|target\s+address)\b",
-        "question": "Can untrusted call targets, callbacks, hooks, or reentrant external effects violate state or value assumptions?",
-    },
-    {
-        "class": "privileged_exit",
-        "pattern": r"\b(?:admin|owner|governance|role|permission|onlyOwner|withdraw|sweep|rescue|emergency|upgrade)\b",
-        "question": "Are privileged exits, rescue paths, and upgrades access-controlled and constrained to intended assets/recipients?",
-    },
-    {
-        "class": "encoding_schema",
-        "pattern": r"\b(?:abi\.decode|decode|deserialize|serialize|bytes\d*|address\(|cast|length|schema|struct|layout|endianness)\b",
-        "question": "Do encoded/decoded schemas preserve field widths, ordering, permissions, and address formats across boundaries?",
-    },
-)
+_ATTENTION_EXACT_SCOPE_MAX_FILES = 512
 
 
 _FACET_KEYWORDS: tuple[tuple[str, str], ...] = (
@@ -7185,126 +12734,43 @@ _FACET_KEYWORDS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _read_security_signal_text(scratchpad: Path) -> str:
-    names = (
-        "recon_summary.md", "design_context.md", "attack_surface.md",
-        "detected_patterns.md", "template_recommendations.md",
-        "contract_inventory.md", "external_interfaces.md",
-        "integration_points.md", "function_summary.md", "caller_map.md",
-        "callee_map.md", "state_write_map.md", "opengrep_findings.md",
-        "findings_inventory.md",
-    )
-    chunks: list[str] = []
-    for name in names:
-        p = scratchpad / name
-        if not p.exists() or not p.is_file():
-            continue
-        try:
-            chunks.append(p.read_text(encoding="utf-8", errors="replace")[:120_000])
-        except Exception:
-            continue
-    return "\n".join(chunks)
+def _write_security_obligations(
+    scratchpad: Path,
+    mode: str = "core",
+    *,
+    ecosystem: str = "",
+    run_id: str = "",
+    source_snapshot_digest: str = "",
+    stage: str = "post_depth",
+) -> int:
+    """Write the typed P1-C authority and its Markdown projection.
 
-
-def _write_security_obligations(scratchpad: Path, mode: str = "core") -> int:
-    """Write generic feature-triggered audit obligations.
-
-    These are target-shape obligations, not benchmark hints. They are derived
-    from recon/graph/static artifacts and ask broad methodology questions that
-    downstream agents must answer or carry forward.
+    The return value counts rule-owned security obligations, excluding the
+    additive SO-000 substrate/authority debt row.  Queue construction reads
+    the JSON authority through ``_parse_security_obligation_items`` below.
     """
-    signal_text = _llm_norm(_read_security_signal_text(scratchpad))
-    out = scratchpad / "security_obligations.md"
-    if not signal_text.strip():
-        out.write_text(
-            "# Security Obligations\n\n"
-            "**Status**: SKIPPED - no recon or graph signal artifacts available.\n",
-            encoding="utf-8",
-        )
-        return 0
-
-    obligations: list[dict[str, str]] = []
-    for rule in _SECURITY_OBLIGATION_RULES:
-        pattern = str(rule["pattern"])
-        matches = list(re.finditer(pattern, signal_text, re.IGNORECASE))
-        if not matches:
-            continue
-        snippets: list[str] = []
-        for m in matches[:3]:
-            start = max(0, m.start() - 80)
-            end = min(len(signal_text), m.end() + 80)
-            snippet = re.sub(r"\s+", " ", signal_text[start:end]).strip()
-            if snippet:
-                snippets.append(snippet.replace("|", "/"))
-        obligations.append({
-            "id": f"SO-{len(obligations) + 1:03d}",
-            "class": str(rule["class"]),
-            "question": str(rule["question"]),
-            "signals": " ; ".join(snippets[:3]) or "(signal present)",
-        })
-
-    lines = [
-        "# Security Obligations",
-        "",
-        "Generated mechanically from recon, graph, inventory, and static-analysis "
-        "signals. These are generic vulnerability-class obligations. They are "
-        "not expected findings and must not be treated as protocol-specific "
-        "answers.",
-        "",
-        f"**Mode**: {mode}",
-        f"**Count**: {len(obligations)}",
-        "",
-        "| Obligation ID | Class | Audit Question | Trigger Signals |",
-        "|---------------|-------|----------------|-----------------|",
-    ]
-    if obligations:
-        for item in obligations:
-            lines.append(
-                f"| {item['id']} | {item['class']} | {item['question']} | {item['signals']} |"
-            )
-    else:
-        lines.append("| n/a | none | No generic feature obligations triggered. | n/a |")
-    lines.extend([
-        "",
-        "## Receipt Contract",
-        "",
-        "When a later phase directly evaluates an obligation, it may emit:",
-        "",
-        "`[OBLIG:security_obligations.md:<SO-ID>] STATUS:R|D|C KEY:<summary> -> <finding_id|reason|phase>`",
-        "",
-        "`R` means reported, `D` means dismissed with evidence, and `C` means "
-        "carried to a named later phase. Missing receipts are telemetry unless "
-        "a dedicated phase explicitly consumes this file.",
-    ])
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return len(obligations)
+    payload = _write_security_obligation_authority(
+        Path(scratchpad),
+        mode=str(mode or "core"),
+        ecosystem=str(ecosystem or ""),
+        run_id=str(run_id or ""),
+        source_snapshot_digest=str(source_snapshot_digest or ""),
+        stage=str(stage or "post_depth"),
+    )
+    return sum(
+        1
+        for row in payload.get("obligations", [])
+        if isinstance(row, dict) and row.get("display_id") != "SO-000"
+    )
 
 
 def _parse_security_obligation_items(scratchpad: Path) -> list[dict[str, str]]:
-    path = scratchpad / "security_obligations.md"
-    if not path.exists():
-        return []
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return []
-    items: list[dict[str, str]] = []
-    for line in text.splitlines():
-        s = line.strip()
-        if not s.startswith("|") or _is_separator_row(s):
-            continue
-        cells = [c.strip().strip("`") for c in s.strip("|").split("|")]
-        if len(cells) < 4 or cells[0].lower().startswith("obligation"):
-            continue
-        if not re.fullmatch(r"SO-\d{3}", cells[0], re.IGNORECASE):
-            continue
-        items.append({
-            "id": cells[0].upper(),
-            "class": cells[1],
-            "question": cells[2],
-            "signals": cells[3],
-        })
-    return items
+    """Read only current, non-accounted rows from typed P1-C authority.
+
+    A corrupt/missing authority returns one SO-000 review row; it never falls
+    back to reconstructing methodology decisions from the Markdown view.
+    """
+    return _read_queueable_security_obligations(Path(scratchpad))
 
 
 def _composition_obligation_rows(scratchpad: Path) -> list[dict[str, object]]:
@@ -7407,8 +12873,10 @@ def _composition_obligation_rows(scratchpad: Path) -> list[dict[str, object]]:
     return rows
 
 
-def _render_deferred_chain_notes(scratchpad: Path) -> set[str]:
-    """Emit ONE clean deferred-High note per un-queue-able justified chain.
+def _deferred_chain_notes_projection(
+    scratchpad: Path,
+) -> tuple[set[str], bytes | None]:
+    """Compute ONE clean deferred-High note per un-queue-able justified chain.
 
     A chain that `chain_hypotheses.md` upgraded to High/Critical with a
     justified Combined-Impact is a genuine compound finding. When it is
@@ -7433,7 +12901,7 @@ def _render_deferred_chain_notes(scratchpad: Path) -> set[str]:
     except Exception:
         forced = {}
     if not forced:
-        return set()
+        return set(), None
     # Verify-queue ID set: the chains that already have a body/verification home.
     queue_ids: set[str] = set()
     try:
@@ -7455,7 +12923,7 @@ def _render_deferred_chain_notes(scratchpad: Path) -> set[str]:
             "constituents": constituents,
         }
     if not deferred:
-        return set()
+        return set(), None
 
     lines = ["# Report Semantic Chain Deferred", ""]
     lines.append(
@@ -7476,16 +12944,28 @@ def _render_deferred_chain_notes(scratchpad: Path) -> set[str]:
             f"— needs verification: {cid} = {joined}"
         )
     lines.append("")
-    try:
-        (scratchpad / "report_semantic_chain_deferred.md").write_text(
-            "\n".join(lines) + "\n", encoding="utf-8"
-        )
-    except Exception:
-        pass
-    return set(deferred.keys())
+    raw = ("\n".join(lines) + "\n").encode("utf-8")
+    return set(deferred.keys()), raw
 
 
-def _write_obligation_ledger(scratchpad: Path, mode: str) -> int:
+def _render_deferred_chain_notes(scratchpad: Path) -> set[str]:
+    """Legacy standalone projection writer retained for direct callers/tests."""
+
+    deferred, raw = _deferred_chain_notes_projection(Path(scratchpad))
+    if raw is not None:
+        try:
+            (Path(scratchpad) / "report_semantic_chain_deferred.md").write_bytes(raw)
+        except Exception:
+            pass
+    return deferred
+
+
+def _write_obligation_ledger(
+    scratchpad: Path,
+    mode: str,
+    *,
+    emit_deferred_report: bool = True,
+) -> int:
     """Write a typed, protocol-neutral obligation ledger.
 
     The ledger is a deterministic retention contract, not a detector. Classes
@@ -7501,7 +12981,13 @@ def _write_obligation_ledger(scratchpad: Path, mode: str) -> int:
     # each, then mark the matching obligation rows `covered` so the retention
     # gate is satisfied and no `UNACCOUNTED-OBLIGATION` clone is produced.
     try:
-        deferred_chain_ids = _render_deferred_chain_notes(scratchpad)
+        deferred_chain_ids, _deferred_report_bytes = (
+            _deferred_chain_notes_projection(scratchpad)
+        )
+        if emit_deferred_report and _deferred_report_bytes is not None:
+            (Path(scratchpad) / "report_semantic_chain_deferred.md").write_bytes(
+                _deferred_report_bytes
+            )
     except Exception:
         deferred_chain_ids = set()
     if deferred_chain_ids:
@@ -7622,9 +13108,7 @@ def _extract_candidate_facets(text: str) -> dict[str, list[str]]:
 
 
 def _write_candidate_semantic_facets(scratchpad: Path) -> int:
-    rows = parse_verification_queue_rows(scratchpad)
-    if not rows:
-        return 0
+    rows = _report_candidate_universe_rows(scratchpad)
     finding_record_maps = _load_finding_record_maps(scratchpad)
     records: list[dict[str, object]] = []
     for row in rows:
@@ -7637,6 +13121,9 @@ def _write_candidate_semantic_facets(scratchpad: Path) -> int:
             row.get("severity", ""),
             row.get("title", ""),
             row.get("location", ""),
+            row.get("claim premise", ""),
+            row.get("claim harm", ""),
+            row.get("claim evidence", ""),
         ]
         if record:
             for key in ("title", "root_cause", "description", "impact", "location"):
@@ -7657,8 +13144,6 @@ def _write_candidate_semantic_facets(scratchpad: Path) -> int:
             "location": row.get("location", ""),
             "facets": facets,
         })
-    if not records:
-        return 0
     payload = {
         "schema_version": "plamen.candidate_semantic_facets.v1",
         "candidate_count": len(records),
@@ -7688,6 +13173,8 @@ def _write_candidate_semantic_facets(scratchpad: Path) -> int:
             f"{', '.join(facets.get('decoded_fields', [])) or '-'} | "
             f"{', '.join(facets.get('entrypoints', [])) or '-'} |"
         )
+    if not records:
+        lines.extend(("", "0 candidates; explicit empty denominator."))
     (scratchpad / "candidate_semantic_facets.md").write_text(
         "\n".join(lines) + "\n",
         encoding="utf-8",
@@ -7808,7 +13295,18 @@ def _extract_graph_attention_rows(scratchpad: Path) -> list[dict[str, str]]:
     return rows
 
 
-def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str, str]]:
+def _build_attention_repair_items(
+    scratchpad: Path,
+    mode: str,
+    *,
+    scope_file: str | None = None,
+    scope_match_mode: str = "legacy",
+    pipeline: str = "l1",
+    language: str = "",
+) -> list[dict[str, str]]:
+    exact_scope_authority = (
+        normalize_scope_match_mode(scope_match_mode) == "exact"
+    )
     items: list[dict[str, str]] = []
     seen_targets: set[str] = set()
     cap_rows: list[dict] = []
@@ -7826,33 +13324,40 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
             })
             seen_targets.add(key)
 
-    # Generic discovery obligations are cheap to derive and intentionally
-    # protocol-agnostic. They become active repair rows only in Thorough mode;
-    # Light/Core still get the sidecar for downstream prompt context without
-    # adding a new LLM repair spend.
-    try:
-        _write_security_obligations(scratchpad, mode)
-    except Exception:
-        pass
+    # P1-C cutover: attention repair is a read-only consumer of the bound
+    # post-depth authority.  Re-deriving here would silently transfer semantic
+    # ownership away from the two driver PhaseIO transactions and could account
+    # receipts against a different input snapshot.
     if mode == "thorough":
         obligations = _parse_security_obligation_items(scratchpad)
-        if len(obligations) > 10:
-            cap_rows.append(shortfall(
-                producer=producer,
-                scope="security-obligations",
-                cap="ATTENTION_SECURITY_OBLIGATIONS",
-                limit=10,
-                observed=len(obligations),
-                retained=10,
-                exact=True,
-                samples=[row.get("id", "") for row in obligations[10:]],
-                detail="security obligations were omitted from the attention-repair queue",
-            ))
-        for obligation in obligations[:10]:
+        # Exact security aliases are mandatory application work, not optional
+        # prioritization hints. Never drop alias 11+ from the repair queue.
+        for obligation in obligations:
+            exact_target = obligation.get("alias_id") or obligation["id"]
+            relation_context = "; ".join(
+                part
+                for part in (
+                    f"parent={obligation['id']}",
+                    (
+                        f"symbol={obligation.get('symbol')}"
+                        if obligation.get("symbol")
+                        else ""
+                    ),
+                    (
+                        f"object={obligation.get('object_id')}"
+                        if obligation.get("object_id")
+                        else ""
+                    ),
+                )
+                if part
+            )
             add(
                 "security-obligation",
-                obligation["id"],
-                f"{obligation['class']}: {obligation['question']}",
+                exact_target,
+                (
+                    f"{obligation['class']}: {obligation['question']}"
+                    + (f" ({relation_context})" if relation_context else "")
+                ),
                 "security_obligations.md",
                 obligation.get("signals", ""),
             )
@@ -7909,7 +13414,13 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
             for p in _extract_gap_paths_from_markdown(text):
                 add("notread-file", p, "recon marked file NOTREAD and depth cited no evidence", gap_file.name)
 
-    cov = _compute_scip_coverage_sets(scratchpad)
+    cov = _compute_scip_coverage_sets(
+        scratchpad,
+        scope_file=scope_file,
+        scope_match_mode=scope_match_mode,
+        pipeline=pipeline,
+        language=language,
+    )
     _write_spec_expectations(
         scratchpad,
         cov.get("spec_support_indexed", set()) if isinstance(cov, dict) else set(),
@@ -7920,7 +13431,30 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
             uncited,
             key=lambda p: (-_path_security_weight(str(p)), str(p)),
         )
-        if len(ranked) > 16:
+        if exact_scope_authority:
+            ranked_window = ranked[:_ATTENTION_EXACT_SCOPE_MAX_FILES]
+            if len(ranked) > _ATTENTION_EXACT_SCOPE_MAX_FILES:
+                cap_rows.append(shortfall(
+                    producer=producer,
+                    scope="exact-scope-uncited-files",
+                    cap="ATTENTION_EXACT_SCOPE_MAX_FILES",
+                    limit=_ATTENTION_EXACT_SCOPE_MAX_FILES,
+                    observed=len(ranked),
+                    retained=len(ranked_window),
+                    exact=True,
+                    samples=[
+                        str(path)
+                        for path in ranked[_ATTENTION_EXACT_SCOPE_MAX_FILES:]
+                    ],
+                    detail=(
+                        "authorized exact-scope files exceeded the global "
+                        "safety ceiling; omitted rows remain explicit final "
+                        "coverage debt and cannot be reported COMPLETE"
+                    ),
+                ))
+        else:
+            ranked_window = ranked[:16]
+        if not exact_scope_authority and len(ranked) > 16:
             cap_rows.append(shortfall(
                 producer=producer,
                 scope="uncited-security-files",
@@ -7932,9 +13466,12 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
                 samples=[str(path) for path in ranked[16:]],
                 detail="uncited production files were omitted from attention repair",
             ))
-        ranked_window = ranked[:16]
         for ranked_idx, p in enumerate(ranked_window):
-            if _path_security_weight(str(p)) <= 0 and len(items) >= 8:
+            if (
+                not exact_scope_authority
+                and _path_security_weight(str(p)) <= 0
+                and len(items) >= 8
+            ):
                 cap_rows.append(shortfall(
                     producer=producer,
                     scope="uncited-low-weight-policy",
@@ -7951,8 +13488,18 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
             add(
                 "uncited-security-file",
                 str(p),
-                "strict SCIP citation coverage did not touch this security-relevant file",
-                "scip/repo_map.md",
+                (
+                    "exact scope citation coverage did not touch this "
+                    "authorized file"
+                    if exact_scope_authority
+                    else "strict SCIP citation coverage did not touch this "
+                    "security-relevant file"
+                ),
+                (
+                    Path(scope_file).name
+                    if exact_scope_authority and scope_file
+                    else "scip/repo_map.md"
+                ),
             )
 
     graph_rows = _extract_graph_attention_rows(scratchpad)
@@ -7971,28 +13518,69 @@ def _build_attention_repair_items(scratchpad: Path, mode: str) -> list[dict[str,
     for row in graph_rows[:12]:
         add(row["kind"], row["target"], row["reason"], row["source"], row["evidence"])
 
-    if len(items) > _ATTENTION_REPAIR_MAX_ITEMS:
+    security_items = [
+        row for row in items if row.get("kind") == "security-obligation"
+    ]
+    exact_scope_items = [
+        row for row in items
+        if exact_scope_authority
+        and row.get("kind") == "uncited-security-file"
+    ]
+    optional_items = [
+        row for row in items
+        if row.get("kind") != "security-obligation"
+        and row not in exact_scope_items
+    ]
+    optional_budget = max(
+        0,
+        _ATTENTION_REPAIR_MAX_ITEMS
+        - len(security_items)
+        - len(exact_scope_items),
+    )
+    retained_optional = optional_items[:optional_budget]
+    retained_items = security_items + exact_scope_items + retained_optional
+    if len(retained_optional) < len(optional_items):
         cap_rows.append(shortfall(
             producer=producer,
-            scope="final-repair-queue",
-            cap="ATTENTION_REPAIR_MAX_ITEMS",
-            limit=_ATTENTION_REPAIR_MAX_ITEMS,
-            observed=len(items),
-            retained=_ATTENTION_REPAIR_MAX_ITEMS,
+            scope="final-optional-repair-queue",
+            cap="ATTENTION_OPTIONAL_REPAIR_MAX_ITEMS",
+            limit=optional_budget,
+            observed=len(optional_items),
+            retained=len(retained_optional),
             exact=True,
-            samples=[row.get("target", "") for row in items[_ATTENTION_REPAIR_MAX_ITEMS:]],
-            detail="attention-repair obligations exceeded the final worker queue budget",
+            samples=[
+                row.get("target", "")
+                for row in optional_items[optional_budget:]
+            ],
+            detail=(
+                "optional attention-repair rows exceeded the remaining worker "
+                "queue budget; exact security obligations were retained"
+            ),
         ))
     try:
         replace_producer_shortfalls(scratchpad, producer, cap_rows)
     except Exception:
         pass
-    return items[:_ATTENTION_REPAIR_MAX_ITEMS]
+    return retained_items
 
 
 def _write_attention_repair_queue(scratchpad: Path, items: list[dict[str, str]]) -> None:
+    binding_payload = [
+        {
+            "row": index,
+            "kind": str(item["kind"]),
+            "target": str(item["target"]),
+            "reason": str(item["reason"]),
+            "source": str(item["source"]),
+            "evidence": str(item.get("evidence", "")),
+        }
+        for index, item in enumerate(items, 1)
+    ]
+    queue_binding = attention_queue_binding_sha256(binding_payload)
     lines = [
         "# Attention Repair Queue",
+        "",
+        f"QUEUE_BINDING_SHA256: {queue_binding}",
         "",
         "This is a deterministic, bounded repair queue. It is not a second",
         "breadth/depth pass. Audit only these rows, preserve SAFE verdicts,",
@@ -8028,8 +13616,28 @@ def _write_attention_repair_skip(scratchpad: Path, reason: str) -> None:
     )
 
 
-def _prepare_attention_repair(scratchpad: Path, mode: str) -> tuple[bool, str]:
-    items = _build_attention_repair_items(scratchpad, mode)
+def _prepare_attention_repair(
+    scratchpad: Path,
+    mode: str,
+    *,
+    scope_file: str | None = None,
+    scope_match_mode: str = "legacy",
+    pipeline: str = "l1",
+    language: str = "",
+) -> tuple[bool, str]:
+    # The model is never authoritative for application receipts. A retry or a
+    # newly-derived queue invalidates any prior deterministic gate receipt.
+    (scratchpad / "attention_repair_application_receipt.json").unlink(
+        missing_ok=True
+    )
+    items = _build_attention_repair_items(
+        scratchpad,
+        mode,
+        scope_file=scope_file,
+        scope_match_mode=scope_match_mode,
+        pipeline=pipeline,
+        language=language,
+    )
     if not items:
         return False, f"mode={mode}; no NOTREAD, strict-coverage, or graph-row repair queue"
     _write_attention_repair_queue(scratchpad, items)
@@ -8087,16 +13695,26 @@ _SOURCE_IDS_RE = re.compile(
 
 
 def _extract_dedup_absorbed_ids(scratchpad: Path) -> set[str]:
-    """Extract finding IDs that were absorbed by semantic/mechanical dedup.
+    """Extract receipt-accepted semantic/mechanical dedup absorptions.
 
-    Parses ``dedup_decisions.md`` for two formats:
-    - LLM semantic dedup: ``| absorbed_id | MERGED into <survivor> |``
-    - Mechanical fallback/supplement: ``| MECHANICAL_MERGE | absorbed_id | keep_id |``
-      or ``| MECHANICAL_SUPPLEMENT | absorbed_id | keep_id |``
+    Raw ``dedup_decisions.md`` rows are proposals and are never consumed here.
 
     These IDs are no longer standalone candidates — they are accounted for via
     the absorbing survivor.
     """
+    try:
+        from semantic_dedup_authority import load_applied_aliases
+
+        return set(load_applied_aliases(Path(scratchpad)))
+    except Exception as exc:
+        log.warning(
+            "[dedup-authority] coverage cannot trust raw absorbed proposals: %r",
+            exc,
+        )
+        return set()
+
+    # Legacy parser retained below for archaeology only; applied authority
+    # returns above and never consumes raw proposal prose.
     absorbed: set[str] = set()
     for name in ("dedup_decisions.md",):
         path = scratchpad / name
@@ -8215,29 +13833,14 @@ def _collect_raw_candidate_ledger_rows(
 
 
 def _load_poc_demotion_caps(scratchpad: Path) -> dict[str, dict[str, str]]:
-    """Return finding-ID severity caps from poc_demotions.md."""
-    path = scratchpad / "poc_demotions.md"
-    if not path.exists():
-        return {}
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return {}
-    caps: dict[str, dict[str, str]] = {}
-    for line in text.splitlines():
-        if not line.lstrip().startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 5:
-            continue
-        if cells[0].lower() == "finding id" or set(cells[0]) <= {"-"}:
-            continue
-        caps[cells[0]] = {
-            "capped_at": normalize_severity(cells[2]),
-            "poc_class": cells[3],
-            "reason": cells[4],
-        }
-    return caps
+    """Return live typed PoC-negative severity caps.
+
+    No such authority is cut over.  The former Markdown table represented an
+    execution-scope proposal and is intentionally inert, including on resume
+    from a scratchpad that still contains ``poc_demotions.md``.
+    """
+    _ = scratchpad
+    return {}
 
 
 # ── ZERO-DATA-LOSS mechanical dedup support (v2.9 dedup throughput upgrade) ──
@@ -8379,11 +13982,15 @@ def _dedup_parse_finding_info(text: str) -> dict[str, dict]:
             "evidence": evidence,
             "title": title,
             "kind": "sc",
-            "block": f"### Finding [{fid}]: {title}\n{body}".rstrip(),
+            # Preserve the exact source bytes.  P0-Q's field-complete applied
+            # receipt hashes the original block and requires the absorbed
+            # member card to reconstruct those bytes exactly.
+            "block": m.group(0),
         }
 
     # --- L1 queue rows ---
-    lines = text.splitlines()
+    # Preserve exact row terminators for the field-complete member card.
+    lines = text.splitlines(keepends=True)
     header_keys: dict[int, str] | None = None
     for raw in lines:
         line = raw.strip()
@@ -8434,8 +14041,38 @@ def _dedup_parse_finding_info(text: str) -> dict[str, dict]:
             "title": title,
             "kind": "l1",
             "row": raw,
+            "row_values": dict(row_vals),
+            "header_keys": dict(header_keys or {}),
         }
     return info
+
+
+def _dedup_l1_delivery_compatible(absorb: dict, keep: dict) -> bool:
+    """True when every canonical L1 row field can reach the survivor shard.
+
+    Verify workers consume the bounded shard row, not the preserved-member
+    card that lives outside the queue table.  Title and evidence-debt cells are
+    explicitly coupled by ``_couple_absorbed_into_survivor_row``; location,
+    severity, and preferred evidence have their own mechanical union rules.
+    Every other canonical executable field (notably Primary Artifact, bug
+    class, and PoC class) must already agree or the merge is vetoed so both
+    findings retain independent verification jobs.
+    """
+    a_values = dict(absorb.get("row_values") or {})
+    k_values = dict(keep.get("row_values") or {})
+    mechanically_coupled = {
+        "finding id", "queue", "title", "location", "severity",
+        "preferred tag", "evidence debt",
+    }
+    for key, raw_value in a_values.items():
+        if key in mechanically_coupled:
+            continue
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        if value != str(k_values.get(key, "") or "").strip():
+            return False
+    return True
 
 
 def _dedup_survivor_superset_ok(absorb: dict, keep: dict) -> bool:
@@ -8462,6 +14099,10 @@ def _dedup_survivor_superset_ok(absorb: dict, keep: dict) -> bool:
     """
     a_src = absorb.get("source_ids") or set()
     k_src = keep.get("source_ids") or set()
+
+    if absorb.get("kind") == "l1" and keep.get("kind") == "l1":
+        if not _dedup_l1_delivery_compatible(absorb, keep):
+            return False
 
     # Dimension 1: strict source-ID superset is dispositive across files.
     if a_src and k_src:
@@ -8751,6 +14392,24 @@ def _couple_absorbed_into_survivor_block(
         out.append(f"**Source IDs**: {', '.join(union_src)}")
     if not saw_severity:
         out.append(f"**Severity**: {new_sev}")
+
+    # P0-Q: the short coupling paragraph above is useful to readers but is not
+    # a losslessness proof.  Preserve the absorbed member's exact source block
+    # in a visible, byte-recoverable group card.  The applied-authority receipt
+    # reparses this card and compares every typed field hash before permitting
+    # physical removal or downstream alias propagation.
+    try:
+        from semantic_dedup_authority import preserved_member_card
+
+        card = preserved_member_card({
+            "finding_id": absorb_id,
+            "raw": str(absorb_info.get("block", "")),
+        })
+        out.extend(card.strip("\n").splitlines())
+    except Exception:
+        # The post-transform field gate will veto this merge.  Do not claim
+        # losslessness merely because the best-effort card renderer failed.
+        pass
     return "\n".join(out).rstrip()
 
 
@@ -8790,6 +14449,28 @@ def _couple_absorbed_into_survivor_row(
     )
     # Split into cells preserving the leading/trailing pipe structure.
     cells = row.split("|")
+    a_values = dict(absorb_info.get("row_values") or {})
+    k_values = dict(keep_info.get("row_values") or {})
+    header_keys = dict(keep_info.get("header_keys") or {})
+    # These are canonical fields whose distinct absorbed values have no other
+    # row-level union rule. Keep them directly in the surviving executable row
+    # because L1 verifier shards do not read the out-of-table preservation card.
+    for header_index, key in sorted(header_keys.items()):
+        if key not in {"title", "evidence debt"}:
+            continue
+        absorbed_value = str(a_values.get(key, "") or "").strip()
+        kept_value = str(k_values.get(key, "") or "").strip()
+        if not absorbed_value or absorbed_value.casefold() in kept_value.casefold():
+            continue
+        cell_index = int(header_index) + 1  # leading pipe creates cells[0] == ""
+        if cell_index >= len(cells):
+            continue
+        current = cells[cell_index].strip()
+        coupled = (
+            f"{current} / coupled {absorb_id}: {absorbed_value}"
+            if current else f"coupled {absorb_id}: {absorbed_value}"
+        )
+        cells[cell_index] = cells[cell_index].replace(current, coupled)
     coupled_loc = False
     for i, cell in enumerate(cells):
         cstr = cell.strip()
@@ -8847,6 +14528,7 @@ def _apply_mechanical_dedup_from_pairs(
     Returns the number of merges applied.
     """
     # --- file selection ---
+    pending_path: Path | None = None
     if supplemental:
         pairs_file = scratchpad / "dedup_candidate_pairs_full.md"
         if not pairs_file.exists():
@@ -8856,17 +14538,15 @@ def _apply_mechanical_dedup_from_pairs(
     if not pairs_file.exists():
         return 0
     try:
-        text = pairs_file.read_text(encoding="utf-8", errors="replace")
+        text = pairs_file.read_bytes().decode("utf-8", errors="replace")
     except Exception:
         return 0
 
     # --- parse per-finding info for the aggregate guard + survivor-superset
     #     gate + content coupling. For both fallback and supplemental the
-    #     finding bodies live in the same base file (verification_queue.md for
-    #     L1, findings_inventory.md for SC). ---
-    if phase_name == "semantic_dedup":
-        _finfo_path = scratchpad / "verification_queue.md"
-    elif phase_name == "sc_semantic_dedup":
+    #     finding bodies live in the canonical inventory for both pipelines.
+    #     Semantic dedup precedes queue publication and may not edit a queue.
+    if phase_name in {"semantic_dedup", "sc_semantic_dedup"}:
         _finfo_path = scratchpad / "findings_inventory.md"
     else:
         _finfo_path = None
@@ -8874,7 +14554,7 @@ def _apply_mechanical_dedup_from_pairs(
     if _finfo_path is not None and _finfo_path.exists():
         try:
             finfo = _dedup_parse_finding_info(
-                _finfo_path.read_text(encoding="utf-8", errors="replace")
+                _finfo_path.read_bytes().decode("utf-8", errors="replace")
             )
         except Exception:
             finfo = {}
@@ -8889,19 +14569,64 @@ def _apply_mechanical_dedup_from_pairs(
     present_ids: set[str] | None = None
     live_pairs: set[frozenset[str]] | None = None
     if supplemental:
-        if phase_name == "semantic_dedup":
-            _target = scratchpad / "verification_queue.md"
-        elif phase_name == "sc_semantic_dedup":
+        if phase_name in {"semantic_dedup", "sc_semantic_dedup"}:
             _target = scratchpad / "findings_inventory.md"
         else:
             return 0
         if not _target.exists():
             return 0
-        _target_text = _target.read_text(encoding="utf-8", errors="replace")
-        present_ids = set()
-        for _tl in _target_text.splitlines():
-            for _m in re.finditer(r"\b((?:INV|F)-\d+)\b", _tl):
-                present_ids.add(_m.group(1))
+        pending_path = _target.with_name(
+            _target.name + ".semantic_dedup.pending"
+        )
+        # Crash recovery for the receipt-before-commit window.  The canonical
+        # queue/inventory is never edited until the immutable receipt exists.
+        # If a prior attempt wrote the receipt and durable staged output but
+        # crashed before os.replace, validate that exact output through the
+        # normal receipt chain and finish the atomic commit.  If canonical is
+        # already the receipted output, return the accepted count so the driver
+        # refreshes typed queue/shard projections after a crash between commit
+        # and sidecar regeneration.
+        try:
+            import semantic_dedup_authority as dedup_authority
+
+            supp_receipt = (
+                scratchpad
+                / dedup_authority.SUPPLEMENTAL_RECEIPT_NAME
+            )
+            if supp_receipt.is_file():
+                payload = json.loads(supp_receipt.read_text(encoding="utf-8"))
+                accepted_count = len(payload.get("accepted_absorbed_ids") or [])
+                for candidate, staged in (
+                    (_target, False),
+                    (pending_path, True),
+                ):
+                    if not candidate.is_file():
+                        continue
+                    try:
+                        candidate_text = candidate.read_bytes().decode(
+                            "utf-8", errors="strict"
+                        )
+                        dedup_authority.load_applied_aliases(
+                            scratchpad, canonical_text=candidate_text
+                        )
+                    except Exception:
+                        continue
+                    if staged:
+                        os.replace(candidate, _target)
+                    elif pending_path.exists():
+                        pending_path.unlink()
+                    return accepted_count
+        except Exception as exc:
+            log.warning(
+                "[dedup-authority] supplemental commit recovery deferred; "
+                "will recompute conservatively: %r",
+                exc,
+            )
+        _target_text = _target.read_bytes().decode("utf-8", errors="replace")
+        # Top-level identities only. Field-complete absorbed-member cards retain
+        # lineage IDs inside survivor bodies and must not resurrect those IDs as
+        # independently present supplemental-dedup candidates.
+        present_ids = set(_dedup_parse_finding_info(_target_text))
         # Build exclusion set from the live pairs file (LLM already evaluated)
         _live_file = scratchpad / "dedup_candidate_pairs.md"
         if _live_file.exists():
@@ -9113,18 +14838,13 @@ def _apply_mechanical_dedup_from_pairs(
     # --- remove absorbed finding rows from the target file ---
     if supplemental:
         # In-place: modify the already-swapped file
-        if phase_name == "semantic_dedup":
-            target = scratchpad / "verification_queue.md"
-        elif phase_name == "sc_semantic_dedup":
+        if phase_name in {"semantic_dedup", "sc_semantic_dedup"}:
             target = scratchpad / "findings_inventory.md"
         else:
             return len(final_merges)
     else:
         # Fallback: copy source to deduped target
-        if phase_name == "semantic_dedup":
-            source = scratchpad / "verification_queue.md"
-            target = scratchpad / "verification_queue_deduped.md"
-        elif phase_name == "sc_semantic_dedup":
+        if phase_name in {"semantic_dedup", "sc_semantic_dedup"}:
             source = scratchpad / "findings_inventory.md"
             target = scratchpad / "findings_inventory_deduped.md"
         else:
@@ -9135,8 +14855,81 @@ def _apply_mechanical_dedup_from_pairs(
     read_path = target if supplemental else source
     if not read_path.exists():
         return len(final_merges)
+    input_text = read_path.read_bytes().decode("utf-8", errors="replace")
+    apply_target = target
+    if supplemental:
+        assert pending_path is not None
+        shutil.copy2(read_path, pending_path)
+        apply_target = pending_path
+        _apply_merges_to_inventory(
+            apply_target, apply_target, final_merges, finfo
+        )
+    else:
+        _apply_merges_to_inventory(
+            read_path, apply_target, final_merges, finfo
+        )
 
-    _apply_merges_to_inventory(read_path, target, final_merges, finfo)
+    # P0-Q/P0-S: deterministic fallback/supplemental transforms cross the same
+    # field-complete applied-authority boundary as LLM proposals.  A receipt
+    # failure restores the exact pre-transform bytes, leaving proposal prose
+    # visible but incapable of feeding aliases downstream.
+    receipt_written = False
+    try:
+        import semantic_dedup_authority as dedup_authority
+
+        mechanical_proposals = dedup_authority.proposals_from_merge_candidates(
+            final_merges,
+            source=(
+                "MECHANICAL_SUPPLEMENT"
+                if supplemental
+                else "MECHANICAL_FALLBACK"
+            ),
+        )
+        receipt_kind = (
+            "SUPPLEMENTAL"
+            if supplemental
+            and (scratchpad / dedup_authority.PRIMARY_RECEIPT_NAME).is_file()
+            else "PRIMARY"
+        )
+        dedup_authority.write_applied_receipt(
+            scratchpad,
+            phase_name=phase_name,
+            application_kind=receipt_kind,
+            proposal_text=text,
+            proposal_path=pairs_file.name,
+            proposals=mechanical_proposals,
+            input_text=input_text,
+            output_text=apply_target.read_bytes().decode(
+                "utf-8", errors="replace"
+            ),
+            applied_merges=final_merges,
+        )
+        receipt_written = True
+        if supplemental:
+            # Receipt-first atomic commit. A crash before this line leaves the
+            # canonical candidate set untouched; a crash after receipt but
+            # before replacement is completed by the recovery block above.
+            os.replace(apply_target, target)
+    except Exception as exc:
+        log.warning(
+            "[dedup-authority] mechanical application receipt veto; "
+            "restoring all members: %r",
+            exc,
+        )
+        if supplemental:
+            # Retain a receipted stage for deterministic resume; discard any
+            # unreceipted partial output. Canonical bytes were never changed.
+            if not receipt_written and pending_path is not None:
+                try:
+                    pending_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        else:
+            try:
+                target.write_bytes(input_text.encode("utf-8"))
+            except Exception:
+                pass
+        return 0
 
     return len(final_merges)
 
@@ -9168,7 +14961,7 @@ def _apply_merges_to_inventory(
     """
     if not read_path.exists():
         return 0
-    body = read_path.read_text(encoding="utf-8", errors="replace")
+    body = read_path.read_bytes().decode("utf-8", errors="replace")
     absorbed_to_keep = {absorb: keep for absorb, keep, _ in final_merges}
     absorbed_ids = set(absorbed_to_keep.keys())
 
@@ -9253,9 +15046,36 @@ def _apply_merges_to_inventory(
         if not skip:
             out_lines.append(line)
     deduped = "\n".join(out_lines)
+    # Row-form queues have no safe column in which to inline arbitrary
+    # narrative fields. Append exact, visible absorbed-member cards outside the
+    # table; queue parsers ignore them, while the P0-Q field gate proves every
+    # original column byte remains recoverable before authorizing removal.
+    try:
+        from semantic_dedup_authority import preserved_member_card
+
+        row_cards: list[str] = []
+        for absorbed, _survivor in sorted(absorbed_to_keep.items()):
+            record = finfo.get(absorbed, {})
+            if record.get("kind") != "l1":
+                continue
+            marker = f"PLAMEN_DEDUP_PRESERVED_MEMBER_BEGIN id={absorbed} "
+            if marker in deduped:
+                continue
+            row_cards.append(
+                preserved_member_card({
+                    "finding_id": absorbed,
+                    "raw": str(record.get("row", "")),
+                }).strip("\n")
+            )
+        if row_cards:
+            deduped = deduped.rstrip("\n") + "\n\n## Preserved Dedup Members\n\n" + "\n\n".join(row_cards)
+    except Exception:
+        # Receipt validation will veto and restore the input if a card cannot
+        # be rendered exactly.
+        pass
     if not deduped.endswith("\n"):
         deduped += "\n"
-    target.write_text(deduped, encoding="utf-8")
+    target.write_bytes(deduped.encode("utf-8"))
     return len(final_merges)
 
 
@@ -9366,14 +15186,22 @@ def _apply_llm_group_decisions(scratchpad: Path, phase_name: str) -> int:
     if not dec_path.is_file():
         return 0
     try:
-        text = dec_path.read_text(encoding="utf-8", errors="replace")
+        text = dec_path.read_bytes().decode("utf-8", errors="replace")
     except Exception:
         return 0
+    try:
+        import semantic_dedup_authority as dedup_authority
 
-    if phase_name == "semantic_dedup":
-        source = scratchpad / "verification_queue.md"
-        target = scratchpad / "verification_queue_deduped.md"
-    elif phase_name == "sc_semantic_dedup":
+        proposals = dedup_authority.parse_dedup_proposals(text)
+        conflicting_members = dedup_authority.conflicting_merge_members(proposals)
+    except Exception as exc:
+        log.warning(
+            "[dedup-authority] proposal parse failed; keeping all members: %r",
+            exc,
+        )
+        return 0
+
+    if phase_name in {"semantic_dedup", "sc_semantic_dedup"}:
         source = scratchpad / "findings_inventory.md"
         target = scratchpad / "findings_inventory_deduped.md"
     else:
@@ -9384,38 +15212,56 @@ def _apply_llm_group_decisions(scratchpad: Path, phase_name: str) -> int:
     finfo: dict[str, dict] = {}
     try:
         finfo = _dedup_parse_finding_info(
-            source.read_text(encoding="utf-8", errors="replace")
+            source.read_bytes().decode("utf-8", errors="replace")
         )
     except Exception:
         finfo = {}
     finfo = {k.upper(): v for k, v in finfo.items()}
 
     # ── Step 1: collect ID-clusters from ALL three MERGE forms. ──
-    clusters: list[list[str]] = []
-    # 1a. New group-lines (whole comma list = one cluster).
-    clusters.extend(_parse_dedup_group_lines(text))
-    # 1b. Legacy status rows: `| {absorbed} | MERGED into {survivor} |`.
-    for m in re.finditer(
-        r"^\|\s*\[?([A-Za-z]+-\d+)\]?\s*\|\s*MERGED\s+into\s+\[?([A-Za-z]+-\d+)\]?",
-        text,
-        re.MULTILINE | re.IGNORECASE,
-    ):
-        absorbed = m.group(1).strip().upper()
-        survivor = m.group(2).strip().upper()
-        if absorbed and survivor and absorbed != survivor:
-            # Survivor first to match the group-line convention.
-            clusters.append([survivor, absorbed])
-    # 1c. Legacy headings: `### MERGE: {survivor} absorbs {absorbed}`.
-    for m in re.finditer(
-        r"(?im)^\s*#{2,6}\s+MERGE:\s+\[?([A-Za-z]+-\d+)\]?\s+absorbs\s+\[?([A-Za-z]+-\d+)\]?",
-        text,
-    ):
-        survivor = m.group(1).strip().upper()
-        absorbed = m.group(2).strip().upper()
-        if absorbed and survivor and absorbed != survivor:
-            clusters.append([survivor, absorbed])
+    clusters: list[list[str]] = [
+        list(event["member_ids"])
+        for event in proposals
+        if event.get("action") == "MERGE"
+    ]
 
     if not clusters:
+        # KEEP/GROUP/empty proposal sets still receive an applied receipt. This
+        # prevents "no destructive delta" from silently falling back to raw
+        # proposal authority on resume.
+        try:
+            shutil.copy2(source, target)
+            if phase_name in {"semantic_dedup", "sc_semantic_dedup"}:
+                for group_match in re.finditer(
+                    r"(?im)^\s*#{2,6}\s+GROUP:\s+\[?([A-Za-z]+-\d+)\]?\s+represents\s+(.+?)\s*$",
+                    text,
+                ):
+                    representative = group_match.group(1).strip().upper()
+                    group_members = [
+                        token.strip().upper().strip("[]")
+                        for token in re.split(r"[,;\s]+", group_match.group(2))
+                        if re.fullmatch(r"\[?[A-Za-z]+-\d+\]?", token.strip())
+                    ]
+                    _stamp_dedup_group_note(target, representative, group_members)
+            dedup_authority.write_applied_receipt(
+                scratchpad,
+                phase_name=phase_name,
+                application_kind="PRIMARY",
+                proposal_text=text,
+                proposals=proposals,
+                input_text=source.read_bytes().decode("utf-8", errors="replace"),
+                output_text=target.read_bytes().decode("utf-8", errors="replace"),
+                applied_merges=[],
+            )
+        except Exception as exc:
+            log.warning(
+                "[dedup-authority] no-merge receipt failed; keeping passthrough: %r",
+                exc,
+            )
+            try:
+                shutil.copy2(source, target)
+            except Exception:
+                pass
         return 0
 
     # ── Step 2: UNION-FIND over all clusters → connected components. ──
@@ -9454,8 +15300,19 @@ def _apply_llm_group_decisions(scratchpad: Path, phase_name: str) -> int:
     # ── Step 3+4+5: per component, fold-left _resolve_dedup_survivor to choose
     #    a survivor, drop gate-rejected members, apply same-severity guard. ──
     final_merges: list[tuple[str, str, str]] = []
+    rejection_reasons: dict[str, str] = {}
     for root, members in components.items():
         if len(members) < 2:
+            continue
+        if any(member in conflicting_members for member in members):
+            for member in members:
+                if member in conflicting_members:
+                    rejection_reasons[member] = "CONFLICTING_PROPOSAL"
+            continue
+        missing_members = [member for member in members if member not in finfo]
+        if missing_members:
+            for member in missing_members:
+                rejection_reasons[member] = "MEMBER_NOT_IN_INPUT"
             continue
         # Deterministic processing order: ID-numeric ascending so the fold is
         # reproducible regardless of decision-line ordering.
@@ -9465,6 +15322,7 @@ def _apply_llm_group_decisions(scratchpad: Path, phase_name: str) -> int:
         for nxt in ordered[1:]:
             resolved = _resolve_dedup_survivor(survivor, nxt, nxt, survivor, finfo)
             if resolved is None:
+                rejection_reasons[nxt] = "SUPERSET_GATE_REJECTED"
                 # Gate rejects this pair → KEEP SEPARATE (drop from the merge).
                 continue
             absorb, keep = resolved
@@ -9492,6 +15350,7 @@ def _apply_llm_group_decisions(scratchpad: Path, phase_name: str) -> int:
                 sa = a.get("severity")
                 sk = k.get("severity")
                 if sa and sk and _absorbed_severity_higher(sa, sk):
+                    rejection_reasons[absorb] = "HIGHER_SEVERITY_MEMBER_VETO"
                     # Absorbed tier strictly higher than survivor → removing it
                     # would drop a higher-severity finding. Keep separate.
                     log.debug(
@@ -9515,8 +15374,8 @@ def _apply_llm_group_decisions(scratchpad: Path, phase_name: str) -> int:
         seen_absorbed.add(absorb)
         deduped_merges.append((absorb, survivor, sig))
 
-    if not deduped_merges:
-        return 0
+    # Zero accepted merges is still an applied-authority event: the receipt
+    # records explicit rejections and the output remains an exact passthrough.
 
     # ── Step 6: build the deduped artifact via the EXISTING zero-loss engine. ──
     try:
@@ -9524,14 +15383,58 @@ def _apply_llm_group_decisions(scratchpad: Path, phase_name: str) -> int:
     except Exception:
         try:
             target.write_text(
-                source.read_text(encoding="utf-8", errors="replace"),
+                source.read_bytes().decode("utf-8", errors="replace"),
                 encoding="utf-8",
             )
         except Exception:
             return 0
+    if deduped_merges:
+        try:
+            _apply_merges_to_inventory(target, target, deduped_merges, finfo)
+        except Exception as exc:
+            log.warning(
+                "[dedup-authority] transform failed; restoring passthrough: %r",
+                exc,
+            )
+            shutil.copy2(source, target)
+            deduped_merges = []
+    # GROUP is non-destructive, but it still changes output bytes. Stamp its
+    # notes before the immutable receipt hashes the applied artifact.
+    if phase_name in {"semantic_dedup", "sc_semantic_dedup"}:
+        for group_match in re.finditer(
+            r"(?im)^\s*#{2,6}\s+GROUP:\s+\[?([A-Za-z]+-\d+)\]?\s+represents\s+(.+?)\s*$",
+            text,
+        ):
+            representative = group_match.group(1).strip().upper()
+            group_members = [
+                token.strip().upper().strip("[]")
+                for token in re.split(r"[,;\s]+", group_match.group(2))
+                if re.fullmatch(r"\[?[A-Za-z]+-\d+\]?", token.strip())
+            ]
+            _stamp_dedup_group_note(target, representative, group_members)
     try:
-        _apply_merges_to_inventory(target, target, deduped_merges, finfo)
-    except Exception:
+        source_text = source.read_bytes().decode("utf-8", errors="replace")
+        output_text = target.read_bytes().decode("utf-8", errors="replace")
+        dedup_authority.write_applied_receipt(
+            scratchpad,
+            phase_name=phase_name,
+            application_kind="PRIMARY",
+            proposal_text=text,
+            proposals=proposals,
+            input_text=source_text,
+            output_text=output_text,
+            applied_merges=deduped_merges,
+            rejection_reasons=rejection_reasons,
+        )
+    except Exception as exc:
+        log.warning(
+            "[dedup-authority] applied receipt veto; restoring passthrough: %r",
+            exc,
+        )
+        try:
+            shutil.copy2(source, target)
+        except Exception:
+            pass
         return 0
     return len(deduped_merges)
 
@@ -9543,7 +15446,7 @@ def _dedup_id_num(fid: str) -> int:
 
 
 def apply_llm_dedup_decisions(scratchpad: Path, phase_name: str) -> int:
-    """Build the deduped inventory/queue from LLM-authored dedup decisions.
+    """Build the deduped inventory from LLM-authored dedup decisions.
 
     Faithful (non-fallback) path: the dedup agent emits ONLY ``dedup_decisions.md``
     (decisions-as-delta); the driver mechanically produces the deduped artifact
@@ -9575,10 +15478,7 @@ def apply_llm_dedup_decisions(scratchpad: Path, phase_name: str) -> int:
         return 0
 
     # Source + target artifacts per pipeline.
-    if phase_name == "semantic_dedup":
-        source = scratchpad / "verification_queue.md"
-        target = scratchpad / "verification_queue_deduped.md"
-    elif phase_name == "sc_semantic_dedup":
+    if phase_name in {"semantic_dedup", "sc_semantic_dedup"}:
         source = scratchpad / "findings_inventory.md"
         target = scratchpad / "findings_inventory_deduped.md"
     else:
@@ -9595,41 +15495,10 @@ def apply_llm_dedup_decisions(scratchpad: Path, phase_name: str) -> int:
     #     zero-loss `_apply_merges_to_inventory`. ---
     merges_applied = _apply_llm_group_decisions(scratchpad, phase_name)
 
-    # --- GROUP decisions: keep all member blocks, stamp the note (SC block-form
-    #     only). If there are no real MERGE/GROUP rows, leave any prewritten
-    #     passthrough in place (recall-safe floor). ---
-    has_group = bool(re.search(r"(?im)^\s*#{2,6}\s+GROUP:\s+", text))
-    if not merges_applied and not has_group:
-        return 0
-
-    # Ensure the deduped target exists before GROUP stamping. The reducer creates
-    # it only when it applies >=1 merge; for a GROUP-only decision we copy here.
-    if has_group and not target.exists():
-        try:
-            shutil.copy2(source, target)
-        except Exception:
-            try:
-                target.write_text(
-                    source.read_text(encoding="utf-8", errors="replace"),
-                    encoding="utf-8",
-                )
-            except Exception:
-                return merges_applied
-
-    # Now stamp GROUP notes on the deduped artifact (SC block-form only).
-    if has_group and phase_name == "sc_semantic_dedup" and target.exists():
-        for m in re.finditer(
-            r"(?im)^\s*#{2,6}\s+GROUP:\s+\[?([A-Za-z]+-\d+)\]?\s+represents\s+(.+?)\s*$",
-            text,
-        ):
-            rep = m.group(1).strip().upper()
-            members = [
-                tok.strip().upper().strip("[]")
-                for tok in re.split(r"[,;\s]+", m.group(2))
-                if re.fullmatch(r"\[?[A-Za-z]+-\d+\]?", tok.strip())
-            ]
-            _stamp_dedup_group_note(target, rep, members)
-
+    # The union-find reducer also owns GROUP-only and KEEP/no-delta paths.  It
+    # stamps every GROUP annotation before hashing the immutable applied
+    # receipt.  A second stamp here used to mutate the output after receipt
+    # publication, making the canonical bytes fail their own authority check.
     return merges_applied
 
 
@@ -9643,35 +15512,53 @@ def _cap_severity_at(severity: str, capped_at: str) -> str:
     return sev
 
 
-def _write_mechanical_report_index(scratchpad: Path) -> int:
-    """Build report_index.md deterministically from verifier artifacts.
+def _write_mechanical_report_index(
+    scratchpad: Path,
+    *,
+    prepare_body: bool = True,
+    materialize_facets: bool = True,
+) -> int:
+    """Build a recall-safe report index from verifier artifacts.
 
-    This removes the LLM index from the critical path: verifier status decides
-    body vs Appendix A; Python assigns report IDs and writes a parseable index.
+    Verifier status and signature clusters are proposals, not destructive
+    authority.  Every queue identity remains active unless an applied typed
+    lifecycle/alias boundary has already removed it upstream.  Later report
+    disposition machinery may consume genuine authority; this builder never
+    invents it from prose.
     """
-    try:
-        _write_candidate_semantic_facets(scratchpad)
-    except Exception as exc:
-        log.warning(f"[report_index] candidate semantic facets skipped: {exc!r}")
-    rows = parse_verification_queue_rows(scratchpad)
+    if materialize_facets:
+        try:
+            _write_candidate_semantic_facets(scratchpad)
+        except Exception as exc:
+            log.warning(
+                f"[report_index] candidate semantic facets skipped: {exc!r}"
+            )
+    rows = _report_candidate_universe_rows(scratchpad)
     if not rows:
         return 0
     counters = {"C": 0, "H": 0, "M": 0, "L": 0, "I": 0}
     raw_active: list[dict[str, str]] = []
     excluded: list[dict[str, str]] = []
     poc_caps = _load_poc_demotion_caps(scratchpad)
-    judge_downgrades = _collect_judge_downgrade_map(scratchpad)
     finding_record_maps = _load_finding_record_maps(scratchpad)
-    # FIX #1: Skeptic-Judge UNRESOLVED rulings are authoritative even when the
-    # verifier text says CONFIRMED (the INV-004 case). Pull the judge-unresolved
-    # internal-ID set so a judge UNRESOLVED over a CONFIRMED verifier still
-    # demotes once + stamps Trust Adj. + drives the body [UNRESOLVED] flag.
+    # P0-V: skeptic UNRESOLVED is a challenge/evidence state, not severity
+    # authority.  Pull the IDs only to retain a visible Trust-Adj/body flag.
     try:
         judge_unresolved_ids = {
             x.upper() for x in _collect_judge_unresolved_ids(scratchpad)
         }
     except Exception:
         judge_unresolved_ids = set()
+    late_statuses: Mapping[str, Any] = {}
+    if (
+        Path(scratchpad)
+        / "post_verify_late_verification_authority.json"
+    ).is_file():
+        from post_verify_candidate_delta import (
+            load_post_verify_late_delivery_statuses,
+        )
+
+        late_statuses = load_post_verify_late_delivery_statuses(scratchpad)
 
     for row in rows:
         fid = (row.get("finding id") or "").strip()
@@ -9679,34 +15566,67 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
             continue
         record = _finding_record_for_ids(scratchpad, [fid], finding_record_maps)
         vp = _verify_file_for_id(scratchpad, fid)
-        try:
-            vtxt = _llm_norm(vp.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
+        late_status = late_statuses.get(fid)
+        verifier_complete = (
+            bool(late_status)
+            and late_status.delivery_state
+            == "INDEPENDENT_VERIFICATION_RECORDED"
+            and bool(late_status.verify_artifact)
+        ) or (
+            row.get("source kind") in {
+                None, "", "BASE_VERIFICATION_QUEUE"
+            }
+            and _verifier_output_has_completion_authority(scratchpad, fid)
+        )
+        untrusted_claim_text = ""
+        if verifier_complete:
+            try:
+                vtxt = _llm_norm(
+                    vp.read_text(encoding="utf-8", errors="replace")
+                )
+            except Exception:
+                vtxt = ""
+        else:
+            # Unreceipted/partial bytes are not a report-index input.  Keep
+            # queue/record facts and route the candidate as visibly pending.
+            # A bounded read may preserve a claimed negative verdict as an
+            # explicitly non-authoritative challenge; none of these bytes may
+            # supply severity, evidence, title, location, or report removal.
             vtxt = ""
-        status = _verifier_status_from_text(vtxt)
+            try:
+                untrusted_claim_text = _llm_norm(
+                    read_bounded_regular_bytes(vp, 4 * 1024 * 1024).decode(
+                        "utf-8", errors="replace"
+                    )
+                )
+            except (OSError, RuntimeError, UnicodeError, ValueError):
+                untrusted_claim_text = ""
+        status = (
+            _verifier_status_from_text(vtxt)
+            if verifier_complete
+            else "UNRESOLVED"
+        )
+        claimed_status = (
+            status
+            if verifier_complete
+            else _verifier_status_from_text(untrusted_claim_text)
+        )
         # Phase B: matrix is authoritative when Impact + Likelihood are present.
         # Falls back to LLM/queue severity otherwise (back-compat).
-        severity = _enforce_severity_matrix(vtxt, row)
-        # FIX #1: unresolved is driven by verifier text OR a Skeptic-Judge
-        # UNRESOLVED ruling on this finding id (judge overrides a CONFIRMED
-        # verifier). Demote at most once total even if both sources fire.
+        severity = (
+            _enforce_severity_matrix(vtxt, row)
+            if verifier_complete
+            else normalize_severity(row.get("severity", "") or "Medium")
+        )
+        # P0-V: unresolved is driven by verifier text OR a skeptic proposal,
+        # but it never changes the tier without typed independent authority.
         unresolved = any(tok in status for tok in ("UNRESOLVED", "PARTIAL")) or (
             fid.upper() in judge_unresolved_ids
         )
         adjustments: list[str] = []
         if unresolved:
-            # FIX #2: capture the PRE-demote severity and stamp the paren form
-            # (UNRESOLVED(<sev>)) so the body UNRESOLVED tagger regex
-            # (UNRESOLVED\s*\() matches and report_assemble does not re-degrade.
             original_severity = severity
-            severity = _demote_severity_once(severity)
             adjustments.append(f"UNRESOLVED({original_severity})")
-        judge_sev = judge_downgrades.get(fid)
-        if judge_sev and not unresolved:
-            capped = _cap_severity_at(severity, judge_sev)
-            if capped != severity:
-                adjustments.append(f"SKEPTIC-DOWNGRADE({severity})")
-                severity = capped
         poc_cap = poc_caps.get(fid)
         if poc_cap:
             capped = _cap_severity_at(severity, poc_cap["capped_at"])
@@ -9732,18 +15652,32 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
             _field_from_markdown(vtxt, ("Evidence Tag", "Evidence Tags", "Evidence"))
             or _field_from_markdown(vtxt, ("Preferred Tag", "Preferred Evidence"))
             or row.get("preferred tag", "")
-            or EVIDENCE_TAG_DEFAULT
+            or (EVIDENCE_TAG_DEFAULT if verifier_complete else "UNVERIFIED")
         ).replace("|", "/")
 
-        if not _is_reportable_verdict(status):
+        proposed_negative_status = (
+            claimed_status
+            if not _is_reportable_verdict(claimed_status)
+            else ""
+        )
+        if proposed_negative_status:
             excluded.append({
                 "finding_id": fid,
                 "severity": severity,
                 "title": title,
-                "verdict": status,
-                "reason": f"{status} in verify_{fid}.md",
+                "verdict": proposed_negative_status,
+                "reason": (
+                    f"{proposed_negative_status} claimed in verify_{fid}.md; "
+                    "terminal authority not established"
+                ),
             })
-            continue
+            # A verifier-authored negative is a challenge that requires typed
+            # closure authority.  Keep the exact candidate active and preserve
+            # the proposal for later adjudication.
+            unresolved = True
+            adjustments.append(
+                f"UNPROVEN_NEGATIVE({proposed_negative_status})"
+            )
         # Phase C: pre-compute dedup signature from verify body for clustering.
         sig = _dedup_signature_for_finding(vtxt, severity=severity, hint_title=title)
         raw_active.append({
@@ -9755,12 +15689,13 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
             "verdict": status,
             "unresolved": bool(unresolved),
             "severity_adjustments": adjustments,
+            "report_blocked": not verifier_complete,
             "_sig_key": sig.key(),
             "_sig_vuln": sig.vuln_class,
             "_sig_fix": sig.fix_pattern,
         })
 
-    # ----- Phase C: cluster raw_active by signature, threshold >= 3 -----
+    # ----- Phase C: nominate signature clusters, never apply them here -----
     consolidation_map: list[dict] = []
     by_key: dict[tuple, list[dict]] = {}
     for r in raw_active:
@@ -9790,29 +15725,14 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
             )["verdict"]
             # Preserve unresolved if ANY member is unresolved.
             any_unresolved = any(bool(m.get("unresolved")) for m in members)
-            consolidated.append({
-                "finding_id": absorbed[0],
-                "severity": members[0]["severity"],
-                "title": class_title,
-                "location": locations,
-                "evidence": best_evidence,
-                "verdict": best_verdict,
-                "unresolved": any_unresolved,
-                "severity_adjustments": sorted({
-                    adj
-                    for m in members
-                    for adj in (m.get("severity_adjustments") or [])
-                }),
-                "absorbed_finding_ids": absorbed,
-            })
             consolidation_map.append({
                 "title": class_title,
                 "severity": members[0]["severity"],
                 "vuln_class": sig.vuln_class,
                 "fix_pattern": sig.fix_pattern,
                 "absorbed_finding_ids": absorbed,
+                "authority_state": "PROPOSAL_ONLY",
             })
-            consumed_ids.update(absorbed)
 
     active: list[dict[str, str]] = []
     # Keep all non-clustered raw rows + the consolidated rows, preserving order.
@@ -9829,8 +15749,10 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
             "unresolved": r["unresolved"],
             "severity_adjustments": r.get("severity_adjustments", []),
             "absorbed_finding_ids": [],
+            "report_blocked": bool(r.get("report_blocked")),
         })
-    active.extend(consolidated)
+    # `consolidated`/`consumed_ids` intentionally remain empty.  An applied
+    # lossless-equivalence receipt upstream is the only identity-removal path.
 
     # Re-sort by severity rank then by original verdict order (stable).
     sev_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Informational": 4}
@@ -9870,21 +15792,13 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
     if consolidation_map:
         lines.extend([
             "",
-            "## Consolidation Map",
+            "## Proposed Consolidation Map (Non-authoritative)",
             "",
             "| Report ID | Title | Severity | Absorbed Findings | Reason |",
             "|-----------|-------|----------|-------------------|--------|",
         ])
         for cm in consolidation_map:
-            # Find report ID by matching absorbed list.
-            report_id = ""
-            for r in active:
-                if (
-                    r.get("absorbed_finding_ids")
-                    and set(r["absorbed_finding_ids"]) == set(cm["absorbed_finding_ids"])
-                ):
-                    report_id = r["report_id"]
-                    break
+            report_id = "PROPOSAL"
             lines.append(
                 f"| {report_id} | {cm['title']} | {cm['severity']} | "
                 f"{', '.join(cm['absorbed_finding_ids'])} | "
@@ -9892,7 +15806,7 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
             )
     lines.extend([
         "",
-        "## Excluded Findings",
+        "## Proposed Negative Dispositions (Non-authoritative)",
         "",
         "| Internal ID | Severity | Title | Exclusion Reason |",
         "|-------------|----------|-------|------------------|",
@@ -9907,7 +15821,8 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
         json.dumps(
             {
                 "active": active,
-                "excluded": excluded,
+                "excluded": [],
+                "negative_disposition_proposals": excluded,
                 "consolidation_map": consolidation_map,
             },
             indent=2,
@@ -9923,8 +15838,9 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
         "",
         f"- Verification queue rows parsed: {len(rows)}",
         f"- Active report rows: {len(active)}",
-        f"- Excluded rows: {len(excluded)}",
-        f"- Consolidation clusters: {len(consolidation_map)}",
+        "- Excluded rows: 0",
+        f"- Negative disposition proposals: {len(excluded)}",
+        f"- Consolidation proposals: {len(consolidation_map)}",
         "",
         "## Active Trace",
         "",
@@ -9939,7 +15855,7 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
         )
     coverage_lines.extend([
         "",
-        "## Excluded Trace",
+        "## Proposed Negative Disposition Trace",
         "",
         "| Internal Finding ID | Severity | Verdict / Reason |",
         "|---------------------|----------|------------------|",
@@ -9953,7 +15869,7 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
         for r in active
         for fid in (r.get("absorbed_finding_ids") or [r["finding_id"]])
     }
-    excluded_ids = {r["finding_id"].upper() for r in excluded}
+    excluded_ids: set[str] = set()
     raw_rows = _collect_raw_candidate_ledger_rows(
         scratchpad, promoted_ids, excluded_ids
     )
@@ -9973,31 +15889,49 @@ def _write_mechanical_report_index(scratchpad: Path) -> int:
         "\n".join(coverage_lines),
         encoding="utf-8",
     )
-    for _tier in ("critical_high", "medium", "low_info"):
-        ensure_report_tier_shards(scratchpad, _tier)
-    # Phase E5 prerequisite: emit body-writer manifests so the next phase
-    # (tier writer, mechanical or LLM) has a verified-evidence anchor. The
-    # manifest dir doubles as the validator's source of truth.
-    try:
-        _build_body_writer_manifests(scratchpad)
-    except Exception as exc:
-        log.warning(f"[report_index] body-writer manifest emission failed: {exc!r}")
+    if prepare_body:
+        for _tier in ("critical_high", "medium", "low_info"):
+            ensure_report_tier_shards(scratchpad, _tier)
+        # Phase E5 prerequisite: emit body-writer manifests so the next phase
+        # (tier writer, mechanical or LLM) has a verified-evidence anchor. The
+        # manifest dir doubles as the validator's source of truth.
+        try:
+            _build_body_writer_manifests(scratchpad)
+        except Exception as exc:
+            log.warning(
+                f"[report_index] body-writer manifest emission failed: {exc!r}"
+            )
     return len(active)
 
 
 def _latest_report_index_backup(scratchpad: Path, filename: str) -> Path | None:
-    candidates: list[Path] = []
+    """Return only an authenticated live root; retry backups are control data."""
+
     direct = scratchpad / filename
-    if direct.exists() and direct.stat().st_size > 0:
-        candidates.append(direct)
-    qdir = scratchpad / "_retry_quarantine" / "report_index"
-    if qdir.exists():
-        candidates.extend(
-            p for p in qdir.glob(f"{filename}*") if p.is_file() and p.stat().st_size > 0
-        )
-    if not candidates:
+    if not direct.is_file():
         return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
+    try:
+        raw = direct.read_bytes()
+        if not raw:
+            return None
+        ledger = read_artifact_ledger(Path(scratchpad))
+        identity = f"scratchpad:{filename}"
+        binding = ledger.get("artifact_bindings", {}).get(identity)
+        if not isinstance(binding, dict):
+            return None
+        run_id = str(binding.get("run_id") or "").strip()
+        if not run_id:
+            return None
+        if semantic_input_prebind_producer_authority_issues(
+            scratchpad,
+            scratchpad.parent,
+            (identity,),
+            run_id=run_id,
+        ):
+            return None
+    except (OSError, TypeError, ValueError):
+        return None
+    return direct
 
 
 def _split_markdown_row(line: str) -> list[str]:
@@ -10108,7 +16042,11 @@ def _replace_completeness_assertion(text: str, rows: list[dict[str, object]]) ->
     return _replace_section(text, r"(?m)^##\s+Completeness\s+Assertion\b.*$", receipt)
 
 
-def _repair_sc_report_index_from_prior(scratchpad: Path) -> int:
+def _repair_sc_report_index_from_prior(
+    scratchpad: Path,
+    *,
+    prepare_body: bool = True,
+) -> int:
     """Repair an SC LLM report index when only mechanical contracts failed.
 
     SC report indexing is a semantic consolidation step, so replacing it with
@@ -10158,8 +16096,8 @@ def _repair_sc_report_index_from_prior(scratchpad: Path) -> int:
 
     expected_by_id = _expected_report_index_severities(scratchpad)
     severity_rank_map = {s: i for i, s in enumerate(SEVERITY_ORDER)}
-    # FIX #1 (SC parity): Skeptic-Judge UNRESOLVED rulings demote once + stamp
-    # paren-form Trust Adj. even when the preserved LLM row did not record it.
+    # P0-V (SC parity): skeptic UNRESOLVED proposals are visible status only;
+    # they do not demote the preserved tier.
     try:
         judge_unresolved_ids = {
             x.upper() for x in _collect_judge_unresolved_ids(scratchpad)
@@ -10194,9 +16132,7 @@ def _repair_sc_report_index_from_prior(scratchpad: Path) -> int:
                 target_sev = source_sev
                 cells[sev_i] = source_sev
                 changed = True
-        # FIX #1 (SC parity): a judge UNRESOLVED ruling on any internal ID of
-        # this row demotes the (already-resolved) severity once and stamps the
-        # paren-form Trust Adj. token, but only if not already present.
+        # P0-V (SC parity): stamp disagreement without a tier mutation.
         row_ids_upper = {fid.upper() for fid in ids}
         existing_trust = cells[trust_i] if 0 <= trust_i < len(cells) else ""
         if (
@@ -10205,10 +16141,8 @@ def _repair_sc_report_index_from_prior(scratchpad: Path) -> int:
             and not re.search(r"\bUNRESOLVED\s*\(", existing_trust, re.IGNORECASE)
         ):
             pre_demote = target_sev
-            demoted = _demote_severity_once(target_sev)
-            target_sev = demoted
             if sev_i >= 0 and sev_i < len(cells):
-                cells[sev_i] = demoted
+                cells[sev_i] = target_sev
             token = f"UNRESOLVED({pre_demote})"
             if trust_i >= 0 and trust_i < len(cells):
                 cells[trust_i] = (
@@ -10292,10 +16226,13 @@ def _repair_sc_report_index_from_prior(scratchpad: Path) -> int:
             encoding="utf-8",
         )
 
-    try:
-        _build_sc_body_writer_manifests(scratchpad)
-    except Exception as exc:
-        log.warning(f"[report_index] SC body manifest rebuild after repair failed: {exc!r}")
+    if prepare_body:
+        try:
+            _build_sc_body_writer_manifests(scratchpad)
+        except Exception as exc:
+            log.warning(
+                f"[report_index] SC body manifest rebuild after repair failed: {exc!r}"
+            )
     return len(ordered)
 
 
@@ -10410,7 +16347,69 @@ def _body_writer_poc_result_field(verify_text: str) -> str:
     ).strip()
 
 
-def _build_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
+def _materialize_report_evidence_or_debt(scratchpad: Path) -> bool:
+    """Build the P1-K boundary haltlessly and make any failure durable."""
+
+    try:
+        _materialize_report_evidence_runtime(scratchpad)
+    except (OSError, UnicodeError, json.JSONDecodeError, _ReportEvidenceError, ValueError) as exc:
+        (scratchpad / "report_evidence_runtime_debt.md").write_text(
+            "# Report Evidence Runtime Debt\n\n"
+            "Typed report evidence could not be reconciled before body rendering. "
+            "All report assignments remain retained, but evidence presentation is "
+            "degraded and requires human review.\n\n"
+            f"- Failure class: `{type(exc).__name__}`\n"
+            f"- Detail: `{str(exc).replace('`', "'")[:800]}`\n",
+            encoding="utf-8",
+        )
+        return False
+    (scratchpad / "report_evidence_runtime_debt.md").unlink(missing_ok=True)
+    return True
+
+
+def _verification_runtime_debt_binding(
+    scratchpad: Path, candidate_ids: list[str]
+) -> dict[str, Any] | None:
+    """Return an exact, proof-free retention source for missing verifier files.
+
+    The binding is emitted only when the central denominator validator replays
+    the current queue/work-plan bytes and covers every requested identity.
+    It is provenance for an explicitly UNRESOLVED report row; it never stands
+    in for verifier evidence or execution.
+    """
+
+    missing = [
+        candidate_id
+        for candidate_id in dict.fromkeys(candidate_ids)
+        if candidate_id
+        and not _verifier_output_has_completion_authority(
+            scratchpad, candidate_id
+        )
+    ]
+    if not missing:
+        return None
+    covered, issues = _verification_runtime_debt_coverage(scratchpad, missing)
+    if issues or any(candidate_id not in covered for candidate_id in missing):
+        return None
+    path = scratchpad / "verification_runtime_debt.json"
+    if not path.is_file():
+        return None
+    return {
+        "artifact": path.name,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "covered_candidate_ids": missing,
+        "authority": "RETENTION_ONLY",
+        "verifier_status": "UNRESOLVED",
+        "proof_authority": "NONE",
+    }
+
+
+def _build_body_writer_manifests(
+    scratchpad: Path,
+    *,
+    persist: bool = True,
+    materialize_evidence: bool = True,
+) -> dict[str, dict]:
     """Emit per-shard manifests anchored to verified evidence.
 
     Splits shards when their finding count exceeds the per-tier cap. Cap names
@@ -10444,6 +16443,7 @@ def _build_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
         else:
             if row_finding_id:
                 verify_files = [f"verify_{row_finding_id}.md"]
+        evidence_ids = absorbed or ([row_finding_id] if row_finding_id else [])
         record = _finding_record_for_ids(
             scratchpad,
             absorbed or ([row_finding_id] if row_finding_id else []),
@@ -10455,7 +16455,12 @@ def _build_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
             (scratchpad / verify_files[0]) if verify_files else None
         )
         verify_text = ""
-        if primary_verify_path and primary_verify_path.exists():
+        primary_complete = bool(evidence_ids) and (
+            _verifier_output_has_completion_authority(
+                scratchpad, evidence_ids[0]
+            )
+        )
+        if primary_verify_path and primary_verify_path.exists() and primary_complete:
             try:
                 verify_text = _llm_norm(primary_verify_path.read_text(encoding="utf-8", errors="replace"))
             except Exception:
@@ -10473,9 +16478,18 @@ def _build_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
         if not _looks_like_code_location(location) or _is_test_or_mock_location(location):
             location = ""
         if not location:
-            for vf in verify_files:
+            for index, vf in enumerate(verify_files):
                 p = scratchpad / vf
-                if not p.exists():
+                candidate_id = (
+                    evidence_ids[index] if index < len(evidence_ids) else ""
+                )
+                if (
+                    not p.exists()
+                    or not candidate_id
+                    or not _verifier_output_has_completion_authority(
+                        scratchpad, candidate_id
+                    )
+                ):
                     continue
                 try:
                     txt = _llm_norm(p.read_text(encoding="utf-8", errors="replace"))
@@ -10493,18 +16507,30 @@ def _build_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
             )
         verify_statuses = []
         report_blocked = not bool(verify_files)
-        for vf in verify_files:
+        for index, vf in enumerate(verify_files):
             p = scratchpad / vf
             txt = ""
-            if p.exists():
+            candidate_id = evidence_ids[index] if index < len(evidence_ids) else ""
+            complete = bool(candidate_id) and _verifier_output_has_completion_authority(
+                scratchpad, candidate_id
+            )
+            if p.exists() and complete:
                 try:
                     txt = _llm_norm(p.read_text(encoding="utf-8", errors="replace"))
                 except Exception:
                     txt = ""
-            missing = (not p.exists()) or _is_evidence_missing_for_body(txt)
+            missing = (
+                not complete
+                or (not p.exists())
+                or _is_evidence_missing_for_body(txt)
+            )
             verify_statuses.append({"file": vf, "exists": p.exists(), "evidence_missing": bool(missing)})
             if missing:
                 report_blocked = True
+        runtime_debt = _verification_runtime_debt_binding(
+            scratchpad,
+            absorbed or ([row_finding_id] if row_finding_id else []),
+        )
         grouped[shard].append({
             "report_id": row.get("report_id", ""),
             "finding_id": row_finding_id,
@@ -10523,6 +16549,7 @@ def _build_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
             "poc_result": poc_result,
             "recommendation": rec,
             "report_blocked": bool(report_blocked),
+            "verification_runtime_debt": runtime_debt,
         })
 
     manifests: dict[str, dict] = {}
@@ -10544,6 +16571,17 @@ def _build_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
                     continue
                 name = f"{shard}_{suffix}"
                 manifests[name] = {"shard": name, "findings": slice_rows}
+
+    if not manifests:
+        manifests["report_empty"] = {
+            "schema_version": "plamen.empty_report_denominator.v1",
+            "shard": "report_empty",
+            "denominator_state": "EMPTY",
+            "findings": [],
+        }
+
+    if not persist:
+        return manifests
 
     # Persist manifests so subsequent phases can read them deterministically.
     out_dir = scratchpad / "body_manifests"
@@ -10570,10 +16608,21 @@ def _build_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
             )
     except Exception:
         pass
+    if (
+        materialize_evidence
+        and manifests
+        and (scratchpad / "report_records.json").exists()
+    ):
+        _materialize_report_evidence_or_debt(scratchpad)
     return manifests
 
 
-def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
+def _build_sc_body_writer_manifests(
+    scratchpad: Path,
+    *,
+    persist: bool = True,
+    materialize_evidence: bool = True,
+) -> dict[str, dict]:
     """Build body-writer manifests for SC pipelines from LLM-written report_index.md.
 
     L1 uses _write_mechanical_report_index -> _build_body_writer_manifests.
@@ -10584,8 +16633,6 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
     downstream assembly/traceability.
     """
     assignments, source = get_tier_assignments(scratchpad)
-    if not assignments:
-        return {}
 
     # --- Enrich from report_index.md table cells (title, location) ---
     idx_path = scratchpad / "report_index.md"
@@ -10653,7 +16700,14 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
         return list(dict.fromkeys(out))
 
     try:
-        hypothesis_constituents = _parse_hypothesis_constituents(scratchpad)
+        # Additive evidence lookup may inspect proposal-only composition aliases
+        # so it can locate every constituent verifier. This does not grant the
+        # group deletion, demotion, coverage, or completion authority; each
+        # constituent is still checked independently below.
+        hypothesis_constituents = _parse_hypothesis_constituents(
+            scratchpad,
+            include_composition_aliases=True,
+        )
     except Exception:
         hypothesis_constituents = {}
 
@@ -10703,7 +16757,7 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
     inventory_location_by_id = _inventory_location_map(scratchpad)
     finding_record_maps = _load_finding_record_maps(scratchpad)
     try:
-        for qrow in parse_verification_queue_rows(scratchpad):
+        for qrow in _report_candidate_universe_rows(scratchpad):
             qfid = (
                 qrow.get("finding id")
                 or qrow.get("hypothesis id")
@@ -10757,7 +16811,12 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
 
         verify_text = ""
         primary_fid = verify_ids[0] if verify_ids else ""
-        if primary_fid:
+        primary_complete = bool(primary_fid) and (
+            _verifier_output_has_completion_authority(
+                scratchpad, primary_fid
+            )
+        )
+        if primary_fid and primary_complete:
             vf = _verify_file_for_id(scratchpad, primary_fid)
             if vf.exists():
                 try:
@@ -10789,7 +16848,7 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
         evidence_tag = (
             _field_from_markdown(verify_text, ("Evidence Tag", "Evidence", "Preferred Tag", "Preferred Evidence"))
             or str(record.get("preferred_tag", "") if record else "")
-            or EVIDENCE_TAG_DEFAULT
+            or (EVIDENCE_TAG_DEFAULT if primary_complete else "UNVERIFIED")
         ).strip()
         if location and (not _looks_like_code_location(location) or _is_test_or_mock_location(location)):
             location = ""
@@ -10798,7 +16857,12 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
         if not verify_location:
             for fid in finding_ids:
                 vf = _verify_file_for_id(scratchpad, fid)
-                if not vf.exists():
+                if (
+                    not vf.exists()
+                    or not _verifier_output_has_completion_authority(
+                        scratchpad, fid
+                    )
+                ):
                     continue
                 try:
                     candidate_text = _llm_norm(vf.read_text(encoding="utf-8", errors="replace"))
@@ -10865,17 +16929,28 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
         for fid in verify_ids:
             vf = _verify_file_for_id(scratchpad, fid)
             txt = ""
-            if vf.exists():
+            complete = _verifier_output_has_completion_authority(
+                scratchpad, fid
+            )
+            if vf.exists() and complete:
                 try:
                     txt = _llm_norm(vf.read_text(encoding="utf-8", errors="replace"))
                 except Exception:
                     txt = ""
             if not verdict and txt:
                 verdict = _verifier_status_from_text(txt)
-            missing = (not vf.exists()) or _is_evidence_missing_for_body(txt)
+            missing = (
+                not complete
+                or (not vf.exists())
+                or _is_evidence_missing_for_body(txt)
+            )
             verify_statuses.append({"file": f"verify_{fid}.md", "exists": vf.exists(), "evidence_missing": bool(missing)})
             if missing:
                 report_blocked = True
+        runtime_debt = _verification_runtime_debt_binding(
+            scratchpad, list(verify_ids)
+        )
+        runtime_debt_unresolved = bool(runtime_debt)
 
         manifest_row = {
             "report_id": report_id,
@@ -10891,6 +16966,7 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
             "poc_result": poc_result,
             "recommendation": rec,
             "report_blocked": bool(report_blocked),
+            "verification_runtime_debt": runtime_debt,
         }
         grouped[shard].append(manifest_row)
         active_records.append({
@@ -10900,8 +16976,15 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
             "title": title,
             "location": location,
             "evidence": evidence_tag,
-            "verdict": verdict or "CONFIRMED",
-            "unresolved": bool((verdict or "").upper() in {"UNRESOLVED", "PARTIAL"}),
+            "verdict": (
+                "UNRESOLVED"
+                if runtime_debt_unresolved
+                else verdict or "CONFIRMED"
+            ),
+            "unresolved": bool(
+                runtime_debt_unresolved
+                or (verdict or "").upper() in {"UNRESOLVED", "PARTIAL"}
+            ),
             "severity_adjustments": [],
             "absorbed_finding_ids": finding_ids if len(finding_ids) > 1 else [],
             "report_blocked": bool(report_blocked),
@@ -10926,6 +17009,17 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
                     continue
                 name = f"{shard}_{suffix}"
                 manifests[name] = {"shard": name, "findings": slice_rows}
+
+    if not manifests:
+        manifests["report_empty"] = {
+            "schema_version": "plamen.empty_report_denominator.v1",
+            "shard": "report_empty",
+            "denominator_state": "EMPTY",
+            "findings": [],
+        }
+
+    if not persist:
+        return manifests
 
     out_dir = scratchpad / "body_manifests"
     try:
@@ -10966,6 +17060,12 @@ def _build_sc_body_writer_manifests(scratchpad: Path) -> dict[str, dict]:
     except Exception as exc:
         log = logging.getLogger("plamen.mechanical")
         log.warning("_build_sc_body_writer_manifests: manifest/records write failed: %s", exc)
+    if (
+        materialize_evidence
+        and manifests
+        and (scratchpad / "report_records.json").exists()
+    ):
+        _materialize_report_evidence_or_debt(scratchpad)
     return manifests
 
 
@@ -10999,6 +17099,13 @@ def _write_mechanical_report_tier(scratchpad: Path, phase_name: str) -> int:
                 "absorbed_finding_ids": row.get("absorbed_finding_ids") or [],
                 "title": row.get("title", ""),
                 "evidence": row.get("evidence", ""),
+                # A verifier-authored negative is still an unresolved proposal
+                # until independent typed closure exists. Preserve the record
+                # state through tier dispatch instead of recomputing it only
+                # from prose and accidentally presenting it as ordinary body.
+                "unresolved": bool(row.get("unresolved")),
+                "verdict": row.get("verdict", ""),
+                "severity_adjustments": row.get("severity_adjustments") or [],
             }
             for rid, row in sorted(
                 records_by_report_id.items(),
@@ -11012,7 +17119,7 @@ def _write_mechanical_report_tier(scratchpad: Path, phase_name: str) -> int:
         return 0
     queue_rows = {
         (r.get("finding id") or "").strip(): r
-        for r in parse_verification_queue_rows(scratchpad)
+        for r in _report_candidate_universe_rows(scratchpad)
         if (r.get("finding id") or "").strip()
     }
     if phase_name == "report_critical_high":
@@ -11090,7 +17197,7 @@ def _write_mechanical_report_tier(scratchpad: Path, phase_name: str) -> int:
                 except Exception:
                     vtxt = ""
                 verdicts.append(_verifier_status_from_text(vtxt))
-            is_unresolved = any(
+            is_unresolved = bool(a.get("unresolved")) or any(
                 source_id in unresolved_ids for source_id in source_ids
             ) or any(v == "UNRESOLVED" for v in verdicts)
             section = _synth_report_section_from_verify(
@@ -11128,6 +17235,155 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
     except Exception:
         return None
 
+    # Bind every parsed delay to provider control-plane evidence.  The stdio
+    # stream also contains arbitrary assistant/project text.  Short relative
+    # delays may use a conventional raw HTTP/API error line, but absolute reset
+    # times (which can pause for days) require a fully framed provider event:
+    # Claude's direct 429/rate_limit metadata, or Codex's matched stream-json
+    # error/turn.failed sequence.  Never combine fields across records.
+    parsed_records: list[tuple[str, dict[str, Any]]] = []
+    raw_records: list[str] = []
+    for raw_line in tail.splitlines():
+        try:
+            envelope = json.loads(raw_line)
+        except Exception:
+            envelope = None
+        if isinstance(envelope, dict):
+            parsed_records.append((raw_line, envelope))
+            continue
+        raw_records.append(raw_line)
+
+    def _message_is_rate_limit(message: str) -> bool:
+        return bool(re.search(
+            r"(?i)(?:hit|reached|exceeded).{0,24}"
+            r"(?:usage|rate|weekly|daily).{0,12}limit|"
+            r"(?:usage|rate|weekly|daily).{0,12}limit.{0,24}"
+            r"(?:hit|reached|exceeded)|purchase more credits",
+            message,
+        ))
+
+    # Authenticate Codex errors with an ordered, single-turn state machine.
+    # Global presence checks are insufficient because stale/replayed events can
+    # be reordered or crossed between turns in a concatenated log.
+    codex_framed_error_indices: set[int] = set()
+    active_thread: Optional[str] = None
+    turn_active = False
+    pending_error: Optional[tuple[int, str]] = None
+    for record_index, (_, envelope) in enumerate(parsed_records):
+        record_type = str(envelope.get("type", "")).strip().lower()
+        if record_type == "thread.started":
+            # Every observed thread boundary invalidates prior turn state,
+            # including malformed boundaries.  Only a nonempty string ID may
+            # establish the replacement thread.
+            active_thread = None
+            turn_active = False
+            pending_error = None
+            thread_id = envelope.get("thread_id")
+            if isinstance(thread_id, str) and thread_id.strip():
+                active_thread = thread_id
+        elif record_type == "turn.started":
+            if active_thread is not None:
+                turn_active = True
+                pending_error = None
+        elif record_type == "error" and active_thread is not None and turn_active:
+            message = envelope.get("message")
+            if isinstance(message, str) and _message_is_rate_limit(message):
+                pending_error = (record_index, message)
+        elif record_type == "turn.failed":
+            failure = envelope.get("error")
+            failed_message = (
+                failure.get("message") if isinstance(failure, dict) else None
+            )
+            if (
+                turn_active
+                and pending_error is not None
+                and isinstance(failed_message, str)
+                and failed_message == pending_error[1]
+            ):
+                codex_framed_error_indices.add(pending_error[0])
+            turn_active = False
+            pending_error = None
+        elif record_type in {"turn.completed", "thread.ended", "thread.completed"}:
+            turn_active = False
+            pending_error = None
+            if record_type.startswith("thread."):
+                active_thread = None
+
+    relative_lines: list[tuple[str, bool]] = []
+    absolute_lines: list[str] = []
+    absolute_envelopes: list[dict[str, Any]] = []
+    for record_index, (raw_line, envelope) in enumerate(parsed_records):
+        api_status = envelope.get(
+            "apiErrorStatus", envelope.get("api_error_status")
+        )
+        error_kind = str(envelope.get("error", "")).strip().lower()
+        record_type = str(envelope.get("type", "")).strip().lower()
+        message = envelope.get("message")
+        message_text = message if isinstance(message, str) else ""
+        quota = envelope.get("quotaLimits")
+        if not isinstance(quota, dict):
+            quota = envelope.get("quota_limits")
+        claude_framed = (
+            api_status in {429, 529, "429", "529"}
+            and error_kind in {"rate_limit", "rate_limited", "usage_limit"}
+            and isinstance(quota, dict)
+            and bool(envelope.get("requestId") or envelope.get("request_id"))
+            and bool(envelope.get("session_id") or envelope.get("sessionId"))
+        )
+        codex_framed = (
+            record_type == "error"
+            and record_index in codex_framed_error_indices
+        )
+        if claude_framed or codex_framed:
+            relative_lines.append((raw_line, True))
+            absolute_lines.append(raw_line)
+            absolute_envelopes.append(envelope)
+
+    for raw_line in raw_records:
+        if re.search(
+            r"(?i)^\s*(?:HTTP(?:\s+status)?|API(?:\s+error)?|Error)"
+            r"\s*[:= ]\s*"
+            r"(?:429|529)\b",
+            raw_line,
+        ):
+            relative_lines.append((raw_line, False))
+
+    if not relative_lines and not absolute_lines:
+        return None
+
+    def _local_wall_clock_delta(
+        month: int,
+        day: int,
+        hour: int,
+        minute: int,
+        *,
+        year: Optional[int] = None,
+    ) -> Optional[int]:
+        """Resolve a future local wall time through the OS timezone rules."""
+        now_epoch = time.time()
+        current_year = time.localtime(now_epoch).tm_year
+        years = [year] if year is not None else range(current_year, current_year + 9)
+        for candidate_year in years:
+            try:
+                target_epoch = time.mktime((
+                    int(candidate_year), month, day, hour, minute, 0,
+                    -1, -1, -1,
+                ))
+                # mktime normalizes invalid dates (for example Feb 29 in a
+                # non-leap year).  Accept only an exact local-time round trip.
+                resolved = time.localtime(target_epoch)
+                if (
+                    resolved.tm_year, resolved.tm_mon, resolved.tm_mday,
+                    resolved.tm_hour, resolved.tm_min,
+                ) != (int(candidate_year), month, day, hour, minute):
+                    continue
+                delta = int(target_epoch - now_epoch)
+                if delta > 0:
+                    return delta
+            except (OverflowError, OSError, ValueError):
+                continue
+        return None
+
     patterns = [
         (re.compile(r"(?i)retry[-_ ]after[=:\s]+(\d+)\s*(seconds?|secs?|s)\b"), 1),
         (re.compile(r"(?i)retry[-_ ]after[=:\s]+(\d+)\s*(minutes?|mins?|m)\b"), 60),
@@ -11136,13 +17392,49 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
         (re.compile(r"(?i)wait\s+(\d+)\s*(seconds?|secs?|s)\b"), 1),
         (re.compile(r"(?i)wait\s+(\d+)\s*(minutes?|mins?|m)\b"), 60),
     ]
-    for rx, mult in patterns:
-        m = rx.search(tail)
-        if m:
-            try:
-                return int(m.group(1)) * mult
-            except Exception:
-                pass
+    _RAW_RELATIVE_WAIT_CEILING_S = 900
+    for line, provider_framed in relative_lines:
+        for rx, mult in patterns:
+            m = rx.search(line)
+            if m:
+                try:
+                    candidate = int(m.group(1)) * mult
+                    if (
+                        not provider_framed
+                        and candidate > _RAW_RELATIVE_WAIT_CEILING_S
+                    ):
+                        continue
+                    return candidate
+                except Exception:
+                    pass
+
+    # Claude Code emits quota exhaustion as JSONL with an authoritative Unix
+    # reset timestamp, for example:
+    #   {"error":"rate_limit","apiErrorStatus":429,
+    #    "quotaLimits":{"status":"rejected","resetsAt":1788314400}}
+    # Prefer that machine-readable timestamp over natural-language parsing.  A
+    # bare ``resetsAt`` token is not enough: model output and project files can
+    # contain arbitrary JSON, so require rate-limit evidence in the same
+    # envelope before trusting it as provider control-plane data.
+    for envelope in reversed(absolute_envelopes):
+        quota = envelope.get("quotaLimits")
+        if not isinstance(quota, dict):
+            quota = envelope.get("quota_limits")
+        if not isinstance(quota, dict):
+            continue
+        reset_raw = quota.get("resetsAt", quota.get("resets_at"))
+        try:
+            reset_epoch = float(reset_raw)
+            # Be tolerant of providers serializing Unix milliseconds.
+            if reset_epoch > 10_000_000_000:
+                reset_epoch /= 1000.0
+            now_utc = datetime.now(timezone.utc)
+            target_utc = datetime.fromtimestamp(reset_epoch, timezone.utc)
+            delta = int((target_utc - now_utc).total_seconds())
+            if delta > 0:
+                return delta
+        except Exception:
+            continue
 
     # Absolute reset timestamp WITH a date. Codex/ChatGPT daily usage caps phrase
     # the reset as an absolute wall-clock time hours out, e.g.
@@ -11154,11 +17446,14 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
         "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
         "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
     }
-    m = re.search(
+    date_with_year_rx = re.compile(
         r"(?i)(?:try again|reset[s]?|available again)\s+(?:at|on)\s+"
         r"([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})[,\s]+"
-        r"(\d{1,2}):(\d{2})\s*(am|pm)\b",
-        tail,
+        r"(\d{1,2}):(\d{2})\s*(am|pm)\b"
+    )
+    m = next(
+        (match for line in absolute_lines if (match := date_with_year_rx.search(line))),
+        None,
     )
     if m:
         try:
@@ -11172,23 +17467,52 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
                     hour = 0
                 if m.group(6).lower() == "pm":
                     hour += 12
-                now = datetime.now().astimezone()
-                target = now.replace(
-                    year=year, month=mon, day=day,
-                    hour=hour, minute=minute, second=0, microsecond=0,
+                delta = _local_wall_clock_delta(
+                    mon, day, hour, minute, year=year
                 )
-                delta = int((target - now).total_seconds())
-                if delta > 0:
+                if delta is not None:
+                    return delta
+        except Exception:
+            pass
+
+    # Claude's human-readable weekly-cap fallback omits the year and often the
+    # minutes: "resets Sep 2, 5am".  Resolve it to the next occurrence of that
+    # local wall-clock date, rolling into the next year only when needed.
+    yearless_date_rx = re.compile(
+        r"(?i)(?:try again|reset[s]?|available again)(?:\s+(?:at|on))?\s+"
+        r"([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+"
+        r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b"
+    )
+    m = next(
+        (match for line in absolute_lines if (match := yearless_date_rx.search(line))),
+        None,
+    )
+    if m:
+        try:
+            mon = _MONTHS.get(m.group(1)[:3].lower())
+            if mon:
+                day = int(m.group(2))
+                hour = int(m.group(3))
+                minute = int(m.group(4) or 0)
+                if hour == 12:
+                    hour = 0
+                if m.group(5).lower() == "pm":
+                    hour += 12
+                delta = _local_wall_clock_delta(mon, day, hour, minute)
+                if delta is not None:
                     return delta
         except Exception:
             pass
 
     # Absolute reset time WITHOUT a date: "resets 5:46 PM", "resets at 5:46 PM",
     # or the Codex time-only variant "try again at 5:46 PM".
-    m = re.search(
+    time_only_rx = re.compile(
         r"(?i)(?:try again\s+at|resets?(?:\s+at)?|available again\s+at)\s+"
-        r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
-        tail,
+        r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b"
+    )
+    m = next(
+        (match for line in absolute_lines if (match := time_only_rx.search(line))),
+        None,
     )
     if m:
         try:
@@ -11199,11 +17523,18 @@ def estimate_rate_limit_wait_seconds(stdio_log: Path) -> Optional[int]:
                 hour = 0
             if ampm == "pm":
                 hour += 12
-            now = datetime.now().astimezone()
-            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if target <= now:
-                target = target + timedelta(days=1)
-            return int((target - now).total_seconds())
+            now = time.localtime()
+            today_epoch = time.mktime((
+                now.tm_year, now.tm_mon, now.tm_mday,
+                hour, minute, 0, -1, -1, -1,
+            ))
+            if today_epoch <= time.time():
+                tomorrow = datetime.fromtimestamp(time.time()) + timedelta(days=1)
+                return _local_wall_clock_delta(
+                    tomorrow.month, tomorrow.day, hour, minute,
+                    year=tomorrow.year,
+                )
+            return int(today_epoch - time.time())
         except Exception:
             return None
 
@@ -11367,29 +17698,23 @@ def _apply_location_recovery(scratchpad: Path, project_root: str) -> list[str]:
 
 
 def backfill_unrouted_inventory_into_queue(
-    scratchpad: Path, route: str = "active"
+    scratchpad: Path,
+    route: str = "active",
+    *,
+    authenticated_inventory_text: str | None = None,
 ) -> list[str]:
-    """Route any inventory ID dropped by queue generation back so
-    verification-queue<->inventory parity always holds. Deterministic +
-    idempotent. Returns the backfilled finding IDs.
+    """Route every queue-generation dropout to ACTIVE verification work.
 
-    route="active" (default; fresh-run / verify_queue-completion, BEFORE the
-    verify shards run): add the dropped IDs to the ACTIVE verification_queue.md
-    so they get verified.
+    Deterministic + idempotent. Returns the backfilled finding IDs.  This
+    helper is an identity/work repair, never a producer verdict or exclusion
+    authority.  In particular a resume-detected identity remains verifier work;
+    callers that already completed ordinary shards must use the driver's
+    bounded recovery-verification path and targeted descendant invalidation.
 
-    route="excluded" (RESUME, AFTER verify shards have completed): acknowledge
-    the dropped IDs in verification_queue_evidence_excluded.md as DEFERRED
-    instead. This satisfies verify_queue<->inventory parity (excluded counts as
-    acknowledged) WITHOUT adding active rows that demand a verify_<ID>.md file.
-    Adding active rows at resume retroactively makes already-completed verify
-    shards look incomplete ("wrote 1/4 verifier files; missing INV-002...") and
-    the reconciliation rewinds the entire verify stage. Routing to excluded
-    avoids that: the IDs are flagged deferred-unverified (never silently
-    dropped) and no finished phase is invalidated.
-
-    This converts a silent LLM/mechanical queue-generation dropout (which
-    otherwise makes the resume reconciliation rewind the entire verify stage)
-    into explicit, accounted queue rows.
+    ``route`` remains in the signature only to fail old callers loudly.  The
+    former ``route="excluded"`` behavior converted a persisted candidate into
+    a lexical DEFERRED acknowledgement without independent verification and is
+    therefore forbidden.
 
     The persistence is via the CANONICAL writer `_write_queue_subset_manifest`,
     which rewrites BOTH `verification_queue.md` (canonical 10-column manifest)
@@ -11405,8 +17730,46 @@ def backfill_unrouted_inventory_into_queue(
     location/primary-artifact/poc-class fields any normal active row has.
     """
     from plamen_validators import _compute_unrouted_inventory_ids
+    from plamen_parsers import (
+        _read_queue_json_sidecar,
+        _write_queue_excluded_manifest,
+    )
 
-    unrouted = _compute_unrouted_inventory_ids(scratchpad)
+    if route != "active":
+        raise ValueError(
+            "queue backfill may only create active verification work; "
+            "producer/excluded disposition is forbidden"
+        )
+
+    # Migrate the exact legacy P0-N anti-pattern.  Older runs may already have
+    # converted a resume dropout into an excluded DEFERRED row, so the parity
+    # set no longer calls it "unrouted".  That lexical acknowledgement has no
+    # disposition authority: route it active and remove only this exact legacy
+    # reason.  Legitimate mode/scope/evidence exclusions remain untouched.
+    excluded_path = scratchpad / "verification_queue_evidence_excluded.md"
+    existing_excluded = _read_queue_json_sidecar(excluded_path)
+    legacy_prefix = "deferred on resume: queue-generation dropout"
+    legacy_deferred_ids: set[str] = set()
+    retained_excluded: list[dict[str, str]] = []
+    for row in existing_excluded:
+        reason = str(row.get("exclusion reason") or "").strip().lower()
+        fid = _normalize_finding_id(row.get("finding id", "")) or str(
+            row.get("finding id", "") or ""
+        ).strip()
+        if fid and reason.startswith(legacy_prefix):
+            legacy_deferred_ids.add(fid)
+        else:
+            retained_excluded.append(row)
+
+    unrouted = sorted(
+        set(
+            _compute_unrouted_inventory_ids(
+                scratchpad,
+                authenticated_inventory_text=authenticated_inventory_text,
+            )
+        )
+        | legacy_deferred_ids
+    )
     if not unrouted:
         return []
 
@@ -11448,51 +17811,16 @@ def backfill_unrouted_inventory_into_queue(
 
     appended: list[str] = []
 
-    # RESUME route: acknowledge the dropped IDs as DEFERRED in the excluded
-    # ledger instead of expanding the active queue. Satisfies parity without
-    # demanding verify_<ID>.md files, so completed verify shards are not
-    # retroactively invalidated (no rewind).
-    if route == "excluded":
-        from plamen_parsers import (
-            _read_queue_json_sidecar,
-            _write_queue_excluded_manifest,
-        )
-        excl_path = scratchpad / "verification_queue_evidence_excluded.md"
-        existing_excl = _read_queue_json_sidecar(excl_path)
-        seen_excl: set[str] = set()
-        for r in existing_excl:
-            eid = _normalize_finding_id(r.get("finding id", "")) or (
-                r.get("finding id", "") or ""
-            ).strip()
-            if eid:
-                seen_excl.add(eid)
-        new_excl: list[dict[str, str]] = []
-        for fid in unrouted:
-            if fid in present_ids or fid in seen_excl:
-                continue
-            src = builder_by_id.get(fid)
-            row = dict(src) if src is not None else {"finding id": fid}
-            row["finding id"] = fid
-            row.setdefault("severity", "Medium")
-            row.setdefault("title", fid)
-            row["exclusion reason"] = (
-                "Deferred on resume: queue-generation dropout acknowledged here "
-                "to preserve verify_queue<->inventory parity without re-running "
-                "the already-completed verify stage (flagged unverified, not "
-                "silently dropped)"
-            )
-            new_excl.append(row)
-            seen_excl.add(fid)
-            appended.append(fid)
-        if not new_excl:
-            return []
-        _write_queue_excluded_manifest(excl_path, existing_excl + new_excl)
-        return appended
-
     new_rows: list[dict[str, str]] = []
     for fid in unrouted:
         if fid in present_ids:
             # Idempotency: never duplicate an ID already in the active queue.
+            # If it is simultaneously carrying the exact legacy resume-
+            # deferred row, still return it as recovered work after removing
+            # that stale exclusion. This closes the crash window between the
+            # active manifest write and exclusion cleanup.
+            if fid in legacy_deferred_ids:
+                appended.append(fid)
             continue
         src = builder_by_id.get(fid)
         if src is not None:
@@ -11518,7 +17846,9 @@ def backfill_unrouted_inventory_into_queue(
         appended.append(fid)
 
     if not new_rows:
-        return []
+        if legacy_deferred_ids and len(retained_excluded) != len(existing_excluded):
+            _write_queue_excluded_manifest(excluded_path, retained_excluded)
+        return appended
 
     # Persist via the canonical writer: it writes the 10-column manifest AND
     # the JSON sidecar, so parse_verification_queue_rows (and therefore
@@ -11528,4 +17858,6 @@ def backfill_unrouted_inventory_into_queue(
     for idx, row in enumerate(combined, start=1):
         row["queue #"] = str(idx)
     _write_queue_subset_manifest(queue_path, combined)
+    if legacy_deferred_ids and len(retained_excluded) != len(existing_excluded):
+        _write_queue_excluded_manifest(excluded_path, retained_excluded)
     return appended

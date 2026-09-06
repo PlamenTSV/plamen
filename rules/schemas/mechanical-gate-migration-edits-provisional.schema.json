@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plamen.mechanical_gate_migration_edits.provisional.v1",
+  "title": "Mechanical-gate migration edit and debt manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "runtime_authority_granted",
+    "authoritative_registry",
+    "source_snapshot",
+    "independent_review_receipt_sha256",
+    "gate_count",
+    "edit_entries",
+    "cutover_invariants"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.mechanical_gate_migration_edits.provisional.v1"
+    },
+    "status": {
+      "const": "PROVISIONAL_UNWRAPPED_UNREVIEWED"
+    },
+    "runtime_authority_granted": {
+      "const": false
+    },
+    "authoritative_registry": {
+      "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/authoritative_registry"
+    },
+    "source_snapshot": {
+      "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/source_snapshot"
+    },
+    "independent_review_receipt_sha256": {
+      "type": "null"
+    },
+    "gate_count": {
+      "const": 33
+    },
+    "edit_entries": {
+      "type": "array",
+      "minItems": 33,
+      "maxItems": 33,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "forensic_id",
+          "gate_id",
+          "activation_id",
+          "runtime_readiness",
+          "edit_targets",
+          "phase_io_binding",
+          "migration_debt_codes",
+          "existing_code_edit_authorized"
+        ],
+        "properties": {
+          "forensic_id": {
+            "pattern": "^MG-[0-9]{3}$"
+          },
+          "gate_id": {
+            "pattern": "^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$"
+          },
+          "activation_id": {
+            "pattern": "^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$"
+          },
+          "runtime_readiness": {
+            "enum": [
+              "NEEDS_GATE_RECEIPT_AND_WRAPPER",
+              "SUCCESSOR_PHASEIO_EXISTS_NEEDS_GATE_BINDING",
+              "SHARED_VALIDATOR_SPLIT_REQUIRED",
+              "TARGET_EXECUTION_CIRCUIT_BREAKER_REQUIRED",
+              "EXACT_PHASEIO_EXISTS_NEEDS_RUNTIME_WRAPPER",
+              "MULTI_STAGE_AUTHORITY_NEEDS_SINGLE_GATE_RECEIPT"
+            ]
+          },
+          "edit_targets": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "module",
+                "symbol",
+                "edit_kind",
+                "source_lines"
+              ],
+              "properties": {
+                "module": {
+                  "type": "string",
+                  "pattern": "^scripts/[A-Za-z0-9_./-]+\\.py$"
+                },
+                "symbol": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "edit_kind": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "source_lines": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          },
+          "phase_io_binding": {
+            "$ref": "#/$defs/phase_io_binding"
+          },
+          "migration_debt_codes": {
+            "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/nonempty_unique_strings"
+          },
+          "existing_code_edit_authorized": {
+            "const": false
+          }
+        }
+      }
+    },
+    "cutover_invariants": {
+      "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/nonempty_unique_strings"
+    }
+  },
+  "$defs": {
+    "artifact_identities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^(scratchpad|project):[^:]+$"
+      }
+    },
+    "phase_io_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "phase",
+        "work_unit_id",
+        "owner_key_binding",
+        "input_artifact_identities",
+        "output_artifact_identities"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "ABSENT_DEDICATED_CONTRACT",
+            "EXACT_EXISTING_CONTRACT",
+            "SUCCESSOR_CONTRACT_ONLY",
+            "MULTIPLE_SUCCESSOR_CONTRACTS"
+          ]
+        },
+        "phase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "work_unit_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner_key_binding": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_artifact_identities": {
+          "$ref": "#/$defs/artifact_identities"
+        },
+        "output_artifact_identities": {
+          "$ref": "#/$defs/artifact_identities"
+        }
+      }
+    }
+  }
+}

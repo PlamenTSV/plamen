@@ -129,7 +129,7 @@ def test_p01_collect_unresolved_from_table(tmp_path):
         _TABLE_FIXTURE, encoding="utf-8"
     )
     ids = _collect_judge_unresolved_ids(tmp_path)
-    # H-02 UNRESOLVED + H-05 PARTIAL (both demote-1-tier semantics).
+    # H-02 UNRESOLVED + H-05 PARTIAL remain visible disagreement states.
     assert ids == {"H-02", "H-05"}
 
 
@@ -149,12 +149,12 @@ def test_p01_collect_unresolved_empty_when_no_file(tmp_path):
 
 
 def test_p01_collect_downgrade_map_from_table(tmp_path):
-    """DOWNGRADE rows from the table return {id: final_sev}."""
+    """Legacy DOWNGRADE rows are proposals, never severity authority."""
     (tmp_path / "skeptic_judge_decisions.md").write_text(
         _TABLE_FIXTURE, encoding="utf-8"
     )
     dm = _collect_judge_downgrade_map(tmp_path)
-    assert dm == {"H-03": "Medium"}
+    assert dm == {}
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ def test_p02_sidecar_preferred_when_fresh(tmp_path):
     ids = _collect_judge_unresolved_ids(tmp_path)
     assert ids == {"H-02", "H-05"}
     dm = _collect_judge_downgrade_map(tmp_path)
-    assert dm == {"H-03": "Medium"}
+    assert dm == {}
 
 
 def test_p02_sidecar_skipped_when_md_newer(tmp_path):

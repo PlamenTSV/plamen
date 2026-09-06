@@ -136,14 +136,17 @@ def test_refuted_on_uncited_decisive_external_premise_fires(tmp_path: Path) -> N
         reasoning=_DECISIVE_EXTERNAL,
     )
     _research(scratchpad)
+    verify_path = scratchpad / "verify_H-801.md"
+    before = verify_path.read_bytes()
 
     fired = V._apply_external_assumption_undemotions(scratchpad, "core")
 
     assert {row["finding_id"] for row in fired} == {"H-801"}
     assert fired[0]["depth_verdict"] == "CONFIRMED"
-    assert "[UNPROVEN-EXTERNAL]" in (
-        scratchpad / "verify_H-801.md"
-    ).read_text(encoding="utf-8")
+    assert verify_path.read_bytes() == before
+    # Raw legacy fixtures retain predicate diagnostics but never report-floor
+    # authority without a current committed R10 PhaseIO producer.
+    assert V._load_external_assumption_undemotions(scratchpad) == {}
 
 
 def test_refuted_with_background_external_mention_but_internal_basis_no_fire(
@@ -186,6 +189,60 @@ def test_refuted_with_all_depth_constituents_refuted_does_not_fire(
     _research(scratchpad)
 
     assert V._apply_external_assumption_undemotions(scratchpad, "core") == []
+
+
+def test_proposal_only_all_refuted_alias_cannot_authorize_no_fire(
+    tmp_path: Path,
+) -> None:
+    """A raw multi-member Markdown group has no negative authority.
+
+    Until an independently executed/source-bound relation exists, its members
+    may add positive preservation evidence but cannot collectively certify that
+    the queued claim was refuted.
+    """
+    scratchpad = _scratch(tmp_path)
+    _queue(scratchpad, "H-809")
+    description = (
+        "A state transition consumes a value returned by a non-vendored "
+        "dependency. [EXTERNAL-ASSUMPTION: returned rate may change between "
+        "calls] NEEDS_DEPENDENCY_RESEARCH: dependency rate stability."
+    )
+    (scratchpad / "findings_inventory.md").write_text(
+        "### Finding [INV-809] First proposed member\n\n"
+        "**Severity**: Low\n\n**Verdict**: REFUTED\n\n"
+        "**Location**: `src/adapter.rs:L42`\n\n"
+        f"**Description**: {description}\n\n"
+        "### Finding [INV-810] Second proposed member\n\n"
+        "**Severity**: Low\n\n**Verdict**: REFUTED\n\n"
+        "**Location**: `src/adapter.rs:L43`\n\n"
+        f"**Description**: {description}\n",
+        encoding="utf-8",
+    )
+    (scratchpad / "finding_mapping.md").write_text(
+        "# Finding Mapping\n\n## INV Finding -> Hypothesis\n\n"
+        "| Finding ID | Hypothesis ID | Mapping Status |\n"
+        "|------------|---------------|----------------|\n"
+        "| INV-809 | H-809 | PRIMARY |\n"
+        "| INV-810 | H-809 | PRIMARY |\n",
+        encoding="utf-8",
+    )
+    (scratchpad / "hypotheses.md").write_text("# Hypotheses\n", encoding="utf-8")
+    _verify(
+        scratchpad,
+        "H-809",
+        verdict="CONTESTED",
+        reasoning=(
+            "The local mechanism remains plausible but is treated as harmless "
+            "only because the dependency's returned rate is assumed stable. "
+            "[EXTERNAL-ASSUMPTION: returned rate is stable within a block]"
+        ),
+    )
+    _research(scratchpad)
+
+    fired = V._apply_external_assumption_undemotions(scratchpad, "core")
+
+    assert {row["finding_id"] for row in fired} == {"H-809"}
+    assert fired[0]["depth_verdict"] == "(inv-absent)"
 
 
 def test_refuted_with_matching_external_citation_does_not_fire(

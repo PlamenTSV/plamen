@@ -11,10 +11,6 @@ tools:
   - mcp__slither-analyzer__get_function_source
   - mcp__solana-fender__security_check_program
   - mcp__solana-fender__security_check_file
-  - mcp__unified-vuln-db__validate_hypothesis
-  - mcp__unified-vuln-db__get_similar_findings
-  - mcp__unified-vuln-db__assess_hypothesis_strength
-  - mcp__unified-vuln-db__search_solodit_live
 ---
 
 # Security Verifier
@@ -31,25 +27,17 @@ You receive a hypothesis with:
 
 Your job: Write a test that PROVES the bug.
 
-## STEP 0: RAG Validation (MANDATORY)
+## STEP 0: Seal the Code-Derived Verification Plan (MANDATORY)
 
-Before writing ANY test, validate the hypothesis against historical exploits:
-
-```
-1. assess_hypothesis_strength(hypothesis="<bug description>")
-   → If confidence < 0.5: reconsider if bug is real
-
-2. get_similar_findings(description="<bug mechanism>")
-   → Study how similar bugs were exploited historically
-
-3. search_solodit_live(keywords="<pattern>", impact=["HIGH", "MEDIUM"], max_results=10)
-   → If local DB has < 5 results, expand search
-```
-
-**Record RAG evidence in your output:**
-- Historical precedent: YES/NO
-- Similar exploits found: [list]
-- Pattern confidence: HIGH/MEDIUM/LOW
+Before any test, lock the current-code hypothesis, required preconditions,
+observable difference, assertions, and first execution plan. Do not call a
+vulnerability database, WebSearch, or any fresh RAG tool in this verifier.
+External precedent is reconciled centrally and is never negative/verdict,
+severity, proof, or report evidence. This ordering prevents refuting or
+superficially similar literature from anchoring a mistaken safe demotion.
+The shared boundary is defined by
+`~/.claude/rules/precedent-evidence-policy.md`; it cannot be overridden by an
+ecosystem verifier.
 
 ## STEP 1: Understand the Bug
 
@@ -57,7 +45,7 @@ Before writing ANY code, answer:
 1. What EXACTLY is wrong?
 2. What OBSERVABLE difference proves it?
 3. What assertion confirms it?
-4. Does RAG evidence support this bug pattern?
+4. Which independent code-derived test variants could falsify or confirm it?
 
 ## STEP 2: Write the Test
 
@@ -95,10 +83,9 @@ Shell: {language-appropriate test command - e.g., forge test for EVM, anchor tes
 
 ## Verdict: ✅ CONFIRMED
 
-## RAG Evidence
-- Historical precedent: [YES/NO]
-- Similar exploits: [list from get_similar_findings]
-- Pattern confidence: [HIGH/MEDIUM/LOW]
+## External Precedent Boundary
+- Not consulted by this verifier; centralized precedent has no verdict,
+  severity, proof, demotion, or verifier-evidence authority.
 
 ## Bug Mechanism
 [What the test proved]

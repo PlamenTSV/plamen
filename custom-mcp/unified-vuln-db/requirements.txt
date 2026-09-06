@@ -4,7 +4,7 @@
 # Core
 mcp==1.27.0
 chromadb==1.5.8
-pydantic==2.13.2
+pydantic==2.13.4
 
 # Embeddings — all-MiniLM-L6-v2 (~90MB, 384-dim, fast CPU inference)
 sentence-transformers==5.4.1
@@ -16,9 +16,9 @@ beautifulsoup4==4.14.3
 lxml==6.0.4
 datasets==4.8.4
 
-# Rate limiting & retry
+# Retry support. Solodit's adaptive rate limiting is implemented locally from
+# response headers; the unmaintained sdist-only `ratelimit` package is unused.
 tenacity==9.1.4
-ratelimit==2.2.1
 
 # Utils
 anyio==4.13.0

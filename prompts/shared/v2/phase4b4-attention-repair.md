@@ -48,6 +48,9 @@ For every queue row, write one row to `attention_repair_summary.md`:
 |---------|------|--------|---------|----------|-------|
 
 **Receipt contract**:
+- Copy the queue's `QUEUE_BINDING_SHA256` line verbatim near the top of
+  `attention_repair_summary.md`. A summary without the exact binding is stale
+  and will be rejected.
 - The `Queue #` cell MUST equal the queue row number.
 - The `Kind` cell MUST equal the queue row kind.
 - The `Target` cell MUST copy the queue row `Target` value exactly, including
@@ -75,7 +78,10 @@ Do not return only a prose summary.
 
 ## Finding Format
 
-Confirmed findings MUST use IDs `ATT-1`, `ATT-2`, ... and the following standard fields:
+Confirmed findings MUST use `ATT-N`, where `N` is the exact **global Queue #**
+from the receipt row. Do not renumber only the confirmed rows: if queue row 5 is
+the first confirmed issue, its finding ID is `ATT-5`, not `ATT-1`. Use the
+following standard fields:
 
 ```markdown
 ### Finding [ATT-1]: title

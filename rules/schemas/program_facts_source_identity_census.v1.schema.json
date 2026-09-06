@@ -1,0 +1,769 @@
+{
+  "$defs": {
+    "authority_ceiling": {
+      "additionalProperties": false,
+      "properties": {
+        "clean_certification": {
+          "const": false,
+          "type": "boolean"
+        },
+        "confidence": {
+          "const": false,
+          "type": "boolean"
+        },
+        "consumer": {
+          "const": false,
+          "type": "boolean"
+        },
+        "finding": {
+          "const": false,
+          "type": "boolean"
+        },
+        "phase": {
+          "const": false,
+          "type": "boolean"
+        },
+        "refutation": {
+          "const": false,
+          "type": "boolean"
+        },
+        "severity": {
+          "const": false,
+          "type": "boolean"
+        },
+        "suppression": {
+          "const": false,
+          "type": "boolean"
+        },
+        "terminal_negative": {
+          "const": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "consumer",
+        "finding",
+        "severity",
+        "confidence",
+        "phase",
+        "clean_certification",
+        "refutation",
+        "suppression",
+        "terminal_negative"
+      ],
+      "type": "object"
+    },
+    "file_identity": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "size_bytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "gate3_schema_conformance_review_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "check_id": {
+                "enum": [
+                  "SCHEMA-DRAFT",
+                  "VOCABULARY-KEYWORDS",
+                  "CLOSED-OBJECTS",
+                  "REF-CLOSURE",
+                  "VECTOR-CARRIER",
+                  "KEYWORD-OCCURRENCE-COVERAGE",
+                  "POSITIVE-REPLAY",
+                  "NEGATIVE-REPLAY",
+                  "IDENTITY-STABLE-READ"
+                ],
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "maxLength": 64,
+                      "minLength": 64,
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "size_bytes": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size_bytes",
+                    "sha256"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "check_id",
+              "result",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 9,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "disposition": {
+          "enum": [
+            "PASS_SCHEMA_CONTRACT_FOR_GATE3_PREIMPLEMENTATION_ONLY",
+            "REJECTED"
+          ],
+          "type": "string"
+        },
+        "findings": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "maxLength": 64,
+                      "minLength": 64,
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "size_bytes": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size_bytes",
+                    "sha256"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "finding_id": {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+                "type": "string"
+              },
+              "severity": {
+                "enum": [
+                  "BLOCKING",
+                  "NONBLOCKING"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "OPEN",
+                  "CLOSED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "finding_id",
+              "severity",
+              "status",
+              "description",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "independence": {
+          "additionalProperties": false,
+          "properties": {
+            "no_self_generated_evidence": {
+              "const": true,
+              "type": "boolean"
+            },
+            "oracle_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "production_implementer_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "subject_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "vector_author_separate": {
+              "const": true,
+              "type": "boolean"
+            },
+            "workspace_clean": {
+              "const": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "subject_author_separate",
+            "vector_author_separate",
+            "production_implementer_separate",
+            "oracle_author_separate",
+            "workspace_clean",
+            "no_self_generated_evidence"
+          ],
+          "type": "object"
+        },
+        "open_findings": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+            "type": "string"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "review_body_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "review_id": {
+          "maxLength": 37,
+          "minLength": 37,
+          "pattern": "^pfsr-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "reviewer": {
+          "additionalProperties": false,
+          "properties": {
+            "organization": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "principal_id": {
+              "maxLength": 256,
+              "minLength": 12,
+              "pattern": "^reviewer:[a-z0-9-]+/[a-z0-9-]+$",
+              "type": "string"
+            },
+            "role": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "principal_id",
+            "organization",
+            "role"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_schema_conformance_review.v1",
+          "type": "string"
+        },
+        "subject": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+              "type": "string"
+            },
+            "sha256": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size_bytes": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size_bytes",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "vectors": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+              "type": "string"
+            },
+            "sha256": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size_bytes": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size_bytes",
+            "sha256"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "review_id",
+        "subject",
+        "vectors",
+        "reviewer",
+        "independence",
+        "checks",
+        "findings",
+        "open_findings",
+        "disposition",
+        "review_body_sha256"
+      ],
+      "type": "object"
+    },
+    "gate3_schema_conformance_vectors_v1": {
+      "additionalProperties": false,
+      "properties": {
+        "body_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "keyword_occurrences": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "keyword": {
+                "enum": [
+                  "$ref",
+                  "type",
+                  "const",
+                  "enum",
+                  "required",
+                  "additionalProperties",
+                  "propertyNames",
+                  "properties",
+                  "dependentRequired",
+                  "prefixItems",
+                  "items",
+                  "contains",
+                  "minContains",
+                  "maxContains",
+                  "minProperties",
+                  "maxProperties",
+                  "minItems",
+                  "maxItems",
+                  "uniqueItems",
+                  "minLength",
+                  "maxLength",
+                  "pattern",
+                  "minimum",
+                  "maximum",
+                  "multipleOf",
+                  "allOf",
+                  "anyOf",
+                  "oneOf",
+                  "not",
+                  "if",
+                  "then",
+                  "else"
+                ],
+                "type": "string"
+              },
+              "negative_vector_ids": {
+                "items": {
+                  "maxLength": 37,
+                  "minLength": 37,
+                  "pattern": "^pfsv-[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "positive_vector_ids": {
+                "items": {
+                  "maxLength": 37,
+                  "minLength": 37,
+                  "pattern": "^pfsv-[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "schema_pointer": {
+                "maxLength": 16384,
+                "minLength": 0,
+                "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema_pointer",
+              "keyword",
+              "positive_vector_ids",
+              "negative_vector_ids"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "schema_version": {
+          "const": "plamen.program_facts_schema_conformance_vectors.v1",
+          "type": "string"
+        },
+        "subject": {
+          "additionalProperties": false,
+          "properties": {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+                  "type": "string"
+                },
+                "sha256": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size_bytes",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            "schema_id": {
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^https://plamen\\.local/schemas/[A-Za-z0-9._-]+\\.schema\\.json$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema",
+            "schema_id"
+          ],
+          "type": "object"
+        },
+        "vector_count": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vectors": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "covers": {
+                "items": {
+                  "maxLength": 16384,
+                  "minLength": 0,
+                  "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                  "type": "string"
+                },
+                "maxItems": 10000000,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "expected": {
+                "enum": [
+                  "VALID",
+                  "INVALID"
+                ],
+                "type": "string"
+              },
+              "instance": {},
+              "target_schema_pointer": {
+                "maxLength": 16384,
+                "minLength": 0,
+                "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+                "type": "string"
+              },
+              "vector_id": {
+                "maxLength": 37,
+                "minLength": 37,
+                "pattern": "^pfsv-[0-9a-f]{32}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "vector_id",
+              "target_schema_pointer",
+              "instance",
+              "expected",
+              "covers"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10000000,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "schema_version",
+        "subject",
+        "vectors",
+        "keyword_occurrences",
+        "vector_count",
+        "body_sha256"
+      ],
+      "type": "object"
+    },
+    "hex64": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "identifier": {
+      "maxLength": 512,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$",
+      "type": "string"
+    },
+    "portable_path": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+      "type": "string"
+    },
+    "source_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "end_byte": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "end_column": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "end_line": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$",
+          "type": "string"
+        },
+        "root_token": {
+          "maxLength": 69,
+          "minLength": 69,
+          "pattern": "^pfrt-[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source_file_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^pfs-[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "start_byte": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_column": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "start_line": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_file_id",
+        "root_token",
+        "path",
+        "start_byte",
+        "end_byte",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://plamen.local/schemas/program_facts_source_identity_census.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$vocabulary": {
+    "https://json-schema.org/draft/2020-12/vocab/applicator": true,
+    "https://json-schema.org/draft/2020-12/vocab/core": true,
+    "https://json-schema.org/draft/2020-12/vocab/validation": true
+  },
+  "additionalProperties": false,
+  "properties": {
+    "all_identities": {
+      "items": {
+        "$ref": "#/$defs/file_identity"
+      },
+      "maxItems": 45,
+      "minItems": 45,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "all_identity_count": {
+      "const": 45,
+      "type": "integer"
+    },
+    "census_body_sha256": {
+      "$ref": "#/$defs/hex64"
+    },
+    "non_seed_identities": {
+      "items": {
+        "$ref": "#/$defs/file_identity"
+      },
+      "maxItems": 42,
+      "minItems": 42,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "non_seed_identity_count": {
+      "const": 42,
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "plamen.program_facts_source_identity_census.v1",
+      "type": "string"
+    },
+    "seed_construction_count": {
+      "const": 3,
+      "type": "integer"
+    },
+    "seed_construction_identities": {
+      "items": {
+        "$ref": "#/$defs/file_identity"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "specification": {
+      "$ref": "#/$defs/file_identity"
+    }
+  },
+  "required": [
+    "schema_version",
+    "specification",
+    "non_seed_identities",
+    "non_seed_identity_count",
+    "seed_construction_identities",
+    "seed_construction_count",
+    "all_identities",
+    "all_identity_count",
+    "census_body_sha256"
+  ],
+  "type": "object"
+}

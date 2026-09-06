@@ -7,6 +7,7 @@ turning high-fan-in state into a combinatorial candidate explosion.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import sys
 import threading
@@ -164,10 +165,25 @@ def _write_graph_and_inventory(sp: Path) -> None:
             },
         },
         "var_refs": {
-            "C.zzglobalAccounting": {"bare": "globalAccounting", "refs": refs + ["target (src/C.sol:1)"]},
-            "C.01small": {"bare": "small", "refs": refs[:9] + ["target (src/C.sol:1)"]},
+            "C.00globalAccounting": {
+                "bare": "globalAccounting",
+                "refs": refs + ["target (src/C.sol:1)"],
+                "reference_sites": ["src/C.sol:L2"],
+                "confidence": "REFERENCE_SITE_NO_POLARITY",
+            },
+            "C.01small": {
+                "bare": "small",
+                "refs": refs[:9] + ["target (src/C.sol:1)"],
+                "reference_sites": ["src/C.sol:L2"],
+                "confidence": "REFERENCE_SITE_NO_POLARITY",
+            },
             **{
-                f"C.extra{i}": {"bare": f"extra{i}", "refs": ["target (src/C.sol:1)", refs[i]]}
+                f"C.extra{i}": {
+                    "bare": f"extra{i}",
+                    "refs": ["target (src/C.sol:1)", refs[i]],
+                    "reference_sites": ["src/C.sol:L2"],
+                    "confidence": "REFERENCE_SITE_NO_POLARITY",
+                }
                 for i in range(6)
             },
         },
@@ -182,16 +198,32 @@ def _write_graph_and_inventory(sp: Path) -> None:
     )
 
 
-def test_axis1_caps_are_loud_and_high_fanin_does_not_expand(tmp_path: Path):
+def test_axis1_caps_are_loud_and_high_fanin_retains_bounded_continuation(
+    tmp_path: Path,
+):
     _write_graph_and_inventory(tmp_path)
     EG.compute_enumeration_obligations(tmp_path)
     payload = json.loads((tmp_path / "_enumeration_obligations.json").read_text())
 
-    # The >25-reference symbol is flagged, never expanded into an arbitrary
-    # six-of-N obligation set.
-    assert all(o["symbol"] != "globalAccounting" for o in payload["obligations"])
+    # The >25-reference symbol schedules a bounded prefix, but the complete
+    # normalized family and digest remain durable as actionable continuation
+    # debt.  The cap is therefore neither silently closed nor all-or-nothing.
+    global_obligation = next(
+        o for o in payload["obligations"] if o["symbol"] == "globalAccounting"
+    )
+    assert len(global_obligation["required_coref_identities"]) == EG._MAX_COREFS_PER_VAR
+    assert global_obligation["continuation_required"] is True
+    global_family = next(
+        row for row in payload["family_cards"]
+        if row["symbol_identity"] == "C.00globalAccounting"
+    )
+    assert len(global_family["all_members"]) == 30
+    assert set(global_family["all_members"]) == (
+        set(global_family["scheduled_members"]) | set(global_family["tail_members"])
+    )
+    assert global_family["tail_digest"]
     rows = _shortfalls(tmp_path)
-    assert any(r["kind"] == "HIGH_FAN_IN_UNENUMERATED" for r in rows)
+    assert any(r["kind"] == "HIGH_FAN_IN_CONTINUATION_REQUIRED" for r in rows)
     assert any(r["cap"] == "MAX_VARS_PER_FINDING" for r in rows)
     assert any(r["cap"] == "MAX_COREFS_PER_VAR" for r in rows)
 
@@ -364,6 +396,24 @@ def test_shared_emitter_receipt_failure_recovers_without_false_retention_or_dupl
     receipt = (tmp_path / "enumeration_gap_receipt.md").read_text(encoding="utf-8")
     assert all(f"PERSIST{i}" in receipt for i in range(4))
     assert not (tmp_path / "_coverage_shortfalls.json").exists()
+
+
+def test_stale_receipt_cannot_suppress_deleted_inventory_candidate(tmp_path: Path):
+    inventory = tmp_path / "findings_inventory.md"
+    inventory.write_text("# Inventory\n", encoding="utf-8")
+    candidate = _enum_candidate(1, prefix="RESTORE")
+    assert EG._emit_candidates(
+        tmp_path, [candidate], 1, producer="fixture.restore"
+    ) == 1
+    assert "RESTORE1" in (tmp_path / "enumeration_gap_receipt.md").read_text()
+
+    # Keep the stale receipt but delete the actual finding block. The typed
+    # inventory marker is authoritative, so the same candidate is re-emitted.
+    inventory.write_text("# Inventory\n", encoding="utf-8")
+    assert EG._emit_candidates(
+        tmp_path, [candidate], 1, producer="fixture.restore"
+    ) == 1
+    assert inventory.read_text(encoding="utf-8").count("RESTORE1") == 1
 
 
 def test_source_scan_overflow_is_explicit_lower_bound(tmp_path: Path, monkeypatch):
@@ -651,6 +701,30 @@ def test_hot_function_cap_is_exact(tmp_path: Path, monkeypatch):
     row = next(r for r in _shortfalls(tmp_path) if r["cap"] == "MAX_HOT_FUNCTIONS")
     assert row["observed"] == 4 and row["retained"] == 2 and row["omitted"] == 2
     assert row["count_semantics"] == "EXACT"
+    cap = json.loads(
+        (tmp_path / "_hot_function_cap_receipt.json").read_text(encoding="utf-8")
+    )
+    assert cap["schema_version"] == "plamen.hot_function_cap_receipt.v1"
+    assert cap["observed_count"] == 4
+    assert cap["retained_count"] == 2
+    assert cap["omitted_count"] == 2
+    assert cap["retained_identities"] == ["f0@src/C.sol:1", "f1@src/C.sol:2"]
+    assert cap["omitted_identities"] == ["f2@src/C.sol:3", "f3@src/C.sol:4"]
+    assert cap["omitted_tail"] == "f3@src/C.sol:4"
+    assert cap["omitted_identities_sha256"] == hashlib.sha256(
+        json.dumps(
+            cap["omitted_identities"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert cap["receipt_sha256"] == hashlib.sha256(
+        json.dumps(
+            {key: value for key, value in cap.items() if key != "receipt_sha256"},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def test_gate_p_file_cap_emits_exact_receipt(tmp_path: Path, monkeypatch):
@@ -714,7 +788,7 @@ def test_gate_p_global_cap_is_loud_lower_bound(tmp_path: Path, monkeypatch):
     assert row["count_semantics"] == "LOWER_BOUND"
 
 
-def test_gate_p_tracked_row_after_exact_capacity_does_not_fake_overflow(
+def test_gate_p_id_only_tracked_row_after_capacity_records_real_overflow(
     tmp_path: Path, monkeypatch
 ):
     (tmp_path / "report_index_coverage_seed.md").write_text(
@@ -736,10 +810,15 @@ def test_gate_p_tracked_row_after_exact_capacity_does_not_fake_overflow(
     monkeypatch.setattr(M, "_PROMO_MAX_PER_FILE", 2)
     monkeypatch.setattr(M, "_PROMO_MAX_PER_RUN", 2)
     assert len(M.compute_promotion_orphans(tmp_path)) == 2
-    assert not (tmp_path / "_coverage_shortfalls.json").exists()
+    rows = _shortfalls(tmp_path)
+    assert any(
+        row["cap"] in {"PROMO_MAX_PER_FILE", "PROMO_MAX_PER_RUN"}
+        and row["count_semantics"] == "LOWER_BOUND"
+        for row in rows
+    )
 
 
-def test_gate_p_covered_row_after_exact_capacity_does_not_fake_overflow(
+def test_gate_p_location_proximity_after_capacity_records_real_overflow(
     tmp_path: Path, monkeypatch
 ):
     (tmp_path / "report_index_coverage_seed.md").write_text(
@@ -760,7 +839,9 @@ def test_gate_p_covered_row_after_exact_capacity_does_not_fake_overflow(
     monkeypatch.setattr(M, "_PROMO_MAX_PER_FILE", 2)
     monkeypatch.setattr(M, "_PROMO_MAX_PER_RUN", 2)
     assert len(M.compute_promotion_orphans(tmp_path)) == 2
-    assert not (tmp_path / "_coverage_shortfalls.json").exists()
+    assert any(
+        row["producer"] == "promotion_gate" for row in _shortfalls(tmp_path)
+    )
 
 
 def test_gate_p_duplicate_row_after_exact_capacity_does_not_fake_overflow(
@@ -805,14 +886,14 @@ def test_gate_p_unreadable_feeder_is_unknown_not_clean(tmp_path: Path, monkeypat
     feeder = tmp_path / "depth_unreadable.md"
     feeder.write_text("fixture\n", encoding="utf-8")
     monkeypatch.setattr(M, "_PROMO_FEEDER_GLOBS", ("depth_*.md",))
-    real_read = Path.read_text
+    real_read = M.read_bounded_regular_bytes
 
     def fail_feeder(path: Path, *args, **kwargs):
         if path == feeder:
             raise OSError("fixture feeder read failure")
         return real_read(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", fail_feeder)
+    monkeypatch.setattr(M, "read_bounded_regular_bytes", fail_feeder)
     assert M.compute_promotion_orphans(tmp_path) == []
     rows = _shortfalls(tmp_path)
     assert len(rows) == 1
@@ -873,7 +954,10 @@ def test_attention_repair_all_named_caps_are_loud(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         M,
         "_compute_scip_coverage_sets",
-        lambda _sp: {"uncited": [f"src/file{i}.sol" for i in range(17)], "spec_support_indexed": set()},
+        lambda _sp, **_kwargs: {
+            "uncited": [f"src/file{i}.sol" for i in range(17)],
+            "spec_support_indexed": set(),
+        },
     )
     monkeypatch.setattr(M, "_write_spec_expectations", lambda *_a: None)
     monkeypatch.setattr(M, "_path_security_weight", lambda _p: 1)
@@ -889,9 +973,9 @@ def test_attention_repair_all_named_caps_are_loud(tmp_path: Path, monkeypatch):
     assert len(items) == M._ATTENTION_REPAIR_MAX_ITEMS
     caps = {row["cap"] for row in _shortfalls(tmp_path)}
     assert {
-        "ATTENTION_SECURITY_OBLIGATIONS",
         "ATTENTION_SKILL_REPAIRS",
         "ATTENTION_UNCITED_FILES",
         "ATTENTION_GRAPH_ROWS",
-        "ATTENTION_REPAIR_MAX_ITEMS",
+        "ATTENTION_OPTIONAL_REPAIR_MAX_ITEMS",
     } <= caps
+    assert "ATTENTION_SECURITY_OBLIGATIONS" not in caps

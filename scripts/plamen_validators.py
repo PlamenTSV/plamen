@@ -7,14 +7,23 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import hashlib
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Optional
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable, Mapping, Optional
+
+# The driver is also launched by absolute `scripts/plamen_driver.py` path from
+# an audited project cwd. In that mode Python adds only `scripts/` to sys.path;
+# repo-root support packages would otherwise disappear despite being shipped
+# beside the scripts directory.
+_REPO_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_PACKAGE_ROOT))
 
 from plamen_types import (
     Phase, Checkpoint, SC_PHASES, L1_PHASES, log,
@@ -33,22 +42,120 @@ from plamen_types import (
     canonical_verification_status,
     FINDING_BLOCK_HEADING_RE,
     normalize_severity,
+    severity_rank,
     try_normalize_severity,
     plamen_home,
+    canonical_sc_depth_skill_role,
+    ALL_AUDIT_SOURCE_SUFFIXES,
+    attention_queue_binding_sha256,
+    normalize_scope_match_mode,
+    source_suffixes_for,
 )
 from plamen_parsers import *  # noqa: F403,F401
 from plamen_parsers import (
     _OPTIONAL_FINDING_METADATA_FIELDS,
     _OPTIONAL_FINDING_METADATA_LABELS,
+    _extract_trust_scope,
     _normalize_manifest_header,
     _split_markdown_table_row,
     _manifest_row_from_cells,
     _manifest_row_is_spawned_breadth_agent,
     _poc_kw_present,
+    _dedup_source_ids_by_report_id,
 )
+from late_committed_invariant_authority import (
+    LATE_CI_LEDGER_NAME,
+    LateCommittedInvariantAuthority,
+    LateCommittedInvariantError,
+    replay_late_committed_invariant_ledger,
+)
+from trust_evidence_authority import (
+    record_trust_review_debt,
+    resolve_trust_evidence,
+)
+from trust_evidence_provider import constrain_trust_sensitive_report_projection
+from methodology_citation import MethodologyCitationResolver
+from verification_policy import (
+    ClaimClass as PolicyClaimClass,
+    Decision as PolicyDecision,
+    ExecutionBlocker,
+    ExecutionPolicy,
+    Severity as PolicySeverity,
+    VerificationWorkItem,
+    evaluate_obligation,
+)
+from queue_work_items import (
+    VerifierOutputIdentity,
+    VerifierOutputReceipt,
+)
+from post_verify_candidate_delta import (
+    current_report_candidate_universe_legacy_rows,
+    load_current_report_candidate_universe_authority,
+    load_post_verify_late_delivery_statuses,
+    report_candidate_universe_requires_typed_authority,
+)
+from severity_decision_ledger import (
+    load_severity_decision_ledger,
+    parse_severity_proposal,
+    project_report_severity,
+)
+from finding_producer_registry import (
+    PRODUCERS_BY_KEY as _REGISTERED_PRODUCERS_BY_KEY,
+    artifact_sha256 as _registered_artifact_sha256,
+    canonical_digest as _finding_delivery_digest,
+    materialized_producer_paths as _materialized_registered_producer_paths,
+    producer_accepts_local_id as _registered_producer_accepts_local_id,
+    producer_for_artifact as _registered_producer_for_artifact,
+    producer_read_id_pattern as _registered_producer_read_id_pattern,
+    producer_patterns as _registered_producer_patterns,
+    read_registered_enumeration_obligations as _read_registered_enumeration_obligations,
+    read_registered_typed_actions as _read_registered_typed_actions,
+    render_delivery_human_review_projection as _render_delivery_human_review_projection,
+    registry_digest as _finding_producer_registry_digest,
+    validated_enumgap_obligation_dispositions as _validated_enumgap_obligation_dispositions,
+)
+from preverify_inventory_successor import (
+    DELIVERY_RECEIPT_NAME as PREVERIFY_DELIVERY_SUCCESSOR_NAME,
+    FINAL_RECEIPT_NAME as PREVERIFY_INVENTORY_SUCCESSOR_NAME,
+    PreverifyInventorySuccessorError,
+    validate_preverify_successor_payloads,
+    validate_successor_generation_payload,
+)
+from preverify_projection_authority import (
+    resolve_active_preverify_projection,
+    PreverifyProjectionAuthorityError,
+    resolve_current_preverify_projection,
+    successor_projection_present,
+)
+from skill_selection_authority import (
+    authority_artifact_digest as _skill_authority_digest,
+    build_skill_consumer_coverage as _build_skill_consumer_coverage,
+    build_skill_selection_catalog as _build_skill_selection_catalog,
+    existing_bindings_sha256 as _skill_existing_bindings_sha256,
+    scheduled_consumers_from_spawn_manifest as _scheduled_skill_consumers,
+    scheduled_consumers_sha256 as _skill_scheduled_consumers_sha256,
+    write_authority_artifact as _write_skill_authority_artifact,
+)
+from report_disposition_authority import (
+    authorized_nonbody_internal_ids as _authorized_report_nonbody_ids,
+    validate_index_dispositions as _validate_decision_authorized_index_dispositions,
+)
+from inventory_reconciliation import (
+    reconcile_inventory as _reconcile_exact_inventory,
+    validate_inventory_reconciliation as _validate_exact_inventory_reconciliation,
+    write_inventory_reconciliation as _write_exact_inventory_reconciliation,
+)
+from artifact_ledger import (
+    read_artifact_ledger,
+    semantic_input_prebind_producer_authority_issues,
+    semantic_input_producer_authority_issues,
+)
+from verifier_work_roster import VerifierUnitReceipt, VerifierWorkRoster
 
 __all__ = [
     "verify_poc_contract_only_failed_ids",
+    "_canonical_output_case_issue",
+    "_verification_runtime_debt_coverage",
     "_generate_verify_targeted_repair_hint",
     "verify_targeted_repair_already_done",
     "mark_verify_targeted_repair_done",
@@ -66,11 +173,14 @@ __all__ = [
     "_check_graph_artifact_consumption",
     "_check_index_completeness",
     "_report_index_dropped_ids",
+    "_report_disposition_run_id",
     "_backfill_report_coverage_dropouts",
     "_check_notread_priority_coverage",
     "_check_opengrep_obligation_coverage",
     "_check_dedup_decision_coverage",
     "_dedup_decision_coverage_detail",
+    "_report_dedup_exact_pair_coverage_detail",
+    "_validate_report_dedup_exact_pair_coverage",
     "_repair_dedup_missing_dispositions",
     "_generate_dedup_decision_retry_hint",
     "_check_function_summary_obligation",
@@ -78,6 +188,9 @@ __all__ = [
     "_check_perturbation_block_per_finding",
     "_check_promotion_symmetry",
     "_check_report_index_unresolved_authenticity",
+    "ReportIndexSummaryParityDerivation",
+    "derive_report_index_summary_master_parity",
+    "validate_report_index_summary_master_parity_derivation",
     "validate_report_index_summary_master_parity",
     "_distinct_master_report_ids",
     "_master_tier_counts",
@@ -136,6 +249,11 @@ __all__ = [
     "_body_writer_evidence_fields",
     "_expected_report_index_severities",
     "_expected_report_index_statuses",
+    "_mechanical_successor_authority_view",
+    "_project_report_index_status_authority",
+    "_report_index_status_projection_debt",
+    "_validate_report_index_status_authority",
+    "_validate_report_body_status_authority",
     "_forced_chain_seed_rows",
     "_is_substantive_body_evidence",
     "_is_spec_support_path",
@@ -151,12 +269,14 @@ __all__ = [
     "_owned_artifact_patterns",
     "_panic_sites_available",
     "_parse_inventory_evidence_validation",
+    "_inventory_structural_source_referents",
     "_parse_subsystem_coverage_gap",
     "_primitive_sweep_relevant",
     "_promote_depth_findings_to_inventory",
     "_allocate_depth_promotion_inventory_id",
     "_quarantine_foreign_phase_writes",
     "_quarantine_phase_overreach",
+    "_quarantine_canonical_report_fail_closed",
     "_quarantine_report_without_completed_assemble",
     "_quarantine_stale_on_retry",
     "_pattern_implicated_by_missing",
@@ -185,6 +305,7 @@ __all__ = [
     "_validate_assemble_not_degraded",
     "_validate_attention_repair",
     "_validate_invariants_pass2",
+    "_reconcile_semantic_invariant_application",
     "_validate_chain_iter2",
     "_validate_exploration_skeptic",
     "_validate_enumgap_exploration",
@@ -193,6 +314,7 @@ __all__ = [
     "_validate_chain_anti_absorption",
     "_declared_depth_findings",
     "_validate_chain_baseline_not_regrouped",
+    "_derive_auto_map_unmapped_depth_findings",
     "_auto_map_unmapped_depth_findings",
     "_generate_chain_baseline_regroup_retry_hint",
     "_validate_chain_self_restatement",
@@ -219,6 +341,9 @@ __all__ = [
     "_validate_depth_iterations",
     "_validate_semantic_gap_niche",
     "_validate_niche_manifest_consistency",
+    "_required_niche_manifest_union",
+    "_niche_tokens_from_required_table",
+    "_rewrite_niche_required_table",
     "_validate_injectable_promotion",
     "_promote_injectable_rows",
     "_flag_derived_required_niches",
@@ -228,6 +353,7 @@ __all__ = [
     "_INJECTABLE_FLAG_TO_SKILL",
     "_INJECTABLE_PROTOCOL_TO_SKILL",
     "_validate_depth_promotion_receipt",
+    "_validate_registered_finding_delivery_receipt",
     "_validate_depth_promotion_dedup",
     "_validate_graph_sweeps",
     "_validate_inventory_evidence",
@@ -248,19 +374,38 @@ __all__ = [
     "_validate_sc_subsystem_coverage",
     "_validate_scope_leftover",
     "_validate_skeptic_full_ch_coverage",
+    "_validate_skeptic_challenge_receipt",
     "_validate_skeptic_scope",
     "_validate_spawn_manifest_schema",
     "_skill_template_resolves",
     "_manifest_fabricated_templates",
+    "_required_skill_tokens_from_binding_manifest",
+    "_reconcile_skill_manifest_sources",
+    "_skill_manifest_reconciliation_issues",
+    "_selected_skill_manifest_issues",
+    "_materialize_skill_selection_authority",
+    "_materialize_skill_consumer_authority",
+    "_skill_selection_gate_issues",
+    "_skill_authority_gate_issues",
     "_validate_tier_body_against_manifest",
     "_validate_verification_queue_inventory_parity",
     "_compute_unrouted_inventory_ids",
     "_validate_verify_completion",
+    "_validate_verifier_outputs_before_receipt",
+    "_validate_severity_proposal_sidecars",
+    "_inventory_structural_source_action_referents",
+    "_persist_verifier_output_receipts",
+    "_validate_verifier_output_receipts",
     "_find_verify_file",
     "_validate_poc_attempt_coverage",
     "_apply_poc_fail_demotions",
     "_apply_independent_severity_caps",
+    "_validate_independent_severity_challenge_receipt",
     "_apply_external_assumption_undemotions",
+    "_materialize_r10_driver_outputs",
+    "_r10_phaseio_output_authority_issues",
+    "_r10_report_prework_input_paths",
+    "_r10_semantic_input_authority",
     "_load_independent_severity_caps",
     "_append_crossbatch_coverage_ledger",
     "_validate_report_coverage_accounting",
@@ -275,7 +420,11 @@ __all__ = [
     "_validate_verify_evidence_tags",
     "_validate_verify_files_for_queue",
     "_verify_file_present_for_id",
+    "_verifier_completion_authority_issues",
+    "_verifier_output_has_completion_authority",
     "_write_final_subsystem_coverage_summary",
+    "_validate_exact_scope_coverage_authority",
+    "_project_exact_scope_coverage_limitations",
     "_write_empty_verification_queue",
     "_write_inventory_base_snapshot",
     "_write_crossbatch_manifest",
@@ -338,6 +487,16 @@ def is_verification_queue_empty(scratchpad: Path, pipeline: str) -> tuple:
         if q_text.strip():
             return (False, "verification_queue.md exists but is not parseable")
 
+    if successor_projection_present(scratchpad):
+        # A committed live queue may never be reclassified from mutable
+        # hypotheses/canonical Markdown.  Missing queue bytes are replay debt,
+        # not proof of an honestly empty denominator.
+        return (
+            False,
+            "preverify successor exists but the committed verification queue "
+            "is missing or unreadable",
+        )
+
     if pipeline == "l1":
         sources = ["findings_inventory.md"]
     else:
@@ -397,10 +556,15 @@ def _write_semantic_dedup_skip_outputs(
     written.append(decisions.name)
 
     if phase_name == "semantic_dedup":
-        source = scratchpad / "verification_queue.md"
-        target = scratchpad / "verification_queue_deduped.md"
-        label = "Verification Queue Deduped"
-    elif phase_name == "sc_semantic_dedup":
+        # L1's MODEL unit owns only the decision proposal.  The canonical
+        # inventory successor, its byte-exact compatibility projection, and
+        # every applied-alias sidecar are published together by the later
+        # ``semantic_dedup/prequeue_apply`` DRIVER transaction.  Pre-creating
+        # any of those paths here would manufacture an unowned output
+        # prestate and let a model-phase scaffold masquerade as the RMW
+        # successor.
+        return written
+    if phase_name == "sc_semantic_dedup":
         source = scratchpad / "findings_inventory.md"
         target = scratchpad / "findings_inventory_deduped.md"
         label = "Findings Inventory Deduped"
@@ -550,7 +714,6 @@ def _write_semantic_invariants_fallback(
     explicit instead of retrying a non-load-bearing helper.
     """
     scratchpad = Path(scratchpad)
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
     state_path = scratchpad / "state_variables.md"
     variables: list[str] = []
     if state_path.exists():
@@ -576,11 +739,74 @@ def _write_semantic_invariants_fallback(
     else:
         variable_cell = "None parsed from state_variables.md"
 
+    # The fallback is still a producer decision over the exact finite
+    # denominator. Emit one valid typed row per state as DEFERRED so the
+    # ordinary invariant gate can distinguish an honest bounded fallback from
+    # a producer that simply omitted worklist rows. Without this trace the gate
+    # retries a fallback that can never pass, and the already-consumed PhaseIO
+    # launch then (correctly) refuses reuse because it is no longer INPUTS_BOUND.
+    trace = ""
+    try:
+        import semantic_invariant_authority as semantic_authority
+
+        worklist = json.loads(
+            (scratchpad / semantic_authority.WORKLIST_FILE).read_text(
+                encoding="utf-8", errors="strict"
+            )
+        )
+        run_binding = worklist.get("run_binding")
+        states = worklist.get("states")
+        if not isinstance(run_binding, Mapping) or not isinstance(states, list):
+            raise ValueError("semantic invariant worklist shape is invalid")
+        rows = []
+        for state in states:
+            if not isinstance(state, Mapping) or not str(state.get("state_id") or ""):
+                raise ValueError("semantic invariant worklist state is invalid")
+            rows.append({
+                "state_id": str(state["state_id"]),
+                "disposition": "DEFERRED",
+                "evidence_loci": [],
+                "write_site_status": "UNKNOWN",
+                "semantic_status": "SEMANTICS_UNKNOWN",
+                "result": (
+                    "Enrichment was unavailable; the downstream depth state-trace "
+                    "consumer must inspect this exact state against source."
+                ),
+            })
+        payload = {
+            "schema_version": semantic_authority.APPLICATION_TRACE_SCHEMA,
+            "run_binding_digest": str(run_binding.get("binding_digest") or ""),
+            "authority_digest": str(worklist.get("authority_digest") or ""),
+            "worklist_digest": str(worklist.get("worklist_digest") or ""),
+            "producer_operator_digest": hashlib.sha256(
+                b"plamen.driver.semantic_invariant_fallback.v1"
+            ).hexdigest(),
+            "rows": rows,
+        }
+        payload["payload_digest"] = semantic_authority.payload_digest(payload)
+        trace = (
+            "\n"
+            f"{semantic_authority.TRACE_BEGIN}\n"
+            + json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+            + f"\n{semantic_authority.TRACE_END}\n"
+        )
+    except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+        # Compatibility callers may materialize the legacy Markdown fallback
+        # before the typed PRE boundary exists. The integrated driver always
+        # has the worklist and therefore takes the governed branch above.
+        trace = ""
+
+    safe_reason = str(reason).replace(
+        "<!-- PLAMEN_SEMANTIC_INVARIANT_TRACE_JSON_BEGIN -->",
+        "[semantic trace begin marker removed]",
+    ).replace(
+        "<!-- PLAMEN_SEMANTIC_INVARIANT_TRACE_JSON_END -->",
+        "[semantic trace end marker removed]",
+    )
     body = (
         "# Semantic Invariants\n\n"
         "**Status**: FALLBACK\n\n"
-        f"**Reason**: {reason}\n\n"
-        f"**Generated**: {stamp}\n\n"
+        f"**Reason**: {safe_reason}\n\n"
         "The semantic-invariant enrichment pass did not produce a complete "
         "artifact. This file preserves the documented transition contract: "
         "depth agents must read `state_variables.md` directly and derive "
@@ -611,27 +837,253 @@ def _write_semantic_invariants_fallback(
         "|---|---|---|---|---|\n"
         f"| FALLBACK | {variable_cell} | See function_list.md | Not precomputed | "
         "Not precomputed |\n"
+        f"{trace}"
     )
     target = scratchpad / "semantic_invariants.md"
     target.write_text(body, encoding="utf-8")
     return [target.name]
 
 
+_SEMANTIC_INVARIANT_REQUIRED_SECTIONS = (
+    "Main Table",
+    "Mirror Variable Pairs",
+    "Time-Weighted Accumulators",
+    "Semantic Clusters",
+    "Write Completeness vs Semantic Correctness",
+    "Read-Site Expectations",
+    "Write/Read Meaning Drift",
+    "Branch-Conditioned Formula Inputs",
+    "Lifecycle Semantics",
+    "Refutation Hazards",
+)
+
+
+def _semantic_input_variables(scratchpad: Path) -> dict[str, set[str]]:
+    """Parse the canonical recon File/Variable table without semantic guesses."""
+    path = Path(scratchpad) / "state_variables.md"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    out: dict[str, set[str]] = {}
+    file_index: int | None = None
+    variable_index: int | None = None
+    in_table = False
+    for line in lines:
+        if not line.lstrip().startswith("|"):
+            if in_table:
+                file_index = variable_index = None
+                in_table = False
+            continue
+        cells = _split_markdown_table_row(line)
+        normalized = [
+            re.sub(r"[^a-z0-9]+", " ", cell.casefold()).strip()
+            for cell in cells
+        ]
+        if "file" in normalized and any(
+            cell in {"variable", "state variable", "name"} for cell in normalized
+        ):
+            file_index = normalized.index("file")
+            variable_index = next(
+                index for index, cell in enumerate(normalized)
+                if cell in {"variable", "state variable", "name"}
+            )
+            in_table = True
+            continue
+        if not in_table or file_index is None or variable_index is None:
+            continue
+        if max(file_index, variable_index) >= len(cells):
+            continue
+        if all(not cell or set(cell.strip()) <= {"-", ":"} for cell in cells):
+            continue
+        variable = cells[variable_index].strip().strip("`* ")
+        variable = re.sub(r"[\[(].*$", "", variable).strip()
+        if not variable or variable.casefold() in {"variable", "state variable", "name"}:
+            continue
+        locus = cells[file_index].strip().strip("`* ") or "unknown"
+        out.setdefault(variable, set()).add(locus)
+    return out
+
+
+def _reconcile_semantic_invariant_application(scratchpad: Path) -> dict[str, Any]:
+    """Enumerate/diff invariant inputs against the accepted semantic artifact.
+
+    This receipt proves finite coverage bookkeeping only. A variable counts as
+    represented when the invariant output names it, including an explicit
+    ``NOT_PRECOMPUTED_DEPTH_MUST_INSPECT`` deferral. It does not certify the
+    model's semantic conclusion. Missing rows/sections become additive depth
+    obligations and never halt or delete a finding.
+    """
+    scratchpad = Path(scratchpad)
+    input_path = scratchpad / "state_variables.md"
+    output_path = scratchpad / "semantic_invariants.md"
+    variables = _semantic_input_variables(scratchpad)
+    try:
+        output_bytes = output_path.read_bytes()
+        output_text = output_bytes.decode("utf-8", errors="replace")
+    except OSError:
+        output_bytes = b""
+        output_text = ""
+    try:
+        input_bytes = input_path.read_bytes()
+    except OSError:
+        input_bytes = b""
+    input_text = input_bytes.decode("utf-8", errors="replace") if input_bytes else ""
+    canonical_header = any(
+        line.lstrip().startswith("|")
+        and re.search(r"(?i)\bfile\b", line)
+        and re.search(r"(?i)\b(?:state\s+)?variable\b|\bname\b", line)
+        for line in input_text.splitlines()
+    )
+    explicit_empty = bool(
+        re.search(
+            r"(?i)\b(?:no|zero|0)\s+(?:enumerated\s+)?state\s+variables\b|"
+            r"\bstate\s+variables\s*:\s*(?:none|0)\b",
+            input_text,
+        )
+    )
+    if not input_bytes:
+        input_parser_status = "MISSING"
+    elif variables:
+        input_parser_status = "PARSED"
+    elif canonical_header or explicit_empty:
+        input_parser_status = "EXPLICIT_EMPTY"
+    else:
+        input_parser_status = "UNPARSEABLE_NONEMPTY"
+
+    represented: list[str] = []
+    missing: list[str] = []
+    for variable in sorted(variables, key=str.casefold):
+        token_re = re.compile(
+            r"(?<![A-Za-z0-9_])" + re.escape(variable) + r"(?![A-Za-z0-9_])"
+        )
+        (represented if token_re.search(output_text) else missing).append(variable)
+
+    headings = {
+        re.sub(r"\s+", " ", re.sub(r"[*_`]", "", match.group(1))).strip().casefold()
+        for match in re.finditer(r"(?m)^#{2,6}\s+(.+?)\s*$", output_text)
+    }
+    missing_sections = [
+        section for section in _SEMANTIC_INVARIANT_REQUIRED_SECTIONS
+        if section.casefold() not in headings
+    ]
+    if (
+        input_parser_status in {"MISSING", "UNPARSEABLE_NONEMPTY"}
+        or not output_bytes
+    ):
+        status = "UNMEASURABLE"
+    elif missing or missing_sections:
+        status = "GAPS"
+    else:
+        status = "COVERED"
+    receipt: dict[str, Any] = {
+        "schema_version": 1,
+        "status": status,
+        "assurance": "MECHANICAL_ENUMERATE_DIFF_ONLY",
+        "semantic_correctness_proven": False,
+        "expected_variables": len(variables),
+        "represented_variables": len(represented),
+        "input_parser_status": input_parser_status,
+        "missing_variables": missing,
+        "missing_sections": missing_sections,
+        "input_sha256": hashlib.sha256(input_bytes).hexdigest() if input_bytes else "",
+        "output_sha256": hashlib.sha256(output_bytes).hexdigest() if output_bytes else "",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    receipt_path = scratchpad / "semantic_invariant_application_receipt.json"
+    temp_path = receipt_path.with_name(f".{receipt_path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    os.replace(temp_path, receipt_path)
+
+    lines = [
+        "# Semantic Invariant Coverage Gaps",
+        "",
+        f"**Status**: {status}",
+        "",
+        "This is a deterministic coverage ledger, not a safety verdict. Missing",
+        "rows are mandatory depth inspection obligations; they are never proof of a bug.",
+        "",
+    ]
+    if status == "UNMEASURABLE":
+        lines.extend([
+            "## Global Coverage Obligation",
+            "",
+            "- `state_variables.md`: DEPTH_MUST_INSPECT the canonical state inventory and source directly because deterministic input/output reconciliation was unmeasurable.",
+            "",
+        ])
+    elif not missing and not missing_sections:
+        lines.extend(["No deterministic coverage gaps were found.", ""])
+    else:
+        lines.extend([
+            "## Variable Obligations",
+            "",
+            "| Variable | Recon Locus | Status | Downstream Action |",
+            "|---|---|---|---|",
+        ])
+        for variable in missing:
+            loci = ", ".join(sorted(variables.get(variable, {"unknown"})))
+            lines.append(
+                f"| `{variable}` | `{loci}` | DEPTH_MUST_INSPECT | Enumerate writes, reads, lifecycle, and paired state before disposition. |"
+            )
+        if not missing:
+            lines.append("| (none) | | | |")
+        lines.extend([
+            "",
+            "## Missing Methodology Views",
+            "",
+        ])
+        lines.extend(
+            f"- `{section}`: DEPTH_MUST_INSPECT the omitted semantic view."
+            for section in missing_sections
+        )
+        if not missing_sections:
+            lines.append("- (none)")
+        lines.append("")
+    (scratchpad / "semantic_invariant_coverage_gaps.md").write_text(
+        "\n".join(lines), encoding="utf-8", newline="\n"
+    )
+    return receipt
+
+
 def _write_rag_validation_floor(
     scratchpad: Path,
     reason: str,
 ) -> list[str]:
-    """Write complete RAG floor scores for every inventory finding.
+    """Write complete decision-neutral precedent-unavailable proposals.
 
-    RAG validation is quality-improving context. Final scoring already
-    defines 0.3 as the no-support/tool-failed floor, so the deterministic
-    fallback must materialize that floor for every finding rather than
-    forcing a retry on a missing `rag_validation.md`.
+    Research failure is not evidence for or against a finding and has no
+    numeric confidence floor.  The fallback preserves the full finding
+    denominator in the same bounded typed transport consumed by deterministic
+    precedent reconciliation.
     """
+    from precedent_evidence_authority import (
+        PROPOSAL_BLOCK_BEGIN,
+        PROPOSAL_BLOCK_END,
+        PROPOSAL_SCHEMA,
+        read_canonical_json_artifact,
+    )
+
     scratchpad = Path(scratchpad)
     inv_path = scratchpad / "findings_inventory.md"
     rows: list[tuple[str, str]] = []
-    if inv_path.exists():
+    facts: dict[str, Any] = {}
+    facts_path = scratchpad / "precedent_finding_facts.json"
+    if facts_path.is_file():
+        try:
+            facts = read_canonical_json_artifact(facts_path)
+        except (OSError, ValueError):
+            facts = {}
+    fact_rows = facts.get("findings") if isinstance(facts, Mapping) else None
+    if isinstance(fact_rows, list):
+        for raw in fact_rows:
+            if not isinstance(raw, Mapping):
+                continue
+            finding_id = str(raw.get("finding_id") or "").strip()
+            if finding_id:
+                rows.append((finding_id, "typed finding denominator"))
+    elif inv_path.exists():
         try:
             text = _llm_norm(inv_path.read_text(encoding="utf-8", errors="replace"))
         except Exception:
@@ -642,29 +1094,98 @@ def _write_rag_validation_floor(
         ):
             rows.append((m.group(1).strip(), m.group(2).strip()))
 
-    if not rows:
-        rows = [("NONE", "No inventory findings parsed")]
-
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    checkpoint: dict[str, Any] = {}
+    checkpoint_path = scratchpad / "_v2_checkpoint.json"
+    if checkpoint_path.is_file():
+        try:
+            loaded = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                checkpoint = loaded
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            checkpoint = {}
+    run_id = str(
+        (facts.get("run_id") if isinstance(facts, Mapping) else "")
+        or checkpoint.get("run_id")
+        or "UNBOUND_RESEARCH_FALLBACK"
+    )
+    audit_snapshot = checkpoint.get("audit_snapshot")
+    snapshot_digest = str(
+        (facts.get("snapshot_digest") if isinstance(facts, Mapping) else "")
+        or (
+            audit_snapshot.get("snapshot_digest")
+            if isinstance(audit_snapshot, Mapping)
+            else ""
+        )
+        or ""
+    )
+    if re.fullmatch(r"[0-9a-f]{64}", snapshot_digest) is None:
+        inventory_bytes = inv_path.read_bytes() if inv_path.is_file() else b""
+        snapshot_digest = hashlib.sha256(inventory_bytes).hexdigest()
+    availability = "TIMEOUT" if "timeout" in str(reason).lower() else "TOOL_ERROR"
+    proposals: list[dict[str, Any]] = []
+    for index, (finding_id, title) in enumerate(rows, start=1):
+        source_ref = f"unavailable:{finding_id.lower()}"
+        proposals.append(
+            {
+                "proposal_id": f"PR-{index}",
+                "finding_id": finding_id,
+                "source_kind": "UNAVAILABLE",
+                "source_ref": source_ref,
+                "source_sha256": hashlib.sha256(
+                    f"{source_ref}\n{availability}\n{reason}".encode("utf-8")
+                ).hexdigest(),
+                "availability": availability,
+                "relation": "UNKNOWN",
+                "mechanism_class": "UNAVAILABLE_RESEARCH",
+                "precondition_classes": ["RESEARCH_NOT_AVAILABLE"],
+                "report_context": "External precedent research was unavailable; no decision authority.",
+            }
+        )
+    proposal_artifact = {
+        "schema_version": PROPOSAL_SCHEMA,
+        "run_id": run_id,
+        "snapshot_digest": snapshot_digest,
+        "proposals": proposals,
+    }
     lines = [
-        "# RAG Validation",
+        "# External Precedent Research",
         "",
-        "**Status**: FALLBACK_FLOOR",
+        "**Status**: UNAVAILABLE (decision-neutral fallback)",
         "",
         f"**Reason**: {reason}",
-        f"**Generated**: {stamp}",
         "",
-        "| Finding ID | validate_hypothesis Score | solodit_live Matches | Final RAG Score | Notes |",
-        "|---|---|---|---|---|",
+        "| Finding ID | Source Kind | Availability | Relation | Mechanism Class | Preconditions | Source Ref | Match Proposal | Notes |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for fid, title in rows:
         safe_title = title.replace("|", "/")[:120]
         lines.append(
-            f"| {fid} | N/A | 0 | 0.3 | [RAG: DRIVER_FLOOR] {safe_title}; {reason} |"
+            f"| {fid} | UNAVAILABLE | {availability} | UNKNOWN | "
+            f"UNAVAILABLE_RESEARCH | RESEARCH_NOT_AVAILABLE | "
+            f"unavailable:{fid.lower()} | UNSCORED | "
+            f"[RAG: DRIVER_UNAVAILABLE] {safe_title}; no decision authority |"
         )
-    lines.append("")
+    if not rows:
+        lines.append(
+            "| - | UNAVAILABLE | TOOL_ERROR | UNKNOWN | - | - | - | UNSCORED | No inventory findings parsed |"
+        )
+    lines.extend(
+        [
+            "",
+            PROPOSAL_BLOCK_BEGIN,
+            json.dumps(
+                proposal_artifact,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            PROPOSAL_BLOCK_END,
+            "",
+        ]
+    )
     target = scratchpad / "rag_validation.md"
-    target.write_text("\n".join(lines), encoding="utf-8")
+    target.write_text("\n".join(lines), encoding="utf-8", newline="\n")
     return [target.name]
 
 
@@ -1900,11 +2421,19 @@ def _codebase_is_complex(scratchpad: Path) -> bool:
     except Exception:
         return False
     lines_idx: Optional[int] = None
+    name_idx = 0
+    path_idx: Optional[int] = None
+    inventory_rows_started = False
     total_lines = 0
     contracts = 0
     for ln in text.splitlines():
         s = ln.strip()
         if not s.startswith("|"):
+            # The mechanical inventory is the first table whose header owns a
+            # Lines column. Recon may append narrative/entry-point tables to
+            # the same artifact; those are analysis, not size-tier authority.
+            if lines_idx is not None and inventory_rows_started:
+                break
             continue
         cells = [c.strip() for c in s.strip("|").split("|")]
         if not cells or all(set(c) <= {"-", ":", " "} for c in cells):
@@ -1913,9 +2442,18 @@ def _codebase_is_complex(scratchpad: Path) -> bool:
         if lines_idx is None:
             if "lines" in low:
                 lines_idx = low.index("lines")
+                if "file" in low:
+                    name_idx = low.index("file")
+                elif "contract" in low:
+                    name_idx = low.index("contract")
+                path_idx = low.index("path") if "path" in low else None
             continue  # header row consumed
-        name = cells[0]
-        path = (cells[1].lower() if len(cells) > 1 else "")
+        name = cells[name_idx] if name_idx < len(cells) else cells[0]
+        path = (
+            cells[path_idx].lower()
+            if path_idx is not None and path_idx < len(cells)
+            else (cells[1].lower() if len(cells) > 1 else "")
+        )
         lv: Optional[int] = None
         if lines_idx < len(cells) and re.fullmatch(r"[\d,]+", cells[lines_idx]):
             lv = int(cells[lines_idx].replace(",", ""))
@@ -1926,6 +2464,7 @@ def _codebase_is_complex(scratchpad: Path) -> bool:
                     break
         if lv is None:
             continue
+        inventory_rows_started = True
         total_lines += lv
         is_aux = (
             "interface" in path or "/mock" in path or "mock/" in path
@@ -1949,7 +2488,7 @@ _NON_SKILL_TEMPLATE_TOKENS = frozenset({
 })
 
 
-def _skill_template_resolves(token: str) -> bool:
+def _skill_template_resolves(token: str, language: str = "") -> bool:
     """True if an UPPER_SNAKE skill-template name has a SKILL.md in ANY SC
     skill tree (language/injectable/niche). Mirrors driver's
     _sc_skill_path_for_name existence check (searched across all trees, since
@@ -1958,14 +2497,1004 @@ def _skill_template_resolves(token: str) -> bool:
     if not slug:
         return False
     base = plamen_home() / "agents" / "skills"
-    for sub in ("evm", "solana", "aptos", "sui", "soroban",
-                "injectable", "niche", "injectable/l1"):
+    lang = str(language or "").strip().lower()
+    if lang in {"evm", "solana", "aptos", "sui", "soroban", "daml"}:
+        trees = (lang, "injectable", "niche")
+    else:
+        # Compatibility for catalog tooling without an audit context. Runtime
+        # producer validation always supplies the detected ecosystem.
+        trees = (
+            "evm", "solana", "aptos", "sui", "soroban", "daml",
+            "injectable", "niche", "injectable/l1",
+        )
+    for sub in trees:
         if (base / sub / slug / "SKILL.md").exists():
             return True
     return False
 
 
-def _manifest_fabricated_templates(scratchpad: Path) -> list[str]:
+_REQUIRED_SKILL_POSITIVE_RE = re.compile(
+    r"\b(?:strong\s+trigger|triggered|required|always[- ]on|relevant|"
+    r"recommended|recommendation|applies|present|detected)\b",
+    re.IGNORECASE,
+)
+_REQUIRED_SKILL_NEGATIVE_RE = re.compile(
+    r"\b(?:not\s+triggered|not\s+required|not\s+relevant|does\s+not\s+"
+    r"(?:apply|fire)|no\s+(?:positive\s+)?trigger|not\s+bound|not\s+selected|"
+    r"rejected|excluded|untriggered|skip(?:ped)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _required_cell_is_yes(cell: str) -> bool:
+    value = _strip_md(str(cell or "")).strip().lower()
+    # A word-boundary regex cannot match a symbol-only checkmark cell because
+    # checkmarks are non-word characters.  Use an exact symbol alias set and a
+    # bounded textual token instead.
+    if value in {"✓", "✔", "☑", "✅", "[x]", "x"}:
+        return True
+    return bool(re.match(r"^(?:yes|y|required|true|1)(?:\b|$)", value))
+
+
+def _skill_tokens_in_text(value: str) -> set[str]:
+    """Return only real, canonical skill names mentioned in *value*.
+
+    Resolving against the installed skill tree prevents ordinary uppercase
+    prose (MODE, EVM, LLM, etc.) from becoming a binding.
+    """
+    out: set[str] = set()
+    for token in re.findall(r"\b[A-Z][A-Z0-9_]{3,}\b", str(value or "")):
+        if token not in _NON_SKILL_TEMPLATE_TOKENS and _skill_template_resolves(token):
+            out.add(token)
+    return out
+
+
+def _required_skill_tokens_from_binding_manifest(text: str) -> set[str]:
+    """Read Required=YES skills from the canonical BINDING MANIFEST tables.
+
+    The parser is header-aware and restricted to the H2 BINDING MANIFEST
+    section.  Niche agents have their own union gate and are intentionally not
+    mixed into breadth/depth skill coverage.
+    """
+    required: set[str] = set()
+    in_binding = False
+    in_niche = False
+    headers: list[str] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        h2 = re.match(r"^##\s+(.+?)\s*$", line)
+        if h2:
+            title = _strip_md(h2.group(1)).strip().lower()
+            if title == "binding manifest":
+                in_binding = True
+                in_niche = False
+                headers = []
+                continue
+            if in_binding:
+                break
+        if not in_binding:
+            continue
+        sub = re.match(r"^#{3,6}\s+(.+?)\s*$", line)
+        if sub:
+            in_niche = "niche" in _strip_md(sub.group(1)).lower()
+            headers = []
+            continue
+        if not line.startswith("|"):
+            headers = []
+            continue
+        if _is_separator_row(line):
+            continue
+        cells = _split_markdown_table_row(line)
+        low = [_normalize_manifest_header(c) for c in cells]
+        if "skill" in low and any(h in low for h in ("required", "required_")):
+            headers = low
+            continue
+        if in_niche or not headers:
+            continue
+        row = _manifest_row_from_cells(headers, cells)
+        required_cell = row.get("required") or row.get("required_") or ""
+        if _required_cell_is_yes(required_cell):
+            required.update(_skill_tokens_in_text(row.get("skill", "")))
+    return required
+
+
+def _prose_required_skill_tokens(text: str) -> set[str]:
+    """Harvest positive skill recommendations outside the canonical table.
+
+    This is a compatibility bridge for the observed recon shape where an LLM
+    appends a ``Template / Skill Recommendations`` section but forgets to flip
+    the pre-pass table.  It is deliberately section-scoped, real-skill-only,
+    and negative-cue guarded.  The machine-readable ``required_skills`` signal
+    is preferred when present.
+    """
+    required: set[str] = set()
+    signals = parse_plamen_signals(str(text or ""))
+    raw_signal = signals.get("required_skills")
+    if isinstance(raw_signal, str):
+        raw_signal = [raw_signal]
+    if isinstance(raw_signal, (list, tuple)):
+        for item in raw_signal:
+            if isinstance(item, str):
+                required.update(_skill_tokens_in_text(item.strip().upper()))
+    # A syntactically valid structured channel is authoritative even when its
+    # list is empty.  Falling through to prose in that case resurrected stale
+    # narrative recommendations that recon had explicitly deselected.
+    if "required_skills" in signals:
+        return required
+
+    in_section = False
+    positive_context = False
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        h2 = re.match(r"^##\s+(.+?)\s*$", line)
+        if h2:
+            title = _strip_md(h2.group(1)).strip().lower()
+            if re.search(r"(?:template|skill).*(?:recommendation|selection)|"
+                         r"recommendation.*(?:template|skill)", title):
+                in_section = True
+                positive_context = True  # recommendation-list default
+                continue
+            if in_section:
+                break
+        if not in_section or not line:
+            continue
+        # Bold/sub-headings establish context for following bullets.
+        if re.match(r"^(?:#{3,6}\s+|\*\*).+", line) and not line.startswith(("-", "* ")):
+            if _REQUIRED_SKILL_NEGATIVE_RE.search(line):
+                positive_context = False
+            elif _REQUIRED_SKILL_POSITIVE_RE.search(line):
+                positive_context = True
+            continue
+        tokens = _skill_tokens_in_text(line)
+        if not tokens or _REQUIRED_SKILL_NEGATIVE_RE.search(line):
+            continue
+        if positive_context or _REQUIRED_SKILL_POSITIVE_RE.search(line):
+            required.update(tokens)
+    return required
+
+
+def _rewrite_required_skill_rows(text: str, promote: set[str]) -> tuple[str, int]:
+    """Flip matching BINDING MANIFEST skill rows to YES; never demote."""
+    if not promote:
+        return text, 0
+    out: list[str] = []
+    in_binding = False
+    in_niche = False
+    headers: list[str] = []
+    changed = 0
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        h2 = re.match(r"^##\s+(.+?)\s*$", line)
+        if h2:
+            title = _strip_md(h2.group(1)).strip().lower()
+            if title == "binding manifest":
+                in_binding = True
+                in_niche = False
+                headers = []
+            elif in_binding:
+                in_binding = False
+                headers = []
+        if in_binding:
+            sub = re.match(r"^#{3,6}\s+(.+?)\s*$", line)
+            if sub:
+                in_niche = "niche" in _strip_md(sub.group(1)).lower()
+                headers = []
+            if line.startswith("|") and not _is_separator_row(line):
+                cells = _split_markdown_table_row(line)
+                low = [_normalize_manifest_header(c) for c in cells]
+                if "skill" in low and any(h in low for h in ("required", "required_")):
+                    headers = low
+                elif headers and not in_niche:
+                    row = _manifest_row_from_cells(headers, cells)
+                    skills = _skill_tokens_in_text(row.get("skill", ""))
+                    req_key = "required" if "required" in headers else "required_"
+                    req_idx = headers.index(req_key) if req_key in headers else -1
+                    if skills & promote and req_idx >= 0 and req_idx < len(cells):
+                        if not _required_cell_is_yes(cells[req_idx]):
+                            cells[req_idx] = "YES"
+                            if "rationale" in headers:
+                                ri = headers.index("rationale")
+                                if ri < len(cells) and _INJECTABLE_PLACEHOLDER_RE.search(cells[ri]):
+                                    cells[ri] = (
+                                        "Positive recon recommendation (mechanically "
+                                        "reconciled; see recommendation section)"
+                                    )
+                            raw = "| " + " | ".join(cells) + " |"
+                            changed += 1
+        out.append(raw)
+    suffix = "\n" if str(text or "").endswith("\n") else ""
+    return "\n".join(out) + suffix, changed
+
+
+_REQUIRED_SKILLS_SIGNAL_RE = re.compile(
+    r"<!--\s*PLAMEN_SIGNALS\s*:\s*(\{.*?\})\s*-->",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _rewrite_required_skills_signal(
+    text: str, promote: set[str]
+) -> tuple[str, int]:
+    """Union deterministic manifest positives into the typed recon signal.
+
+    The canonical merge can carry two positive-selection producers: the
+    isolated recon worker's ``PLAMEN_SIGNALS`` snapshot and driver-owned
+    mechanical pre-pass rows already marked ``Required=YES``.  Leaving the
+    latter only in Markdown made the post-merge manifest and the typed
+    selection catalog disagree.  Reconcile the one valid signal in place so
+    the published canonical artifact contains one exact-polarity authority.
+
+    Malformed, duplicate, or non-list signals are deliberately left untouched;
+    their existing staged/content gates must surface producer debt rather than
+    this deterministic transform guessing a repair.
+    """
+    if not promote:
+        return text, 0
+    matches = list(_REQUIRED_SKILLS_SIGNAL_RE.finditer(str(text or "")))
+    if len(matches) != 1 or "\n" in matches[0].group(0) or "\r" in matches[0].group(0):
+        return text, 0
+
+    duplicate_keys: list[str] = []
+
+    def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                duplicate_keys.append(key)
+            value[key] = item
+        return value
+
+    try:
+        payload = json.loads(
+            matches[0].group(1), object_pairs_hook=_unique_object
+        )
+    except (TypeError, ValueError):
+        return text, 0
+    selected = payload.get("required_skills") if isinstance(payload, dict) else None
+    if duplicate_keys or not isinstance(selected, list) or not all(
+        isinstance(item, str) and item for item in selected
+    ):
+        return text, 0
+    additions = sorted(set(promote) - set(selected))
+    if not additions:
+        return text, 0
+    payload["required_skills"] = sorted(set(selected) | set(additions))
+    replacement = (
+        "<!-- PLAMEN_SIGNALS: "
+        + json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + " -->"
+    )
+    match = matches[0]
+    return text[:match.start()] + replacement + text[match.end():], len(additions)
+
+
+def _reconcile_skill_manifest_sources(scratchpad: Path) -> int:
+    """Reconcile all positive selectors into one canonical manifest + signal.
+
+    This is additive and idempotent.  It converts two competing authorities
+    into one before the typed selection catalog and instantiate consume the
+    artifact.  Driver-owned mechanical ``Required=YES`` rows are unioned back
+    into the structured signal as well as signals being promoted into rows.
+    """
+    path = Path(scratchpad) / "template_recommendations.md"
+    if not path.exists():
+        return 0
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    table_required = _required_skill_tokens_from_binding_manifest(text)
+    selected = _prose_required_skill_tokens(text)
+    rewritten, row_changes = _rewrite_required_skill_rows(
+        text, selected - table_required
+    )
+    # Reparse after row promotion so this remains correct if the Markdown
+    # renderer's table layout evolves independently of the signal renderer.
+    canonical_required = _required_skill_tokens_from_binding_manifest(rewritten)
+    rewritten, signal_changes = _rewrite_required_skills_signal(
+        rewritten, canonical_required
+    )
+    changed = row_changes + signal_changes
+    if changed:
+        path.write_text(rewritten, encoding="utf-8")
+    return changed
+
+
+def _skill_manifest_reconciliation_issues(scratchpad: Path) -> list[str]:
+    """Report positive recommendations not represented as Required=YES.
+
+    This is the read-only gate counterpart to the canonical renderer's
+    deterministic reconciliation transform.
+    """
+    path = Path(scratchpad) / "template_recommendations.md"
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [f"binding manifest unreadable: {exc}"]
+    missing = sorted(
+        _prose_required_skill_tokens(text)
+        - _required_skill_tokens_from_binding_manifest(text)
+    )
+    if not missing:
+        return []
+    return [
+        "positive recommendation is not Required=YES in the canonical "
+        "BINDING MANIFEST: " + ", ".join(missing)
+    ]
+
+
+def _selected_skill_manifest_issues(
+    scratchpad: Path, language: str = ""
+) -> list[str]:
+    """Fail-loud when a selected real skill has no canonical table row.
+
+    Reconciliation may flip an existing row but must not invent a row under an
+    arbitrary ecosystem heading.  The producer can repair this deterministically
+    on retry by emitting the ecosystem-valid catalog row.  Silent omission would
+    make the structured signal claim coverage that no downstream parser can see.
+    """
+    path = Path(scratchpad) / "template_recommendations.md"
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [f"binding manifest unreadable: {exc}"]
+    selected = _prose_required_skill_tokens(text)
+    lang = str(language or "").strip().lower()
+    wrong_ecosystem = sorted(
+        token for token in selected
+        if lang and not _skill_template_resolves(token, lang)
+    )
+    issues: list[str] = []
+    if wrong_ecosystem:
+        issues.append(
+            f"selected skill outside active ecosystem {lang}: "
+            + ", ".join(wrong_ecosystem)
+            + ". Cross-language fallback is forbidden."
+        )
+    represented: set[str] = set()
+    in_binding = False
+    in_niche = False
+    headers: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        h2 = re.match(r"^##\s+(.+?)\s*$", line)
+        if h2:
+            title = _strip_md(h2.group(1)).strip().lower()
+            if title == "binding manifest":
+                in_binding = True
+                in_niche = False
+                headers = []
+                continue
+            if in_binding:
+                break
+        if not in_binding:
+            continue
+        sub = re.match(r"^#{3,6}\s+(.+?)\s*$", line)
+        if sub:
+            in_niche = "niche" in _strip_md(sub.group(1)).lower()
+            headers = []
+            continue
+        if not line.startswith("|"):
+            headers = []
+            continue
+        if _is_separator_row(line):
+            continue
+        cells = _split_markdown_table_row(line)
+        low = [_normalize_manifest_header(c) for c in cells]
+        if "skill" in low:
+            headers = low
+            continue
+        if headers and not in_niche:
+            row = _manifest_row_from_cells(headers, cells)
+            represented.update(_skill_tokens_in_text(row.get("skill", "")))
+    absent = sorted(selected - represented)
+    if absent:
+        issues.append(
+            "selected skill absent from canonical BINDING MANIFEST rows: "
+            + ", ".join(absent)
+            + ". Emit the ecosystem-valid catalog row; the driver will not invent "
+            "a cross-ecosystem binding or silently drop the selection."
+        )
+    return issues
+
+
+# P0-AD/P0-A/P1-J typed authority APIs.  These are additive compatibility
+# boundaries: existing Markdown readers keep working while callers can bind
+# exact selection polarity and all-declared-consumer closure before dispatch.
+_SKILL_SELECTION_CATALOG_NAME = "skill_selection_catalog.json"
+_SKILL_CONSUMER_COVERAGE_NAME = "skill_consumer_coverage.json"
+_SKILL_SELECTION_RAW_SOURCES = (
+    "recon_templates_patterns.md",
+    "recon_inventory_templates.md",
+)
+_SKILL_SELECTION_PREPASS_MARKER = (
+    "<!-- plamen-prepass v1: mechanical pre-pass output; "
+    "safe to overwrite while marker is present -->"
+)
+
+
+def _skill_selection_source_texts(scratchpad: Path) -> dict[str, str]:
+    """Bind selection authority to the accepted post-merge canonical bytes.
+
+    The isolated worker shard is an input, not the final authority: canonical
+    merge additionally carries deterministic mechanical trigger selections.
+    Prefer the marker-free canonical manifest and use the raw shard only before
+    canonical publication or for legacy fixtures.
+    """
+    root = Path(scratchpad)
+    canonical = root / "template_recommendations.md"
+    if canonical.is_file():
+        try:
+            text = canonical.read_text(encoding="utf-8", errors="replace")
+            first = text.split("\n", 1)[0].strip()
+            if first != _SKILL_SELECTION_PREPASS_MARKER:
+                return {canonical.name: text}
+        except OSError:
+            pass
+    sources: dict[str, str] = {}
+    for name in _SKILL_SELECTION_RAW_SOURCES:
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            sources[name] = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    if sources:
+        return sources
+    fallback = canonical
+    if fallback.is_file():
+        try:
+            sources[fallback.name] = fallback.read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            pass
+    return sources
+
+
+def _read_skill_authority_artifact(path: Path) -> tuple[dict[str, Any], list[str]]:
+    if not Path(path).is_file():
+        return {}, [f"{Path(path).name} missing"]
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        return {}, [f"{Path(path).name} unreadable or malformed: {exc}"]
+    if not isinstance(value, dict):
+        return {}, [f"{Path(path).name} root is not an object"]
+    claimed = str(value.get("artifact_sha256") or "")
+    actual = _skill_authority_digest(value)
+    issues = [] if claimed == actual else [
+        f"{Path(path).name} digest mismatch: claimed={claimed or 'MISSING'} actual={actual}"
+    ]
+    return value, issues
+
+
+def _skill_selection_authority_issues(
+    catalog: Mapping[str, Any],
+    *,
+    scratchpad: Path,
+    language: str,
+    pipeline: str,
+    mode: str,
+    backend: str,
+) -> list[str]:
+    issues: list[str] = []
+    authority = catalog.get("authority") or {}
+    expected = {
+        "ecosystem": str(language or "").strip().lower(),
+        "pipeline": str(pipeline or "sc").strip().lower(),
+        "mode": str(mode or "core").strip().lower(),
+        "backend": str(backend or "unknown").strip().lower(),
+    }
+    for field, value in expected.items():
+        if authority.get(field) != value:
+            issues.append(
+                f"skill selection authority {field} mismatch: "
+                f"expected={value} observed={authority.get(field)}"
+            )
+    index_path = plamen_home() / "rules" / "skill-index.md"
+    def _plain_sha256(path: Path) -> str:
+        try:
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest().upper()
+        except OSError:
+            return "MISSING"
+
+    if authority.get("skill_index_sha256") != _plain_sha256(index_path):
+        issues.append("skill selection authority skill-index digest is stale")
+    current_source_texts = _skill_selection_source_texts(Path(scratchpad))
+    current_source_digests = [
+        {
+            "source": str(name),
+            "sha256": hashlib.sha256(str(current_source_texts[name]).encode("utf-8"))
+            .hexdigest()
+            .upper(),
+        }
+        for name in sorted(current_source_texts)
+    ]
+    if authority.get("source_digests") != current_source_digests:
+        issues.append("skill selection authority recon source digests are stale")
+    methodology_rows = [
+        {
+            "skill_id": str(row.get("skill_id") or ""),
+            "path": Path(str(row.get("methodology_path") or "")).as_posix(),
+            "sha256": _plain_sha256(Path(str(row.get("methodology_path") or ""))),
+        }
+        for row in catalog.get("skills", [])
+    ]
+    methodology_rows.sort(key=lambda row: row["skill_id"])
+    methodology_set_sha = hashlib.sha256(
+        json.dumps(
+            methodology_rows,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest().upper()
+    if authority.get("methodology_set_sha256") != methodology_set_sha:
+        issues.append("skill selection authority methodology-set digest is stale")
+    selected_ids = {
+        str(row.get("skill_id") or "")
+        for row in catalog.get("skills", [])
+        if row.get("state") == "REQUIRED"
+    }
+    unknown_ids = sorted(
+        str(row.get("skill_id") or "")
+        for row in catalog.get("skills", [])
+        if row.get("state") == "UNKNOWN"
+    )
+    if unknown_ids:
+        issues.append(
+            "skill selection contains UNKNOWN state(s): " + ", ".join(unknown_ids)
+        )
+    blocking_codes = {
+        "DUPLICATE_CATALOG_ID",
+        "MALFORMED_STRUCTURED_SIGNAL",
+        "WRONG_ECOSYSTEM_SKILL",
+        "UNKNOWN_SKILL_ID",
+        "UNKNOWN_SELECTION_CELL",
+        "PROSE_ONLY_RECOMMENDATION",
+        "SELECTION_STATE_CONFLICT",
+        "ILLEGAL_ALWAYS_ON_DEMOTION",
+    }
+    for debt in catalog.get("debts", []):
+        code = str(debt.get("code") or "")
+        sid = str(debt.get("skill_id") or "")
+        if code in blocking_codes or (
+            code == "CONSUMER_METADATA_CONFLICT" and sid in selected_ids
+        ):
+            issues.append(
+                "skill selection debt " + code + (f" for {sid}" if sid else "")
+            )
+    for row in catalog.get("skills", []):
+        if row.get("state") != "REQUIRED":
+            continue
+        path = Path(str(row.get("methodology_path") or ""))
+        current = _plain_sha256(path)
+        if row.get("methodology_sha256") != current:
+            issues.append(
+                f"selected skill {row.get('skill_id')} methodology digest is stale"
+            )
+    return sorted(set(issues))
+
+
+def _materialize_skill_selection_authority(
+    scratchpad: Path,
+    *,
+    language: str,
+    pipeline: str,
+    mode: str,
+    backend: str,
+    persist: bool = True,
+    planned_catalog: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Plan or persist the deterministic exact-polarity selection receipt.
+
+    ``persist=False`` is the pre-execution planning boundary used by the
+    PhaseIO producer.  A supplied ``planned_catalog`` is written byte-for-byte
+    from that plan after the producer has bound its inputs; the materializer
+    must not silently re-read a different source generation between prebind
+    and output publication.
+    """
+    if planned_catalog is None:
+        root = plamen_home()
+        catalog = _build_skill_selection_catalog(
+            skill_index_path=root / "rules" / "skill-index.md",
+            skill_root=root / "agents" / "skills",
+            ecosystem=language,
+            pipeline=pipeline,
+            mode=mode,
+            backend=backend,
+            source_texts=_skill_selection_source_texts(Path(scratchpad)),
+        )
+    else:
+        catalog = dict(planned_catalog)
+    if persist:
+        _write_skill_authority_artifact(
+            Path(scratchpad) / _SKILL_SELECTION_CATALOG_NAME, catalog
+        )
+    issues = _skill_selection_authority_issues(
+        catalog,
+        scratchpad=Path(scratchpad),
+        language=language,
+        pipeline=pipeline,
+        mode=mode,
+        backend=backend,
+    )
+    return catalog, issues
+
+
+def _skill_consumer_authority_issues(
+    catalog: Mapping[str, Any], coverage: Mapping[str, Any]
+) -> list[str]:
+    issues: list[str] = []
+    if (coverage.get("authority") or {}).get("selection_catalog_sha256") != catalog.get(
+        "artifact_sha256"
+    ):
+        issues.append("skill consumer coverage selection-catalog binding mismatch")
+    if coverage.get("status") == "UNKNOWN":
+        issues.append("skill consumer coverage contains unresolved debt")
+    selected = {
+        str(row.get("skill_id") or "")
+        for row in catalog.get("skills", [])
+        if row.get("state") == "REQUIRED"
+    }
+    coverage_rows = {
+        str(row.get("skill_id") or ""): row for row in coverage.get("skills", [])
+    }
+    effective = {
+        str(cid): {str(skill) for skill in skills}
+        for cid, skills in (coverage.get("effective_bindings") or {}).items()
+    }
+    for sid in sorted(selected):
+        row = coverage_rows.get(sid)
+        if not row:
+            issues.append(f"selected skill {sid} absent from consumer coverage")
+            continue
+        declarations = set(row.get("declared_consumers") or [])
+        represented = {
+            str(item.get("declared_consumer") or "")
+            for item in [*(row.get("consumers") or []), *(row.get("dispositions") or [])]
+        }
+        missing = sorted(declarations - represented)
+        if missing:
+            issues.append(
+                f"selected skill {sid} has undealt consumer declaration(s): "
+                + ", ".join(missing)
+            )
+        for consumer in row.get("consumers") or []:
+            cid = str(consumer.get("consumer_id") or "")
+            if sid not in effective.get(cid, set()):
+                issues.append(
+                    f"selected skill {sid} route {cid} absent from effective bindings"
+                )
+    for cid, skills in effective.items():
+        unexpected = sorted(skills - selected)
+        if unexpected:
+            issues.append(
+                f"effective binding {cid} contains non-selected skill(s): "
+                + ", ".join(unexpected)
+            )
+    return sorted(set(issues))
+
+
+def _materialize_skill_consumer_authority(
+    scratchpad: Path,
+    *,
+    language: str,
+    pipeline: str,
+    mode: str,
+    backend: str,
+    persist: bool = True,
+    selection_catalog: Mapping[str, Any] | None = None,
+    planned_coverage: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Plan or persist all-declared-consumer coverage.
+
+    A committed selection catalog is an immutable input to this later work
+    unit, never an output-side helper effect.  Legacy/direct callers retain a
+    fallback that creates the catalog only when it is genuinely absent.
+    """
+    if selection_catalog is not None:
+        catalog = dict(selection_catalog)
+        selection_issues = _skill_selection_authority_issues(
+            catalog,
+            scratchpad=Path(scratchpad),
+            language=language,
+            pipeline=pipeline,
+            mode=mode,
+            backend=backend,
+        )
+    else:
+        catalog_path = Path(scratchpad) / _SKILL_SELECTION_CATALOG_NAME
+        if catalog_path.is_file():
+            catalog, read_issues = _read_skill_authority_artifact(catalog_path)
+            selection_issues = [
+                *read_issues,
+                *(
+                    _skill_selection_authority_issues(
+                        catalog,
+                        scratchpad=Path(scratchpad),
+                        language=language,
+                        pipeline=pipeline,
+                        mode=mode,
+                        backend=backend,
+                    )
+                    if catalog
+                    else []
+                ),
+            ]
+        else:
+            catalog, selection_issues = _materialize_skill_selection_authority(
+                scratchpad,
+                language=language,
+                pipeline=pipeline,
+                mode=mode,
+                backend=backend,
+                persist=persist,
+            )
+    if planned_coverage is None:
+        manifest = Path(scratchpad) / "spawn_manifest.md"
+        try:
+            manifest_text = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            manifest_text = ""
+        scheduled, existing = _scheduled_skill_consumers(
+            manifest_text=manifest_text,
+            selection_catalog=catalog,
+            pipeline=pipeline,
+            mode=mode,
+        )
+        coverage = _build_skill_consumer_coverage(
+            selection_catalog=catalog,
+            scheduled_consumers=scheduled,
+            existing_bindings=existing,
+        )
+    else:
+        coverage = dict(planned_coverage)
+    if persist:
+        _write_skill_authority_artifact(
+            Path(scratchpad) / _SKILL_CONSUMER_COVERAGE_NAME, coverage
+        )
+    issues = [
+        *selection_issues,
+        *_skill_consumer_authority_issues(catalog, coverage),
+    ]
+    return coverage, sorted(set(issues))
+
+
+def _skill_authority_gate_issues(
+    scratchpad: Path,
+    *,
+    language: str,
+    pipeline: str,
+    mode: str,
+    backend: str,
+) -> list[str]:
+    """Validate persisted authority, freshness, and route/disposition parity."""
+    catalog, catalog_read_issues = _read_skill_authority_artifact(
+        Path(scratchpad) / _SKILL_SELECTION_CATALOG_NAME
+    )
+    coverage, coverage_read_issues = _read_skill_authority_artifact(
+        Path(scratchpad) / _SKILL_CONSUMER_COVERAGE_NAME
+    )
+    issues = [*catalog_read_issues, *coverage_read_issues]
+    if catalog:
+        issues.extend(
+            _skill_selection_authority_issues(
+                catalog,
+                scratchpad=Path(scratchpad),
+                language=language,
+                pipeline=pipeline,
+                mode=mode,
+                backend=backend,
+            )
+        )
+    if catalog and coverage:
+        issues.extend(_skill_consumer_authority_issues(catalog, coverage))
+        manifest = Path(scratchpad) / "spawn_manifest.md"
+        manifest_text = ""
+        try:
+            manifest_text = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        scheduled, existing = _scheduled_skill_consumers(
+            manifest_text=manifest_text,
+            selection_catalog=catalog,
+            pipeline=pipeline,
+            mode=mode,
+        )
+        authority = coverage.get("authority") or {}
+        scheduled_sha = _skill_scheduled_consumers_sha256(scheduled)
+        existing_sha = _skill_existing_bindings_sha256(existing)
+        if authority.get("scheduled_consumers_sha256") != scheduled_sha:
+            issues.append("skill consumer coverage scheduled-consumer digest is stale")
+        if authority.get("existing_bindings_sha256") != existing_sha:
+            issues.append("skill consumer coverage existing-binding digest is stale")
+    return sorted(set(issues))
+
+
+def _skill_selection_gate_issues(
+    scratchpad: Path,
+    *,
+    language: str,
+    pipeline: str,
+    mode: str,
+    backend: str,
+) -> list[str]:
+    """Validate the recon-owned selection receipt without requiring instantiate.
+
+    The full authority gate also requires ``skill_consumer_coverage.json`` and
+    therefore cannot be used at the recon boundary or while recon is being
+    reconciled on resume.  This narrower gate preserves the same digest,
+    source, methodology, ecosystem, mode, and backend checks for the producer
+    half only.
+    """
+    catalog, read_issues = _read_skill_authority_artifact(
+        Path(scratchpad) / _SKILL_SELECTION_CATALOG_NAME
+    )
+    issues = list(read_issues)
+    if catalog:
+        issues.extend(
+            _skill_selection_authority_issues(
+                catalog,
+                scratchpad=Path(scratchpad),
+                language=language,
+                pipeline=pipeline,
+                mode=mode,
+                backend=backend,
+            )
+        )
+    return sorted(set(issues))
+
+
+def _assigned_skill_tokens_from_spawn_manifest(text: str) -> set[str]:
+    """Read assignments that the breadth/depth consumers can actually route."""
+    parsed_rows: list[dict[str, str]] = []
+    headers: list[str] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            headers = []
+            continue
+        if _is_separator_row(line):
+            continue
+        cells = _split_markdown_table_row(line)
+        low = [_normalize_manifest_header(c) for c in cells]
+        if ("template" in low or "skill" in low) and (
+            "focus_area" in low or "assigned_to" in low
+            or "inject_into" in low or "agent_id" in low
+        ):
+            headers = low
+            continue
+        if not headers:
+            continue
+        parsed_rows.append(_manifest_row_from_cells(headers, cells))
+
+    breadth_ids: set[str] = set()
+    breadth_focuses: set[str] = set()
+    for row in parsed_rows:
+        if row.get("template") and row.get("focus_area"):
+            agent_id = _strip_md(row.get("agent_id", "")).strip().lower()
+            focus = _strip_md(row.get("focus_area", "")).strip().lower()
+            if agent_id:
+                breadth_ids.add(agent_id)
+            if focus:
+                breadth_focuses.add(focus)
+
+    assigned: set[str] = set()
+    for row in parsed_rows:
+        req = row.get("required") or row.get("required_") or "YES"
+        if re.match(r"(?i)^(?:no|n|false|skip|optional|merged)\b", _strip_md(req).strip()):
+            continue
+        # A primary breadth row is routed by its focus.  A separate binding row
+        # is routable only when it names a real breadth agent/focus or a depth-*
+        # role (the same destination shapes consumed by
+        # `_parse_sc_skill_bindings`).  Decorative prose like "later" or a
+        # nonexistent B99 must not satisfy coverage.
+        routable = bool(row.get("template") and row.get("focus_area"))
+        destination = _strip_md(
+            row.get("assigned_to") or row.get("inject_into") or ""
+        ).strip().lower()
+        if destination:
+            depth_destination = re.search(
+                r"\bdepth-[a-z][a-z0-9_-]*\b", destination
+            )
+            if depth_destination and canonical_sc_depth_skill_role(
+                depth_destination.group(0).replace("_", "-")
+            ):
+                routable = True
+            aid = re.search(r"\b(b\d+[a-z]?)\b", destination)
+            if aid and aid.group(1) in breadth_ids:
+                routable = True
+            focus = re.search(r"\(([a-z0-9_]+)\)", destination)
+            if focus and focus.group(1) in breadth_focuses:
+                routable = True
+        if not routable:
+            continue
+        assigned.update(_skill_tokens_in_text(row.get("template") or row.get("skill") or ""))
+    return assigned
+
+
+def _invalid_sc_depth_skill_destinations(text: str) -> set[str]:
+    """Return every depth-like binding outside the closed manifest registry."""
+    invalid: set[str] = set()
+    headers: list[str] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            headers = []
+            continue
+        if _is_separator_row(line):
+            continue
+        cells = _split_markdown_table_row(line)
+        low = [_normalize_manifest_header(c) for c in cells]
+        if any(h in low for h in ("assigned_to", "inject_into")):
+            headers = low
+            continue
+        if not headers:
+            continue
+        row = _manifest_row_from_cells(headers, cells)
+        destination = _strip_md(
+            row.get("assigned_to") or row.get("inject_into") or ""
+        ).strip().lower()
+        for match in re.findall(
+            r"\bdepth(?:-|_)[a-z][a-z0-9_-]*\b", destination
+        ):
+            # A manifest destination must start with literal ``depth-``.
+            # Within the complete role token, tolerate the r52 producer's
+            # catalog-shaped underscores only when normalization lands on one
+            # of the four canonical scheduled roles.  ``depth_*`` prefixes and
+            # unknown/mixed suffixes remain exact validation errors.
+            normalized = match.replace("_", "-")
+            if not match.startswith("depth-") or (
+                canonical_sc_depth_skill_role(normalized) is None
+            ):
+                invalid.add(match)
+    return invalid
+
+
+def _wrong_ecosystem_manifest_skills(text: str, language: str) -> set[str]:
+    """Find real catalog skills that exist only outside the active ecosystem."""
+    lang = str(language or "").strip().lower()
+    if lang not in {"evm", "solana", "aptos", "sui", "soroban", "daml"}:
+        return set()
+    wrong: set[str] = set()
+    headers: list[str] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            headers = []
+            continue
+        if _is_separator_row(line):
+            continue
+        cells = _split_markdown_table_row(line)
+        low = [_normalize_manifest_header(c) for c in cells]
+        if "skill" in low or "template" in low:
+            headers = low
+            continue
+        if not headers:
+            continue
+        row = _manifest_row_from_cells(headers, cells)
+        value = row.get("skill") or row.get("template") or ""
+        for token in re.findall(r"\b[A-Z][A-Z0-9_]{3,}\b", value):
+            if token in _NON_SKILL_TEMPLATE_TOKENS:
+                continue
+            if (
+                _skill_template_resolves(token)
+                and not _skill_template_resolves(token, lang)
+            ):
+                wrong.add(token)
+    return wrong
+
+
+def _manifest_fabricated_templates(
+    scratchpad: Path, language: str = ""
+) -> list[str]:
     """Return `agent_id:TOKEN` for each spawned breadth AGENT row whose
     Template column names a skill-like token (UPPER_SNAKE) that resolves to NO
     SKILL.md and is not a recognized non-skill sentinel/baseline.
@@ -2024,13 +3553,15 @@ def _manifest_fabricated_templates(scratchpad: Path) -> list[str]:
                 continue
             if T in _NON_SKILL_TEMPLATE_TOKENS:
                 continue
-            if _skill_template_resolves(T):
+            if _skill_template_resolves(T, language):
                 continue
             fabricated.append(f"{agent_id}:{T}")
     return fabricated
 
 
-def _validate_spawn_manifest_schema(scratchpad: Path, mode: str = "core") -> list[str]:
+def _validate_spawn_manifest_schema(
+    scratchpad: Path, mode: str = "core", language: str = ""
+) -> list[str]:
     """Validate the Phase 2 manifest at the producer boundary.
 
     `spawn_manifest.md` is the contract consumed by breadth. Letting
@@ -2116,8 +3647,9 @@ def _validate_spawn_manifest_schema(scratchpad: Path, mode: str = "core") -> lis
                 f"contracts or >5000 total lines per contract_inventory.md) but "
                 f"spawn_manifest declares only {count} breadth AGENT row(s); the "
                 f"Complex tier requires >=7 (phase2-instantiate Step 2a). Reach "
-                f">=7 per Step 2a.3 floor-fill: split a real skill's scope across "
-                f"agents, bind the closest real skill, or use Template `GENERAL` "
+                f">=7 without changing typed skill delivery: add `GENERAL` "
+                f"breadth rows for the deficit. A depth-only skill must never "
+                f"enter a breadth Template/B# binding; "
                 f"— do NOT invent skill names and do NOT merge below the floor."
             )
         # v2.8.17: reject FABRICATED skill templates on COMPLEX codebases — the
@@ -2127,7 +3659,18 @@ def _validate_spawn_manifest_schema(scratchpad: Path, mode: str = "core") -> lis
         # use placeholder template names; non-complex fabrication is still
         # surfaced by the driver's binding-loss warning. Soft/retry-driven;
         # GENERAL is the valid escape, so there is no halt loop.
-        fabricated = _manifest_fabricated_templates(scratchpad) if is_complex else []
+        if mode == "light" and not (3 <= count <= 4):
+            issues.append(
+                f"Light mode requires 3-4 breadth AGENT rows, but the manifest "
+                f"declares {count}. Codebase-size tier floors apply only to "
+                f"Core/Thorough. Keep 3-4 breadth workers and explicitly bind "
+                f"every overflow Required skill to a compatible depth role in "
+                f"the Skill Bindings table; never omit a required skill."
+            )
+        fabricated = (
+            _manifest_fabricated_templates(scratchpad, language)
+            if is_complex else []
+        )
         if fabricated:
             issues.append(
                 "spawn_manifest.md binds fabricated skill template(s) "
@@ -2137,6 +3680,50 @@ def _validate_spawn_manifest_schema(scratchpad: Path, mode: str = "core") -> lis
                 "template_recommendations.md (split scope or closest-fit) or use "
                 "Template `GENERAL` for a skill-less focus agent; never invent a "
                 "template name."
+            )
+        wrong_ecosystem = sorted(
+            _wrong_ecosystem_manifest_skills(text, language)
+        )
+        if wrong_ecosystem:
+            issues.append(
+                f"spawn_manifest binds skill(s) outside active ecosystem "
+                f"{language}: " + ", ".join(wrong_ecosystem)
+                + ". Use an active-ecosystem skill or a truly shared "
+                "injectable/niche catalog skill; cross-language fallback is "
+                "forbidden."
+            )
+        try:
+            tr_path = scratchpad / "template_recommendations.md"
+            tr_text = tr_path.read_text(
+                encoding="utf-8", errors="replace"
+            ) if tr_path.exists() else ""
+            required_skills = _required_skill_tokens_from_binding_manifest(tr_text)
+            assigned_skills = _assigned_skill_tokens_from_spawn_manifest(text)
+            missing_skills = sorted(required_skills - assigned_skills)
+            if missing_skills:
+                issues.append(
+                    "required skill binding missing from spawn_manifest: "
+                    + ", ".join(missing_skills)
+                    + ". Assign each to a breadth Template or an explicit "
+                    "compatible depth role in Skill Bindings; do not suppress "
+                    "methodology to satisfy an agent-count cap."
+                )
+            invalid_depth_destinations = sorted(
+                _invalid_sc_depth_skill_destinations(text)
+            )
+            if invalid_depth_destinations:
+                issues.append(
+                    "spawn_manifest contains noncanonical depth skill "
+                    "destination(s): "
+                    + ", ".join(invalid_depth_destinations)
+                    + ". Bind skills only to a scheduled standard SC depth "
+                    "role: depth-token-flow, depth-state-trace, "
+                    "depth-edge-case, or depth-external."
+                )
+        except Exception as exc:
+            log.warning(
+                "[_validate_spawn_manifest_schema] required-skill coverage "
+                "check degraded: %r", exc,
             )
         if not issues:
             return []
@@ -2167,6 +3754,8 @@ def _validate_spawn_manifest_schema(scratchpad: Path, mode: str = "core") -> lis
 
 def _verification_queue_parity_sets(
     scratchpad: Path,
+    *,
+    authenticated_inventory_text: str | None = None,
 ) -> tuple[set[str], set[str], set[str], set[str]]:
     """Compute the ID sets used by verification-queue<->inventory parity.
 
@@ -2177,10 +3766,28 @@ def _verification_queue_parity_sets(
     Raises on inventory parse failure so callers can surface a parse-error
     issue distinct from a clean empty inventory.
     """
-    inv_path = scratchpad / "findings_inventory.md"
+    if authenticated_inventory_text is None:
+        inventory_text, _inventory_source, authority_issues = (
+            _authoritative_postcutover_inventory(scratchpad)
+        )
+    else:
+        if not isinstance(authenticated_inventory_text, str):
+            raise TypeError("authenticated_inventory_text must be text")
+        # This seam is for a child executor whose parent PhaseIO transaction
+        # already authenticated and froze the exact inventory bytes at T0.
+        # Re-resolving a live ledger inside the isolated replay filesystem would
+        # fabricate authority that cannot exist there.
+        inventory_text = authenticated_inventory_text
+        _inventory_source = "T0_AUTHENTICATED_INPUT_BUNDLE"
+        authority_issues = []
+    if authority_issues:
+        raise ValueError(
+            "authenticated inventory denominator unavailable: "
+            + "; ".join(authority_issues[:3])
+        )
     inventory_ids = {
         _normalize_finding_id(b.get("id", ""))
-        for b in _inventory_blocks(inv_path.read_text(encoding="utf-8", errors="replace"))
+        for b in _inventory_blocks(inventory_text)
     }
     inventory_ids.discard("")
 
@@ -2193,9 +3800,7 @@ def _verification_queue_parity_sets(
     # v2.4.9: hypothesis-aware expansion.  _dedup_queue_by_hypothesis collapses
     # INV-NNN rows into H-N representative rows.  Expand H-N/CH-N back to their
     # constituent INV-NNN IDs so the parity check works across ID namespaces.
-    hypo_map = _parse_hypothesis_constituents(
-        scratchpad, include_split_parent_aliases=True
-    )
+    hypo_map = _parse_hypothesis_constituents(scratchpad)
     expanded_ids: set[str] = set(active_ids)
     mapped_hypos: set[str] = set()
     for aid in active_ids:
@@ -2242,7 +3847,11 @@ def _verification_queue_parity_sets(
     return inventory_ids, active_ids, mapped_hypos, acknowledged
 
 
-def _compute_unrouted_inventory_ids(scratchpad: Path) -> list[str]:
+def _compute_unrouted_inventory_ids(
+    scratchpad: Path,
+    *,
+    authenticated_inventory_text: str | None = None,
+) -> list[str]:
     """Return sorted normalized inventory IDs not routed/excluded/deduped.
 
     Side-effect-free. This is the exact "missing" set
@@ -2253,13 +3862,23 @@ def _compute_unrouted_inventory_ids(scratchpad: Path) -> list[str]:
     distinct failures owned by the parity validator's issue strings).
     """
     inv_path = scratchpad / "findings_inventory.md"
-    if not inv_path.exists():
+    if (
+        not successor_projection_present(scratchpad)
+        and not inv_path.exists()
+    ):
         return []
+    successor_exists = successor_projection_present(scratchpad)
     try:
         inventory_ids, _active, _mapped, acknowledged = _verification_queue_parity_sets(
-            scratchpad
+            scratchpad,
+            authenticated_inventory_text=authenticated_inventory_text,
         )
-    except Exception:
+    except Exception as exc:
+        if successor_exists:
+            raise PreverifyProjectionAuthorityError(
+                "authenticated preverify successor cannot be used as the "
+                f"unrouted inventory denominator: {exc}"
+            ) from exc
         return []
     if not inventory_ids:
         return []
@@ -2295,7 +3914,8 @@ def _resolve_inventory_floor_builder():
 
 
 def _validate_verification_queue_inventory_parity(
-    scratchpad: Path, floor_builder=None
+    scratchpad: Path, floor_builder=None,
+    authorized_external_ids: Iterable[str] = (),
 ) -> list[str]:
     """Ensure every inventory ID is routed to verify or explicitly excluded.
 
@@ -2339,7 +3959,8 @@ def _validate_verification_queue_inventory_parity(
         except Exception:
             return False
 
-    if not _inventory_usable():
+    frozen_cutover = successor_projection_present(scratchpad)
+    if not frozen_cutover and not _inventory_usable():
         # B2: reconstruct via the injected (or opportunistically-resolved) B1
         # floor builder. No static reverse import of the mechanical module here
         # — that would violate the validators -> mechanical dependency-direction
@@ -2390,8 +4011,19 @@ def _validate_verification_queue_inventory_parity(
     if not inventory_ids:
         return []
 
+    authorized_external = {
+        normalized
+        for value in authorized_external_ids
+        if (normalized := _normalize_finding_id(str(value or "")))
+    }
+    # Only an independently validated caller may supply post-inventory work
+    # identities (for example, a current P0-AF v2 successor receipt).  This is
+    # an exact set subtraction, never a CH-prefix exemption, and does not turn
+    # EVIDENCE_FACT constituents into inventory coverage.
     missing = sorted(inventory_ids - acknowledged)
-    extra = sorted((active_ids - mapped_hypos) - inventory_ids)
+    extra = sorted(
+        ((active_ids - mapped_hypos) - inventory_ids) - authorized_external
+    )
     issues: list[str] = []
     if missing:
         sample = ", ".join(missing[:10])
@@ -2484,9 +4116,87 @@ def _collect_semantic_dedup_acknowledged_ids(scratchpad: Path) -> set[str]:
     return acknowledged
 
 
-def _snapshot_file_state(scratchpad: Path, project_root: str) -> dict[str, tuple[int, int]]:
-    """Return path -> (mtime_ns, size) for current run-relevant artifacts."""
-    state: dict[str, tuple[int, int]] = {}
+_PROJECT_SOURCE_STATE_PREFIX = "../PROJECT_SOURCE/"
+_PROJECT_SOURCE_STATE_MAX_FILES = 25_000
+_PROJECT_SOURCE_STATE_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _snapshot_project_source_state(
+    scratchpad: Path, project_root: str
+) -> dict[str, tuple[int, int, int, int, str]]:
+    """Hash the bounded production-source namespace outside the scratchpad.
+
+    Ordinary Claude PTY sessions need project bytes for analysis, but are not
+    allowed to mutate them.  The existing phase-containment baseline covered
+    only scratch artifacts and ``AUDIT_REPORT.md``; a Write/Edit/Bash call could
+    therefore alter audited source without producing any containment signal.
+    Keep the namespace deliberately aligned with recon's canonical production
+    predicate so verifier-created tests and build outputs remain outside it.
+    """
+
+    root = Path(project_root).resolve(strict=True)
+    scratch = Path(scratchpad).resolve(strict=True)
+    if root == scratch:
+        return {}
+    from recon_prepass import _production_source_files
+
+    files = sorted(
+        _production_source_files(root, tuple(ALL_AUDIT_SOURCE_SUFFIXES)),
+        key=lambda item: item.relative_to(root).as_posix().casefold(),
+    )
+    if len(files) > _PROJECT_SOURCE_STATE_MAX_FILES:
+        raise RuntimeError(
+            "project-source containment denominator exceeds bounded file limit: "
+            f"{len(files)} > {_PROJECT_SOURCE_STATE_MAX_FILES}"
+    )
+    state: dict[str, tuple[int, int, int, int, str]] = {}
+    folded_keys: set[str] = set()
+    total = 0
+    for path in files:
+        relative = path.relative_to(root).as_posix()
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or path.is_symlink():
+            raise RuntimeError(
+                f"project-source containment rejects non-regular file: {relative}"
+            )
+        total += int(before.st_size)
+        if total > _PROJECT_SOURCE_STATE_MAX_BYTES:
+            raise RuntimeError(
+                "project-source containment denominator exceeds bounded byte "
+                f"limit: {total} > {_PROJECT_SOURCE_STATE_MAX_BYTES}"
+            )
+        raw = path.read_bytes()
+        after = path.lstat()
+        if (
+            before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or len(raw) != after.st_size
+        ):
+            raise RuntimeError(
+                f"project-source changed while containment baseline was read: {relative}"
+            )
+        key = _PROJECT_SOURCE_STATE_PREFIX + relative
+        folded = key.casefold()
+        if folded in folded_keys:
+            raise RuntimeError(
+                f"project-source containment path alias collision: {relative}"
+            )
+        folded_keys.add(folded)
+        state[key] = (
+            int(after.st_dev),
+            int(after.st_ino),
+            int(after.st_size),
+            int(after.st_mtime_ns),
+            hashlib.sha256(raw).hexdigest(),
+        )
+    return state
+
+
+def _snapshot_file_state(scratchpad: Path, project_root: str) -> dict[str, tuple]:
+    """Return exact state for run artifacts and audited production source."""
+    state: dict[str, tuple] = {}
     excluded_dirs = {
         "_overflow",
         "_retry_quarantine",
@@ -2511,6 +4221,7 @@ def _snapshot_file_state(scratchpad: Path, project_root: str) -> dict[str, tuple
             state["../AUDIT_REPORT.md"] = (stat.st_mtime_ns, stat.st_size)
         except Exception:
             pass
+    state.update(_snapshot_project_source_state(scratchpad, project_root))
     return state
 
 
@@ -2793,16 +4504,65 @@ def _record_phase_artifact_state(
     names = _materialized_artifact_names(scratchpad, project_root, owned)
     if not names:
         return []
-    state = _read_artifact_state(scratchpad)
+    typed_authority_fields = {
+        "owner_key",
+        "run_id",
+        "contract_digest",
+        "launch_digest",
+        "authority_level",
+    }
+    state_path = _artifact_state_path(scratchpad)
+    if state_path.exists():
+        # The generic ownership projection shares the typed PhaseIO ledger for
+        # every phase, not only verification-queue publication.  Once that
+        # ledger exists, read it strictly: replacing unreadable typed authority
+        # with owner-only compatibility metadata would silently rebless (or
+        # destroy) producer authority.
+        try:
+            strict_state = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            log.warning(
+                "[artifact-state] refusing to replace unreadable shared typed "
+                "authority: %s",
+                exc,
+            )
+            return names
+        if not isinstance(strict_state, dict) or not isinstance(
+            strict_state.get("artifacts"), dict
+        ):
+            log.warning(
+                "[artifact-state] refusing to replace malformed shared typed "
+                "authority"
+            )
+            return names
+        state = strict_state
+    else:
+        state = _read_artifact_state(scratchpad)
     artifacts = state.setdefault("artifacts", {})
+    changed = False
     for name in names:
         record = _artifact_record(
             scratchpad, project_root, name,
             owner_phase=phase_name, status=status,
         )
-        if record:
+        existing = artifacts.get(name)
+        if existing is not None:
+            if not isinstance(existing, dict):
+                # A malformed row is typed debt, not legacy authority that the
+                # generic recorder may upgrade.
+                continue
+            if typed_authority_fields.intersection(existing):
+                # Complete current typed projections and every partial or
+                # tampered typed projection are both immutable here.  The
+                # PhaseIO/ledger validators distinguish the former from the
+                # latter against bindings/work units; this compatibility
+                # writer must never mint or repair typed authority.
+                continue
+        if record and existing != record:
             artifacts[name] = record
-    _write_artifact_state(scratchpad, state)
+            changed = True
+    if changed:
+        _write_artifact_state(scratchpad, state)
     return names
 
 
@@ -2873,6 +4633,37 @@ def _mark_artifacts_quarantined(
 def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -> dict[str, list[str]]:
     """Return per-phase artifact ownership patterns for phase-containment checks."""
     common_report = ["../AUDIT_REPORT.md"]
+    def _with_registered_producers(
+        owned: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        # The active phase graph is the primary declaration for every required
+        # output.  Containment may add optional/dynamic outputs below, but it
+        # must never maintain a second hand-written copy that can omit a newly
+        # registered expected artifact (as happened for application_skeptic's
+        # driver-owned plan and receipt).
+        graph = L1_PHASES if pipeline == "l1" else SC_PHASES
+        for phase in graph:
+            rows = owned.setdefault(phase.name, [])
+            declared = list(phase.expected_artifacts or [])
+            for alternatives in getattr(phase, "any_of", ()) or ():
+                declared.extend(alternatives)
+            rows[:] = list(dict.fromkeys([*rows, *declared]))
+        # Custom sharded phases own dynamic child outputs that deliberately are
+        # not completion-gate globs (zero-work is valid).  Keep that optional
+        # output family explicit until all containment consumers read PhaseIO
+        # contracts directly.
+        application_rows = owned.setdefault("application_skeptic", [])
+        application_rows[:] = list(dict.fromkeys([
+            *application_rows,
+            "application_skeptic_assessments_*.json",
+            "candidate_negative_skeptic_assessments_*.json",
+        ]))
+        for producer in _REGISTERED_PRODUCERS_BY_KEY.values():
+            if "containment" not in producer.required_consumers:
+                continue
+            rows = owned.setdefault(producer.owner_phase, [])
+            rows[:] = list(dict.fromkeys([*rows, *producer.artifact_patterns]))
+        return owned
     def _verify_output_names(rows: list[dict[str, str]]) -> list[str]:
         names: list[str] = []
         for row in rows:
@@ -2930,6 +4721,7 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
                 "depth_*_findings.md", "depth_iter2_*_findings.md",
                 "blind_spot_*_findings.md", "scanner_*_findings.md",
                 "da_*_findings.md", "confidence_scores.md",
+                "confidence_consensus_authority.json", "consensus_map.md",
                 "design_stress_findings.md", "perturbation_findings.md",
                 "skill_execution_gaps.md", "skill_execution_checklist.md",
                 "never_cut_checkpoint.md", "depth_exit.md",
@@ -2938,7 +4730,7 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
             "chain": ["hypotheses.md", "finding_mapping.md", "enabler_results.md"],
             "chain_agent2": ["chain_hypotheses.md", "composition_coverage.md", "synthesis_full.md"],
             "semantic_dedup": [
-                "dedup_decisions.md", "verification_queue_deduped.md",
+                "dedup_decisions.md", "findings_inventory_deduped.md",
             ],
             "attention_repair": ["attention_repair_summary.md", "attention_repair_findings.md"],
             "enumgap_exploration": ["enumgap_exploration_findings.md"],
@@ -2951,6 +4743,7 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
             "skeptic": ["skeptic_findings.md", "skeptic_judge_decisions.md"],
             "report_index": [
                 "report_index.md", "report_coverage.md", "report_records.json",
+                "report_index_status_projection.json",
             ],
             "report_body_writer_critical_high": ["report_critical_high.md"],
             "report_body_writer_medium": ["report_medium.md"],
@@ -2967,6 +4760,7 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
             # the data-loss gate passes (hence common_report ownership too).
             "report_dedup": [
                 "report_dedup_mapping.md",
+                "report_dedup_applied_alias_receipt.json",
                 "AUDIT_REPORT.pre-dedup.md",
                 "AUDIT_REPORT.deduped.md",
                 *common_report,
@@ -2997,7 +4791,7 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
                         owned[f"report_{tier}"] = [f"report_{tier}.md"]
         for phase_name, manifest in L1_VERIFY_SHARD_MANIFESTS.items():
             owned[phase_name] = [manifest, *verify_names.get(phase_name, [])]
-        return owned
+        return _with_registered_producers(owned)
     sc_verify_shards = compute_sc_verify_shards(scratchpad) if scratchpad else {
         name: [] for name in SC_VERIFY_PHASE_NAMES
     }
@@ -3011,8 +4805,14 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
             "state_variables.md", "function_list.md", "contract_inventory.md",
             "template_recommendations.md", "detected_patterns.md",
             "setter_list.md", "emit_list.md", "build_status.md",
+            "skill_selection_catalog.json",
         ],
-        "instantiate": ["spawn_manifest.md"],
+        "instantiate": [
+            "spawn_manifest_proposal.md",
+            "spawn_manifest.md",
+            "instantiate_manifest_reconcile_receipt.json",
+            "skill_consumer_coverage.json",
+        ],
         "breadth": ["analysis_*.md"],
         "rescan_prepare": ["rescan_manifest.md"],
         "rescan": ["analysis_rescan_*.md", "analysis_percontract_*.md"],
@@ -3035,6 +4835,7 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
             "depth_*_findings.md", "depth_iter2_*_findings.md",
             "blind_spot_*_findings.md", "scanner_*_findings.md",
             "da_*_findings.md", "confidence_scores.md",
+            "confidence_consensus_authority.json", "consensus_map.md",
             "design_stress_findings.md", "perturbation_findings.md",
             "skill_execution_gaps.md", "skill_execution_checklist.md",
             "never_cut_checkpoint.md", "depth_exit.md",
@@ -3061,15 +4862,9 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
         "attention_repair": ["attention_repair_summary.md", "attention_repair_findings.md"],
         "chain": ["hypotheses.md", "finding_mapping.md", "enabler_results.md"],
         "chain_agent2": ["chain_hypotheses.md", "composition_coverage.md", "synthesis_full.md"],
-        # v2.8.8: iteration 2 appends new chains to chain_hypotheses.md
-        # AND writes new artifact chain_iteration2.md. Shared ownership
-        # on chain_hypotheses.md/composition_coverage.md intentional —
-        # both append-only.
-        "chain_iter2": [
-            "chain_iteration2.md",
-            "chain_hypotheses.md",
-            "composition_coverage.md",
-        ],
+        # The model owns only its immutable delta.  The driver alone performs
+        # the digest-bound merge into chain_hypotheses/composition_coverage.
+        "chain_iter2": ["chain_iteration2.md"],
         "sc_verify_queue": [
             "verification_queue.md", "verification_queue_evidence_excluded.md",
         ],
@@ -3077,7 +4872,10 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
         "sc_mechanical_verify": ["mechanical_verify_manifest.md"],
         "skeptic": ["skeptic_findings.md", "skeptic_judge_decisions.md"],
         "crossbatch": ["cross_batch_consistency.md"],
-        "report_index": ["report_index.md", "report_coverage.md"],
+        "report_index": [
+            "report_index.md", "report_coverage.md",
+            "report_index_status_projection.json",
+        ],
         "report_body_writer_critical_high": ["report_critical_high.md"],
         "report_body_writer_medium": ["report_medium.md"],
         "report_body_writer_low_info": ["report_low_info.md"],
@@ -3097,6 +4895,7 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
         # data-loss gate passes (hence common_report ownership too).
         "report_dedup": [
             "report_dedup_mapping.md",
+            "report_dedup_applied_alias_receipt.json",
             "AUDIT_REPORT.pre-dedup.md",
             "AUDIT_REPORT.deduped.md",
             *common_report,
@@ -3124,7 +4923,7 @@ def _owned_artifact_patterns(pipeline: str, scratchpad: Optional[Path] = None) -
                         ]
     for phase_name, manifest in SC_VERIFY_SHARD_MANIFESTS.items():
         owned[phase_name] = [manifest, *sc_verify_names.get(phase_name, [])]
-    return owned
+    return _with_registered_producers(owned)
 
 
 def _matches_any_pattern(name: str, patterns: list[str]) -> bool:
@@ -3135,17 +4934,24 @@ def _matches_any_pattern(name: str, patterns: list[str]) -> bool:
 def _detect_foreign_phase_writes(scratchpad: Path, project_root: str,
                                  phases: list[Phase], phase_name: str,
                                  pipeline: str,
-                                 before_state: dict[str, tuple[int, int]]) -> list[str]:
+                                 before_state: dict[str, tuple]) -> list[str]:
     """Return later-phase artifacts created/modified by the current phase attempt."""
     phase_names = [p.name for p in phases]
     future_patterns = _future_phase_write_patterns(
         scratchpad, pipeline, phase_name, phase_names
     )
-    if not future_patterns:
-        return []
-
     after_state = _snapshot_file_state(scratchpad, project_root)
-    offenders: list[str] = []
+    # Production source is immutable for every model phase.  Compare the union
+    # so creation, deletion, replacement, metadata drift, and byte mutation are
+    # all visible even for a terminal phase with no later-artifact patterns.
+    offenders: list[str] = sorted(
+        name
+        for name in set(before_state) | set(after_state)
+        if name.startswith(_PROJECT_SOURCE_STATE_PREFIX)
+        and before_state.get(name) != after_state.get(name)
+    )
+    if not future_patterns:
+        return offenders
     allowed_verify_overreach = set()
     # v2.1.8: STRICT PHASE ISOLATION (revised v2.1.6 #1).
     #
@@ -3241,12 +5047,472 @@ def _record_verify_override_degraded(
         pass
 
 
+def _verifier_sidecar_paths(
+    scratchpad: Path, work_item_id: str
+) -> tuple[Path, Path]:
+    return (
+        scratchpad / f"verify_{work_item_id}.identity.json",
+        scratchpad / f"verify_{work_item_id}.receipt.json",
+    )
+
+
+def _atomic_validator_text(path: Path, content: str) -> None:
+    if path.is_file():
+        existing = path.read_text(encoding="utf-8", errors="strict")
+        if existing == content:
+            return
+    fd, temporary_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _canonical_output_case_issue(scratchpad: Path, expected_name: str) -> str:
+    casefolded = expected_name.casefold()
+    variants = sorted(
+        path.name
+        for path in scratchpad.iterdir()
+        if path.is_file() and path.name.casefold() == casefolded
+    )
+    # Absence is reported by the caller as a missing owned artifact.  Any
+    # non-empty set must contain exactly the one canonical spelling; an exact
+    # file plus a case-only twin is still ambiguous on case-sensitive hosts.
+    if variants and variants != [expected_name]:
+        kind = "case mismatch" if expected_name not in variants else "case collision"
+        return (
+            f"canonical verifier output {kind}: expected exactly {expected_name}, "
+            f"found {variants}"
+        )
+    return ""
+
+
+def _validate_legacy_verifier_receipt_v1(
+    payload: Any,
+    *,
+    expected_identity: VerifierOutputIdentity,
+    output_bytes: bytes,
+    launch_digest: str,
+    verifier_backend: str,
+) -> None:
+    """Validate the exact pre-AG-1 receipt before one-way v2 migration.
+
+    The old receipt bound Markdown but not the new typed proposal.  It may be
+    upgraded only after its original identity/output/launch/backend authority
+    validates exactly; migration is never an authority reset around current
+    bytes.
+    """
+
+    expected_keys = {
+        "schema_version",
+        "identity",
+        "output_sha256",
+        "output_size_bytes",
+        "launch_digest",
+        "verifier_backend",
+        "receipt_digest",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise ValueError("legacy verifier receipt v1 schema mismatch")
+    if payload.get("schema_version") != "plamen.verifier_output_receipt.v1":
+        raise ValueError("legacy verifier receipt v1 version mismatch")
+    unsigned = {
+        key: payload[key] for key in payload if key != "receipt_digest"
+    }
+    canonical = json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if payload.get("receipt_digest") != hashlib.sha256(canonical).hexdigest():
+        raise ValueError("legacy verifier receipt v1 digest mismatch")
+    identity = VerifierOutputIdentity.from_dict(payload.get("identity"))
+    if identity != expected_identity:
+        raise ValueError("legacy verifier receipt v1 identity mismatch")
+    if (
+        payload.get("output_sha256") != hashlib.sha256(output_bytes).hexdigest()
+        or payload.get("output_size_bytes") != len(output_bytes)
+    ):
+        raise ValueError("legacy verifier receipt v1 output binding mismatch")
+    if payload.get("launch_digest") != launch_digest:
+        raise ValueError("legacy verifier receipt v1 launch binding mismatch")
+    if payload.get("verifier_backend") != verifier_backend:
+        raise ValueError("legacy verifier receipt v1 backend binding mismatch")
+
+
+def _strict_verifier_receipt_object(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate verifier receipt JSON key {key!r}")
+        value[key] = item
+    return value
+
+
+def _owned_severity_proposal_bytes(
+    scratchpad: Path, item: Any
+) -> tuple[Path, bytes]:
+    expected_name = f"verify_{item.work_item_id}.severity_proposal.json"
+    case_issue = _canonical_output_case_issue(scratchpad, expected_name)
+    if case_issue:
+        raise ValueError(case_issue)
+    path = scratchpad / expected_name
+    if not path.is_file():
+        raise ValueError(
+            f"owned severity proposal missing: {expected_name}"
+        )
+    proposal_bytes = path.read_bytes()
+    proposal = parse_severity_proposal(proposal_bytes)
+    expected_constituents = [item.work_item_id, *item.constituents]
+    if proposal.get("candidate_id") != item.work_item_id:
+        raise ValueError(
+            f"{item.work_item_id} severity proposal candidate identity mismatch"
+        )
+    if proposal.get("constituent_ids") != expected_constituents:
+        raise ValueError(
+            f"{item.work_item_id} severity proposal constituent identity mismatch"
+        )
+    return path, proposal_bytes
+
+
+def _resolve_verifier_assignment(
+    plan,
+    phase_name: str,
+    assigned_work_item_ids: Optional[Iterable[str]] = None,
+) -> tuple[tuple[str, ...], dict[str, str]]:
+    """Resolve an exact runtime subset without changing QueueWorkPlan identity.
+
+    Dynamic verifier children may cross legacy shard boundaries.  Their output
+    identities still bind the original persisted source shard; the runtime unit
+    is execution authority only, never a replacement queue partition.
+    """
+
+    source_shard_by_id = {
+        work_item_id: shard.shard_id
+        for shard in plan.shards
+        for work_item_id in shard.ordered_work_item_ids
+    }
+    if assigned_work_item_ids is None:
+        assigned = tuple(plan.shard(phase_name).ordered_work_item_ids)
+    else:
+        assigned = tuple(assigned_work_item_ids)
+        if len(set(assigned)) != len(assigned):
+            raise ValueError("dynamic verifier assignment contains duplicate IDs")
+        unknown = [work_id for work_id in assigned if work_id not in source_shard_by_id]
+        if unknown:
+            raise ValueError(
+                "dynamic verifier assignment contains unknown IDs: "
+                + ", ".join(unknown)
+            )
+        canonical = tuple(
+            work_id for work_id in plan.ordered_work_item_ids if work_id in set(assigned)
+        )
+        if assigned != canonical:
+            raise ValueError(
+                "dynamic verifier assignment order differs from QueueWorkPlan"
+            )
+    return assigned, source_shard_by_id
+
+
+def _persist_verifier_output_receipts(
+    scratchpad: Path,
+    phase_name: str,
+    *,
+    execution_policy: ExecutionPolicy,
+    launch_digest: str,
+    assigned_work_item_ids: Optional[Iterable[str]] = None,
+) -> tuple[Path, ...]:
+    """Bind freshly returned canonical verifier bytes to the persisted plan.
+
+    Existing receipts are validation authorities on resume; they are never
+    regenerated around changed output bytes.
+    """
+    if execution_policy is None:
+        raise ValueError("execution_policy is required for verifier receipts")
+    plan = read_queue_work_plan(scratchpad)
+    assigned, source_shard_by_id = _resolve_verifier_assignment(
+        plan, phase_name, assigned_work_item_ids
+    )
+    items = {
+        item.work_item_id: item
+        for item in _read_typed_queue_work_items(
+            scratchpad / "verification_queue.md"
+        )
+    }
+    written: list[Path] = []
+    for work_item_id in assigned:
+        item = items[work_item_id]
+        expected_identity = VerifierOutputIdentity.for_assignment(
+            item, plan, source_shard_by_id[work_item_id]
+        )
+        output = scratchpad / expected_identity.expected_output_file
+        case_issue = _canonical_output_case_issue(
+            scratchpad, expected_identity.expected_output_file
+        )
+        if case_issue:
+            raise ValueError(case_issue)
+        if not output.is_file():
+            raise ValueError(
+                f"owned canonical verifier output missing: {output.name}"
+            )
+        output_bytes = output.read_bytes()
+        proposal_path, proposal_bytes = _owned_severity_proposal_bytes(
+            scratchpad, item
+        )
+        identity_path, receipt_path = _verifier_sidecar_paths(
+            scratchpad, work_item_id
+        )
+        identity_exists = identity_path.is_file()
+        receipt_exists = receipt_path.is_file()
+        migrate_legacy_v1 = False
+        if identity_exists:
+            identity_payload = json.loads(
+                identity_path.read_text(encoding="utf-8", errors="strict"),
+                object_pairs_hook=_strict_verifier_receipt_object,
+            )
+            recorded_identity = VerifierOutputIdentity.from_dict(identity_payload)
+            if recorded_identity != expected_identity:
+                raise ValueError(
+                    f"verifier output identity mismatch for {work_item_id}"
+                )
+        if receipt_exists:
+            receipt_payload = json.loads(
+                receipt_path.read_text(encoding="utf-8", errors="strict"),
+                object_pairs_hook=_strict_verifier_receipt_object,
+            )
+            if (
+                isinstance(receipt_payload, dict)
+                and receipt_payload.get("schema_version")
+                == "plamen.verifier_output_receipt.v1"
+            ):
+                _validate_legacy_verifier_receipt_v1(
+                    receipt_payload,
+                    expected_identity=expected_identity,
+                    output_bytes=output_bytes,
+                    launch_digest=launch_digest,
+                    verifier_backend=execution_policy.backend.value,
+                )
+                migrate_legacy_v1 = True
+            else:
+                receipt = VerifierOutputReceipt.from_dict(receipt_payload)
+                receipt.validate_against(
+                    item,
+                    plan,
+                    output_bytes,
+                    severity_proposal=proposal_bytes,
+                    launch_digest=launch_digest,
+                    verifier_backend=execution_policy.backend.value,
+                )
+                if receipt.identity != expected_identity:
+                    raise ValueError(
+                        f"verifier output receipt identity mismatch for {work_item_id}"
+                    )
+        if migrate_legacy_v1:
+            receipt = VerifierOutputReceipt.bind(
+                expected_identity,
+                output_bytes,
+                severity_proposal=proposal_bytes,
+                launch_digest=launch_digest,
+                verifier_backend=execution_policy.backend.value,
+            )
+            if not identity_exists:
+                identity_json = json.dumps(
+                    expected_identity.to_dict(),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                _atomic_validator_text(identity_path, identity_json)
+            _atomic_validator_text(receipt_path, receipt.to_json())
+        elif not identity_exists and not receipt_exists:
+            receipt = VerifierOutputReceipt.bind(
+                expected_identity,
+                output_bytes,
+                severity_proposal=proposal_bytes,
+                launch_digest=launch_digest,
+                verifier_backend=execution_policy.backend.value,
+            )
+            identity_json = json.dumps(
+                expected_identity.to_dict(),
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            _atomic_validator_text(identity_path, identity_json)
+            _atomic_validator_text(receipt_path, receipt.to_json())
+        elif identity_exists and not receipt_exists:
+            receipt = VerifierOutputReceipt.bind(
+                expected_identity,
+                output_bytes,
+                severity_proposal=proposal_bytes,
+                launch_digest=launch_digest,
+                verifier_backend=execution_policy.backend.value,
+            )
+            _atomic_validator_text(receipt_path, receipt.to_json())
+        elif receipt_exists and not identity_exists:
+            identity_json = json.dumps(
+                expected_identity.to_dict(),
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            _atomic_validator_text(identity_path, identity_json)
+        written.extend((identity_path, receipt_path))
+    return tuple(written)
+
+
+def _validate_verifier_output_receipts(
+    scratchpad: Path,
+    phase_name: str,
+    plan,
+    items_by_id: dict[str, Any],
+    *,
+    execution_policy: ExecutionPolicy,
+    launch_digest: Optional[str],
+    assigned_work_item_ids: Optional[Iterable[str]] = None,
+) -> list[str]:
+    issues: list[str] = []
+    if not launch_digest:
+        return ["verifier receipt launch_digest is required"]
+    try:
+        assigned, source_shard_by_id = _resolve_verifier_assignment(
+            plan, phase_name, assigned_work_item_ids
+        )
+    except Exception as exc:
+        return [
+            "verifier assignment authority invalid: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    for work_item_id in assigned:
+        item = items_by_id[work_item_id]
+        expected_identity = VerifierOutputIdentity.for_assignment(
+            item, plan, source_shard_by_id[work_item_id]
+        )
+        case_issue = _canonical_output_case_issue(
+            scratchpad, expected_identity.expected_output_file
+        )
+        if case_issue:
+            issues.append(case_issue)
+            continue
+        output = scratchpad / expected_identity.expected_output_file
+        proposal_path = scratchpad / (
+            f"verify_{work_item_id}.severity_proposal.json"
+        )
+        identity_path, receipt_path = _verifier_sidecar_paths(
+            scratchpad, work_item_id
+        )
+        # Delimit the work-item identity before enumerating named successor /
+        # duplicate sidecars.  A raw prefix glob makes H-1 absorb the wholly
+        # unrelated H-10/H-11 receipts and falsely reports duplicate authority.
+        receipt_variants = sorted(
+            [receipt_path.name] if receipt_path.is_file() else []
+        )
+        receipt_variants.extend(
+            sorted(
+                path.name
+                for path in scratchpad.glob(
+                    f"verify_{work_item_id}.*.receipt.json"
+                )
+            )
+        )
+        if len(receipt_variants) != 1:
+            cardinality_kind = (
+                "duplicate receipts" if len(receipt_variants) > 1 else "missing receipt"
+            )
+            issues.append(
+                f"{work_item_id} {cardinality_kind}; receipt cardinality "
+                "expected 1, found "
+                f"{len(receipt_variants)} ({receipt_variants})"
+            )
+        if not output.is_file():
+            issues.append(
+                f"owned canonical verifier output missing: {output.name}"
+            )
+            continue
+        if (
+            not identity_path.is_file()
+            or not receipt_path.is_file()
+            or not proposal_path.is_file()
+        ):
+            issues.append(f"{work_item_id} identity/receipt sidecar missing")
+            continue
+        try:
+            _validated_proposal_path, proposal_bytes = (
+                _owned_severity_proposal_bytes(scratchpad, item)
+            )
+            recorded_identity = VerifierOutputIdentity.from_dict(
+                json.loads(
+                    identity_path.read_text(encoding="utf-8", errors="strict"),
+                    object_pairs_hook=_strict_verifier_receipt_object,
+                )
+            )
+            if recorded_identity != expected_identity:
+                issues.append(
+                    f"{work_item_id} verifier output identity/work_item/work_plan/shard/"
+                    "queue_record/output binding mismatch"
+                )
+                continue
+            receipt = VerifierOutputReceipt.from_json(
+                receipt_path.read_text(encoding="utf-8", errors="strict")
+            )
+            receipt.validate_against(
+                item,
+                plan,
+                output.read_bytes(),
+                severity_proposal=proposal_bytes,
+                launch_digest=launch_digest,
+                verifier_backend=execution_policy.backend.value,
+            )
+        except Exception as exc:
+            issues.append(
+                f"{work_item_id} verifier receipt/digest validation failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    globally_owned = {
+        owner.expected_output_file.casefold()
+        for owner in plan.output_ownership
+    }
+    allowed_mechanical = {
+        "verify_core.md",
+        "verify_override_degraded.md",
+    }
+    for path in scratchpad.glob("verify_*.md"):
+        if (
+            path.name.casefold() not in globally_owned
+            and path.name.casefold() not in allowed_mechanical
+        ):
+            issues.append(f"unowned verifier output is non-authoritative: {path.name}")
+    return issues
+
+
 def _validate_verify_completion(
     scratchpad: Path,
     phase_name: str,
     *,
     min_bytes: int = 100,
     mode: str = "core",
+    execution_policy: Optional[ExecutionPolicy] = None,
+    launch_digest: Optional[str] = None,
+    require_output_receipts: bool = True,
+    assigned_work_item_ids: Optional[Iterable[str]] = None,
 ) -> list[str]:
     """Ensure a verify shard produced the expected verifier file set.
 
@@ -3254,17 +5520,44 @@ def _validate_verify_completion(
     uses the F- prefix convention in most places, but legacy callers may
     emit the un-prefixed form. Either is considered valid.
     """
-    if phase_name in SC_VERIFY_PHASE_NAMES:
-        shards = compute_sc_verify_shards(scratchpad)
+    if execution_policy is not None:
+        try:
+            plan = read_queue_work_plan(scratchpad)
+            assigned_ids, _source_shard_by_id = _resolve_verifier_assignment(
+                plan, phase_name, assigned_work_item_ids
+            )
+            queue_rows = parse_verification_queue_rows(scratchpad)
+            row_by_id = {
+                (row.get("finding id") or "").strip(): row for row in queue_rows
+            }
+            expected_rows = [row_by_id[work_id] for work_id in assigned_ids]
+            typed_items_by_id = {
+                item.work_item_id: item
+                for item in _read_typed_queue_work_items(
+                    scratchpad / "verification_queue.md"
+                )
+            }
+        except Exception as exc:
+            return [
+                "verify work-plan authority unavailable or invalid: "
+                f"{type(exc).__name__}: {exc}"
+            ]
     else:
-        shards = compute_verify_shards(scratchpad)
-    expected_rows = shards.get(phase_name, [])
+        # Compatibility projection for isolated legacy callers. Every live
+        # driver path supplies execution_policy and consumes the persisted plan.
+        if phase_name in SC_VERIFY_PHASE_NAMES:
+            shards = compute_sc_verify_shards(scratchpad)
+        else:
+            shards = compute_verify_shards(scratchpad)
+        expected_rows = shards.get(phase_name, [])
     # For each finding id, accept either shape as present.
     expected_ids = [row['finding id'] for row in expected_rows]
     if not expected_ids:
         return []
 
     def _verify_names(fid: str) -> tuple[str, ...]:
+        if execution_policy is not None:
+            return (f"verify_{fid}.md",)
         return (
             f"verify_{fid}.md",
             f"verify_F-{fid}.md",
@@ -3291,6 +5584,12 @@ def _validate_verify_completion(
         missing_ids = [fid for fid in expected_ids if not _present(fid)]
         sample = sorted(missing_ids)[:5]
         extra = f" (+{len(missing_ids) - len(sample)} more)" if len(missing_ids) > len(sample) else ""
+        if execution_policy is not None:
+            missing_outputs = [f"verify_{fid}.md" for fid in sample]
+            return [
+                "owned canonical verifier output missing: "
+                f"{missing_outputs}{extra}"
+            ]
         return [
             f"verify completion: wrote {actual}/{len(expected_ids)} verifier files; "
             f"missing: {sample}{extra}"
@@ -3327,21 +5626,13 @@ def _validate_verify_completion(
             txt = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        evidence = _field_from_markdown(txt, ("Evidence Tag", "Evidence Tags", "Evidence"))
-        preferred = _field_from_markdown(
-            txt, ("Preferred Tag", "Preferred Verification", "Preferred Evidence")
-        )
-        if evidence and not preferred:
-            txt = txt.rstrip() + f"\n\n**Preferred Tag**: {evidence}\n"
-            p.write_text(txt, encoding="utf-8")
         missing_fields: list[str] = []
         if not _field_from_markdown(txt, accepted_field_names):
             missing_fields.append("Preferred Tag/Evidence Tag")
         verdict = _field_from_markdown(txt, ("Verdict", "Final Verdict", "Status"))
         if (
             not verdict
-            or _verifier_status_from_text(f"**Verdict**: {verdict}")
-            == "SCHEMA_INVALID"
+            or _verifier_status_from_text(txt) == "SCHEMA_INVALID"
         ):
             missing_fields.append("Verdict")
         row = row_by_file.get(name, {})
@@ -3357,7 +5648,24 @@ def _validate_verify_completion(
             "verify schema: missing required verifier fields in "
             + ", ".join(schema_issues[:8])
         ]
-    poc_issues = _validate_poc_contract_for_rows(scratchpad, expected_rows, mode)
+    if execution_policy is not None and require_output_receipts:
+        receipt_issues = _validate_verifier_output_receipts(
+            scratchpad,
+            phase_name,
+            plan,
+            typed_items_by_id,
+            execution_policy=execution_policy,
+            launch_digest=launch_digest,
+            assigned_work_item_ids=assigned_ids,
+        )
+        if receipt_issues:
+            return receipt_issues
+    poc_issues = _validate_poc_contract_for_rows(
+        scratchpad,
+        expected_rows,
+        mode,
+        execution_policy=execution_policy,
+    )
     if poc_issues:
         # Split the bounded Medium+ mock override (v2.8.8) from the unbounded
         # mandatory-PoC enforcement. The override hard-fails for a bounded
@@ -3380,6 +5688,1336 @@ def _validate_verify_completion(
     return []
 
 
+def _validate_verifier_outputs_before_receipt(
+    scratchpad: Path,
+    phase_name: str,
+    *,
+    min_bytes: int = 100,
+    mode: str = "core",
+    execution_policy: ExecutionPolicy,
+    require_severity_proposals: bool = False,
+    assigned_work_item_ids: Optional[Iterable[str]] = None,
+) -> list[str]:
+    """Validate returned verifier bytes before granting output authority.
+
+    This boundary deliberately excludes receipt validation: receipts do not
+    exist yet.  It performs the same owned-output, schema, and PoC checks as
+    the post-commit completion gate without rewriting verifier Markdown.
+    """
+
+    issues = _validate_verify_completion(
+        scratchpad,
+        phase_name,
+        min_bytes=min_bytes,
+        mode=mode,
+        execution_policy=execution_policy,
+        launch_digest=None,
+        require_output_receipts=False,
+        assigned_work_item_ids=assigned_work_item_ids,
+    )
+    if require_severity_proposals:
+        issues.extend(
+            _validate_severity_proposal_sidecars(
+                scratchpad,
+                phase_name,
+                assigned_work_item_ids=assigned_work_item_ids,
+            )
+        )
+    return issues
+
+
+def _validate_severity_proposal_sidecars(
+    scratchpad: Path,
+    phase_name: str,
+    *,
+    assigned_work_item_ids: Optional[Iterable[str]] = None,
+) -> list[str]:
+    """Validate exact typed proposal ownership before any authority receipt."""
+
+    try:
+        plan = read_queue_work_plan(scratchpad)
+        assigned, _source_shard_by_id = _resolve_verifier_assignment(
+            plan, phase_name, assigned_work_item_ids
+        )
+        items = {
+            item.work_item_id: item
+            for item in _read_typed_queue_work_items(
+                scratchpad / "verification_queue.md"
+            )
+        }
+    except Exception as exc:
+        return [
+            "severity proposal work-plan authority unavailable or invalid: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    issues: list[str] = []
+    expected_for_shard = {
+        f"verify_{work_item_id}.severity_proposal.json": work_item_id
+        for work_item_id in assigned
+    }
+    globally_owned = {
+        f"verify_{work_item_id}.severity_proposal.json".casefold()
+        for work_item_id in plan.ordered_work_item_ids
+    }
+    names_by_casefold: dict[str, list[str]] = {}
+    for path in scratchpad.glob("verify_*.severity_proposal.json"):
+        names_by_casefold.setdefault(path.name.casefold(), []).append(path.name)
+        if path.name.casefold() not in globally_owned:
+            issues.append(
+                f"unowned severity proposal sidecar is non-authoritative: {path.name}"
+            )
+    for expected_name, work_item_id in expected_for_shard.items():
+        variants = sorted(names_by_casefold.get(expected_name.casefold(), []))
+        if variants != [expected_name]:
+            kind = "missing" if not variants else "case/collision mismatch"
+            issues.append(
+                f"{work_item_id} severity proposal {kind}: expected "
+                f"{expected_name}, found {variants}"
+            )
+            continue
+        path = scratchpad / expected_name
+        try:
+            proposal_bytes = path.read_bytes()
+            # Check the driver-owned identity envelope before semantic schema
+            # validation.  A proposal that swaps constituents while retaining
+            # stale per-constituent outcomes is an ownership failure, not merely
+            # a malformed model payload.  The strict parser still runs below
+            # and remains the authority for duplicates and value constraints.
+            identity_envelope = json.loads(
+                proposal_bytes.decode("utf-8", errors="strict")
+            )
+        except Exception as exc:
+            issues.append(
+                f"{work_item_id} severity proposal schema invalid: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
+        item = items.get(work_item_id)
+        if item is None:
+            issues.append(
+                f"{work_item_id} severity proposal has no typed queue record"
+            )
+            continue
+        if not isinstance(identity_envelope, dict):
+            issues.append(
+                f"{work_item_id} severity proposal schema invalid: expected JSON object"
+            )
+            continue
+        if identity_envelope.get("candidate_id") != work_item_id:
+            issues.append(
+                f"{work_item_id} severity proposal candidate identity mismatch"
+            )
+            continue
+        constituent_ids = identity_envelope.get("constituent_ids")
+        if not isinstance(constituent_ids, list) or not constituent_ids:
+            issues.append(
+                f"{work_item_id} severity proposal schema invalid: "
+                "constituent_ids must be a non-empty list"
+            )
+            continue
+        if constituent_ids != [
+            item.work_item_id,
+            *item.constituents,
+        ]:
+            issues.append(
+                f"{work_item_id} severity proposal constituent identity mismatch"
+            )
+            continue
+        try:
+            parse_severity_proposal(proposal_bytes)
+        except Exception as exc:
+            issues.append(
+                f"{work_item_id} severity proposal schema invalid: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    return issues
+
+
+def _inventory_structural_source_referents(text: str) -> dict[str, set[str]]:
+    """Map canonical Source IDs to the finding headings that own them.
+
+    Only `Source ID(s)` fields inside real `##/### Finding [...]` blocks are
+    identity-bearing. IDs in descriptions, rationale, comments, or receipts
+    are mentions and cannot suppress promotion or satisfy a receipt.
+    """
+    referents: dict[str, set[str]] = {}
+    headings = list(FINDING_BLOCK_HEADING_RE.finditer(text or ""))
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        block = text[heading.start():end]
+        # A mechanically coupled/recovered block can legitimately contain more
+        # than one typed Source-ID line.  Reading only the first line made later
+        # provenance invisible and caused idempotent promotion to append a
+        # duplicate.  Keep extraction anchored to explicit fields inside the
+        # finding block so free-form ID mentions still cannot satisfy identity.
+        source_values: list[str] = []
+        first_source = _field_from_markdown(block, ("Source IDs", "Source ID"))
+        if first_source:
+            source_values.append(first_source)
+        for match in re.finditer(
+            r"(?im)^\s*[-*]?\s*(?:\*\*)?Source\s+IDs?(?:\*\*)?\s*:\s*(.+?)\s*$",
+            block,
+        ):
+            value = match.group(1).strip()
+            if value and value not in source_values:
+                source_values.append(value)
+        if not source_values:
+            continue
+        owner = heading.group(1).strip().upper()
+        for source_value in source_values:
+            ids = {
+                match.group(1).upper()
+                for match in _INTERNAL_FINDING_ID_RE.finditer(source_value)
+            }
+            # The promotion grammar deliberately supports multi-segment depth
+            # and scanner IDs (for example DA3-...-N and BLIND-BN) that the
+            # older unified grammar does not yet enumerate exhaustively.
+            ids.update(
+                match.group(0).upper()
+                for match in re.finditer(
+                    r"\b" + _PROMOTABLE_FEEDER_ID_PATTERN + r"\b",
+                    source_value,
+                    re.IGNORECASE,
+                )
+            )
+            # Niche/injectable agents may mint a new short prefix before the
+            # unified registry is updated.  At this *typed field* boundary a
+            # conservative numeric-suffix grammar is safe and preserves
+            # idempotency without allowing prose mentions to certify identity.
+            ids.update(
+                match.group(0).upper()
+                for match in re.finditer(
+                    r"\b[A-Z][A-Z0-9_]{1,15}(?:-[A-Z0-9_]*\d+)+\b",
+                    source_value,
+                    re.IGNORECASE,
+                )
+            )
+            for source_id in ids:
+                referents.setdefault(source_id, set()).add(owner)
+    return referents
+
+
+def _inventory_structural_source_action_referents(
+    text: str,
+) -> dict[tuple[str, str], set[str]]:
+    """Map exact ``(producer artifact, local ID)`` actions to inventory rows.
+
+    Local IDs are producer-local and can legitimately collide across tools.
+    The promotion bridge writes ``Primary Artifact`` on every appended row, so
+    that pair—not the bare ID—is the exact post-promotion authority.
+    """
+
+    referents: dict[tuple[str, str], set[str]] = {}
+    headings = list(FINDING_BLOCK_HEADING_RE.finditer(text or ""))
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        block = text[heading.start():end]
+        artifact = _field_from_markdown(
+            block, ("Primary Artifact", "Source Artifact", "Artifact")
+        )
+        if not artifact:
+            continue
+        source_value = _field_from_markdown(block, ("Source IDs", "Source ID"))
+        if not source_value:
+            continue
+        owner = heading.group(1).strip().upper()
+        artifact_name = Path(artifact).name
+        producer = _registered_producer_for_artifact(
+            artifact_name, consumer="pre_dedup_promotion"
+        )
+        source_pattern = (
+            _registered_producer_read_id_pattern(producer)
+            if producer is not None
+            else _PROMOTABLE_FEEDER_ID_PATTERN
+        )
+        for match in re.finditer(
+            r"\b" + source_pattern + r"\b",
+            source_value,
+            re.IGNORECASE,
+        ):
+            key = (artifact_name, match.group(0).upper())
+            referents.setdefault(key, set()).add(owner)
+    return referents
+
+
+def _inventory_structural_source_hash_action_referents(
+    text: str,
+) -> dict[tuple[str, str, str], set[str]]:
+    """Map source-file/local-ID/exact-file-hash actions to inventory rows."""
+
+    referents: dict[tuple[str, str, str], set[str]] = {}
+    headings = list(FINDING_BLOCK_HEADING_RE.finditer(text or ""))
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        block = text[heading.start():end]
+        artifact = _field_from_markdown(
+            block, ("Primary Artifact", "Source Artifact", "Artifact")
+        )
+        source_hash = _field_from_markdown(
+            block, ("Source Artifact Hash",)
+        ).strip().lower()
+        source_value = _field_from_markdown(block, ("Source IDs", "Source ID"))
+        if not artifact or not source_value:
+            continue
+        if re.fullmatch(r"[0-9a-f]{64}", source_hash):
+            source_hash = "sha256:" + source_hash
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", source_hash):
+            continue
+        owner = heading.group(1).strip().upper()
+        artifact_name = Path(artifact).name
+        producer = _registered_producer_for_artifact(
+            artifact_name, consumer="pre_dedup_promotion"
+        )
+        source_pattern = (
+            _registered_producer_read_id_pattern(producer)
+            if producer is not None
+            else _PROMOTABLE_FEEDER_ID_PATTERN
+        )
+        for match in re.finditer(
+            r"\b" + source_pattern + r"\b",
+            source_value,
+            re.IGNORECASE,
+        ):
+            key = (artifact_name, match.group(0).upper(), source_hash)
+            referents.setdefault(key, set()).add(owner)
+    return referents
+
+
+_FINDING_DELIVERY_RECEIPT = "finding_delivery_receipt.json"
+_FINDING_DELIVERY_SCHEMA = "plamen.finding_delivery.v2"
+_FINDING_DELIVERY_DEBT = "report_semantic_finding_delivery.md"
+
+
+def _registered_id_matches(producer: object, finding_id: str) -> bool:
+    return _registered_producer_accepts_local_id(producer, finding_id)
+
+
+def _registered_source_blocks(text: str) -> dict[str, str]:
+    """Return standard/review blocks keyed by their exact source action ID."""
+    heading_re = re.compile(
+        r"(?im)^#{2,3}\s+(?:Finding|Review\s+Disposition)\s+\[([^\]\n]+)\]"
+    )
+    matches = list(heading_re.finditer(text or ""))
+    blocks: dict[str, str] = {}
+    for idx, match in enumerate(matches):
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        blocks[match.group(1).strip().upper()] = text[match.start():end].strip()
+    return blocks
+
+
+def _scan_registered_finding_delivery_sources(scratchpad: Path) -> dict[str, object]:
+    """Enumerate every registered action before deciding any disposition.
+
+    This denominator is independent of promotion success.  A parser that sees
+    a source heading but emits zero candidates therefore creates residual debt
+    instead of a vacuous clean receipt.
+    """
+    actions: list[dict[str, object]] = []
+    residual: list[str] = []
+    artifact_rows: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    try:
+        enumgap_dispositions = _validated_enumgap_obligation_dispositions(
+            scratchpad,
+            production_root=Path(scratchpad).parent,
+        )
+    except Exception as exc:
+        enumgap_dispositions = {}
+        residual.append(
+            "enumgap independent-consumer authority invalid "
+            f"({type(exc).__name__}: {exc})"
+        )
+    for path in _materialized_registered_producer_paths(
+        scratchpad, "pre_dedup_promotion"
+    ):
+        producer = _registered_producer_for_artifact(
+            path.name, consumer="pre_dedup_promotion"
+        )
+        if producer is None:
+            continue
+        if getattr(producer, "artifact_format", "MARKDOWN_FINDINGS") != "MARKDOWN_FINDINGS":
+            try:
+                source_hash = _registered_artifact_sha256(path)
+                if getattr(producer, "artifact_format", "") == (
+                    "EXPLORATION_CLEAR_OBLIGATION_QUEUE_V1"
+                ):
+                    typed_actions = _read_registered_enumeration_obligations(
+                        path, consumer="pre_dedup_promotion"
+                    )
+                else:
+                    typed_actions = _read_registered_typed_actions(
+                        path, consumer="pre_dedup_promotion"
+                    )
+            except Exception as exc:
+                residual.append(
+                    f"{path.name}: typed producer artifact invalid "
+                    f"({type(exc).__name__}: {exc})"
+                )
+                try:
+                    source_hash = _registered_artifact_sha256(path)
+                except Exception:
+                    source_hash = "UNAVAILABLE"
+                artifact_rows.append({
+                    "producer_key": producer.key,
+                    "artifact": path.name,
+                    "sha256": source_hash,
+                    "source_action_count": 0,
+                })
+                continue
+            artifact_count = 0
+            for typed_action in typed_actions:
+                row = typed_action.delivery_row()
+                exact_key = (path.name, str(row["action_identity"]))
+                if exact_key in seen:
+                    residual.append(
+                        f"{path.name}:{row['action_identity']}: duplicate exact "
+                        "typed action identity"
+                    )
+                    continue
+                seen.add(exact_key)
+                artifact_count += 1
+                exact_disposition = enumgap_dispositions.get(
+                    str(row.get("action_id") or "")
+                )
+                if (
+                    row.get("disposition") == "INDEPENDENT_ENUMERATION_REQUIRED"
+                    and exact_disposition is not None
+                ):
+                    row.update(exact_disposition)
+                    row["disposition"] = "INDEPENDENT_ENUMERATION_DISPOSED"
+                    row["reason"] = (
+                        "exact independent enumgap disposition recomputed from "
+                        "current worklist, output, receipt, and residual authority"
+                    )
+                actions.append(row)
+                if row.get("disposition") == "INDEPENDENT_ENUMERATION_REQUIRED":
+                    residual.append(
+                        f"{path.name}:{row['action_id']}: unresolved enumeration "
+                        "obligation lacks an exact independent-consumer disposition"
+                    )
+            artifact_rows.append({
+                "producer_key": producer.key,
+                "artifact": path.name,
+                "sha256": source_hash,
+                "source_action_count": artifact_count,
+            })
+            continue
+        try:
+            text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
+            source_hash = _registered_artifact_sha256(path)
+        except Exception as exc:
+            residual.append(
+                f"{path.name}: producer artifact unreadable ({type(exc).__name__})"
+            )
+            continue
+        blocks = _registered_source_blocks(text)
+        parsed = _parse_depth_finding_blocks(path)
+        parsed_by_id = {
+            str(row.get("id") or "").upper(): row
+            for row in parsed
+            if row.get("id")
+        }
+        # Every finding/review heading in a registered producer is part of the
+        # source denominator.  A local ID outside the declared grammar is
+        # parser/producer drift and must become residual debt, not disappear
+        # before reconciliation.
+        source_ids = set(blocks)
+        # Row-only fuzz violations and legacy exploration headings have no
+        # standard source heading but are still typed parser outputs.
+        source_ids.update(parsed_by_id)
+        artifact_count = 0
+        for finding_id in sorted(source_ids):
+            key = (path.name, finding_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            artifact_count += 1
+            block = blocks.get(finding_id, "")
+            item = parsed_by_id.get(finding_id)
+            local_id_valid = _registered_id_matches(producer, finding_id)
+            if not local_id_valid:
+                detail = (
+                    f"{path.name}:{finding_id}: local ID is outside producer "
+                    f"{producer.key} grammar"
+                )
+                residual.append(detail)
+                actions.append({
+                    "producer_key": producer.key,
+                    "source_file": path.name,
+                    "source_artifact_hash": source_hash,
+                    "action_id": finding_id,
+                    "local_id_valid": False,
+                    "action_kind": str((item or {}).get("action_kind") or "UNKNOWN"),
+                    "target_id": str((item or {}).get("target_id") or ""),
+                    "title": str((item or {}).get("title") or finding_id),
+                    "source_identity": str((item or {}).get("source_identity") or ""),
+                    "evidence_scope": str((item or {}).get("evidence_scope") or "NONE"),
+                    "proof_scope": str((item or {}).get("proof_scope") or "NONE"),
+                    "effective_evidence_scope": str(
+                        (item or {}).get("effective_evidence_scope") or "UNSPECIFIED"
+                    ),
+                    "effective_proof_scope": str(
+                        (item or {}).get("effective_proof_scope") or "ANALYTICAL"
+                    ),
+                    "effective_harm_scope": str(
+                        (item or {}).get("effective_harm_scope") or "UNPROVEN"
+                    ),
+                    "content_bearing": False,
+                    "origin_assessment": str((item or {}).get("verdict") or ""),
+                    "disposition": "RESIDUAL_DEBT",
+                    "reason": detail,
+                })
+                continue
+            is_review_heading = bool(re.search(
+                r"(?im)^#{2,3}\s+Review\s+Disposition\s+\["
+                + re.escape(finding_id) + r"\]",
+                block,
+            ))
+            contentless_marker = bool(re.search(
+                r"(?i)CONTENT[-_ ]LESS|APPENDIX_ONLY|"
+                r"CONTENT_LESS_HUMAN_REVIEW",
+                block,
+            ))
+            if is_review_heading or contentless_marker:
+                title_line = block.splitlines()[0] if block else finding_id
+                title = re.sub(
+                    r"^#{2,3}\s+Review\s+Disposition\s+\[[^\]]+\]\s*:?\s*",
+                    "", title_line, flags=re.IGNORECASE,
+                ).strip() or "Content-less producer disposition"
+                actions.append({
+                    "producer_key": producer.key,
+                    "source_file": path.name,
+                    "source_artifact_hash": source_hash,
+                    "action_id": finding_id,
+                    "local_id_valid": True,
+                    "action_kind": "REVIEW",
+                    "target_id": "",
+                    "title": title,
+                    "source_identity": _field_from_markdown(
+                        block, ("Source Identity",)
+                    ),
+                    "evidence_scope": "NONE",
+                    "proof_scope": "NONE",
+                    "effective_evidence_scope": "NONE",
+                    "effective_proof_scope": "NONE",
+                    "effective_harm_scope": "UNPROVEN",
+                    "content_bearing": False,
+                    "disposition": "HUMAN_REVIEW",
+                    "reason": _field_from_markdown(block, ("Reason",))
+                    or "content-less source row retained as methodology debt",
+                })
+                continue
+            if item is None or item.get("_content_bearing") != "true":
+                residual.append(
+                    f"{path.name}:{finding_id}: source action parsed without "
+                    "substantive content; retained as delivery debt"
+                )
+                actions.append({
+                    "producer_key": producer.key,
+                    "source_file": path.name,
+                    "source_artifact_hash": source_hash,
+                    "action_id": finding_id,
+                    "local_id_valid": True,
+                    "action_kind": str((item or {}).get("action_kind") or "UNKNOWN"),
+                    "target_id": str((item or {}).get("target_id") or ""),
+                    "title": str((item or {}).get("title") or finding_id),
+                    "source_identity": str((item or {}).get("source_identity") or ""),
+                    "evidence_scope": str((item or {}).get("evidence_scope") or "NONE"),
+                    "proof_scope": str((item or {}).get("proof_scope") or "NONE"),
+                    "effective_evidence_scope": str(
+                        (item or {}).get("effective_evidence_scope") or "UNSPECIFIED"
+                    ),
+                    "effective_proof_scope": str(
+                        (item or {}).get("effective_proof_scope") or "ANALYTICAL"
+                    ),
+                    "effective_harm_scope": str(
+                        (item or {}).get("effective_harm_scope") or "UNPROVEN"
+                    ),
+                    "content_bearing": False,
+                    "disposition": "RESIDUAL_DEBT",
+                    "reason": "malformed or content-less finding heading",
+                })
+                continue
+            action_kind = str(item.get("action_kind") or "NEW").upper()
+            target_id = str(item.get("target_id") or "").upper()
+            reason = ""
+            if action_kind in {"UPGRADE", "RE-OPEN"} and not target_id:
+                reason = "amendment action is missing its target identity"
+                residual.append(f"{path.name}:{finding_id}: {reason}")
+            status = _verifier_status_from_text(
+                f"**Verdict**: {item.get('verdict', '')}"
+            ) if item.get("verdict") else ""
+            scope_debt = str(item.get("_scope_debt") or "").strip()
+            if scope_debt:
+                residual.append(f"{path.name}:{finding_id}: {scope_debt}")
+            actions.append({
+                "producer_key": producer.key,
+                "source_file": path.name,
+                "source_artifact_hash": source_hash,
+                "action_id": finding_id,
+                "local_id_valid": True,
+                "action_kind": action_kind,
+                "target_id": target_id,
+                "title": str(item.get("title") or finding_id),
+                "source_identity": str(item.get("source_identity") or ""),
+                "evidence_scope": str(item.get("evidence_scope") or ""),
+                "proof_scope": str(item.get("proof_scope") or producer.proof_scope_default),
+                "effective_evidence_scope": str(
+                    item.get("effective_evidence_scope") or "UNSPECIFIED"
+                ),
+                "effective_proof_scope": str(
+                    item.get("effective_proof_scope") or "ANALYTICAL"
+                ),
+                "effective_harm_scope": str(
+                    item.get("effective_harm_scope") or "UNPROVEN"
+                ),
+                "content_bearing": True,
+                "origin_assessment": status,
+                "disposition": "PENDING",
+                "reason": reason,
+            })
+        artifact_rows.append({
+            "producer_key": producer.key,
+            "artifact": path.name,
+            "sha256": source_hash,
+            "source_action_count": artifact_count,
+        })
+
+    # The lifecycle JSON and its bound exploration Markdown can describe the
+    # same producer action.  The JSON row is the exact authority because it
+    # binds receipt + source bytes + source-row lineage.  Suppress only the
+    # cryptographically identical Markdown projection; a same-ID action from
+    # another artifact or different bytes remains a distinct denominator row.
+    typed_aliases = {
+        (
+            str(row.get("lineage_source_file") or ""),
+            str(row.get("action_id") or "").upper(),
+            "sha256:" + str(row.get("lineage_artifact_sha256") or ""),
+        ): row
+        for row in actions
+        if row.get("producer_key") == "exploration_clear_additive"
+    }
+    if typed_aliases:
+        bound_lineages = {
+            (source_file, source_hash)
+            for source_file, _action_id, source_hash in typed_aliases
+        }
+        filtered: list[dict[str, object]] = []
+        for row in actions:
+            alias_key = (
+                str(row.get("source_file") or ""),
+                str(row.get("action_id") or "").upper(),
+                str(row.get("source_artifact_hash") or ""),
+            )
+            typed = typed_aliases.get(alias_key)
+            if typed is not None and row.get("producer_key") != "exploration_clear_additive":
+                typed["bound_markdown_projection"] = str(row.get("source_file") or "")
+                continue
+            if (
+                row.get("producer_key") == "exploration_skeptic"
+                and str(row.get("action_id") or "").upper().startswith("SKEP-LEGACY-")
+                and (
+                    str(row.get("source_file") or ""),
+                    str(row.get("source_artifact_hash") or ""),
+                ) in bound_lineages
+            ):
+                # The old section parser can synthesize a pseudo-action from
+                # adjacent Notes prose.  A valid lifecycle receipt already
+                # enumerates the exact bound source rows, so retaining that
+                # synthetic alias would double-count (and can promote prose).
+                continue
+            filtered.append(row)
+        actions = filtered
+    return {
+        "actions": actions,
+        "residual_debt": residual,
+        "artifacts": artifact_rows,
+    }
+
+
+def _build_registered_finding_delivery_receipt_payload(
+    scratchpad: Path,
+    scan: dict[str, object],
+    inventory_text: str,
+    *,
+    inventory_source_artifact: str = "findings_inventory.md",
+) -> dict[str, object]:
+    """Recompute exact source/action/disposition authority from current bytes."""
+
+    source_name = str(inventory_source_artifact or "")
+    source_path = PurePosixPath(source_name)
+    if (
+        not source_name
+        or "\\" in source_name
+        or source_path.is_absolute()
+        or source_name != source_path.as_posix()
+        or any(part in {"", ".", ".."} for part in source_path.parts)
+    ):
+        raise ValueError(
+            "registered delivery inventory source must be a canonical "
+            "relative POSIX path"
+        )
+    inventory_path = Path(scratchpad).joinpath(*source_path.parts)
+    try:
+        inventory_raw = inventory_path.read_bytes()
+        exact_inventory_text = inventory_raw.decode(
+            "utf-8", errors="strict"
+        )
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(
+            "registered delivery inventory source is unavailable or invalid"
+        ) from exc
+    # ``Path.read_text`` uses universal-newline translation.  Accept that
+    # representational normalization, but derive all semantics and hashes from
+    # the exact source bytes so CRLF/LF behavior is identical across hosts.
+    normalized_exact_text = exact_inventory_text.replace(
+        "\r\n", "\n"
+    ).replace("\r", "\n")
+    if inventory_text not in {exact_inventory_text, normalized_exact_text}:
+        raise ValueError(
+            "registered delivery inventory text differs from its exact "
+            "source artifact"
+        )
+
+    action_referents = _inventory_structural_source_action_referents(
+        exact_inventory_text
+    )
+    source_hash_action_referents = (
+        _inventory_structural_source_hash_action_referents(
+            exact_inventory_text
+        )
+    )
+    residual = list(scan.get("residual_debt") or [])
+    source_actions = sorted(
+        (dict(row) for row in (scan.get("actions") or [])),
+        key=lambda row: (str(row.get("source_file")), str(row.get("action_id"))),
+    )
+    actions: list[dict[str, object]] = []
+    for raw in source_actions:
+        row = dict(raw)
+        finding_id = str(row.get("action_id") or "").upper()
+        disposition = str(row.get("disposition") or "PENDING")
+        if disposition == "PENDING":
+            action_key = (str(row.get("source_file") or ""), finding_id)
+            source_hash = str(row.get("source_artifact_hash") or "").lower()
+            if re.fullmatch(r"[0-9a-f]{64}", source_hash):
+                source_hash = "sha256:" + source_hash
+            if row.get("producer_key") == "niche":
+                exact_delivery = (
+                    action_key + (source_hash,)
+                    in source_hash_action_referents
+                )
+            else:
+                exact_delivery = action_key in action_referents
+            if row.get("producer_key") == "exploration_clear_additive":
+                bound_projection = str(row.get("bound_markdown_projection") or "")
+                lineage_source = str(row.get("lineage_source_file") or "")
+                exact_delivery = exact_delivery or (
+                    bool(bound_projection)
+                    and (bound_projection, finding_id) in action_referents
+                ) or (
+                    bool(lineage_source)
+                    and (lineage_source, finding_id) in action_referents
+                )
+            if exact_delivery:
+                disposition = (
+                    "PROMOTED_AMENDMENT"
+                    if row.get("action_kind") in {"UPGRADE", "RE-OPEN"}
+                    else "PROMOTED_FINDING"
+                )
+            elif str(row.get("origin_assessment") or "") and not _is_reportable_verdict(
+                str(row.get("origin_assessment") or "")
+            ):
+                # A producer can retain its assessment but cannot certify its
+                # own terminal negative. Independent discriminator authority
+                # must later replace this review obligation.
+                disposition = "ORIGIN_NEGATIVE_REVIEW_REQUIRED"
+                row["reason"] = (
+                    str(row.get("reason") or "")
+                    or "producer-authored negative requires independent decision"
+                )
+                residual.append(
+                    f"{row.get('source_file')}:{finding_id}: producer-only "
+                    "negative lacks independent disposition"
+                )
+            else:
+                disposition = "RESIDUAL_DEBT"
+                detail = (
+                    f"{row.get('source_file')}:{finding_id}: content-bearing "
+                    "registered action has no inventory referent or review disposition"
+                )
+                if detail not in residual:
+                    residual.append(detail)
+        row["disposition"] = disposition
+        unsigned_action = dict(row)
+        row["action_digest"] = _finding_delivery_digest(unsigned_action)
+        actions.append(row)
+
+    source_count = len(actions)
+    terminal_dispositions = {
+        "PROMOTED_FINDING",
+        "PROMOTED_AMENDMENT",
+        "HUMAN_REVIEW",
+        "INDEPENDENT_ENUMERATION_DISPOSED",
+    }
+    accounted = sum(
+        1 for row in actions if row.get("disposition") in terminal_dispositions
+    )
+    artifacts: list[dict[str, object]] = []
+    for raw_artifact in sorted(
+        (dict(row) for row in (scan.get("artifacts") or [])),
+        key=lambda row: (str(row.get("artifact")), str(row.get("producer_key"))),
+    ):
+        action_ids = [
+            str(row.get("action_id"))
+            for row in actions
+            if row.get("source_file") == raw_artifact.get("artifact")
+        ]
+        artifact = {
+            "producer_key": raw_artifact.get("producer_key"),
+            "artifact": raw_artifact.get("artifact"),
+            "sha256": raw_artifact.get("sha256"),
+            "source_action_count": len(action_ids),
+            "source_action_ids": action_ids,
+            "source_action_digest": _finding_delivery_digest(action_ids),
+        }
+        artifacts.append(artifact)
+    inventory_sha256 = "sha256:" + hashlib.sha256(inventory_raw).hexdigest()
+    residual_rows = sorted(dict.fromkeys(str(row) for row in residual))
+    unsigned_payload: dict[str, object] = {
+        "schema_version": _FINDING_DELIVERY_SCHEMA,
+        "registry_digest": _finding_producer_registry_digest(),
+        "status": "DEGRADED" if residual_rows else "CLEAN",
+        "inventory_artifact": "findings_inventory.md",
+        "inventory_sha256": inventory_sha256,
+        "source_artifact_count": len(artifacts),
+        "source_artifact_digest": _finding_delivery_digest(artifacts),
+        "source_action_count": source_count,
+        "source_action_digest": _finding_delivery_digest(source_actions),
+        "accounted_action_count": accounted,
+        "disposition_count": len(actions),
+        "disposition_digest": _finding_delivery_digest(actions),
+        "residual_debt_count": len(residual_rows),
+        "residual_debt_digest": _finding_delivery_digest(residual_rows),
+        "artifacts": artifacts,
+        "actions": actions,
+        "residual_debt": residual_rows,
+    }
+    return {
+        **unsigned_payload,
+        "receipt_digest": _finding_delivery_digest(unsigned_payload),
+    }
+
+
+def _write_registered_finding_delivery_receipt(
+    scratchpad: Path,
+    scan: dict[str, object],
+    inventory_text: str,
+    *,
+    deferred_ids: set[str] | None = None,
+) -> dict[str, object]:
+    # ``deferred_ids`` remains a compatibility argument only. A confidence
+    # threshold may schedule review but can no longer manufacture a terminal
+    # disposition; the current artifact/inventory facts are recomputed here.
+    _ = deferred_ids
+    payload = _build_registered_finding_delivery_receipt_payload(
+        scratchpad, scan, inventory_text
+    )
+    actions = list(payload["actions"])
+    source_count = int(payload["source_action_count"])
+    accounted = int(payload["accounted_action_count"])
+    json_text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    receipt_path = scratchpad / _FINDING_DELIVERY_RECEIPT
+    _atomic_validator_text(receipt_path, json_text)
+
+    lines = [
+        "# Registered Finding Delivery Receipt", "",
+        f"- Status: **{payload['status']}**",
+        f"- Registry: `{payload['registry_digest']}`",
+        f"- Receipt digest: `{payload['receipt_digest']}`",
+        f"- Source actions: {source_count}",
+        f"- Accounted actions: {accounted}", "",
+        "| Producer | Source | Action | Kind | Target | Disposition |",
+        "|---|---|---|---|---|---|",
+    ]
+    for row in actions:
+        lines.append(
+            f"| {row.get('producer_key')} | {row.get('source_file')} | "
+            f"`{row.get('action_id')}` | {row.get('action_kind')} | "
+            f"{row.get('target_id') or '-'} | {row.get('disposition')} |"
+        )
+    if not actions:
+        lines.append("| (none) | - | - | - | - | CLEAN_NO_ACTION |")
+    md_text = "\n".join(lines) + "\n"
+    md_path = scratchpad / "finding_delivery_receipt.md"
+    _atomic_validator_text(md_path, md_text)
+
+    debt_path = scratchpad / _FINDING_DELIVERY_DEBT
+    debt_text = _render_delivery_human_review_projection(payload)
+    if debt_text:
+        _atomic_validator_text(debt_path, debt_text)
+    elif debt_path.exists():
+        debt_path.unlink()
+    return payload
+
+
+_DEPTH_IDENTITY_PRESERVATION_SCHEMA = (
+    "plamen.depth_identity_preservation_debt.v2"
+)
+_DEPTH_IDENTITY_PRESERVATION_FILE = "depth_identity_preservation_debt.json"
+
+
+def _confidence_identity_preservation_state(scratchpad: Path) -> dict[str, Any]:
+    """Load exact, re-derived unbound-identity preservation obligations.
+
+    Consensus is additive telemetry. Its authenticated identity debt can veto a
+    confidence-based drop, but can never mint a finding identity or proof. A
+    present but stale/tampered authority degrades to broad preservation debt;
+    an absent authority preserves legacy numeric-threshold behavior.
+    """
+    root = Path(scratchpad)
+    path = root / "confidence_consensus_authority.json"
+    if not path.is_file():
+        return {
+            "status": "ABSENT",
+            "authority_sha256": "",
+            "bindings": {},
+            "issues": [],
+        }
+    try:
+        raw = path.read_bytes()
+        payload = json.loads(raw.decode("utf-8", errors="strict"))
+        if not isinstance(payload, Mapping):
+            raise ValueError("confidence consensus authority is not an object")
+        from confidence_consensus_authority import (
+            AUTHORITY_SCHEMA,
+            validate_confidence_consensus_authority,
+        )
+
+        issues = list(validate_confidence_consensus_authority(root, payload))
+    except (OSError, UnicodeError, ValueError, TypeError, ImportError) as exc:
+        return {
+            "status": "DEGRADED",
+            "authority_sha256": (
+                hashlib.sha256(raw).hexdigest() if "raw" in locals() else ""
+            ),
+            "bindings": {},
+            "issues": [
+                "confidence consensus identity authority is unreadable: "
+                f"{type(exc).__name__}: {exc}"
+            ],
+        }
+
+    if issues:
+        return {
+            "status": "DEGRADED",
+            "authority_sha256": hashlib.sha256(raw).hexdigest(),
+            "bindings": {},
+            "issues": sorted(set(issues)),
+        }
+    if payload.get("schema_version") != AUTHORITY_SCHEMA:
+        issues.append("confidence consensus identity schema mismatch")
+    accounting = payload.get("identity_accounting")
+    policy = payload.get("policy")
+    if (
+        not isinstance(accounting, Mapping)
+        or accounting.get("negative_or_drop_authority") is not False
+        or not isinstance(policy, Mapping)
+        or policy.get("unbound_negative_or_drop_authority") is not False
+    ):
+        issues.append("confidence consensus grants forbidden negative authority")
+    if issues:
+        return {
+            "status": "DEGRADED",
+            "authority_sha256": hashlib.sha256(raw).hexdigest(),
+            "bindings": {},
+            "issues": sorted(set(issues)),
+        }
+
+    observations = {
+        str(row.get("observation_digest") or ""): row
+        for row in payload.get("observations", [])
+        if isinstance(row, Mapping) and row.get("observation_digest")
+    }
+    scores = {
+        str(row.get("observation_digest") or ""): row
+        for row in payload.get("scores", [])
+        if isinstance(row, Mapping) and row.get("observation_digest")
+    }
+    bindings: dict[tuple[str, str], dict[str, Any]] = {}
+
+    # Producer-side EXACT means only that the Source Finding(s) syntax was
+    # unambiguous.  It is not identity authority until every anchor resolves
+    # exactly once in the current authenticated inventory projection.
+    inventory_text, inventory_source, inventory_issues = (
+        _authoritative_postcutover_inventory(root)
+    )
+    inventory_sha256 = hashlib.sha256(
+        inventory_text.encode("utf-8")
+    ).hexdigest()
+    inventory_matches: dict[str, list[str]] = {}
+    if not inventory_issues and inventory_text:
+        try:
+            for block in _inventory_blocks(inventory_text):
+                anchor = _normalize_finding_id(str(block.get("id") or ""))
+                if not anchor:
+                    continue
+                inventory_matches.setdefault(anchor.upper(), []).append(
+                    hashlib.sha256(
+                        str(block.get("block") or "").encode("utf-8")
+                    ).hexdigest()
+                )
+        except Exception as exc:
+            inventory_issues = list(inventory_issues) + [
+                "authenticated inventory projection is unparseable: "
+                f"{type(exc).__name__}: {exc}"
+            ]
+
+    def anchor_binding_for(observation: Mapping[str, Any]) -> dict[str, Any]:
+        anchors = sorted(
+            {
+                str(anchor).upper()
+                for anchor in observation.get("source_finding_ids", [])
+                if str(anchor).strip()
+            }
+        )
+        counts = {
+            anchor: len(inventory_matches.get(anchor, []))
+            for anchor in anchors
+        }
+        block_digests = {
+            anchor: list(inventory_matches.get(anchor, []))
+            for anchor in anchors
+        }
+        if inventory_issues:
+            status = "INVENTORY_AUTHORITY_DEGRADED"
+        elif not anchors:
+            status = "PRODUCER_UNBOUND"
+        elif any(count > 1 for count in counts.values()):
+            status = "AMBIGUOUS_CANONICAL_ANCHOR"
+        elif any(count != 1 for count in counts.values()):
+            status = "UNRESOLVED_CANONICAL_ANCHOR"
+        else:
+            status = "EXACT_CURRENT_CANONICAL_ANCHOR"
+        return {
+            "anchors": anchors,
+            "inventory_projection_sha256": inventory_sha256,
+            "inventory_source_artifact": inventory_source,
+            "inventory_authority_issues": sorted(set(inventory_issues)),
+            "match_counts": counts,
+            "matched_block_sha256": block_digests,
+            "status": status,
+        }
+
+    def add_preservation_binding(
+        observation: Mapping[str, Any],
+        *,
+        debt_id: str,
+        identity_status: str,
+    ) -> None:
+        source = str(observation.get("source_artifact") or "")
+        fid = str(observation.get("finding_id") or "").upper()
+        observation_digest = str(observation.get("observation_digest") or "")
+        candidate = {
+            "source_artifact": source,
+            "source_artifact_sha256": str(
+                observation.get("source_artifact_sha256") or ""
+            ),
+            "finding_id": str(observation.get("finding_id") or ""),
+            "source_byte_start": int(observation.get("source_byte_start") or 0),
+            "source_byte_end": int(observation.get("source_byte_end") or 0),
+            "claim_block_sha256": str(
+                observation.get("claim_block_sha256") or ""
+            ),
+            "observation_digest": observation_digest,
+        }
+        key = (source, fid)
+        if not source or not fid or key in bindings:
+            issues.append(
+                "confidence consensus identity preservation binding is "
+                f"ambiguous: {source}:{fid}"
+            )
+            return
+        bindings[key] = {
+            "candidate_ref": candidate,
+            "debt_id": debt_id,
+            "identity_status": identity_status,
+            "upstream_anchor_binding": anchor_binding_for(observation),
+        }
+
+    for debt in payload.get("identity_debts", []):
+        if not isinstance(debt, Mapping):
+            issues.append("confidence consensus identity debt row is not an object")
+            continue
+        candidate = debt.get("candidate_ref")
+        if not isinstance(candidate, Mapping):
+            issues.append("confidence consensus identity debt lacks candidate binding")
+            continue
+        observation_digest = str(candidate.get("observation_digest") or "")
+        observation = observations.get(observation_digest)
+        score = scores.get(observation_digest)
+        fid = str(candidate.get("finding_id") or "").upper()
+        source = str(candidate.get("source_artifact") or "")
+        key = (source, fid)
+        expected_candidate = None
+        if isinstance(observation, Mapping):
+            expected_candidate = {
+                "source_artifact": str(observation.get("source_artifact") or ""),
+                "source_artifact_sha256": str(
+                    observation.get("source_artifact_sha256") or ""
+                ),
+                "finding_id": str(observation.get("finding_id") or ""),
+                "source_byte_start": int(observation.get("source_byte_start") or 0),
+                "source_byte_end": int(observation.get("source_byte_end") or 0),
+                "claim_block_sha256": str(
+                    observation.get("claim_block_sha256") or ""
+                ),
+                "observation_digest": observation_digest,
+            }
+        if (
+            not source
+            or not fid
+            or expected_candidate is None
+            or dict(candidate) != expected_candidate
+            or observation.get("authority_status") != "UNBOUND"
+            or not isinstance(score, Mapping)
+            or score.get("preservation_required") is not True
+            or score.get("negative_or_drop_authority") is not False
+            or debt.get("negative_or_drop_authority") is not False
+            or debt.get("proof_authority") != "NONE"
+            or debt.get("resolution_status") != "OPEN"
+            or debt.get("required_action")
+            != "RETAIN_PENDING_IDENTITY_RECONCILIATION"
+        ):
+            issues.append(
+                f"confidence consensus identity debt is not preservation-only: "
+                f"{source}:{fid}"
+            )
+            continue
+        add_preservation_binding(
+            observation,
+            debt_id=str(debt.get("debt_id") or ""),
+            identity_status=str(debt.get("identity_status") or ""),
+        )
+
+    # Reclassify syntactically EXACT producer rows whose anchors do not bind to
+    # exactly one current canonical inventory block.  Confidence (including a
+    # 0.95 score) has no authority to manufacture the missing identity.
+    for observation_digest, observation in sorted(observations.items()):
+        if observation.get("authority_status") != "CURRENT":
+            continue
+        anchor_binding = anchor_binding_for(observation)
+        anchor_status = str(anchor_binding.get("status") or "")
+        if anchor_status == "EXACT_CURRENT_CANONICAL_ANCHOR":
+            continue
+        synthetic_seed = {
+            "observation_digest": observation_digest,
+            "anchor_binding": anchor_binding,
+        }
+        debt_id = "CID-DEBT-ANCHOR-" + hashlib.sha256(
+            _canonical_validator_json_bytes(synthetic_seed)
+        ).hexdigest()[:24].upper()
+        add_preservation_binding(
+            observation,
+            debt_id=debt_id,
+            identity_status=anchor_status,
+        )
+
+    if issues:
+        return {
+            "status": "DEGRADED",
+            "authority_sha256": hashlib.sha256(raw).hexdigest(),
+            "bindings": {},
+            "issues": sorted(set(issues)),
+        }
+    return {
+        "status": "CURRENT",
+        "authority_sha256": hashlib.sha256(raw).hexdigest(),
+        "bindings": bindings,
+        "issues": [],
+    }
+
+
+def _depth_identity_preservation_rows(
+    scratchpad: Path,
+    state: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if state.get("status") == "ABSENT":
+        return []
+    root = Path(scratchpad)
+    bindings = state.get("bindings") if isinstance(state.get("bindings"), Mapping) else {}
+    rows: list[dict[str, Any]] = []
+    if state.get("status") == "CURRENT":
+        # The authenticated producer denominator is authoritative for what
+        # must be preserved. Do not silently narrow it through a second parser.
+        for (_source, _fid), binding in sorted(
+            bindings.items(), key=lambda pair: (pair[0][0], pair[0][1])
+        ):
+            if not isinstance(binding, Mapping):
+                continue
+            candidate_ref = dict(binding["candidate_ref"])
+            observation_digest = str(
+                candidate_ref.get("observation_digest") or ""
+            )
+            rows.append({
+                "authority_binding": {
+                    "confidence_authority_sha256": str(
+                        state.get("authority_sha256") or ""
+                    ),
+                    "observation_digest": observation_digest,
+                    "status": "AUTHENTICATED_UNBOUND",
+                },
+                "candidate_ref": candidate_ref,
+                "disposition": "RETAIN_PENDING_IDENTITY_RECONCILIATION",
+                "identity_authority": "NONE",
+                "identity_debt_id": str(binding.get("debt_id") or ""),
+                "identity_status": str(
+                    binding.get("identity_status") or "UNBOUND"
+                ),
+                "negative_or_drop_authority": False,
+                "preservation_required": True,
+                "proof_authority": "NONE",
+                "upstream_anchor_binding": dict(
+                    binding.get("upstream_anchor_binding") or {}
+                ),
+            })
+        return rows
+
+    seen: set[tuple[str, str]] = set()
+    for pattern in _DEPTH_PROMOTION_FILES:
+        for source_path in sorted(root.glob(pattern)):
+            for item in _parse_depth_finding_blocks(source_path):
+                key = (source_path.name, str(item.get("id") or "").upper())
+                if not key[1] or key in seen:
+                    continue
+                seen.add(key)
+                # Authority integrity failed. Preserve the current source
+                # candidate without claiming block-level identity.
+                try:
+                    source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
+                except OSError:
+                    source_sha = ""
+                candidate_ref = {
+                    "claim_block_sha256": None,
+                    "finding_id": key[1],
+                    "observation_digest": None,
+                    "source_artifact": source_path.name,
+                    "source_artifact_sha256": source_sha,
+                    "source_byte_end": None,
+                    "source_byte_start": None,
+                }
+                debt_id = ""
+                identity_status = "AUTHORITY_DEGRADED"
+                authority_status = "DEGRADED_UNBOUND"
+                observation_digest = None
+                rows.append({
+                    "authority_binding": {
+                        "confidence_authority_sha256": str(
+                            state.get("authority_sha256") or ""
+                        ),
+                        "observation_digest": observation_digest,
+                        "status": authority_status,
+                    },
+                    "candidate_ref": candidate_ref,
+                    "disposition": "RETAIN_PENDING_IDENTITY_RECONCILIATION",
+                    "identity_authority": "NONE",
+                    "identity_debt_id": debt_id,
+                    "identity_status": identity_status,
+                    "negative_or_drop_authority": False,
+                    "preservation_required": True,
+                    "proof_authority": "NONE",
+                    "upstream_anchor_binding": {
+                        "anchors": [],
+                        "inventory_projection_sha256": "",
+                        "inventory_source_artifact": "",
+                        "inventory_authority_issues": list(
+                            state.get("issues", [])
+                        ),
+                        "match_counts": {},
+                        "matched_block_sha256": {},
+                        "status": "AUTHORITY_DEGRADED",
+                    },
+                })
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row["candidate_ref"]["source_artifact"]),
+            str(row["candidate_ref"]["finding_id"]).upper(),
+            str(row["candidate_ref"].get("observation_digest") or ""),
+        ),
+    )
+
+
+def _depth_identity_preservation_payload(
+    scratchpad: Path,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    rows = _depth_identity_preservation_rows(scratchpad, state)
+    unsigned: dict[str, Any] = {
+        "authority": "NONE_HUMAN_REVIEW_ONLY",
+        "authority_issues": sorted(set(str(x) for x in state.get("issues", []))),
+        "identity_authority": "NONE",
+        "proof_authority": "NONE",
+        "report_authoritative": False,
+        "row_count": len(rows),
+        "rows": rows,
+        "schema_version": _DEPTH_IDENTITY_PRESERVATION_SCHEMA,
+        "source_authority_status": str(state.get("status") or "ABSENT"),
+    }
+    payload = dict(unsigned)
+    payload["receipt_digest"] = hashlib.sha256(
+        _canonical_validator_json_bytes(unsigned)
+    ).hexdigest()
+    return payload
+
+
+def _write_depth_identity_preservation_debt(
+    scratchpad: Path,
+    state: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if state.get("status") == "ABSENT":
+        return None
+    payload = _depth_identity_preservation_payload(scratchpad, state)
+    _atomic_validator_bytes(
+        Path(scratchpad) / _DEPTH_IDENTITY_PRESERVATION_FILE,
+        _canonical_validator_json_bytes(payload),
+    )
+    return payload
+
+
+def _validate_depth_identity_preservation_debt(
+    scratchpad: Path,
+    state: Mapping[str, Any],
+) -> tuple[set[tuple[str, str]], list[str]]:
+    if state.get("status") == "ABSENT":
+        return set(), []
+    expected = _depth_identity_preservation_payload(scratchpad, state)
+    path = Path(scratchpad) / _DEPTH_IDENTITY_PRESERVATION_FILE
+    try:
+        raw = path.read_bytes()
+        observed = json.loads(raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        return set(), [
+            "depth identity preservation debt is missing/unreadable: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    if (
+        observed != expected
+        or raw != _canonical_validator_json_bytes(expected)
+    ):
+        return set(), [
+            "depth identity preservation debt is stale, tampered, or non-canonical"
+        ]
+    keys = {
+        (
+            str(row["candidate_ref"]["source_artifact"]),
+            str(row["candidate_ref"]["finding_id"]).upper(),
+        )
+        for row in expected["rows"]
+    }
+    return keys, []
+
+
 def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float = 0.70) -> list[str]:
     """Append high-confidence depth-only findings to findings_inventory.md.
 
@@ -3392,15 +7030,141 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
     if not inv.exists():
         return []
     try:
-        inv_text = inv.read_text(encoding="utf-8", errors="replace")
+        inv_raw = inv.read_bytes()
+        inv_text = inv_raw.decode("utf-8", errors="replace")
     except Exception:
         return []
-    existing_ids = set(re.findall(r"\b" + _PROMOTABLE_FEEDER_ID_PATTERN + r"\b", inv_text))
+    delivery_scan = _scan_registered_finding_delivery_sources(scratchpad)
+    review_only_action_keys = {
+        (
+            str(row.get("source_file") or ""),
+            str(row.get("action_id") or "").upper(),
+        )
+        for row in delivery_scan.get("actions") or []
+        if row.get("disposition") == "HUMAN_REVIEW"
+    }
+    typed_bound_lineages = {
+        (
+            str(row.get("lineage_source_file") or ""),
+            "sha256:" + str(row.get("lineage_artifact_sha256") or ""),
+        )
+        for row in delivery_scan.get("actions") or []
+        if row.get("producer_key") == "exploration_clear_additive"
+    }
+    deferred_ids: set[str] = set()
+    # Promotion is invoked at more than one downstream boundary. Preserve the
+    # cumulative receipt of promotions that are still visibly present in the
+    # inventory; otherwise a later duplicate-only invocation rewrites
+    # ``Promoted N`` to zero and destroys the successful first pass's lineage.
+    prior_promoted_ids: list[str] = []
+    prior_receipt = scratchpad / "depth_promotion_receipt.md"
+    if prior_receipt.exists():
+        try:
+            prior_text = prior_receipt.read_text(
+                encoding="utf-8", errors="replace"
+            )
+            promoted_section = re.search(
+                r"(?is)^##\s+Promoted\b(.*?)(?=^##\s+|\Z)",
+                prior_text,
+                re.MULTILINE,
+            )
+            if promoted_section:
+                prior_promoted_ids = [
+                    fid.upper()
+                    for fid in re.findall(
+                        r"(?m)^\s*[-*]\s*`?("
+                        + _PROMOTABLE_FEEDER_ID_PATTERN
+                        + r")`?",
+                        promoted_section.group(1),
+                        re.IGNORECASE,
+                    )
+                ]
+        except Exception:
+            prior_promoted_ids = []
+    # The inventory supplement is the authoritative recovery source when a
+    # legacy/retried run has already overwritten its receipt. The promoter
+    # writes the promoted finding itself as the FIRST Source ID in each block;
+    # referenced parent IDs follow it and are intentionally not counted.
+    promotion_section = re.search(
+        r"(?is)^##\s+Depth Promotion Supplement\b(.*?)(?=^##\s+|\Z)",
+        inv_text,
+        re.MULTILINE,
+    )
+    if promotion_section:
+        section_body = promotion_section.group(1)
+        block_starts = list(FINDING_BLOCK_HEADING_RE.finditer(section_body))
+        for index, heading in enumerate(block_starts):
+            end = (
+                block_starts[index + 1].start()
+                if index + 1 < len(block_starts)
+                else len(section_body)
+            )
+            block = section_body[heading.start():end]
+            source_line = _field_from_markdown(block, ("Source IDs", "Source ID"))
+            source_ids = re.findall(
+                r"\b" + _PROMOTABLE_FEEDER_ID_PATTERN + r"\b",
+                source_line,
+                re.IGNORECASE,
+            )
+            if source_ids:
+                own_id = source_ids[0].upper()
+                if own_id not in prior_promoted_ids:
+                    prior_promoted_ids.append(own_id)
+    structural_referents = _inventory_structural_source_referents(inv_text)
+    structural_action_referents = _inventory_structural_source_action_referents(
+        inv_text
+    )
+    existing_ids = set(structural_referents)
+    source_local_id_counts: dict[str, int] = {}
+    for source_action in delivery_scan.get("actions") or []:
+        source_id = str(source_action.get("action_id") or "").upper()
+        source_local_id_counts[source_id] = (
+            source_local_id_counts.get(source_id, 0) + 1
+        )
+    seen_action_keys: set[tuple[str, str]] = set()
     next_n = max(
         (int(x) for x in re.findall(r"###\s+Finding\s+\[INV-(\d+)\]", inv_text)),
         default=0,
     ) + 1
     scores = _parse_depth_confidence_scores(scratchpad)
+    identity_preservation_state = _confidence_identity_preservation_state(
+        scratchpad
+    )
+    identity_preservation_payload = _write_depth_identity_preservation_debt(
+        scratchpad, identity_preservation_state
+    )
+    identity_preservation_keys = {
+        (
+            str(row["candidate_ref"]["source_artifact"]),
+            str(row["candidate_ref"]["finding_id"]).upper(),
+        )
+        for row in (
+            identity_preservation_payload.get("rows", [])
+            if isinstance(identity_preservation_payload, Mapping)
+            else []
+        )
+    }
+
+    # UPGRADE is an amendment candidate, never an instruction for this bridge
+    # to mutate the target.  Its provisional severity is floored at the target
+    # severity so malformed/understated producer prose cannot make the bridge
+    # perform the downgrade this additive phase is forbidden to perform.
+    target_severity: dict[str, str] = {}
+    inv_heads = list(FINDING_BLOCK_HEADING_RE.finditer(inv_text))
+    for idx_h, heading in enumerate(inv_heads):
+        end_h = inv_heads[idx_h + 1].start() if idx_h + 1 < len(inv_heads) else len(inv_text)
+        block_h = inv_text[heading.start():end_h]
+        severity_h = _field_from_markdown(block_h, ("Severity", "Final Severity"))
+        if severity_h:
+            target_severity[heading.group(1).strip().upper()] = normalize_severity(severity_h)
+        source_h = _field_from_markdown(block_h, ("Source IDs", "Source ID"))
+        for source_id_h in re.findall(
+            r"\b" + _PROMOTABLE_FEEDER_ID_PATTERN + r"\b",
+            source_h,
+            re.IGNORECASE,
+        ):
+            if severity_h:
+                target_severity[source_id_h.upper()] = normalize_severity(severity_h)
 
     # Build location index from existing inventory for conservative dedup.
     # Fires on EITHER high title overlap (≥0.80) OR location overlap
@@ -3420,32 +7184,68 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
             _existing_by_file.setdefault(_efile, []).append((_etitle, _elines))
 
     candidates: list[dict[str, str]] = []
-    dedup_skipped: list[tuple[str, str, str, float]] = []
+    similarity_tagged: list[tuple[str, str, str, float]] = []
     for pat in _DEPTH_PROMOTION_FILES:
         for p in sorted(scratchpad.glob(pat)):
             for item in _parse_depth_finding_blocks(p):
                 fid = item["id"]
-                if fid in existing_ids:
+                action_key = (p.name, fid.upper())
+                if action_key in identity_preservation_keys:
+                    # Identity-unbound observations remain visible as typed
+                    # reconciliation debt. They bypass confidence/drop filters,
+                    # but are never appended as a fabricated canonical finding.
+                    deferred_ids.add(fid.upper())
+                    seen_action_keys.add(action_key)
+                    continue
+                if (
+                    fid.upper().startswith("SKEP-LEGACY-")
+                    and (p.name, _registered_artifact_sha256(p)) in typed_bound_lineages
+                ):
+                    continue
+                if action_key in review_only_action_keys:
+                    continue
+                if action_key in seen_action_keys or action_key in structural_action_referents:
+                    continue
+                if (
+                    fid in existing_ids
+                    and source_local_id_counts.get(fid.upper(), 0) <= 1
+                ):
                     continue
                 score = scores.get(fid)
                 status = _verifier_status_from_text(f"**Verdict**: {item.get('verdict', '')}") if item.get("verdict") else ""
                 if status and not _is_reportable_verdict(status):
                     continue
                 if status != "CONFIRMED" and score is not None and score < min_confidence:
+                    producer = _REGISTERED_PRODUCERS_BY_KEY.get(
+                        str(item.get("_producer_key") or "")
+                    )
+                    # Typed exploration/fuzz/recovery producers promise
+                    # verification delivery independent of an optional depth
+                    # confidence score.  Legacy plain FINDING channels retain
+                    # their established threshold and become visible debt.
+                    if producer is None or producer.action_contract == "FINDING":
+                        deferred_ids.add(fid.upper())
+                        continue
+                if item.get("_content_bearing") == "false":
+                    deferred_ids.add(fid.upper())
                     continue
+                action_kind = str(item.get("action_kind") or "").upper()
+                target_id = str(item.get("target_id") or "").upper()
+                if action_kind == "UPGRADE" and target_id in target_severity:
+                    claimed = normalize_severity(str(item.get("severity") or "Medium"))
+                    floor = target_severity[target_id]
+                    if severity_rank(floor) > severity_rank(claimed):
+                        item["severity"] = floor
                 # Tag likely duplicates: same file + (high title overlap OR
                 # location overlap).  Never blocks promotion — tags the
                 # finding so the LLM can make the semantic merge decision.
                 cand_loc = _norm_loc(item.get("location", ""))
                 cand_file = re.sub(r":L?\d+.*$", "", cand_loc)
                 cand_lines = _parse_line_range(cand_loc)
-                # v2.4.8: high-confidence duplicates are BLOCKED from promotion.
-                # Block when title overlap >= 0.90 (near-identical titles), OR
-                # when title overlap >= 0.50 AND location overlaps (same bug,
-                # slightly different phrasing). Low-title-overlap + location-overlap
-                # is tagged but promoted (different bug at same site).
-                # 0.80-0.89 title overlap without location match is tagged only.
-                _blocked = False
+                # Pre-verification similarity is a routing hint, never an
+                # identity proof.  Even an identical title at an overlapping
+                # location can be a sibling mechanism; tag it for the semantic
+                # dedup/verifier stages but always promote it.
                 if cand_file and cand_file in _existing_by_file:
                     for _et, _elines in _existing_by_file[cand_file]:
                         _overlap = _titles_overlap_score(item["title"], _et)
@@ -3454,32 +7254,30 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
                             and _elines is not None
                             and _line_ranges_overlap(cand_lines, _elines)
                         )
-                        if _overlap >= 0.90 or (_loc_match and _overlap >= 0.50):
-                            _reason = "location overlap" if _loc_match else f"score={_overlap:.2f}"
-                            item["_dup_tag"] = f"[LIKELY-DUP of \"{_et[:60]}\" {_reason}]"
-                            dedup_skipped.append((fid, item["title"], _et, _overlap))
-                            _blocked = True
-                            break
                         if _overlap >= 0.80 or _loc_match:
                             _reason = "location overlap" if _loc_match else f"score={_overlap:.2f}"
                             item["_dup_tag"] = f"[LIKELY-DUP of \"{_et[:60]}\" {_reason}]"
-                            dedup_skipped.append((fid, item["title"], _et, _overlap))
+                            similarity_tagged.append((fid, item["title"], _et, _overlap))
                             break
-                if _blocked:
-                    existing_ids.add(fid)
-                    continue
                 item["confidence"] = f"{score:.2f}" if score is not None else "n/a"
                 candidates.append(item)
-                existing_ids.add(fid)
+                seen_action_keys.add(action_key)
                 # Register this candidate so later candidates dedup against it too
                 if cand_file:
                     _existing_by_file.setdefault(cand_file, []).append(
                         (item["title"], cand_lines)
                     )
-    if not candidates and not dedup_skipped:
+    # A recovered promotion supplement is authoritative even when a stale
+    # receipt says zero.  Fall through so the receipt self-heals on an
+    # otherwise idempotent rerun.
+    if not candidates and not similarity_tagged and not prior_promoted_ids:
+        _write_registered_finding_delivery_receipt(
+            scratchpad, delivery_scan, inv_text, deferred_ids=deferred_ids
+        )
         return []
 
     promoted_ids: list[str] = []
+    inventory_text_after = inv_text
     if candidates:
         additions = [
             "",
@@ -3521,26 +7319,50 @@ def _promote_depth_findings_to_inventory(scratchpad: Path, min_confidence: float
                 *optional_lines,
                 "",
             ])
-        inv.write_text(inv_text.rstrip() + "\n" + "\n".join(additions), encoding="utf-8")
+        separator = "" if inv_text.endswith(("\n", "\r")) else "\n"
+        addition_text = separator + "\n".join(additions)
+        inventory_text_after = inv_text + addition_text
+        # Preserve the exact historical byte prefix.  The enclosing semantic
+        # transaction can therefore prove this write was truly additive rather
+        # than trusting its FINDING_PROMOTION label.
+        inv.write_bytes(inv_raw + addition_text.encode("utf-8"))
 
-    # Always write receipt so the validator can see blocked/tagged IDs
-    # even when no candidates survive dedup (fixes all-blocked-no-receipt halt).
+    cumulative_promoted_ids: list[str] = []
+    for fid in prior_promoted_ids + promoted_ids:
+        if fid in cumulative_promoted_ids:
+            continue
+        # A receipt is not allowed to outlive its inventory referent. This
+        # retains genuine prior promotions across idempotent reruns without
+        # letting stale receipts mask a later inventory-loss regression.
+        if fid in _inventory_structural_source_referents(inventory_text_after):
+            cumulative_promoted_ids.append(fid)
+
+    # Always write a cumulative receipt. Similarity hints are diagnostic only;
+    # every corresponding ID must also remain in the Promoted section.
     receipt_lines = [
         "# Depth Promotion Receipt\n",
-        f"Promoted {len(promoted_ids)} depth finding(s) into findings_inventory.md.\n",
+        f"Promoted {len(cumulative_promoted_ids)} depth finding(s) into findings_inventory.md.\n",
     ]
-    if promoted_ids:
+    if cumulative_promoted_ids:
         receipt_lines.append("## Promoted\n")
-        receipt_lines.extend(f"- `{fid}`\n" for fid in promoted_ids)
-    if dedup_skipped:
+        receipt_lines.extend(
+            f"- `{fid}`\n" for fid in cumulative_promoted_ids
+        )
+    if similarity_tagged:
         receipt_lines.append("\n## Likely Duplicates\n")
-        for _dfid, _dtitle, _matched, _dscore in dedup_skipped:
+        for _dfid, _dtitle, _matched, _dscore in similarity_tagged:
             receipt_lines.append(
                 f"- `{_dfid}` — \"{_dtitle[:60]}\" matched existing "
                 f"\"{_matched[:60]}\" (score={_dscore:.2f})\n"
             )
     (scratchpad / "depth_promotion_receipt.md").write_text(
         "\n".join(receipt_lines), encoding="utf-8",
+    )
+    _write_registered_finding_delivery_receipt(
+        scratchpad,
+        delivery_scan,
+        inventory_text_after,
+        deferred_ids=deferred_ids,
     )
     return promoted_ids
 
@@ -3996,8 +7818,31 @@ def _rewrite_niche_required_table(text: str, required: set[str]) -> str:
     return "\n".join(new_lines) + ("\n" if text.endswith("\n") else "")
 
 
+def _required_niche_manifest_union(scratchpad: Path) -> set[str]:
+    """Return the side-effect-free upstream-positive niche denominator.
+
+    Canonical reconciliation belongs to instantiate's deterministic successor.
+    Later validators and depth scheduling may inspect this set but must not
+    rewrite recon or model artifacts.
+    """
+
+    root = Path(scratchpad)
+    try:
+        template_text = (root / "template_recommendations.md").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        template_text = ""
+    return (
+        _niche_tokens_from_required_table(template_text)
+        | _niche_tokens_from_binding_rules(template_text)
+        | _flag_derived_required_niches(root)
+        | _signal_declared_required_niches(root)
+    )
+
+
 def _validate_niche_manifest_consistency(
-    scratchpad: Path, mode: str
+    scratchpad: Path, mode: str, *, repair: bool = True
 ) -> list[str]:
     """Gate 1: reconcile the three niche representations and repair to the
     recall-safe union; fail-loud only when repair is impossible.
@@ -4049,10 +7894,19 @@ def _validate_niche_manifest_consistency(
     if not union:
         # Nothing is required by any source: a niche-free audit is valid.
         return []
-    if set_c == union:
+    # A valid model proposal may add a niche that recon did not select.  The
+    # recall-safe invariant is that every upstream-positive niche survives,
+    # not that the downstream set is byte-for-byte equal to the upstream set.
+    # Catalog/schema validation separately rejects invented or unroutable rows.
+    if union.issubset(set_c):
         return []
 
     dropped = union - set_c
+    if not repair:
+        return [
+            "spawn_manifest.md omits upstream-required niche(s): "
+            + ", ".join(sorted(dropped))
+        ]
     issues: list[str] = []
     repaired_any = False
 
@@ -4350,35 +8204,48 @@ def _validate_depth_promotion_receipt(scratchpad: Path, min_confidence: float = 
     if not inv.exists():
         return []
     inv_text = inv.read_text(encoding="utf-8", errors="replace")
+    structural_referents = _inventory_structural_source_referents(inv_text)
+    structural_action_referents = _inventory_structural_source_action_referents(
+        inv_text
+    )
+    delivery_scan = _scan_registered_finding_delivery_sources(scratchpad)
+    typed_bound_lineages = {
+        (
+            str(row.get("lineage_source_file") or ""),
+            "sha256:" + str(row.get("lineage_artifact_sha256") or ""),
+        )
+        for row in delivery_scan.get("actions") or []
+        if row.get("producer_key") == "exploration_clear_additive"
+    }
+    local_id_counts: dict[str, int] = {}
+    for source_action in delivery_scan.get("actions") or []:
+        source_id = str(source_action.get("action_id") or "").upper()
+        local_id_counts[source_id] = local_id_counts.get(source_id, 0) + 1
     scores = _parse_depth_confidence_scores(scratchpad)
-
-    # v2.4.9: read the promotion receipt to identify findings intentionally
-    # blocked as high-confidence duplicates. These should not be flagged as
-    # missing — the promoter already decided they overlap an existing entry.
-    blocked_ids: set[str] = set()
-    receipt = scratchpad / "depth_promotion_receipt.md"
-    if receipt.exists():
-        try:
-            receipt_text = receipt.read_text(encoding="utf-8", errors="replace")
-            # Extract only the "Likely Duplicates" section — these were
-            # intentionally blocked or tagged. Promoted IDs are NOT included
-            # (they should be in inventory; if removed later that's a real gap).
-            dup_sec = receipt_text.split("## Likely Duplicates")
-            if len(dup_sec) > 1:
-                dup_body = dup_sec[1].split("\n## ")[0]
-                for m in re.finditer(
-                    r"- `(" + _PROMOTABLE_FEEDER_ID_PATTERN + r")`", dup_body
-                ):
-                    blocked_ids.add(m.group(1))
-        except Exception:
-            pass
+    identity_preservation_state = _confidence_identity_preservation_state(
+        scratchpad
+    )
+    preserved_identity_keys, identity_preservation_issues = (
+        _validate_depth_identity_preservation_debt(
+            scratchpad, identity_preservation_state
+        )
+    )
 
     missing: list[str] = []
     for pat in _DEPTH_PROMOTION_FILES:
         for p in sorted(scratchpad.glob(pat)):
             for item in _parse_depth_finding_blocks(p):
                 fid = item["id"]
-                if fid in blocked_ids:
+                if (p.name, fid.upper()) in preserved_identity_keys:
+                    # Typed reconciliation debt is the completeness sink. It
+                    # grants neither inventory identity nor proof.
+                    continue
+                if (
+                    fid.upper().startswith("SKEP-LEGACY-")
+                    and (p.name, _registered_artifact_sha256(p)) in typed_bound_lineages
+                ):
+                    continue
+                if item.get("_content_bearing") == "false":
                     continue
                 score = scores.get(fid)
                 status = _verifier_status_from_text(f"**Verdict**: {item.get('verdict', '')}") if item.get("verdict") else ""
@@ -4386,17 +8253,576 @@ def _validate_depth_promotion_receipt(scratchpad: Path, min_confidence: float = 
                     continue
                 if status != "CONFIRMED" and score is not None and score < min_confidence:
                     continue
-                # Closes F-PROM-01: word-boundary match. Plain substring
-                # match false-passed `DCI-1` whenever `DCI-12` was already
-                # present in inventory, hiding genuinely-missing promotions.
-                if not re.search(rf"\b{re.escape(fid)}\b", inv_text):
-                    missing.append(fid)
+                # Identity is carried only by Source IDs inside an actual
+                # finding block. A description that mentions this ID is not a
+                # promotion referent and must not satisfy completeness.
+                exact = (p.name, fid.upper()) in structural_action_referents
+                legacy = (
+                    fid.upper() in structural_referents
+                    and local_id_counts.get(fid.upper(), 0) <= 1
+                )
+                if not exact and not legacy:
+                    missing.append(f"{p.name}:{fid}")
+    issues = list(identity_preservation_issues)
     if missing:
-        return [
+        issues.append(
             "depth promotion receipt: high-confidence depth findings missing "
             "from findings_inventory.md: " + ", ".join(sorted(set(missing))[:12])
+        )
+    return issues
+
+
+def _validated_preverify_delivery_successor(
+    scratchpad: Path,
+    *,
+    delivery_scan: Mapping[str, object],
+    expected_consumer_work_unit_key: str = "",
+    expected_run_id: str = "",
+) -> tuple[bool, list[str], dict[str, object] | None]:
+    """Validate the queue-era successor, including its PhaseIO ownership."""
+
+    root = Path(scratchpad)
+    final_path = root / PREVERIFY_INVENTORY_SUCCESSOR_NAME
+    delivery_path = root / PREVERIFY_DELIVERY_SUCCESSOR_NAME
+    present = final_path.exists() or delivery_path.exists()
+    if not present:
+        return False, [], None
+    if not final_path.is_file() or not delivery_path.is_file():
+        return (
+            True,
+            [
+                "preverify registered-delivery successor generation is "
+                "incomplete"
+            ],
+            None,
+        )
+    try:
+        final_payload = json.loads(
+            final_path.read_text(encoding="utf-8", errors="strict")
+        )
+        delivery_payload = json.loads(
+            delivery_path.read_text(encoding="utf-8", errors="strict")
+        )
+        run_id = str(final_payload.get("run_id") or "")
+        runtime_authority_required = bool(
+            expected_consumer_work_unit_key or expected_run_id
+        )
+        if runtime_authority_required and not (
+            expected_consumer_work_unit_key and expected_run_id
+        ):
+            raise ValueError(
+                "preverify successor runtime authority is partially specified"
+            )
+        if runtime_authority_required and run_id != expected_run_id:
+            raise ValueError(
+                "preverify successor run differs from the current queue run"
+            )
+        validate_preverify_successor_payloads(
+            root,
+            final_payload=final_payload,
+            delivery_payload=delivery_payload,
+            run_id=run_id,
+            validate_current_sources=False,
+        )
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        AttributeError,
+        ValueError,
+        PreverifyInventorySuccessorError,
+    ) as exc:
+        return (
+            True,
+            [
+                "preverify registered-delivery successor is invalid: "
+                f"{type(exc).__name__}: {exc}"
+            ],
+            None,
+        )
+    try:
+        ledger = read_artifact_ledger(root)
+        bindings = ledger.get("artifact_bindings", {})
+        identities = (
+            f"scratchpad:{PREVERIFY_INVENTORY_SUCCESSOR_NAME}",
+            f"scratchpad:{PREVERIFY_DELIVERY_SUCCESSOR_NAME}",
+        )
+        rows = [bindings.get(identity) for identity in identities]
+        if any(
+            not isinstance(row, Mapping)
+            or row.get("status") != "ACTIVE"
+            for row in rows
+        ):
+            raise ValueError("successor output binding is not ACTIVE")
+        owner_keys = {str(row.get("owner_key") or "") for row in rows}
+        if len(owner_keys) != 1:
+            raise ValueError("successor outputs do not share one owner")
+        owner_key = next(iter(owner_keys))
+        expected_owner_key = ""
+        expected_capture_prefix = ""
+        expected_routing_consumer = ""
+        expected_successor_consumer = ""
+        if runtime_authority_required:
+            consumer_parts = expected_consumer_work_unit_key.split("/")
+            if (
+                len(consumer_parts) != 6
+                or consumer_parts[-1] != "routing"
+            ):
+                raise ValueError(
+                    "current queue consumer work-unit identity is malformed"
+                )
+            expected_owner_key = "/".join(
+                (*consumer_parts[:-1], "preverify_successors")
+            )
+            expected_capture_prefix = "/".join(
+                (*consumer_parts[:-1], "preverify_capture.")
+            )
+            expected_routing_consumer = "/".join(consumer_parts[-2:])
+            expected_successor_consumer = (
+                f"{consumer_parts[-2]}/preverify_successors"
+            )
+        unit = ledger.get("work_units", {}).get(owner_key)
+        if (
+            not owner_key.endswith("/preverify_successors")
+            or not isinstance(unit, Mapping)
+            or unit.get("run_id") != run_id
+            or unit.get("execution_state") != "OUTPUT_COMMITTED"
+            or unit.get("semantic_status") != "ACTIVE"
+            or set(unit.get("artifacts") or {}) != set(identities)
+        ):
+            raise ValueError("successor PhaseIO work unit is not committed")
+        if runtime_authority_required:
+            if owner_key != expected_owner_key:
+                raise ValueError(
+                    "successor PhaseIO owner differs from the current "
+                    "pipeline/mode/ecosystem/backend/phase authority"
+                )
+            manifest = unit.get("contract_manifest")
+            outputs = (
+                manifest.get("outputs")
+                if isinstance(manifest, Mapping)
+                else None
+            )
+            output_rows = {
+                str(row.get("identity") or ""): row
+                for row in outputs or ()
+                if isinstance(row, Mapping)
+            }
+            if (
+                not isinstance(manifest, Mapping)
+                or manifest.get("key") != expected_owner_key
+                or set(output_rows) != set(identities)
+                or any(
+                    row.get("owner_key") != expected_owner_key
+                    or expected_routing_consumer
+                    not in set(row.get("consumers") or ())
+                    for row in output_rows.values()
+                )
+            ):
+                raise ValueError(
+                    "successor PhaseIO contract does not authorize the "
+                    "current typed queue consumer"
+                )
+        for path, identity, row in zip(
+            (final_path, delivery_path), identities, rows
+        ):
+            raw = path.read_bytes()
+            if (
+                row.get("sha256") != hashlib.sha256(raw).hexdigest()
+                or row.get("size") != len(raw)
+                or unit["artifacts"][identity].get("sha256")
+                != row.get("sha256")
+            ):
+                raise ValueError("successor output bytes differ from PhaseIO")
+        input_bindings = unit.get("input_bindings")
+        if not isinstance(input_bindings, Mapping) or len(input_bindings) != 1:
+            raise ValueError(
+                "successor PhaseIO generation denominator is not singular"
+            )
+        generation_identity, generation_binding = next(
+            iter(input_bindings.items())
+        )
+        generation_prefix = (
+            "scratchpad:_preverify_successors/generation_"
+        )
+        if (
+            not str(generation_identity).startswith(generation_prefix)
+            or not str(generation_identity).endswith(".json")
+            or not isinstance(generation_binding, Mapping)
+            or generation_binding.get("status") != "ACTIVE"
+        ):
+            raise ValueError(
+                "successor PhaseIO generation input is not ACTIVE"
+            )
+        generation_name = str(generation_identity).removeprefix(
+            "scratchpad:"
+        )
+        generation_path = root / generation_name
+        generation_raw = generation_path.read_bytes()
+        if (
+            generation_binding.get("sha256")
+            != hashlib.sha256(generation_raw).hexdigest()
+            or generation_binding.get("size") != len(generation_raw)
+        ):
+            raise ValueError(
+                "successor PhaseIO generation bytes are stale"
+            )
+        generation_payload = json.loads(
+            generation_raw.decode("utf-8", errors="strict")
+        )
+        validate_successor_generation_payload(
+            root,
+            payload=generation_payload,
+            artifact_name=generation_name,
+        )
+        if (
+            generation_payload.get("final_payload") != final_payload
+            or generation_payload.get("delivery_payload") != delivery_payload
+        ):
+            raise ValueError(
+                "stable successor projections differ from their generation"
+            )
+        capture_plan = generation_payload.get("capture_plan")
+        source_projection = (
+            capture_plan.get("source_projection")
+            if isinstance(capture_plan, Mapping)
+            else None
+        )
+        if runtime_authority_required and not isinstance(
+            source_projection, Mapping
+        ):
+            raise ValueError(
+                "current queue successor lacks an explicit frozen source "
+                "projection"
+            )
+        inventory_source = (
+            str(source_projection.get("inventory") or "")
+            if isinstance(source_projection, Mapping)
+            else "findings_inventory.md"
+        )
+        inventory_source_path = PurePosixPath(inventory_source)
+        if (
+            not inventory_source
+            or "\\" in inventory_source
+            or inventory_source_path.is_absolute()
+            or inventory_source != inventory_source_path.as_posix()
+            or any(
+                part in {"", ".", ".."}
+                for part in inventory_source_path.parts
+            )
+        ):
+            raise ValueError(
+                "successor capture inventory source is not a canonical "
+                "relative POSIX path"
+            )
+        inventory_text = root.joinpath(
+            *inventory_source_path.parts
+        ).read_text(encoding="utf-8", errors="strict")
+        expected_delivery = (
+            _build_registered_finding_delivery_receipt_payload(
+                root,
+                dict(delivery_scan),
+                inventory_text,
+                inventory_source_artifact=inventory_source,
+            )
+        )
+        if delivery_payload.get("delivery_payload") != expected_delivery:
+            raise ValueError(
+                "preverify registered-delivery successor differs from "
+                "recomputed source/action authority"
+            )
+        if runtime_authority_required:
+            capture_owner = str(
+                generation_binding.get("producer_work_unit_key") or ""
+            )
+        else:
+            capture_owner = str(
+                generation_binding.get("producer_work_unit_key")
+                or generation_binding.get("owner_key")
+                or ""
+            )
+        # Input bindings name producers with ``producer_work_unit_key``;
+        # tolerate ``owner_key`` only for older ledger projections.
+        capture_unit = ledger.get("work_units", {}).get(capture_owner)
+        if (
+            "/preverify_capture." not in capture_owner
+            or not isinstance(capture_unit, Mapping)
+            or capture_unit.get("run_id") != run_id
+            or capture_unit.get("execution_state") != "OUTPUT_COMMITTED"
+            or capture_unit.get("semantic_status") != "ACTIVE"
+            or set(capture_unit.get("artifacts") or {})
+            != {generation_identity}
+        ):
+            raise ValueError(
+                "content-addressed successor capture is not ledger committed"
+            )
+        if runtime_authority_required:
+            capture_manifest = capture_unit.get("contract_manifest")
+            capture_outputs = (
+                capture_manifest.get("outputs")
+                if isinstance(capture_manifest, Mapping)
+                else None
+            )
+            capture_rows = [
+                row
+                for row in capture_outputs or ()
+                if isinstance(row, Mapping)
+            ]
+            if (
+                not capture_owner.startswith(expected_capture_prefix)
+                or capture_unit.get("run_id") != expected_run_id
+                or not isinstance(capture_manifest, Mapping)
+                or capture_manifest.get("key") != capture_owner
+                or len(capture_rows) != 1
+                or capture_rows[0].get("identity")
+                != generation_identity
+                or capture_rows[0].get("owner_key") != capture_owner
+                or expected_successor_consumer
+                not in set(capture_rows[0].get("consumers") or ())
+            ):
+                raise ValueError(
+                    "content-addressed capture differs from the current typed "
+                    "pipeline/mode/ecosystem/backend/phase/run authority"
+                )
+    except (OSError, UnicodeError, ValueError) as exc:
+        return (
+            True,
+            [
+                "preverify registered-delivery successor lacks current ledger "
+                f"authority: {exc}"
+            ],
+            None,
+        )
+    return True, [], {
+        "expected_delivery": expected_delivery,
+        "inventory_source_artifact": inventory_source,
+        "inventory_text": inventory_text,
+        "run_id": run_id,
+        "owner_key": owner_key,
+        "capture_owner_key": capture_owner,
+    }
+
+
+def _authoritative_postcutover_inventory(
+    scratchpad: Path,
+) -> tuple[str, str, list[str]]:
+    """Return the exact inventory text selected by the current queue boundary.
+
+    Before a successor exists, the canonical inventory remains the producer
+    input and is returned for compatibility with pre-queue validators.  Once
+    either stable successor projection exists, downstream consumers may read
+    inventory metadata only from the authenticated capture generation.  A
+    partial, stale, legacy-canonical, or otherwise unauthenticated successor
+    yields explicit debt instead of silently falling back to root Markdown.
+    """
+
+    root = Path(scratchpad)
+    if not successor_projection_present(root):
+        canonical = root / "findings_inventory.md"
+        try:
+            return (
+                canonical.read_text(encoding="utf-8", errors="strict"),
+                "findings_inventory.md",
+                [],
+            )
+        except (OSError, UnicodeError) as exc:
+            # Preserve legacy/no-successor behavior.  Queue/verifier artifacts
+            # remain the operative denominator and callers simply have no
+            # depth metadata to enrich it with.
+            return (
+                "",
+                "findings_inventory.md",
+                [],
+            )
+
+    try:
+        authority = resolve_active_preverify_projection(root)
+    except PreverifyProjectionAuthorityError as exc:
+        return "", "", [
+            "preverify successor has no authenticated downstream inventory "
+            f"authority: {exc}"
         ]
-    return []
+    source = str(authority.get("inventory_source_artifact") or "")
+    text = authority.get("inventory_text")
+    if not source or not isinstance(text, str):
+        return (
+            "",
+            source,
+            [
+                "preverify successor inventory projection is absent or "
+                "malformed"
+            ],
+        )
+    return text, source, []
+
+
+def _validate_registered_finding_delivery_receipt(
+    scratchpad: Path,
+    *,
+    expected_consumer_work_unit_key: str = "",
+    expected_run_id: str = "",
+) -> list[str]:
+    """Exact source-action -> delivery/review reconciliation.
+
+    Canonical-ID telemetry is intentionally ignored as proof of delivery: only
+    an inventory Source-ID referent or an explicit source-negative/human-review
+    disposition accounts for a registered action.
+    """
+    scan = _scan_registered_finding_delivery_sources(Path(scratchpad))
+    actions = list(scan.get("actions") or [])
+    residual = list(scan.get("residual_debt") or [])
+    path = Path(scratchpad) / _FINDING_DELIVERY_RECEIPT
+    artifacts = list(scan.get("artifacts") or [])
+    successor_exists = (
+        (Path(scratchpad) / PREVERIFY_INVENTORY_SUCCESSOR_NAME).exists()
+        or (Path(scratchpad) / PREVERIFY_DELIVERY_SUCCESSOR_NAME).exists()
+    )
+    if successor_exists:
+        (
+            successor_present,
+            successor_issues,
+            successor_expected,
+        ) = _validated_preverify_delivery_successor(
+            Path(scratchpad),
+            delivery_scan=scan,
+            expected_consumer_work_unit_key=(
+                expected_consumer_work_unit_key
+            ),
+            expected_run_id=expected_run_id,
+        )
+        if not successor_present:
+            return [
+                "preverify registered-delivery successor disappeared during "
+                "validation"
+            ]
+        if successor_issues:
+            return successor_issues
+        if successor_expected is None:
+            return [
+                "preverify registered-delivery successor has no recomputed "
+                "delivery denominator"
+            ]
+        expected_delivery = successor_expected.get("expected_delivery")
+        if not isinstance(expected_delivery, Mapping):
+            return [
+                "preverify registered-delivery successor has no authenticated "
+                "delivery payload"
+            ]
+        if expected_delivery.get("status") == "DEGRADED" or (
+            expected_delivery.get("residual_debt")
+        ):
+            return [
+                "registered finding delivery has residual parser/delivery "
+                "debt: "
+                + "; ".join(
+                    str(row)
+                    for row in expected_delivery.get(
+                        "residual_debt", []
+                    )[:6]
+                )
+            ]
+        return []
+
+    if not actions and not residual and not artifacts:
+        if path.exists():
+            try:
+                stale = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                return ["stale registered finding delivery receipt is unreadable"]
+            if (
+                stale.get("source_action_count")
+                or stale.get("source_artifact_count")
+                or stale.get("actions")
+                or stale.get("artifacts")
+            ):
+                return [
+                    "registered finding delivery receipt outlived its source artifacts"
+                ]
+        return []
+    ids = sorted({str(row.get("action_id") or "") for row in actions if row.get("action_id")})
+    if not path.exists():
+        return [
+            "registered finding delivery receipt missing for source actions: "
+            + ", ".join(ids[:12])
+        ]
+    payload: dict[str, object] = {}
+    if path.exists():
+        try:
+            payload = json.loads(
+                path.read_text(encoding="utf-8", errors="replace")
+            )
+        except Exception as exc:
+            return [
+                "registered finding delivery receipt unreadable: "
+                + type(exc).__name__
+            ]
+    issues: list[str] = []
+    inventory = Path(scratchpad) / "findings_inventory.md"
+    if not inventory.is_file():
+        return ["registered finding delivery inventory authority is missing"]
+    try:
+        inventory_text = inventory.read_text(encoding="utf-8", errors="replace")
+        expected = _build_registered_finding_delivery_receipt_payload(
+            Path(scratchpad), scan, inventory_text
+        )
+    except Exception as exc:
+        return [
+            "registered finding delivery recomputation failed: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+
+    # Compare every bound axis, not only row membership. This catches a valid
+    # self-digest wrapped around stale source bytes or invented dispositions.
+    for field in (
+        "schema_version",
+        "registry_digest",
+        "inventory_artifact",
+        "inventory_sha256",
+        "source_artifact_count",
+        "source_artifact_digest",
+        "source_action_count",
+        "source_action_digest",
+        "accounted_action_count",
+        "disposition_count",
+        "disposition_digest",
+        "residual_debt_count",
+        "residual_debt_digest",
+        "receipt_digest",
+    ):
+        if payload.get(field) != expected.get(field):
+            issues.append(
+                f"registered finding delivery {field} mismatch against recomputed authority"
+            )
+    for field in ("artifacts", "actions", "residual_debt", "status"):
+        if payload.get(field) != expected.get(field):
+            issues.append(
+                f"registered finding delivery {field} differs from recomputed authority"
+            )
+
+    expected_projection = _render_delivery_human_review_projection(expected)
+    projection_path = Path(scratchpad) / _FINDING_DELIVERY_DEBT
+    if expected_projection:
+        try:
+            current_projection = projection_path.read_text(
+                encoding="utf-8", errors="strict"
+            )
+        except (OSError, UnicodeError):
+            current_projection = ""
+        if current_projection != expected_projection:
+            issues.append(
+                "registered finding delivery human-review projection parity mismatch"
+            )
+    elif projection_path.exists():
+        issues.append(
+            "registered finding delivery has a stale human-review projection"
+        )
+
+    if expected.get("status") == "DEGRADED" or expected.get("residual_debt"):
+        issues.append(
+            "registered finding delivery has residual parser/delivery debt: "
+            + "; ".join(str(row) for row in expected.get("residual_debt", [])[:6])
+        )
+    return issues
 
 
 def _validate_depth_promotion_dedup(scratchpad: Path) -> list[str]:
@@ -5359,6 +9785,124 @@ def _percontract_candidate_is_content_bearing(
     return has_location and has_harm
 
 
+_SELF_EXCLUSION_CONTEXT_HEADING_RE = re.compile(
+    r"(?i)\b(?:context|exclusion\s+universe|referent\s+universe|"
+    r"source\s+universe|input\s+universe|instructions?|scope)\b"
+)
+_SELF_EXCLUSION_EMPTY_RE = re.compile(
+    r"(?i)(?:\bNO_CANDIDATE\b|"
+    r"\bno\s+(?:candidates?|findings?|items?|rows?)\s+(?:were\s+)?"
+    r"(?:excluded|absorbed|dropped|self[- ]?dropped|found)\b|"
+    r"^\s*(?:[-*+]\s*)?(?:n/?a|none)\s*$)"
+)
+_SELF_EXCLUSION_STATUS_RE = re.compile(
+    r"(?i)\b(?:excluded|absorbed|self[ _-]?drop(?:ped)?|dropped|"
+    r"duplicate|not\s+reportable|already\s+(?:found|known))\b"
+)
+_SELF_EXCLUSION_TABLE_HEADER_RE = re.compile(
+    r"(?i)\b(?:candidate|finding)\b.*\b(?:status|referent|reason|location)\b|"
+    r"\bstatus\b.*\b(?:candidate|finding|referent|reason)\b"
+)
+
+
+def _logical_self_exclusion_entries(
+    lines: list[str], heading_re: re.Pattern[str]
+) -> list[tuple[int, list[str]]]:
+    """Return entry+continuation groups from candidate-bearing heading subtrees.
+
+    This is a compatibility parser only. It deliberately ignores context and
+    universe heading subtrees, because those describe the denominator rather
+    than a model decision about a candidate.
+    """
+    from plamen_parsers import _SEPARATOR_ROW_RE
+
+    spans: list[tuple[int, int, int]] = []
+    blocked_ranges: list[tuple[int, int]] = []
+    for index, line in enumerate(lines):
+        if not heading_re.match(line):
+            continue
+        match = re.match(r"^\s*(#{1,6})\s+(.+?)\s*$", line)
+        depth = len(match.group(1)) if match else 6
+        title = match.group(2) if match else line
+        end = len(lines)
+        for cursor in range(index + 1, len(lines)):
+            peer = re.match(r"^\s*(#{1,6})\s", lines[cursor])
+            if peer and len(peer.group(1)) <= depth:
+                end = cursor
+                break
+        if any(start <= index < stop for start, stop in blocked_ranges):
+            continue
+        if _SELF_EXCLUSION_CONTEXT_HEADING_RE.search(title):
+            blocked_ranges.append((index, end))
+            continue
+        if any(start <= index < stop for start, stop, _depth in spans):
+            continue
+        spans.append((index + 1, end, depth))
+
+    logical: list[tuple[int, list[str]]] = []
+    for start, end, root_depth in spans:
+        current: list[str] | None = None
+        suppressed_depth: int | None = None
+        for index in range(start, end):
+            line = lines[index]
+            stripped = line.strip()
+            heading = re.match(r"^\s*(#{1,6})\s+(.+?)\s*$", line)
+            if heading:
+                depth = len(heading.group(1))
+                if suppressed_depth is not None and depth <= suppressed_depth:
+                    suppressed_depth = None
+                if _SELF_EXCLUSION_CONTEXT_HEADING_RE.search(heading.group(2)):
+                    suppressed_depth = depth
+                current = None
+                continue
+            if suppressed_depth is not None:
+                continue
+            if not stripped:
+                current = None
+                continue
+            if _BARE_HR_RE.match(stripped) or _SEPARATOR_ROW_RE.match(stripped):
+                current = None
+                continue
+            is_bullet = bool(re.match(r"^\s*[-*+]\s", line))
+            is_table = bool(re.match(r"^\s*\|", line))
+            if is_bullet or is_table:
+                current = [line]
+                logical.append((index, current))
+                continue
+            if current is not None:
+                current.append(line)
+                continue
+            if _SELF_EXCLUSION_STATUS_RE.search(line):
+                current = [line]
+                logical.append((index, current))
+    return logical
+
+
+def _self_exclusion_entry_is_non_candidate(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return True
+    if _SELF_EXCLUSION_EMPTY_RE.search(stripped):
+        return True
+    if re.match(r"^\s*\|", stripped):
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if cells and all(
+            not cell or set(cell) <= {"-", ":"} for cell in cells
+        ):
+            return True
+        if (
+            _SELF_EXCLUSION_TABLE_HEADER_RE.search(stripped)
+            and not _SELF_EXCLUSION_STATUS_RE.search(stripped)
+        ):
+            return True
+        if any(cell.casefold() in {"n/a", "na", "none", "no_candidate"} for cell in cells):
+            if "no_candidate" in stripped.casefold() or re.search(
+                r"(?i)\bno\s+candidates?\b", stripped
+            ):
+                return True
+    return False
+
+
 def _validate_percontract_self_exclusion(
     scratchpad: Path,
 ) -> tuple[list[str], list[dict]]:
@@ -5405,30 +9949,18 @@ def _validate_percontract_self_exclusion(
             text = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        lines = text.splitlines()
-        # Identify exclusion-intent section spans: from a matching heading until
-        # the next heading of the same-or-shallower depth (or EOF).
-        section_spans: list[tuple[int, int]] = []
-        for idx, ln in enumerate(lines):
-            if not _PERCONTRACT_EXCLUSION_HEADING_RE.match(ln):
-                continue
-            hm = re.match(r"^\s*(#{1,6})\s", ln)
-            depth = len(hm.group(1)) if hm else 6
-            end = len(lines)
-            for j in range(idx + 1, len(lines)):
-                jm = re.match(r"^\s*(#{1,6})\s", lines[j])
-                if jm and len(jm.group(1)) <= depth:
-                    end = j
-                    break
-            section_spans.append((idx + 1, end))
-        if not section_spans:
-            continue
-
-        for (start, end) in section_spans:
-            for j in range(start, end):
-                entry = lines[j]
-                stripped = entry.strip()
-                if not stripped:
+        logical_entries = _logical_self_exclusion_entries(
+            text.splitlines(), _PERCONTRACT_EXCLUSION_HEADING_RE
+        )
+        for _line_number, entry_lines in logical_entries:
+                entry = entry_lines[0]
+                detect_text = "\n".join(entry_lines)
+                stripped = " ".join(
+                    part
+                    for part in (line.strip() for line in entry_lines)
+                    if part
+                )
+                if _self_exclusion_entry_is_non_candidate(detect_text):
                     continue
                 # Only consider entry-like lines (list items, table rows, or
                 # lines that explicitly say EXCLUDED/duplicate). Skip plain
@@ -5457,11 +9989,11 @@ def _validate_percontract_self_exclusion(
 
                 cited_ids = {
                     m.group(1).strip().upper()
-                    for m in _BRACKETED_ID_RE.finditer(entry)
+                    for m in _TABLE_SOURCE_ID_RE.finditer(detect_text)
                 }
                 cited_locs = {
                     _norm_referent_location(loc)
-                    for loc in _TABLE_LOCATION_RE.findall(entry)
+                    for loc in _TABLE_LOCATION_RE.findall(detect_text)
                 }
                 # The entry's OWN [PCn-k] id is the excluded candidate, not a
                 # referent — drop ids matching the per-contract prefix from the
@@ -5485,9 +10017,9 @@ def _validate_percontract_self_exclusion(
                 if cited_locs:
                     loc = sorted(cited_locs)[0]
                 title = re.sub(
-                    r"^\s*(?:[-*+]\s*|\|\s*)", "", stripped
+                    r"^\s*(?:[-*+]\s*|\|\s*)", "", entry.strip()
                 ).strip().strip("|").strip()
-                sev_m = _SEVERITY_RE.search(entry)
+                sev_m = _SEVERITY_RE.search(detect_text)
                 severity = ""
                 if sev_m:
                     severity = (sev_m.group(1) or sev_m.group(2) or "").title()
@@ -5548,6 +10080,12 @@ _DEPTH_EXTERNAL_ASSUMPTION_RE = re.compile(
     r"\bassum(?:e|es|ed|ing|ption)\b|"
     r"guaranteed\s+by\b"
     r")"
+)
+
+_DEPTH_IN_SCOPE_REFUTATION_RE = re.compile(
+    r"(?i)\b(?:refut(?:e|ed|ation)|rejected?|fails?\s+(?:at|because)|"
+    r"reverts?\s+at|unreachable\s+because|cannot\s+reach|guarded\s+by|"
+    r"blocked\s+by|proven\s+(?:safe|inert))\b"
 )
 
 # A bare Markdown horizontal rule (``---`` / ``***`` / ``___``, 3+ identical
@@ -5617,72 +10155,10 @@ def _validate_depth_self_exclusion(
             text = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        lines = text.splitlines()
-        # Identify self-exclusion section spans: from a matching heading until
-        # the next heading of the same-or-shallower depth (or EOF).
-        section_spans: list[tuple[int, int]] = []
-        for idx, ln in enumerate(lines):
-            if not _DEPTH_SELF_EXCLUSION_HEADING_RE.match(ln):
-                continue
-            hm = re.match(r"^\s*(#{1,6})\s", ln)
-            depth = len(hm.group(1)) if hm else 6
-            end = len(lines)
-            for j in range(idx + 1, len(lines)):
-                jm = re.match(r"^\s*(#{1,6})\s", lines[j])
-                if jm and len(jm.group(1)) <= depth:
-                    end = j
-                    break
-            section_spans.append((idx + 1, end))
-        if not section_spans:
-            continue
-
-        for (start, end) in section_spans:
-            # Group each entry with its CONTINUATION lines into ONE logical
-            # entry (blemish 2): an absorbed candidate is often a bullet whose
-            # concrete ``file:Lnnn`` / harm spills onto following lines. A
-            # continuation line is a non-empty line that is NOT itself a new
-            # bullet, heading, bare horizontal rule, or table row. Referent /
-            # content-bearing detection then runs over the FULL joined text, so
-            # a location or harm sitting on line 2+ is correctly seen. Bare HRs
-            # (``---``/``***``/``___``) are separators, never entries (blemish 1).
-            logical_entries: list[tuple[int, list[str]]] = []
-            current = None
-            for j in range(start, end):
-                entry = lines[j]
-                stripped = entry.strip()
-                if not stripped:
-                    current = None
-                    continue
-                if _BARE_HR_RE.match(stripped) or _SEPARATOR_ROW_RE.match(stripped):
-                    # Horizontal rule / table separator: boundary, not an entry.
-                    current = None
-                    continue
-                if re.match(r"^\s*#", entry):  # nested heading: boundary
-                    current = None
-                    continue
-                # A real Markdown bullet requires whitespace AFTER the marker,
-                # so a ``**bold**`` continuation line is not mistaken for one.
-                is_new_bullet = bool(re.match(r"^\s*[-*+]\s", entry))
-                is_table_row = bool(re.match(r"^\s*\|", entry))
-                if is_new_bullet or is_table_row:
-                    current = [entry]
-                    logical_entries.append((j, current))
-                    continue
-                if current is not None:
-                    current.append(entry)  # continuation of entry in progress
-                    continue
-                # Not currently in an entry: a plain prose line only STARTS a
-                # new logical entry when it carries absorbed/dropped vocabulary.
-                if re.search(
-                    r"\b(?:absorbed|self[ _-]?drop|dropped|excluded|"
-                    r"duplicate|not\s+report|already\s+(?:found|known))\b",
-                    entry,
-                    re.IGNORECASE,
-                ):
-                    current = [entry]
-                    logical_entries.append((j, current))
-
-            for (j, entry_lines) in logical_entries:
+        logical_entries = _logical_self_exclusion_entries(
+            text.splitlines(), _DEPTH_SELF_EXCLUSION_HEADING_RE
+        )
+        for _line_number, entry_lines in logical_entries:
                 first = entry_lines[0]
                 # Detection text keeps newlines so ``^``-anchored regexes
                 # (severity) still match on continuation lines; stored line_text
@@ -5694,10 +10170,12 @@ def _validate_depth_self_exclusion(
                 # Idempotency: never re-flag a driver-minted re-emit entry.
                 if "[RE-EMITTED" in detect_text.upper():
                     continue
+                if _self_exclusion_entry_is_non_candidate(detect_text):
+                    continue
 
                 cited_ids = {
                     m.group(1).strip().upper()
-                    for m in _BRACKETED_ID_RE.finditer(detect_text)
+                    for m in _TABLE_SOURCE_ID_RE.finditer(detect_text)
                 }
                 cited_locs = {
                     _norm_referent_location(loc)
@@ -5708,9 +10186,19 @@ def _validate_depth_self_exclusion(
                 # only treat IDs that appear in the provided universe as
                 # referents (see has_universe_id below).
                 has_universe_id = bool(cited_ids & finding_ids)
-                # A concrete in-scope refutation is ANY cited file:Lnnn (per the
-                # counterplan) OR a real upstream finding ID.
-                has_concrete_referent = bool(has_universe_id or cited_locs)
+                has_universe_location = bool(cited_locs & locations)
+                # A candidate's own source location is evidence of the candidate,
+                # not independent refutation. A non-universe location suppresses
+                # recovery only when the entry explicitly states a refutation.
+                has_explicit_refutation = bool(
+                    cited_locs
+                    and _DEPTH_IN_SCOPE_REFUTATION_RE.search(detect_text)
+                )
+                has_concrete_referent = bool(
+                    has_universe_id
+                    or has_universe_location
+                    or has_explicit_refutation
+                )
                 has_external_assumption = bool(
                     _DEPTH_EXTERNAL_ASSUMPTION_RE.search(detect_text)
                 )
@@ -5718,7 +10206,14 @@ def _validate_depth_self_exclusion(
                 if has_concrete_referent and not has_external_assumption:
                     continue  # legitimately-refuted; leave alone
 
-                own_id = next(iter(cited_ids), None) if cited_ids else None
+                own_id = next(
+                    (
+                        finding_id
+                        for finding_id in sorted(cited_ids)
+                        if finding_id not in finding_ids
+                    ),
+                    None,
+                )
                 loc = ""
                 if cited_locs:
                     loc = sorted(cited_locs)[0]
@@ -5854,6 +10349,56 @@ def _collect_scip_indexed_paths(scratchpad: Path) -> set[str]:
     return paths
 
 
+def _validated_attention_application_receipt(
+    scratchpad: Path,
+) -> dict[str, object] | None:
+    receipt_path = scratchpad / "attention_repair_application_receipt.json"
+    queue_path = scratchpad / "attention_repair_queue.md"
+    if not receipt_path.is_file() or not queue_path.is_file():
+        return None
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        queue_sha256 = hashlib.sha256(queue_path.read_bytes()).hexdigest()
+    except Exception:
+        return None
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema") != "plamen.attention-repair-application.v1"
+        or receipt.get("status") not in {"COMPLETE", "INCOMPLETE"}
+        or receipt.get("queue_file_sha256") != queue_sha256
+    ):
+        return None
+    accepted = receipt.get("accepted_paths")
+    unresolved = receipt.get("unresolved_paths")
+    rows = receipt.get("rows")
+    if (
+        not isinstance(accepted, list)
+        or not isinstance(unresolved, list)
+        or not isinstance(rows, list)
+        or any(not isinstance(path, str) or not path for path in accepted)
+        or any(not isinstance(path, str) or not path for path in unresolved)
+        or set(accepted) & set(unresolved)
+        or len(accepted) != len(set(accepted))
+        or len(unresolved) != len(set(unresolved))
+        or receipt.get("status")
+        != ("INCOMPLETE" if unresolved else "COMPLETE")
+    ):
+        return None
+    return receipt
+
+
+def _validated_attention_application_paths(scratchpad: Path) -> set[str]:
+    receipt = _validated_attention_application_receipt(scratchpad)
+    if receipt is None:
+        return set()
+    accepted = receipt["accepted_paths"]
+    assert isinstance(accepted, list)
+    return {
+        path for path in accepted
+        if isinstance(path, str) and path
+    }
+
+
 def _collect_cited_paths(scratchpad: Path) -> set[str]:
     """Return the set of source paths cited by depth/breadth/scanner/verify.
 
@@ -5862,19 +10407,77 @@ def _collect_cited_paths(scratchpad: Path) -> set[str]:
     (Bucket A) and the path-existence gate (Bucket C).
     """
     paths: set[str] = set()
+    suffix_pattern = "|".join(
+        re.escape(suffix.lstrip("."))
+        for suffix in sorted(ALL_AUDIT_SOURCE_SUFFIXES, key=len, reverse=True)
+    )
     citation_re = re.compile(
-        r"\b([a-zA-Z][a-zA-Z0-9_./\-]*?\."
-        r"(?:rs|go|sol|move|py|c|cpp|cc|h|hpp|java|ts|js))\b"
+        rf"\b([a-zA-Z][a-zA-Z0-9_./\-]*?\.(?:{suffix_pattern}))\b"
     )
     for pattern in _FINDING_GLOBS_FOR_CITATION:
         for f in scratchpad.glob(pattern):
+            if f.name.startswith("attention_repair"):
+                continue
             try:
                 text = f.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 continue
             for m in citation_re.finditer(text):
                 paths.add(m.group(1))
+    paths.update(_validated_attention_application_paths(scratchpad))
     return paths
+
+
+def _exact_path_literal_present(text: str, path: str) -> bool:
+    """Match one exact portable path without suffix/basename aliasing."""
+
+    if f"`{path}`" in text:
+        return True
+    boundary_chars = r"A-Za-z0-9_@./\\-"
+    return bool(
+        re.search(
+            rf"(?<![{boundary_chars}]){re.escape(path)}"
+            rf"(?![{boundary_chars}])",
+            text,
+        )
+    )
+
+
+def _collect_exact_scope_citations(
+    scratchpad: Path,
+    scope_names: set[str],
+    *,
+    patterns: Iterable[str] = _FINDING_GLOBS_FOR_CITATION,
+) -> set[str]:
+    """Diff a finite exact-scope authority against literal artifact citations."""
+
+    remaining = set(scope_names)
+    cited: set[str] = set()
+    for pattern in patterns:
+        for artifact in scratchpad.glob(pattern):
+            if artifact.name.startswith("attention_repair"):
+                # Queue/plan Markdown is producer-owned input, and raw worker
+                # Markdown is not authority until the attention gate binds its
+                # per-row receipts. Counting either here lets the queue cite
+                # itself and manufacture 100% coverage.
+                continue
+            if not remaining:
+                return cited
+            try:
+                text = artifact.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            matched = {
+                path for path in remaining
+                if _exact_path_literal_present(text, path)
+            }
+            cited.update(matched)
+            remaining.difference_update(matched)
+    if remaining:
+        cited.update(
+            _validated_attention_application_paths(scratchpad) & remaining
+        )
+    return cited
 
 
 def _basenames(paths: set[str]) -> dict[str, set[str]]:
@@ -5965,8 +10568,14 @@ def _first_production_location_for_validator(text: str, *fallbacks: str) -> str:
 
 
 def _compute_scip_coverage_sets(
-    scratchpad: Path, scope_file: str | None = None
+    scratchpad: Path,
+    scope_file: str | None = None,
+    *,
+    scope_match_mode: str = "legacy",
+    pipeline: str = "l1",
+    language: str = "",
 ) -> dict[str, object]:
+    mode = normalize_scope_match_mode(scope_match_mode)
     indexed = _collect_scip_indexed_paths(scratchpad)
     cited = _collect_cited_paths(scratchpad)
     cited_basenames = _basenames(cited)
@@ -5979,10 +10588,31 @@ def _compute_scip_coverage_sets(
     # Narrow the required (prod) universe to in-scope files only when the
     # wizard supplied a scope file, so out-of-scope vendored libraries are not
     # reported as coverage gaps. Empty scope → require everything (unchanged).
-    scope_names = _load_scope_file_paths(scope_file)
-    if scope_names:
+    scope_names = _load_scope_file_paths(
+        scope_file,
+        match_mode=mode,
+        pipeline=pipeline,
+        language=language,
+    )
+    if mode == "exact":
+        cited = _collect_exact_scope_citations(scratchpad, scope_names)
+        cited_basenames = _basenames(cited)
+    scope_unindexed: set[str] = set()
+    if mode == "exact":
+        # In exact mode the user-authorized source list is the denominator.
+        # SCIP is evidence about those files, not authority to silently erase
+        # an unsupported ecosystem or an indexing miss from coverage.
+        prod_indexed = set(scope_names)
+        scope_unindexed = set(scope_names) - set(indexed)
+    elif scope_names:
         prod_indexed = {
-            p for p in prod_indexed if _path_in_scope_file(p, scope_names)
+            p
+            for p in prod_indexed
+            if _path_in_scope_file(
+                p,
+                scope_names,
+                match_mode=mode,
+            )
         }
     indexed_basenames = _basenames(prod_indexed)
 
@@ -5993,6 +10623,11 @@ def _compute_scip_coverage_sets(
         if p in cited:
             covered.add(p)
             continue
+        if mode == "exact":
+            # A basename or suffix citation cannot discharge exact authority:
+            # duplicate names are common in acquired multi-repo programs.
+            uncited.append(p)
+            continue
         if (
             bn in cited_basenames
             and len(cited_basenames.get(bn, set())) == 1
@@ -6002,7 +10637,11 @@ def _compute_scip_coverage_sets(
             continue
         uncited.append(p)
 
-    coverage_pct = 100.0 * len(covered) / max(1, len(prod_indexed))
+    coverage_pct = (
+        100.0 * len(covered) / len(prod_indexed)
+        if prod_indexed
+        else (0.0 if mode == "exact" else 100.0)
+    )
     return {
         "indexed": indexed,
         "prod_indexed": prod_indexed,
@@ -6011,6 +10650,9 @@ def _compute_scip_coverage_sets(
         "covered": covered,
         "uncited": uncited,
         "coverage_pct": coverage_pct,
+        "scope_names": scope_names,
+        "scope_unindexed": scope_unindexed,
+        "scope_match_mode": mode,
     }
 
 
@@ -6079,7 +10721,13 @@ def _materialize_sc_slither_flat_files(scratchpad: Path) -> list[str]:
 
 
 def _compute_subsystem_coverage_gap(
-    scratchpad: Path, mode: str, scope_file: str | None = None
+    scratchpad: Path,
+    mode: str,
+    scope_file: str | None = None,
+    *,
+    scope_match_mode: str = "legacy",
+    pipeline: str = "l1",
+    language: str = "",
 ) -> list[str]:
     """SCIP-driven generic coverage gap. Soft validator.
 
@@ -6115,7 +10763,7 @@ def _compute_subsystem_coverage_gap(
         return []
 
     indexed = _collect_scip_indexed_paths(scratchpad)
-    if not indexed:
+    if not indexed and normalize_scope_match_mode(scope_match_mode) != "exact":
         _write_skip(
             "no SCIP repo_map.md found in scratchpad/scip/ — bake phase "
             "may have skipped (SC mode, or rust-analyzer/scip-go missing). "
@@ -6123,10 +10771,17 @@ def _compute_subsystem_coverage_gap(
         )
         return []
 
-    cov = _compute_scip_coverage_sets(scratchpad, scope_file=scope_file)
+    cov = _compute_scip_coverage_sets(
+        scratchpad,
+        scope_file=scope_file,
+        scope_match_mode=scope_match_mode,
+        pipeline=pipeline,
+        language=language,
+    )
     prod_indexed = cov["prod_indexed"]
     uncited = cov["uncited"]
     coverage_pct = cov["coverage_pct"]
+    scope_unindexed = sorted(cov.get("scope_unindexed", set()))
 
     try:
         if uncited:
@@ -6138,7 +10793,9 @@ def _compute_subsystem_coverage_gap(
                 f"**Uncited**: {len(uncited)} | "
                 f"**Coverage**: {coverage_pct:.1f}%",
                 "",
-                "Files below are recon-indexed via SCIP but received zero "
+                "Files below are required by the coverage authority "
+                "(SCIP in legacy mode; the exact scope list in exact mode) "
+                "but received zero "
                 "citations across depth, breadth, scanner, niche, validation, "
                 "and verify outputs. iter2 / DA / next-phase agents SHOULD "
                 "read this file and route attention to uncited entries.",
@@ -6156,6 +10813,15 @@ def _compute_subsystem_coverage_gap(
                 f"cited). No subsystem skip.\n",
                 encoding="utf-8",
             )
+        if scope_unindexed:
+            with gap_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "\n## Exact-scope mechanical-index limitations\n\n"
+                    "These authorized files were absent from SCIP. They remain "
+                    "coverage obligations and are not treated as covered:\n\n"
+                )
+                for path in scope_unindexed:
+                    handle.write(f"- `{path}`\n")
     except Exception:
         pass
 
@@ -6200,11 +10866,29 @@ def _parse_subsystem_coverage_gap(scratchpad: Path) -> dict[str, float]:
     }
 
 
-def _write_final_subsystem_coverage_summary(scratchpad: Path) -> None:
+def _write_final_subsystem_coverage_summary(
+    scratchpad: Path,
+    *,
+    scope_file: str | None = None,
+    scope_match_mode: str = "legacy",
+    pipeline: str = "l1",
+    language: str = "",
+    run_id: str = "",
+    source_snapshot_digest: str = "",
+) -> None:
     """Write final strict citation coverage after all phase outputs exist."""
-    if not _collect_scip_indexed_paths(scratchpad):
+    if (
+        not _collect_scip_indexed_paths(scratchpad)
+        and normalize_scope_match_mode(scope_match_mode) != "exact"
+    ):
         return
-    cov = _compute_scip_coverage_sets(scratchpad)
+    cov = _compute_scip_coverage_sets(
+        scratchpad,
+        scope_file=scope_file,
+        scope_match_mode=scope_match_mode,
+        pipeline=pipeline,
+        language=language,
+    )
     prod_indexed = cov["prod_indexed"]
     cited = cov["cited"]
     covered = cov["covered"]
@@ -6230,6 +10914,13 @@ def _write_final_subsystem_coverage_summary(scratchpad: Path) -> None:
         "the same as `file_coverage_ledger.md`, which may count acknowledged "
         "or heuristic coverage.",
     ]
+    scope_unindexed = sorted(cov.get("scope_unindexed", set()))
+    if scope_unindexed:
+        lines.extend([
+            "",
+            f"**Exact-scope files absent from SCIP**: {len(scope_unindexed)} "
+            "(retained as coverage obligations)",
+        ])
     if uncited:
         lines.extend([
             "",
@@ -6248,6 +10939,357 @@ def _write_final_subsystem_coverage_summary(scratchpad: Path) -> None:
         )
     except Exception:
         pass
+    exact_authority = scratchpad / "exact_scope_coverage_authority.json"
+    if normalize_scope_match_mode(scope_match_mode) != "exact":
+        exact_authority.unlink(missing_ok=True)
+        return
+    try:
+        scope_bytes = Path(str(scope_file or "")).read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            "exact scope coverage authority cannot bind scope_file bytes"
+        ) from exc
+    queue_path = scratchpad / "attention_repair_queue.md"
+    receipt_path = scratchpad / "attention_repair_application_receipt.json"
+    queue_bytes = queue_path.read_bytes() if queue_path.is_file() else b""
+    receipt_bytes = receipt_path.read_bytes() if receipt_path.is_file() else b""
+    queued_paths = {
+        path for path in prod_indexed
+        if queue_bytes
+        and _exact_path_literal_present(
+            queue_bytes.decode("utf-8", errors="replace"),
+            path,
+        )
+    }
+    validated_receipt = _validated_attention_application_receipt(scratchpad)
+    raw_unresolved = (
+        validated_receipt.get("unresolved_paths")
+        if validated_receipt is not None
+        else None
+    )
+    receipt_unresolved = {
+        path for path in raw_unresolved
+        if isinstance(path, str) and path in prod_indexed
+    } if isinstance(raw_unresolved, list) else set()
+    unresolved_set = set(uncited)
+    authority_payload: dict[str, object] = {
+        "schema": "plamen.exact-scope-coverage-authority.v1",
+        "status": "INCOMPLETE" if uncited else "COMPLETE",
+        "claim": (
+            "EXACT_SCOPE_APPLICATION_INCOMPLETE"
+            if uncited
+            else "EXACT_SCOPE_APPLICATION_COMPLETE"
+        ),
+        "run_id": str(run_id or ""),
+        "source_snapshot_digest": str(source_snapshot_digest or ""),
+        "scope_file_sha256": hashlib.sha256(scope_bytes).hexdigest(),
+        "pipeline": str(pipeline or ""),
+        "language": str(language or ""),
+        "required_paths": sorted(prod_indexed),
+        "cited_paths": sorted(covered),
+        "unresolved_paths": sorted(uncited),
+        "queued_unapplied_paths": sorted(
+            (unresolved_set & queued_paths) - receipt_unresolved
+        ),
+        "applied_needs_human_paths": sorted(
+            unresolved_set & receipt_unresolved
+        ),
+        "unqueued_unresolved_paths": sorted(
+            unresolved_set - queued_paths
+        ),
+        "scope_unindexed_paths": scope_unindexed,
+        "coverage_pct": coverage_pct,
+        "attention_queue_sha256": (
+            hashlib.sha256(queue_bytes).hexdigest() if queue_bytes else ""
+        ),
+        "attention_application_receipt_sha256": (
+            hashlib.sha256(receipt_bytes).hexdigest()
+            if receipt_bytes
+            else ""
+        ),
+    }
+    authority_payload["authority_sha256"] = hashlib.sha256(
+        json.dumps(
+            authority_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    temporary = exact_authority.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(authority_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, exact_authority)
+
+
+def _project_exact_scope_coverage_limitations(
+    scratchpad: Path,
+    report_path: Path,
+) -> list[str]:
+    """Project incomplete exact-scope application without hiding findings."""
+
+    authority_path = scratchpad / "exact_scope_coverage_authority.json"
+    begin = "<!-- PLAMEN_EXACT_SCOPE_COVERAGE_BEGIN -->"
+    end = "<!-- PLAMEN_EXACT_SCOPE_COVERAGE_END -->"
+    if not report_path.is_file():
+        return ["AUDIT_REPORT.md missing for exact-scope limitation projection"]
+    try:
+        report = report_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [f"AUDIT_REPORT.md unreadable for exact-scope projection: {exc}"]
+    report = re.sub(
+        rf"\n?{re.escape(begin)}.*?{re.escape(end)}\n?",
+        "\n",
+        report,
+        flags=re.DOTALL,
+    ).rstrip()
+    if not authority_path.is_file():
+        report_path.write_text(report + "\n", encoding="utf-8")
+        return []
+    try:
+        authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [f"exact scope coverage authority is unreadable: {exc}"]
+    if not isinstance(authority, dict) or authority.get("schema") != (
+        "plamen.exact-scope-coverage-authority.v1"
+    ):
+        return ["exact scope coverage authority schema is invalid"]
+    authority_issues = _validate_exact_scope_coverage_authority(scratchpad)
+    if authority_issues:
+        return authority_issues
+    if authority.get("status") == "COMPLETE":
+        report_path.write_text(report + "\n", encoding="utf-8")
+        return []
+    unresolved = authority.get("unresolved_paths")
+    required = authority.get("required_paths")
+    cited = authority.get("cited_paths")
+    if not all(isinstance(value, list) for value in (unresolved, required, cited)):
+        return ["exact scope coverage authority path sets are invalid"]
+    section = [
+        "",
+        begin,
+        "## Audit Scope Coverage Limitations",
+        "",
+        "The audit completed with unresolved exact-scope application debt. "
+        "Individually verified findings remain valid, but this report must not "
+        "be interpreted as complete coverage of every authorized source file.",
+        "",
+        f"- Authorized source files: {len(required)}",
+        f"- Files with accepted analysis evidence: {len(cited)}",
+        f"- Unresolved files: {len(unresolved)}",
+        f"- Coverage authority: `{authority.get('authority_sha256', '')}`",
+    ]
+    if unresolved:
+        section.extend(["", "Unresolved source paths:"])
+        section.extend(f"- `{path}`" for path in unresolved[:20])
+        if len(unresolved) > 20:
+            section.append(
+                f"- ... and {len(unresolved) - 20} more in "
+                "`exact_scope_coverage_authority.json`."
+            )
+    section.extend([end, ""])
+    report_path.write_text(
+        report + "\n" + "\n".join(section),
+        encoding="utf-8",
+    )
+    return []
+
+
+def _validate_exact_scope_coverage_authority(
+    scratchpad: Path,
+    *,
+    scope_file: str | None = None,
+    expected_run_id: str = "",
+    expected_source_snapshot_digest: str = "",
+) -> list[str]:
+    """Compare the final exact-scope authority with current bound inputs."""
+
+    path = scratchpad / "exact_scope_coverage_authority.json"
+    if not path.is_file():
+        return ["exact scope coverage authority is missing"]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [f"exact scope coverage authority is unreadable: {exc}"]
+    if not isinstance(payload, dict) or payload.get("schema") != (
+        "plamen.exact-scope-coverage-authority.v1"
+    ):
+        return ["exact scope coverage authority schema is invalid"]
+    supplied_hash = str(payload.get("authority_sha256") or "")
+    hash_input = dict(payload)
+    hash_input.pop("authority_sha256", None)
+    expected_hash = hashlib.sha256(
+        json.dumps(
+            hash_input,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    issues: list[str] = []
+    if supplied_hash != expected_hash:
+        issues.append("exact scope coverage authority self-hash mismatch")
+    if expected_run_id and payload.get("run_id") != expected_run_id:
+        issues.append("exact scope coverage authority run_id mismatch")
+    if (
+        expected_source_snapshot_digest
+        and payload.get("source_snapshot_digest")
+        != expected_source_snapshot_digest
+    ):
+        issues.append(
+            "exact scope coverage authority source snapshot mismatch"
+        )
+    source_snapshot = str(payload.get("source_snapshot_digest") or "")
+    if source_snapshot and not re.fullmatch(r"[a-fA-F0-9]{64}", source_snapshot):
+        issues.append(
+            "exact scope coverage authority snapshot digest is malformed"
+        )
+    effective_scope = scope_file or ""
+    if effective_scope:
+        try:
+            scope_digest = hashlib.sha256(
+                Path(effective_scope).read_bytes()
+            ).hexdigest()
+        except OSError:
+            scope_digest = ""
+        if not scope_digest or payload.get("scope_file_sha256") != scope_digest:
+            issues.append("exact scope coverage authority scope_file drift")
+
+    def _path_set(name: str) -> set[str]:
+        value = payload.get(name)
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item for item in value
+        ):
+            issues.append(
+                f"exact scope coverage authority {name} is invalid"
+            )
+            return set()
+        if len(value) != len(set(value)):
+            issues.append(
+                f"exact scope coverage authority {name} has duplicates"
+            )
+        return set(value)
+
+    required = _path_set("required_paths")
+    cited = _path_set("cited_paths")
+    unresolved = _path_set("unresolved_paths")
+    queued_unapplied = _path_set("queued_unapplied_paths")
+    needs_human = _path_set("applied_needs_human_paths")
+    unqueued = _path_set("unqueued_unresolved_paths")
+    if cited & unresolved or cited | unresolved != required:
+        issues.append(
+            "exact scope coverage authority cited/unresolved partition mismatch"
+        )
+    if (
+        queued_unapplied & needs_human
+        or queued_unapplied & unqueued
+        or needs_human & unqueued
+        or queued_unapplied | needs_human | unqueued != unresolved
+    ):
+        issues.append(
+            "exact scope coverage authority unresolved partition mismatch"
+        )
+    expected_status = "INCOMPLETE" if unresolved else "COMPLETE"
+    if payload.get("status") != expected_status:
+        issues.append("exact scope coverage authority status mismatch")
+    expected_claim = f"EXACT_SCOPE_APPLICATION_{expected_status}"
+    if payload.get("claim") != expected_claim:
+        issues.append("exact scope coverage authority claim mismatch")
+    expected_pct = (
+        100.0 * len(cited) / len(required)
+        if required
+        else 0.0
+    )
+    try:
+        actual_pct = float(payload.get("coverage_pct"))
+    except (TypeError, ValueError):
+        actual_pct = -1.0
+    if abs(actual_pct - expected_pct) > 1e-9:
+        issues.append("exact scope coverage authority percentage mismatch")
+    for field, artifact in (
+        ("attention_queue_sha256", scratchpad / "attention_repair_queue.md"),
+        (
+            "attention_application_receipt_sha256",
+            scratchpad / "attention_repair_application_receipt.json",
+        ),
+    ):
+        recorded = str(payload.get(field) or "")
+        current = (
+            hashlib.sha256(artifact.read_bytes()).hexdigest()
+            if artifact.is_file()
+            else ""
+        )
+        if recorded != current:
+            issues.append(
+                f"exact scope coverage authority {field} drift"
+            )
+    return issues
+
+
+def _validate_exact_scope_coverage_delivery(
+    scratchpad: Path,
+    report_path: Path,
+    *,
+    scope_file: str | None = None,
+    expected_run_id: str = "",
+    expected_source_snapshot_digest: str = "",
+) -> list[str]:
+    """Terminal compare-only gate for exact-scope authority and projection."""
+
+    issues = _validate_exact_scope_coverage_authority(
+        scratchpad,
+        scope_file=scope_file,
+        expected_run_id=expected_run_id,
+        expected_source_snapshot_digest=expected_source_snapshot_digest,
+    )
+    if issues:
+        return issues
+    authority_path = scratchpad / "exact_scope_coverage_authority.json"
+    try:
+        authority = json.loads(authority_path.read_text(encoding="utf-8"))
+        report = report_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return [
+            "exact scope coverage terminal delivery is unreadable: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    begin = "<!-- PLAMEN_EXACT_SCOPE_COVERAGE_BEGIN -->"
+    end = "<!-- PLAMEN_EXACT_SCOPE_COVERAGE_END -->"
+    begin_count = report.count(begin)
+    end_count = report.count(end)
+    status = str(authority.get("status") or "")
+    if status == "COMPLETE":
+        if begin_count or end_count:
+            issues.append(
+                "complete exact scope report must not retain a coverage "
+                "limitation marker"
+            )
+        return issues
+    if begin_count != 1 or end_count != 1:
+        issues.append(
+            "incomplete exact scope report limitation marker is missing "
+            "or duplicated"
+        )
+        return issues
+    begin_at = report.find(begin)
+    end_at = report.find(end, begin_at + len(begin))
+    if end_at < begin_at:
+        issues.append("exact scope report limitation markers are misordered")
+        return issues
+    section = report[begin_at:end_at + len(end)]
+    authority_hash = str(authority.get("authority_sha256") or "")
+    if not authority_hash or authority_hash not in section:
+        issues.append(
+            "exact scope report limitation is not bound to the current "
+            "coverage authority"
+        )
+    if "## Audit Scope Coverage Limitations" not in section:
+        issues.append(
+            "exact scope report limitation section heading is missing"
+        )
+    return issues
 
 
 def _panic_sites_available(scratchpad: Path) -> bool:
@@ -6530,15 +11572,87 @@ def _validate_chain_iter2(scratchpad: Path, mode: str) -> list[str]:
     """
     if mode != "thorough":
         return []
+    manifest_path = Path(scratchpad) / "chain_candidate_pairs_iter2.json"
+    typed_manifest = False
+    try:
+        typed_manifest = (
+            json.loads(manifest_path.read_text(encoding="utf-8", errors="strict"))
+            .get("schema_version")
+            == "plamen.chain_tail_manifest.v2"
+        )
+    except Exception:
+        typed_manifest = False
+    if typed_manifest:
+        try:
+            from chain_tail_authority import (
+                _read_progress_receipt,
+                validate_chain_tail_authority,
+            )
+
+            authority_issues = validate_chain_tail_authority(scratchpad)
+            receipt = _read_progress_receipt(Path(scratchpad))
+        except Exception as exc:
+            authority_issues = [
+                f"typed chain-tail authority raised {type(exc).__name__}: {exc}"
+            ]
+            receipt = {"status": "UNKNOWN", "unresolved_pairs": None}
+        iter2_path = Path(scratchpad) / "chain_iteration2.md"
+        if not iter2_path.exists() or iter2_path.stat().st_size <= 30:
+            authority_issues.append("chain iteration 2 aggregate delta missing/empty")
+        status = str(receipt.get("status") or "UNKNOWN")
+        if status != "COMPLETE" or authority_issues:
+            sentinel = Path(scratchpad) / "chain_iter2.degraded"
+            existing = (
+                sentinel.read_text(encoding="utf-8", errors="replace")
+                if sentinel.exists() else ""
+            )
+            line = (
+                "[CHAIN_ITER2_TYPED_DEBT] Exact chain-tail closure is not clean: "
+                f"status={status}; denominator={receipt.get('denominator')}; "
+                f"unresolved={receipt.get('unresolved_pairs')}; "
+                f"ledger_sha256={receipt.get('ledger_sha256')}; issues="
+                + "; ".join(authority_issues or receipt.get("issues") or ["unresolved work"])
+                + "\n"
+            )
+            if line not in existing:
+                sentinel.write_text(existing + line, encoding="utf-8")
+        else:
+            try:
+                (Path(scratchpad) / "chain_iter2.degraded").unlink(missing_ok=True)
+            except OSError:
+                pass
+        return []
+    tail_receipt: dict[str, Any] = {}
+    try:
+        from chain_prep import reconcile_chain_iter2_tail
+
+        tail_receipt = reconcile_chain_iter2_tail(scratchpad)
+    except Exception as exc:
+        tail_receipt = {"status": "FAILED", "error": str(exc)}
     iter2_path = scratchpad / "chain_iteration2.md"
-    if iter2_path.exists() and iter2_path.stat().st_size > 30:
+    if (
+        iter2_path.exists()
+        and iter2_path.stat().st_size > 30
+        and tail_receipt.get("status") in {"COMPLETE", "DEGRADED_COVERAGE_GAPS"}
+    ):
+        if tail_receipt.get("status") == "DEGRADED_COVERAGE_GAPS":
+            try:
+                (scratchpad / "chain_iter2.degraded").write_text(
+                    "[CHAIN_ITER2_COVERAGE_GAPS] Structured tail reconciliation "
+                    "left real-signal pairs unexamined. See "
+                    "chain_composition_coverage_gaps.md.\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
         return []
     # Missing or near-empty output. Write sentinel; don't halt.
     try:
         (scratchpad / "chain_iter2.degraded").write_text(
             "[CHAIN_ITER2_DEGRADED] chain_iteration2.md missing or "
-            "<30 bytes. Pipeline continues; iteration 1 chain hypotheses "
-            "are still in chain_hypotheses.md.\n",
+            "<30 bytes, or the structured tail receipt failed. Pipeline "
+            "continues; real-signal omissions remain visible in "
+            "chain_composition_coverage_gaps.md.\n",
             encoding="utf-8",
         )
     except OSError:
@@ -6826,21 +11940,126 @@ _CI_CLEAR_SIGNAL_RE = re.compile(r"\bNO-?GAP\b|\bDOWNGRADE\b", re.IGNORECASE)
 _CI_BLOCK_ANY_RE = re.compile(r"committed-invariant\s*\[\s*[^\]\n]+\]", re.IGNORECASE)
 
 
-def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
-    """SOFT validator for M1 committed-invariant emission (skeptic phases).
+def _late_committed_invariant_replay_issues(scratchpad: Path) -> list[str]:
+    """Side-effect-free replay of every verifier-emitted next-run CI."""
 
-    Recall-positive / additive. Like _validate_exploration_skeptic, it returns []
-    in every branch — it can never set passed=False and can never halt. When a
-    skeptic artifact records value-bearing clears (NO-GAP / DOWNGRADE) but carries
-    NO `committed-invariant [CI-n]` block, it writes a `.ci_gap` sentinel and a
-    warning so the missing falsifiable assertions are visible. Never raises.
+    try:
+        from enumeration_gate import (
+            _inventory_candidate_keys,
+            _receipt_candidate_keys,
+            compute_invariant_assertion_candidates,
+        )
+
+        candidates = compute_invariant_assertion_candidates(scratchpad)
+        expected: list[LateCommittedInvariantAuthority] = []
+        expected_keys: set[str] = set()
+        for candidate in candidates:
+            late = candidate.get("late_ci_authority")
+            if late is None:
+                continue
+            if not isinstance(late, Mapping):
+                raise LateCommittedInvariantError(
+                    stage="DERIVATION",
+                    code="LATE_CI_AUTHORITY_INVALID",
+                    detail="late committed-invariant candidate authority is malformed",
+                )
+            key = str(candidate.get("key") or "")
+            expected_keys.add(key)
+            expected.append(
+                LateCommittedInvariantAuthority.create(
+                    source_artifact=late.get("source_artifact"),
+                    source_artifact_sha256=late.get("source_artifact_sha256"),
+                    committed_invariant_id=late.get("committed_invariant_id"),
+                    committed_invariant_sha256=late.get(
+                        "committed_invariant_sha256"
+                    ),
+                    candidate_key=key,
+                )
+            )
+        ledger_path = scratchpad / LATE_CI_LEDGER_NAME
+        if not ledger_path.is_file():
+            if expected:
+                return [
+                    "late committed-invariant PERSISTENCE/LEDGER_MISSING: "
+                    "verifier-emitted CI has no HUMAN_REVIEW_NEXT_RUN ledger"
+                ]
+            return []
+        payload = json.loads(ledger_path.read_text(encoding="utf-8", errors="strict"))
+        observed = replay_late_committed_invariant_ledger(payload)
+        expected_sorted = tuple(sorted(
+            expected,
+            key=lambda row: (
+                row.source_artifact,
+                row.committed_invariant_id,
+                row.committed_invariant_sha256,
+            ),
+        ))
+        if observed != expected_sorted:
+            return [
+                "late committed-invariant PERSISTENCE/LEDGER_REPLAY_MISMATCH: "
+                "next-run authority differs from verifier CI denominator"
+            ]
+        inventory_keys = _inventory_candidate_keys(scratchpad)
+        receipt_keys = _receipt_candidate_keys(scratchpad)
+        if (
+            not expected_keys.issubset(inventory_keys)
+            or not expected_keys.issubset(receipt_keys)
+            or inventory_keys != receipt_keys
+        ):
+            return [
+                "late committed-invariant EMISSION/CANDIDATE_PERSISTENCE_UNPROVEN: "
+                "inventory and emission receipt do not replay exactly"
+            ]
+        return []
+    except LateCommittedInvariantError as exc:
+        return [
+            f"late committed-invariant {exc.stage}/{exc.code}: {exc.detail}"
+        ]
+    except Exception as exc:
+        return [
+            "late committed-invariant PERSISTENCE/REPLAY_FAILED: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+
+
+def _validate_invariant_commitment(
+    scratchpad: Path, mode: str, *, recover: bool = True
+) -> list[str]:
+    """Validate typed M1 commitment authority and recover valid candidates.
+
+    The typed exploration receipt is authoritative: commitment debt is returned
+    as a phase issue. Legacy Markdown-only gaps and internal validation/recovery
+    failures are also returned, never silently swallowed. ``recover=False`` is
+    the side-effect-free resume/content-gate path.
     """
     if mode != "thorough":
         return []
     try:
         scratchpad = Path(scratchpad)
-    except Exception:
-        return []
+    except Exception as exc:
+        return [f"invariant commitment scratchpad invalid: {type(exc).__name__}: {exc}"]
+    issues: list[str] = []
+    receipt_path = scratchpad / "exploration_clear_receipt.json"
+    if receipt_path.is_file():
+        try:
+            from exploration_clear_lifecycle import load_lifecycle_receipt
+
+            receipt = load_lifecycle_receipt(receipt_path)
+            if receipt.invariant_commitment_status == "DEBT":
+                debt_ids = [
+                    row.obligation_id
+                    for row in receipt.invariant_commitments
+                    if row.status == "DEBT"
+                ]
+                issues.append(
+                    "typed exploration committed-invariant debt: "
+                    + ", ".join(debt_ids[:12])
+                )
+        except Exception as exc:
+            issues.append(
+                "typed exploration committed-invariant receipt invalid: "
+                f"{type(exc).__name__}: {exc}"
+            )
     arts = []
     for name in ("exploration_skeptic_findings.md", "skeptic_findings.md"):
         try:
@@ -6849,15 +12068,16 @@ def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
                 arts.append(p)
         except OSError:
             continue
-    if not arts:
-        return []
     clears = 0
     ci_blocks = 0
     ci_blocks_any = 0
     for p in arts:
         try:
             body = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as exc:
+            issues.append(
+                f"invariant commitment source unreadable ({p.name}): {exc}"
+            )
             continue
         clears += len(_CI_CLEAR_SIGNAL_RE.findall(body))
         ci_blocks += len(_CI_BLOCK_PRESENCE_RE.findall(body))
@@ -6870,24 +12090,52 @@ def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
     # post-verify skeptic candidates remain explicit NEEDS_VERIFICATION review
     # items rather than disappearing.
     recovery_failed = False
-    try:
-        from enumeration_gate import recover_invariant_assertion_candidates
-
-        recover_invariant_assertion_candidates(scratchpad)
-        (scratchpad / "invariant_commitment.ci_recovery_gap").unlink(
-            missing_ok=True
-        )
-    except Exception as exc:
-        recovery_failed = True
+    if recover:
         try:
-            (scratchpad / "invariant_commitment.ci_recovery_gap").write_text(
-                "[INVARIANT_COMMITMENT_RECOVERY_GAP] Committed-invariant "
-                "candidate recovery failed; the source artifact remains but "
-                f"normal verify routing is not proven ({type(exc).__name__}).\n",
-                encoding="utf-8",
+            from enumeration_gate import recover_invariant_assertion_candidates
+
+            recover_invariant_assertion_candidates(scratchpad)
+            (scratchpad / "invariant_commitment.ci_recovery_gap").unlink(
+                missing_ok=True
             )
-        except OSError:
-            pass
+        except LateCommittedInvariantError as exc:
+            recovery_failed = True
+            issues.append(
+                f"late committed-invariant {exc.stage}/{exc.code}: {exc.detail}"
+            )
+            try:
+                (scratchpad / "invariant_commitment.ci_recovery_gap").write_text(
+                    "[INVARIANT_COMMITMENT_RECOVERY_GAP] Late committed-invariant "
+                    f"{exc.stage}/{exc.code}: {exc.detail}\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+        except Exception as exc:
+            recovery_failed = True
+            issues.append(
+                "committed-invariant candidate recovery failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            try:
+                (scratchpad / "invariant_commitment.ci_recovery_gap").write_text(
+                    "[INVARIANT_COMMITMENT_RECOVERY_GAP] Committed-invariant "
+                    "candidate recovery failed; the source artifact remains but "
+                    f"normal verify routing is not proven ({type(exc).__name__}).\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+    if not recover:
+        if ci_blocks_any > ci_blocks:
+            issues.append(
+                "committed-invariant ID-format drift: "
+                f"{ci_blocks_any - ci_blocks} block(s) are not harvestable"
+            )
+        issues.extend(_late_committed_invariant_replay_issues(scratchpad))
+        return list(dict.fromkeys(issues))
+    if not recovery_failed:
+        issues.extend(_late_committed_invariant_replay_issues(scratchpad))
     # Harvest-vs-emit reconciliation (durable guard against ID-format drift):
     # committed-invariant blocks the harvester regex can't parse are silently
     # dropped — the CI-A1-vs-`CI-\d+` class that dark-dropped 12 skeptic
@@ -6895,6 +12143,10 @@ def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
     # harvestable pattern matches, surface it LOUDLY (sentinel + warning) rather
     # than letting the deriver harvest 0 with no signal. Never raises.
     if ci_blocks_any > ci_blocks:
+        issues.append(
+            "committed-invariant ID-format drift: "
+            f"{ci_blocks_any - ci_blocks} block(s) are not harvestable"
+        )
         import logging as _logging
         _logging.getLogger("plamen.validators").warning(
             "[invariant_commitment] CI ID-FORMAT DRIFT: %d committed-invariant "
@@ -6922,13 +12174,16 @@ def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
         except OSError:
             pass
     if clears > 0 and ci_blocks == 0:
+        issues.append(
+            "committed-invariant coverage gap: "
+            f"{clears} value-bearing clear(s), 0 harvestable CI blocks"
+        )
         import logging as _logging
         _logging.getLogger("plamen.validators").warning(
             "[invariant_commitment] %d NO-GAP/DOWNGRADE clear(s) recorded across "
             "skeptic artifacts but 0 committed-invariant [CI-n] blocks emitted — "
             "each value-bearing clear should commit its tacit local guard as a "
-            "falsifiable assertion. WARNING-only; sentinel written, pipeline "
-            "continues (no prior finding is lost).",
+            "falsifiable assertion. Typed debt retained for the owning phase.",
             clears,
         )
         try:
@@ -6937,9 +12192,9 @@ def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
                 f"{clears} value-bearing clear(s) (NO-GAP/DOWNGRADE) but emitted "
                 "0 committed-invariant [CI-n] block(s). Per M1, each value-bearing "
                 "clear should commit its tacit local guard as a falsifiable "
-                "assertion for the falsifier. This is WARNING-only and "
-                "recall-positive: nothing is dropped or downgraded; the missing "
-                "assertions should be surfaced as committed invariants.\n",
+                "assertion for the falsifier. Typed debt is retained; nothing "
+                "is dropped or downgraded, and the missing assertions must be "
+                "surfaced as committed invariants.\n",
                 encoding="utf-8",
             )
         except OSError:
@@ -6949,7 +12204,7 @@ def _validate_invariant_commitment(scratchpad: Path, mode: str) -> list[str]:
             (scratchpad / "invariant_commitment.ci_gap").unlink(missing_ok=True)
         except OSError:
             pass
-    return []
+    return list(dict.fromkeys(issues))
 
 
 def _validate_axis_coverage(scratchpad: Path, mode: str) -> list[str]:
@@ -7091,14 +12346,23 @@ def _parse_inventory_finding_meta_blocks(
     which silently lost every field a uniform-tabular inventory rendered.
     """
     meta: dict[str, dict[str, str]] = {}
+    # Capture the serialization envelope broadly, then validate the complete
+    # identity against the shared producer registry grammar.  A local
+    # ``[A-Z]{2,6}-N`` grammar silently excluded valid nested producer IDs such
+    # as ``DA-ROLE_AXIS-N`` before P0-W could preserve their group membership.
+    # Invalid headings still delimit the preceding block, so malformed data
+    # cannot be swallowed into a valid finding's fields.
     matches = list(re.finditer(
-        r"^#{2,4}\s*Finding\s*\[\s*([A-Z]{" + str(prefix_min)
-        + r",6}-\d+)\s*\]\s*:\s*(.+?)\s*$",
+        r"^#{2,4}\s*Finding\s*\[\s*"
+        r"([A-Za-z][A-Za-z0-9_-]{1,95})\s*\]\s*:\s*(.+?)\s*$",
         text,
-        re.MULTILINE,
+        re.MULTILINE | re.ASCII,
     ))
     for i, m in enumerate(matches):
         fid = m.group(1).strip().upper()
+        prefix = fid.split("-", 1)[0]
+        if len(prefix) < prefix_min or not _INTERNAL_FINDING_ID_RE.fullmatch(fid):
+            continue
         title = m.group(2).strip()
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
@@ -7814,18 +13078,12 @@ def _generate_id_ledger_collision_retry_hint(
 
 
 def _validate_chain_anti_absorption(scratchpad: Path, mode: str) -> list[str]:
-    """HARD-with-retry gate enforcing anti-absorption (phase4c-chain rule 6).
+    """Require typed equivalence or exact independent member work (P0-W).
 
-    For each multi-constituent GRP-* hypothesis, flag a violation when any of:
-      (a) Constituents span ≥2 distinct (file, function) tuples
-      (b) max(severity) − min(severity) > 1 tier
-      (c) Pairwise root-cause Jaccard similarity < 0.30
-    UNLESS the hypothesis body (in hypotheses.md) explicitly contains
-    "Anti-absorption override:" with a reason.
-
-    Returns issue strings. Caller may emit a retry hint and re-spawn chain
-    Agent 1 on attempt 2; if violations persist on attempt 2, caller should
-    log warning and proceed (do not halt the pipeline).
+    Raw grouping, exact locus, lexical similarity, severity proximity, and a
+    chain-authored override are proposals only. The gate clears only for a
+    source-bound independent five-dimension equivalence decision or after the
+    relation overlay retains each member as a separate verification identity.
     """
     # Lazy import to avoid circular dependency at module load
     try:
@@ -7836,11 +13094,30 @@ def _validate_chain_anti_absorption(scratchpad: Path, mode: str) -> list[str]:
     if mode not in ("core", "thorough"):
         return []
     inventory = _parse_inventory_finding_meta(scratchpad)
-    if not inventory:
-        return []
-    mapping = _parse_hypothesis_constituents(scratchpad)
+    mapping = _parse_hypothesis_constituents(
+        scratchpad, apply_chain_grouping_authority=False
+    )
     if not mapping:
         return []
+    resolved_groups: set[str] = set()
+    try:
+        from chain_grouping_authority import load_validated_chain_grouping_relations
+
+        relation = load_validated_chain_grouping_relations(scratchpad)
+        resolved_groups = {
+            str(group.get("group_id") or "").upper()
+            for group in relation.get("groups", [])
+            if isinstance(group, dict)
+            and (
+                group.get("active_identity_mode") == "INDEPENDENT_MEMBERS"
+                or (
+                    group.get("active_identity_mode") == "EQUIVALENT_GROUP"
+                    and group.get("equivalence_status") == "ACCEPTED"
+                )
+            )
+        }
+    except Exception:
+        resolved_groups = set()
     hyp_text = ""
     hyp_path = scratchpad / "hypotheses.md"
     if hyp_path.exists():
@@ -7851,13 +13128,29 @@ def _validate_chain_anti_absorption(scratchpad: Path, mode: str) -> list[str]:
 
     issues: list[str] = []
     for hyp_id, constituents in mapping.items():
-        # Resolve constituent metadata; skip those not in inventory (could be
-        # chain hypothesis IDs CH-*, niche IDs not yet promoted, etc.).
+        # Inventory metadata is proposal telemetry, not the grouping
+        # denominator.  Missing/unparsed members remain independent repair debt.
         meta_list = [
             (cid, inventory[cid]) for cid in constituents if cid in inventory
         ]
-        if len(meta_list) < 2:
+        raw_members = list(dict.fromkeys(constituents))
+        if len(raw_members) < 2:
             continue
+        # P0-W: grouping is never identity authority by itself.  Every raw
+        # multi-member group requires an applied, source-bound equivalence
+        # decision covering mechanism, preconditions, effect, impact, and
+        # remediation.  Locus/title/Jaccard/severity and the chain worker's own
+        # override are proposal telemetry only. Rejected groups disappear from
+        # this active mapping through the relation overlay; only independently
+        # accepted groups can still reach this branch and clear it.
+        if hyp_id.upper() in resolved_groups:
+            continue
+        issues.append(
+            f"{hyp_id} groups {len(raw_members)} constituents "
+            f"({', '.join(raw_members)}) without an applied "
+            "typed equivalence decision; retain independent member verification"
+        )
+        continue
         # Look for explicit override anywhere in the hypothesis's section
         override_present = False
         if hyp_text:
@@ -8097,17 +13390,14 @@ def _validate_chain_baseline_not_regrouped(scratchpad: Path, mode: str) -> list[
 
     # Collect declared depth finding IDs ONLY from `### Finding [ID]:` headings
     # in depth_*_findings.md (not from free-text cross-references), so the gate
-    # cannot false-fire on mentioned-but-not-declared IDs. Only NON-REFUTED
-    # findings (CONFIRMED/PARTIAL/CONTESTED, per _is_reportable_verdict) are
-    # required to be mapped — REFUTED/FALSE_POSITIVE/DUPLICATE depth findings
-    # are legitimately excluded from grouping, so flagging them would false-fire
-    # and (post inline auto-map) leave a non-repairable residual. The same
-    # heading/ID/verdict extraction (`_declared_depth_findings`) is reused by the
-    # inline auto-map repair helper, keeping detection and repair symmetric.
+    # cannot false-fire on mentioned-but-not-declared IDs. Every declared depth
+    # finding remains in the composition denominator regardless of its lexical
+    # verdict. A depth agent's negative label is not central closure authority,
+    # so grouping preserves the item for later broker-backed disposition. The
+    # same heading extraction helper is reused by the inline repair, keeping
+    # detection and repair symmetric.
     for depth_path in sorted(scratchpad.glob("depth_*_findings.md")):
         for did, _title, _sev, _loc, verdict in _declared_depth_findings(depth_path):
-            if not _is_reportable_verdict(verdict):
-                continue
             norm = _norm(did)
             if not norm:
                 continue
@@ -8121,28 +13411,30 @@ def _validate_chain_baseline_not_regrouped(scratchpad: Path, mode: str) -> list[
     return issues
 
 
-def _auto_map_unmapped_depth_findings(scratchpad: Path) -> list[str]:
-    """Inline mechanical repair for the chain baseline-regroup gate.
+def _derive_auto_map_unmapped_depth_findings(
+    scratchpad: Path,
+) -> tuple[list[str], dict[str, bytes]]:
+    """Purely derive the paired chain baseline-regroup repair postimages.
 
-    When `_validate_chain_baseline_not_regrouped` detects unmapped non-refuted
-    depth findings (and/or the surviving MECHANICAL_BASELINE stamp), the driver
+    When `_validate_chain_baseline_not_regrouped` detects unmapped declared depth
+    findings (and/or the surviving MECHANICAL_BASELINE stamp), the driver
     repairs the condition deterministically instead of retrying Chain Agent 1
     (which both costs a 42-min re-run AND re-mints cosmetically-reworded IDs that
     trip `_validate_id_ledger_collisions`). This mirrors the existing inline
     repair pattern used for anti-absorption (`_repair_chain_anti_absorption_splits`):
     repair-then-recheck, never retry.
 
-    For each `depth_*_findings.md` finding whose verdict is reportable
-    (CONFIRMED/PARTIAL/CONTESTED — REFUTED/FALSE_POSITIVE/DUPLICATE skipped via
-    `_is_reportable_verdict`) and whose ID is NOT already mapped, append a solo
-    hypothesis row to BOTH `hypotheses.md` and `finding_mapping.md` using the
+    For each declared `depth_*_findings.md` finding whose ID is NOT already
+    mapped, append a solo hypothesis row to BOTH `hypotheses.md` and
+    `finding_mapping.md` using the
     same scaffold row format as `_write_chain_passthrough_outputs`, preserving
     the finding's ID, title, and severity verbatim from the depth block. Also
     strips the `**Status**: MECHANICAL_BASELINE` stamp from both files so the
     gate's CHECK 1 clears after repair (full-skip self-heal).
 
-    RECALL-SAFE: only ADDS rows, never removes any. Returns the list of finding
-    IDs it appended (empty if nothing to repair).
+    RECALL-SAFE: only ADDS rows, never removes any.  The mutable roots are not
+    written here; the driver commits both derived postimages through one
+    journaled paired PhaseIO successor.
     """
     scratchpad = Path(scratchpad)
     try:
@@ -8152,7 +13444,7 @@ def _auto_map_unmapped_depth_findings(scratchpad: Path) -> list[str]:
             _parse_hypothesis_constituents,
         )
     except Exception:
-        return []
+        return [], {}
 
     def _norm(raw: str) -> str:
         return _normalize_finding_id(str(raw)) or str(raw).strip().upper()
@@ -8188,13 +13480,11 @@ def _auto_map_unmapped_depth_findings(scratchpad: Path) -> list[str]:
             if norm:
                 mapped_ids.add(norm)
 
-    # Collect unmapped non-refuted depth findings (id, title, severity, location).
+    # Collect all unmapped declared depth findings (id, title, severity, location).
     to_append: list[dict[str, str]] = []
     seen_new: set[str] = set()
     for depth_path in sorted(scratchpad.glob("depth_*_findings.md")):
         for did, title, sev, loc, verdict in _declared_depth_findings(depth_path):
-            if not _is_reportable_verdict(verdict):
-                continue
             norm = _norm(did)
             if not norm or norm in mapped_ids or norm in seen_new:
                 continue
@@ -8217,6 +13507,7 @@ def _auto_map_unmapped_depth_findings(scratchpad: Path) -> list[str]:
 
     if not to_append:
         # Nothing to map, but still clear any surviving stamp.
+        postimages: dict[str, bytes] = {}
         for fpath in (hyp_path, map_path):
             if not fpath.exists():
                 continue
@@ -8225,8 +13516,10 @@ def _auto_map_unmapped_depth_findings(scratchpad: Path) -> list[str]:
             except Exception:
                 continue
             if _MECHANICAL_BASELINE_STAMP in text:
-                fpath.write_text(_strip_stamp(text).rstrip("\n") + "\n", encoding="utf-8")
-        return []
+                postimages[fpath.name] = (
+                    _strip_stamp(text).rstrip("\n") + "\n"
+                ).encode("utf-8")
+        return [], postimages
 
     # Allocate fresh H-N hypothesis IDs continuing the existing sequence.
     max_h = 0
@@ -8258,7 +13551,7 @@ def _auto_map_unmapped_depth_findings(scratchpad: Path) -> list[str]:
             f"| {entry['id']} | {hid} | AUTO_MAPPED_DEPTH | {note} |"
         )
 
-    def _append_rows(fpath: Path, rows: list[str]) -> None:
+    def _append_rows(fpath: Path, rows: list[str]) -> bytes:
         try:
             text = fpath.read_text(encoding="utf-8", errors="replace") if fpath.exists() else ""
         except Exception:
@@ -8268,12 +13561,24 @@ def _auto_map_unmapped_depth_findings(scratchpad: Path) -> list[str]:
         if body:
             body += "\n"
         body += "\n".join(rows) + "\n"
-        fpath.write_text(body, encoding="utf-8")
+        return body.encode("utf-8")
 
-    _append_rows(hyp_path, new_hyp_rows)
-    _append_rows(map_path, new_map_rows)
+    postimages = {
+        hyp_path.name: _append_rows(hyp_path, new_hyp_rows),
+        map_path.name: _append_rows(map_path, new_map_rows),
+    }
 
-    return [entry["id"] for entry in to_append]
+    return [entry["id"] for entry in to_append], postimages
+
+
+def _auto_map_unmapped_depth_findings(scratchpad: Path) -> list[str]:
+    """Compatibility writer over the pure paired auto-map derivation."""
+
+    root = Path(scratchpad)
+    mapped, postimages = _derive_auto_map_unmapped_depth_findings(root)
+    for relative, raw in postimages.items():
+        (root / relative).write_bytes(raw)
+    return mapped
 
 
 def _generate_chain_baseline_regroup_retry_hint(issues: list[str]) -> str:
@@ -8493,17 +13798,12 @@ def _build_merged_group(
     }
 
 
-def _repair_chain_anti_absorption_splits(scratchpad: Path) -> int:
-    """Mechanically resolve over-absorbed chain hypotheses via sub-clustering.
+def _repair_chain_anti_absorption_splits_legacy_disabled(scratchpad: Path) -> int:
+    """RETIRED P0-W migration reference; never called or exported.
 
-    The safe repair for an anti-absorption failure is never another merge and
-    never a per-constituent explosion. When a multi-constituent hypothesis
-    violates the (post-Fix-6) rule and lacks an explicit override, partition it
-    into maximal sub-clusters keyed on EXACT (file, function) + severity tier
-    (Fix 5): emit ONE hypothesis per sub-cluster carrying ALL of its source_ids,
-    with singletons only for truly-unshared loci. This resolves a severity-span
-    violation by tier and keeps same-locus clusters intact instead of atomizing
-    them, preserving every source finding without spending a retry.
+    This lossy whole-file rewrite remains only so historical receipts can be
+    interpreted during the dirty-worktree migration. The live function below
+    is relation-only. Locus partitioning has no equivalence authority.
     """
     try:
         from plamen_parsers import _parse_hypothesis_constituents
@@ -8654,6 +13954,71 @@ def _repair_chain_anti_absorption_splits(scratchpad: Path) -> int:
     return len(repaired_rows)
 
 
+def _repair_chain_anti_absorption_splits(scratchpad: Path) -> int:
+    """Apply source-preserving P0-W relation authority.
+
+    The legacy destructive implementation is quarantined above for migration
+    archaeology only and is never called. This function does not rewrite
+    ``hypotheses.md`` or ``finding_mapping.md``. It writes a typed overlay that
+    retains independently addressable members unless an independent, applied
+    decision proves all equivalence dimensions. Exact resume is a no-op.
+    """
+    root = Path(scratchpad)
+    try:
+        from chain_grouping_authority import (
+            load_validated_chain_grouping_relations,
+            write_chain_grouping_relations,
+        )
+        from plamen_parsers import _parse_hypothesis_constituents
+    except Exception:
+        return 0
+    try:
+        load_validated_chain_grouping_relations(root)
+        return 0
+    except Exception:
+        pass
+    inventory = _parse_inventory_finding_meta(root)
+    # No current overlay exists, so the parser returns raw relation proposals.
+    mapping = _parse_hypothesis_constituents(
+        root, apply_chain_grouping_authority=False
+    )
+    if not mapping:
+        return 0
+    try:
+        hypothesis_text = (root / "hypotheses.md").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        hypothesis_text = ""
+    try:
+        count = write_chain_grouping_relations(
+            root, mapping, inventory, hypothesis_text
+        )
+        relation = load_validated_chain_grouping_relations(root)
+        lines = [
+            "# Anti-Absorption Relation-Only Repair (P0-W)",
+            "",
+            "No hypothesis or finding-mapping bytes were rewritten. The typed "
+            "relation receipt is authority; this Markdown is observability only.",
+            "",
+            "| Group | Active Mode | Members |",
+            "|---|---|---|",
+        ]
+        for group in relation.get("groups", []):
+            lines.append(
+                f"| {group['group_id']} | {group['active_identity_mode']} | "
+                f"{', '.join(group['members'])} |"
+            )
+        (root / "anti_absorption_repair.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+        return count
+    except Exception:
+        # Haltless, recall-safe failure: no source transform occurred and the
+        # raw group remains visible for the validator/retry/human-review path.
+        return 0
+
+
 def _generate_anti_absorption_retry_hint(issues: list[str]) -> str:
     """Produce a chain-phase retry hint text describing each violation.
 
@@ -8665,37 +14030,30 @@ def _generate_anti_absorption_retry_hint(issues: list[str]) -> str:
     lines = [
         "## ATTEMPT 2 RETRY — ANTI-ABSORPTION VIOLATIONS",
         "",
-        "Chain Agent 1 attempt 1 grouped findings into hypotheses that violate "
-        "the anti-absorption rule (`phase4c-chain-prompt.md` PHASE 1 rule 6). "
-        "You MUST split the offending hypotheses below into separate "
-        "hypotheses, one per distinct root cause / fix.",
+        "Chain Agent 1 attempt 1 proposed groups without independently applied "
+        "equivalence authority (`phase4c-chain-prompt.md` PHASE 1 rule 6). "
+        "Keep every base claim independently addressable and describe the "
+        "group only as an additive composition relation.",
         "",
         "Anti-absorption rule recap:",
-        "- Constituents in the same hypothesis must share file AND function",
-        "- Severity tier span must be <= 1 (a Medium and a High cannot share a "
-        "Medium hypothesis)",
-        "- Pairwise root-cause token Jaccard similarity must be >= 0.30 "
-        "(metric: `|A ∩ B| / |A ∪ B|` on lowercased word tokens). "
-        "Any pair below 0.30 -> SPLIT into separate hypotheses.",
+        "- Locus, title, Jaccard, and severity are candidate signals only",
+        "- Jaccard is |A intersection B| / |A union B| with the historical "
+        "0.30 candidate threshold; it is never equivalence authority",
+        "- Equivalence requires the same mechanism, preconditions, effect, "
+        "impact, and remediation scope with evidence for every dimension",
+        "- Otherwise preserve one verification obligation per constituent ID.",
         "",
-        "If you believe a violation is intentional (e.g., two findings are "
-        "redundant detections of the same single bug by different agents and "
-        "TRULY require the same fix), add the following line in the "
-        "hypothesis body to override:",
-        "",
-        "    Anti-absorption override: <one-sentence reason>",
-        "",
-        "Without an explicit override, the violations below MUST be resolved "
-        "by splitting:",
+        "A chain-authored override is only a proposal and cannot clear this "
+        "gate. The driver applies or rejects equivalence independently:",
         "",
     ]
     for issue in issues:
         lines.append(f"- {issue}")
     lines.extend([
         "",
-        "When splitting: keep the constituent IDs intact, produce N "
-        "separate GRP-* IDs with the same severity inheritance rule "
-        "(group inherits highest constituent severity).",
+        "Keep constituent IDs intact. Do not mint replacement identities or "
+        "rewrite prior narrative/invariant/evidence fields. The driver patches "
+        "only the active relation overlay.",
         "",
     ])
     return "\n".join(lines)
@@ -8960,6 +14318,16 @@ def _validate_attention_repair(
         qtext = queue.read_text(encoding="utf-8", errors="replace")
     except Exception:
         qtext = ""
+    application_receipt = (
+        scratchpad / "attention_repair_application_receipt.json"
+    )
+    # A model-authored or stale receipt is never authority.
+    application_receipt.unlink(missing_ok=True)
+    binding_match = re.search(
+        r"(?im)^\s*QUEUE_BINDING_SHA256:\s*([a-f0-9]{64})\s*$",
+        qtext,
+    )
+    queue_binding = binding_match.group(1) if binding_match else ""
     queued_rows = [ln for ln in qtext.splitlines() if re.match(r"^\|\s*\d+\s*\|", ln)]
     if not queued_rows:
         return [], []
@@ -8996,6 +14364,30 @@ def _validate_attention_repair(
         re.IGNORECASE,
     )
 
+    def _split_bound_row(raw: str) -> list[str]:
+        body = raw.strip()
+        if body.startswith("|"):
+            body = body[1:]
+        if body.endswith("|"):
+            body = body[:-1]
+        cells: list[str] = []
+        current: list[str] = []
+        escaped = False
+        for char in body:
+            if escaped:
+                current.append(char)
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "|":
+                cells.append("".join(current).strip().strip("`"))
+                current = []
+            else:
+                current.append(char)
+        current_cell = "".join(current).strip().strip("`")
+        cells.append(current_cell)
+        return cells
+
     def _parse_attention_row_no(raw: str) -> int | None:
         m = re.search(r"\b(?:queue\s*)?(?:row\s*)?#?\s*(\d+)\b", str(raw or ""), re.IGNORECASE)
         if not m:
@@ -9007,15 +14399,17 @@ def _validate_attention_repair(
 
     summary_receipts: set[int] = set()
     receipt_context: dict[int, str] = {}
+    structured_receipts: dict[int, list[str]] = {}
     for line in summary_blob.splitlines():
         s = line.strip()
         # Table row: | N | VERDICT | ... |, also accepts | Row 1 | / | #1 |.
         if s.startswith("|"):
-            cells = [c.strip().strip("`") for c in s.strip("|").split("|")]
+            cells = _split_bound_row(s)
             row_no = _parse_attention_row_no(cells[0] if cells else "")
             if row_no is not None and len(cells) >= 2 and any(allowed_verdict_re.search(c) for c in cells[1:]):
                 summary_receipts.add(row_no)
                 receipt_context[row_no] = " | ".join(cells[3:] if len(cells) >= 4 else cells[1:])
+                structured_receipts[row_no] = cells
             continue
         # Bullet fallback: - N: VERDICT ..., * Row N. VERDICT ..., - #N VERDICT ...
         bm = re.match(r"^[-*]\s*((?:queue\s*)?(?:row\s*)?#?\s*\d+)\s*[:.)-]?\s*(.+)$", s, re.I)
@@ -9026,31 +14420,189 @@ def _validate_attention_repair(
                 receipt_context[row_no] = bm.group(2)
     queue_numbers: list[int] = []
     queued_paths: list[str] = []
+    queue_records: dict[int, dict[str, str]] = {}
+    queue_binding_rows: list[dict[str, object]] = []
+    malformed_bound_queue = False
     for line in qtext.splitlines():
         s = line.strip()
         if not re.match(r"^\|\s*\d+\s*\|", s):
             continue
-        cells = [c.strip().strip("`") for c in s.strip("|").split("|")]
+        cells = _split_bound_row(s)
         if len(cells) < 3:
+            if queue_binding:
+                malformed_bound_queue = True
             continue
         row_no: int | None = None
         try:
             row_no = int(cells[0])
             queue_numbers.append(row_no)
+            queue_records[row_no] = {
+                "kind": cells[1],
+                "target": cells[2],
+            }
+            if queue_binding:
+                if len(cells) < 6:
+                    malformed_bound_queue = True
+                else:
+                    queue_binding_rows.append(
+                        {
+                            "row": row_no,
+                            "kind": cells[1],
+                            "target": cells[2],
+                            "reason": cells[3],
+                            "source": cells[4],
+                            "evidence": cells[5],
+                        }
+                    )
         except ValueError:
-            pass
+            if queue_binding:
+                malformed_bound_queue = True
         kind = cells[1].lower()
         if any(token in kind for token in ("uncited", "notread", "file", "path")):
             for cell in (cells[2], cells[-1]):
                 for p in _extract_gap_paths_from_markdown(cell):
                     if p not in queued_paths:
                         queued_paths.append(p)
+    if queue_binding:
+        recomputed_binding = (
+            attention_queue_binding_sha256(queue_binding_rows)
+            if not malformed_bound_queue
+            else ""
+        )
+        if (
+            malformed_bound_queue
+            or len(queue_binding_rows) != len(queue_numbers)
+            or len(queue_numbers) != len(set(queue_numbers))
+            or queue_numbers != list(range(1, len(queue_numbers) + 1))
+            or recomputed_binding != queue_binding
+        ):
+            return [
+                "attention repair queue semantic binding mismatch"
+            ], soft
     missing_receipts = [n for n in queue_numbers if n not in summary_receipts]
     if missing_receipts:
         return [
             "attention repair summary missing queue receipt row(s): "
             + ", ".join(str(n) for n in missing_receipts[:12])
         ], soft
+
+    if queue_binding:
+        if not re.search(
+            rf"(?im)^\s*QUEUE_BINDING_SHA256:\s*{queue_binding}\s*$",
+            summary_blob,
+        ):
+            return [
+                "attention repair summary is stale or unbound: "
+                "QUEUE_BINDING_SHA256 mismatch"
+            ], soft
+        strict_verdicts = {
+            "SAFE",
+            "CONFIRMED",
+            "NO_FINDING",
+            "NEEDS_HUMAN",
+        }
+        accepted_paths: list[str] = []
+        unresolved_paths: list[str] = []
+        receipt_rows: list[dict[str, object]] = []
+        strict_issues: list[str] = []
+        for row_no in queue_numbers:
+            queue_record = queue_records.get(row_no, {})
+            cells = structured_receipts.get(row_no)
+            if cells is None or len(cells) < 5:
+                strict_issues.append(
+                    f"row {row_no} lacks the structured six-column receipt"
+                )
+                continue
+            expected_kind = str(queue_record.get("kind") or "")
+            expected_target = str(queue_record.get("target") or "")
+            actual_kind = cells[1].strip()
+            actual_target = cells[2].strip()
+            verdict = cells[3].strip().upper().replace(" ", "_")
+            evidence = cells[4].strip()
+            notes = cells[5].strip() if len(cells) >= 6 else ""
+            if actual_kind != expected_kind:
+                strict_issues.append(
+                    f"row {row_no} kind drifted from {expected_kind!r}"
+                )
+            if actual_target != expected_target:
+                strict_issues.append(
+                    f"row {row_no} target drifted from exact queue authority"
+                )
+            if verdict not in strict_verdicts:
+                strict_issues.append(
+                    f"row {row_no} has unsupported bound verdict {verdict!r}"
+                )
+            path_target = (
+                Path(expected_target).suffix.lower()
+                in ALL_AUDIT_SOURCE_SUFFIXES
+            )
+            evidence_has_target = _exact_path_literal_present(
+                evidence,
+                expected_target,
+            )
+            if path_target and not evidence_has_target:
+                strict_issues.append(
+                    f"row {row_no} evidence omits exact target path"
+                )
+            if (
+                path_target
+                and verdict != "NEEDS_HUMAN"
+                and not re.search(
+                    rf"{re.escape(expected_target)}:L?\d+\b",
+                    evidence,
+                )
+            ):
+                strict_issues.append(
+                    f"row {row_no} lacks exact file:line evidence"
+                )
+            if path_target and verdict == "NEEDS_HUMAN":
+                unresolved_paths.append(expected_target)
+            elif (
+                path_target
+                and verdict in {"SAFE", "CONFIRMED", "NO_FINDING"}
+            ):
+                accepted_paths.append(expected_target)
+            receipt_rows.append(
+                {
+                    "row": row_no,
+                    "kind": expected_kind,
+                    "target": expected_target,
+                    "verdict": verdict,
+                    "evidence": evidence,
+                    "notes": notes,
+                    "coverage_accepted": (
+                        path_target
+                        and verdict in {"SAFE", "CONFIRMED", "NO_FINDING"}
+                    ),
+                }
+            )
+        if strict_issues:
+            return [
+                "attention repair bound receipt failed: "
+                + "; ".join(strict_issues[:12])
+            ], soft
+        queue_sha256 = hashlib.sha256(queue.read_bytes()).hexdigest()
+        payload = {
+            "schema": "plamen.attention-repair-application.v1",
+            "status": "INCOMPLETE" if unresolved_paths else "COMPLETE",
+            "queue_binding_sha256": queue_binding,
+            "queue_file_sha256": queue_sha256,
+            "rows": receipt_rows,
+            "accepted_paths": sorted(set(accepted_paths)),
+            "unresolved_paths": sorted(set(unresolved_paths)),
+        }
+        temporary = application_receipt.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, application_receipt)
+        if unresolved_paths:
+            soft.append(
+                "attention repair retained NEEDS_HUMAN path debt: "
+                + ", ".join(sorted(set(unresolved_paths))[:8])
+            )
+        return [], soft
 
     def _attention_path_cited(path: str) -> bool:
         norm_path = _norm_loc(path)
@@ -9246,14 +14798,6 @@ _STEP_TRACE_VALIDATION_RE = re.compile(
     r"<!--\s*PLAMEN_STEP_TRACE_VALIDATION:\s*(EXTRACTED|UNKNOWN)\s*-->",
     re.IGNORECASE,
 )
-_STRICT_STEP_SOURCE_CITATION_RE = re.compile(
-    r"(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_./\\-]+\."
-    r"(?:rs|go|sol|move|py|c|cc|cpp|h|hpp|java|ts|js))"
-    r":L(?P<line>[1-9][0-9]*)",
-    re.IGNORECASE,
-)
-
-
 def _embedded_step_trace_table(text: str) -> tuple[list[str], list[dict[str, str]]] | None:
     """Return the one embedded trace table, preserving every table line.
 
@@ -9499,9 +15043,12 @@ def _step_trace_project_root(scratchpad: Path) -> Path:
 
 
 def _step_trace_evidence_has_citation(
-    ev: str, scratchpad: Path | None = None
+    ev: str,
+    scratchpad: Path | None = None,
+    *,
+    resolver: MethodologyCitationResolver | None = None,
 ) -> bool:
-    """True only for a strict, in-project, existing ``source.ext:Lline``.
+    """True for a normalized in-project ``source.ext[:L]line`` application locus.
 
     Tags do not certify execution by themselves.  A tag is accepted only when
     its own text contains a citation that resolves to an existing source file
@@ -9510,32 +15057,13 @@ def _step_trace_evidence_has_citation(
     ev = (ev or "").strip()
     if not ev or ev == "-" or scratchpad is None:
         return False
-    root = _step_trace_project_root(scratchpad)
-    scratch_resolved = scratchpad.resolve()
-    for match in _STRICT_STEP_SOURCE_CITATION_RE.finditer(ev):
-        raw_path = match.group("path").replace("\\", "/")
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            candidate = root / candidate
-        try:
-            resolved = candidate.resolve()
-            resolved.relative_to(root)
-            if scratchpad.name == ".scratchpad":
-                try:
-                    resolved.relative_to(scratch_resolved)
-                    continue
-                except ValueError:
-                    pass
-            if not resolved.is_file():
-                continue
-            requested_line = int(match.group("line"))
-            with resolved.open("r", encoding="utf-8", errors="replace") as handle:
-                line_count = sum(1 for _ in handle)
-            if requested_line <= line_count:
-                return True
-        except (OSError, ValueError):
-            continue
-    return False
+    if resolver is None:
+        root = _step_trace_project_root(scratchpad)
+        excluded = (
+            scratchpad if scratchpad.name == ".scratchpad" else root / ".scratchpad"
+        )
+        resolver = MethodologyCitationResolver(root, scratchpad=excluded)
+    return resolver.has_resolvable_citation(ev)
 
 
 def _step_trace_has_ceremonial_yes(trace_path: Path) -> bool:
@@ -9548,7 +15076,7 @@ def _step_trace_has_ceremonial_yes(trace_path: Path) -> bool:
 
     The shared evidence contract is intentionally strict: prose line forms,
     `(general)`, and bare evidence tags do not prove execution. A tag counts
-    only when it embeds a resolvable project-source `file:Lline`.
+    only when it embeds a resolvable project-source `file:line` or `file:Lline`.
     """
     try:
         text = trace_path.read_text(encoding="utf-8", errors="replace")
@@ -9557,11 +15085,15 @@ def _step_trace_has_ceremonial_yes(trace_path: Path) -> bool:
     rows = _parse_step_trace_rows(text)
     if not rows:
         return True
+    scratchpad = trace_path.parent
+    root = _step_trace_project_root(scratchpad)
+    excluded = scratchpad if scratchpad.name == ".scratchpad" else root / ".scratchpad"
+    resolver = MethodologyCitationResolver(root, scratchpad=excluded)
     for row in rows:
         if row.get("executed", "").strip().lower() != "yes":
             continue
         if not _step_trace_evidence_has_citation(
-            row.get("evidence", ""), trace_path.parent
+            row.get("evidence", ""), trace_path.parent, resolver=resolver
         ):
             return True
     return False
@@ -9622,6 +15154,13 @@ def _check_step_execution_traces(
 
     # Check 2: ceremonial-yes detection — yes rows without evidence
     invalid_yes_gaps: list[dict[str, str]] = []
+    project_root = _step_trace_project_root(scratchpad)
+    excluded = (
+        scratchpad if scratchpad.name == ".scratchpad" else project_root / ".scratchpad"
+    )
+    citation_resolver = MethodologyCitationResolver(
+        project_root, scratchpad=excluded
+    )
     for f in sorted(scratchpad.glob(_STEP_TRACE_GLOB)):
         agent = f.name.replace("step_execution_trace_", "").replace(".md", "")
         try:
@@ -9631,7 +15170,9 @@ def _check_step_execution_traces(
         for row in _parse_step_trace_rows(text):
             if row.get("executed", "").lower() == "yes":
                 has_citation = _step_trace_evidence_has_citation(
-                    row.get("evidence", ""), scratchpad
+                    row.get("evidence", ""),
+                    scratchpad,
+                    resolver=citation_resolver,
                 )
                 if not has_citation:
                     invalid_yes_gaps.append({
@@ -10034,6 +15575,256 @@ def _dedup_decision_coverage_detail(scratchpad: Path) -> dict[str, Any]:
         "missing_count": missing_count,
         "missing_rows": pair_rows[accounted:],
     }
+
+
+_REPORT_DEDUP_DECISION_ID_RE = re.compile(
+    r"\b([CHMLI]-\d{1,3})\b", re.IGNORECASE
+)
+
+
+def _report_dedup_ids_from_cell(cell: str) -> list[str]:
+    """Return canonical report IDs from one structured Markdown cell only."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in _REPORT_DEDUP_DECISION_ID_RE.finditer(str(cell or "")):
+        report_id = match.group(1).upper()
+        if report_id not in seen:
+            seen.add(report_id)
+            out.append(report_id)
+    return out
+
+
+def _report_dedup_decision_dispositions(
+    scratchpad: Path,
+) -> tuple[dict[str, str], list[str]]:
+    """Parse exact unordered-pair dispositions from the agent decision tables.
+
+    IDs in reasons, Quality Observation rows, or unrelated tables never count.
+    MERGE rows are interpreted through the Survivor/Absorbed columns; reviewed
+    rows use only their Report-ID(s) column.  This deliberately avoids the old
+    global-ID-presence proxy, which could falsely dispose a pair merely because
+    its two endpoints appeared in unrelated prose or rows.
+    """
+    path = Path(scratchpad) / "report_dedup_agent_decisions.md"
+    if not path.exists():
+        return {}, ["report_dedup_agent_decisions.md is missing"]
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {}, [f"report_dedup_agent_decisions.md is unreadable: {exc}"]
+
+    dispositions: dict[str, str] = {}
+    conflicts: set[str] = set()
+    issues: list[str] = []
+    section = ""
+    headers: list[str] = []
+
+    def _record(pair_key: str, disposition: str) -> None:
+        existing = dispositions.get(pair_key)
+        if existing is not None and existing != disposition:
+            conflicts.add(pair_key)
+            return
+        dispositions[pair_key] = disposition
+
+    def _header_index(candidates: tuple[str, ...]) -> int | None:
+        for index, header in enumerate(headers):
+            normalized = _normalize_manifest_header(header)
+            if any(candidate in normalized for candidate in candidates):
+                return index
+        return None
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        h2 = re.match(r"^\s*##(?!#)\s+(.+?)\s*$", line)
+        if h2:
+            title = re.sub(r"[^a-z0-9]+", " ", h2.group(1).lower()).strip()
+            if "merge" in title:
+                section = "MERGE"
+            elif "kept separate" in title or (
+                "reviewed" in title and "separate" in title
+            ):
+                section = "KEEP_SEPARATE"
+            else:
+                section = ""
+            headers = []
+            continue
+        if not section:
+            continue
+        stripped = line.strip()
+        if not stripped.startswith("|") or _is_separator_row(stripped):  # noqa: F405
+            continue
+        cells = _split_markdown_table_row(stripped)
+        if not cells:
+            continue
+
+        # A table header carries no report IDs.  Retain it so expanded prompt
+        # schemas (for example a title column between survivor and absorbed)
+        # remain machine-readable without scanning the free-text reason cells.
+        if not any(_report_dedup_ids_from_cell(cell) for cell in cells):
+            normalized = [_normalize_manifest_header(cell) for cell in cells]
+            if section == "MERGE" and any("survivor" in h for h in normalized):
+                headers = cells
+            elif section == "KEEP_SEPARATE" and any(
+                "report_id" in h or h == "ids" for h in normalized
+            ):
+                headers = cells
+            continue
+
+        if section == "MERGE":
+            survivor_index = _header_index(("survivor",))
+            absorbed_index = _header_index(("absorbed",))
+            same_root_index = _header_index(("same_root_cause", "same_root"))
+            if survivor_index is None or absorbed_index is None:
+                # Canonical compact schema: Survivor | Absorbed | ...
+                survivor_index, absorbed_index = 0, 1
+            if max(survivor_index, absorbed_index) >= len(cells):
+                issues.append(
+                    f"MERGE row {line_number} does not match its table header"
+                )
+                continue
+            if same_root_index is not None:
+                if same_root_index >= len(cells):
+                    issues.append(
+                        f"MERGE row {line_number} lacks Same Root Cause value"
+                    )
+                    continue
+                if not re.fullmatch(r"yes", cells[same_root_index].strip(), re.I):
+                    # NO is a veto, not a merge disposition.  The exact pair
+                    # must appear in Reviewed - Kept Separate to be accounted.
+                    continue
+            survivors = _report_dedup_ids_from_cell(cells[survivor_index])
+            absorbed_ids = _report_dedup_ids_from_cell(cells[absorbed_index])
+            if len(survivors) != 1 or not absorbed_ids:
+                issues.append(
+                    f"MERGE row {line_number} lacks one survivor and an absorbed ID"
+                )
+                continue
+            survivor = survivors[0]
+            for absorbed in absorbed_ids:
+                try:
+                    _record(
+                        _report_dedup_pair_key(survivor, absorbed),  # noqa: F405
+                        "MERGE",
+                    )
+                except ValueError as exc:
+                    issues.append(f"MERGE row {line_number} is invalid: {exc}")
+            continue
+
+        report_ids_index = _header_index(("report_id", "finding_id", "ids"))
+        if report_ids_index is None:
+            report_ids_index = 0
+        if report_ids_index >= len(cells):
+            issues.append(
+                f"Reviewed row {line_number} does not match its table header"
+            )
+            continue
+        report_ids = _report_dedup_ids_from_cell(cells[report_ids_index])
+        if len(report_ids) < 2:
+            issues.append(
+                f"Reviewed row {line_number} lacks an exact pair in its ID cell"
+            )
+            continue
+        for left_index, left in enumerate(report_ids):
+            for right in report_ids[left_index + 1:]:
+                try:
+                    _record(
+                        _report_dedup_pair_key(left, right),  # noqa: F405
+                        "KEEP_SEPARATE",
+                    )
+                except ValueError as exc:
+                    issues.append(f"Reviewed row {line_number} is invalid: {exc}")
+
+    for pair_key in sorted(conflicts):
+        dispositions.pop(pair_key, None)
+        issues.append(
+            f"conflicting MERGE and KEEP_SEPARATE dispositions for {pair_key}"
+        )
+    return dispositions, issues
+
+
+def _report_dedup_exact_pair_coverage_detail(
+    scratchpad: Path,
+) -> dict[str, Any]:
+    """Reconcile every typed candidate against an exact pair disposition."""
+    detail: dict[str, Any] = {
+        "denominator_count": 0,
+        "accounted_count": 0,
+        "missing_count": 0,
+        "projected_count": 0,
+        "projected_accounted_count": 0,
+        "projected_missing_count": 0,
+        "tail_count": 0,
+        "tail_accounted_count": 0,
+        "tail_missing_count": 0,
+        "missing_pair_keys": [],
+        "projected_missing_pair_keys": [],
+        "tail_missing_pair_keys": [],
+        "denominator_digest": "",
+        "ledger_issues": [],
+        "decision_schema_issues": [],
+    }
+    try:
+        ledger = _load_report_dedup_candidate_ledger(scratchpad)  # noqa: F405
+    except RuntimeError as exc:
+        detail["ledger_issues"] = [str(exc)]
+        return detail
+
+    pairs = ledger["pairs"]
+    all_keys = [str(row["pair_key"]) for row in pairs]
+    projected_keys = [
+        str(row["pair_key"])
+        for row in pairs
+        if row.get("projection_rank") is not None
+    ]
+    tail_keys = [
+        str(row["pair_key"])
+        for row in pairs
+        if row.get("projection_rank") is None
+    ]
+    dispositions, decision_issues = _report_dedup_decision_dispositions(scratchpad)
+    disposed = set(dispositions)
+    missing = [key for key in all_keys if key not in disposed]
+    projected_missing = [key for key in projected_keys if key not in disposed]
+    tail_missing = [key for key in tail_keys if key not in disposed]
+
+    detail.update({
+        "denominator_count": len(all_keys),
+        "accounted_count": len(all_keys) - len(missing),
+        "missing_count": len(missing),
+        "projected_count": len(projected_keys),
+        "projected_accounted_count": len(projected_keys) - len(projected_missing),
+        "projected_missing_count": len(projected_missing),
+        "tail_count": len(tail_keys),
+        "tail_accounted_count": len(tail_keys) - len(tail_missing),
+        "tail_missing_count": len(tail_missing),
+        "missing_pair_keys": missing,
+        "projected_missing_pair_keys": projected_missing,
+        "tail_missing_pair_keys": tail_missing,
+        "denominator_digest": str(ledger.get("denominator_digest") or ""),
+        "decision_schema_issues": decision_issues,
+    })
+    return detail
+
+
+def _validate_report_dedup_exact_pair_coverage(scratchpad: Path) -> list[str]:
+    """Return loud, non-mutating issues for denominator or coverage defects."""
+    detail = _report_dedup_exact_pair_coverage_detail(scratchpad)
+    issues = [
+        f"report dedup typed candidate ledger: {issue}"
+        for issue in detail.get("ledger_issues", [])
+    ]
+    issues.extend(
+        f"report dedup decision schema: {issue}"
+        for issue in detail.get("decision_schema_issues", [])
+    )
+    if int(detail.get("missing_count") or 0):
+        issues.append(
+            "report dedup exact-pair coverage: "
+            f"{detail['accounted_count']}/{detail['denominator_count']} disposed; "
+            f"projected missing={detail['projected_missing_count']}, "
+            f"tail missing={detail['tail_missing_count']}; "
+            f"denominator={detail['denominator_digest']}"
+        )
+    return issues
 
 
 def _check_dedup_decision_coverage(scratchpad: Path) -> list[str]:
@@ -10672,7 +16463,13 @@ def _check_notread_priority_coverage(
 
 
 def _validate_rc_parity(
-    phase: Phase, scratchpad: Path, rc: int, backend: str = "claude",
+    phase: Phase,
+    scratchpad: Path,
+    rc: int,
+    backend: str = "claude",
+    *,
+    execution_policy: Optional[ExecutionPolicy] = None,
+    launch_digest: Optional[str] = None,
 ) -> list[str]:
     """Parity check for rc=-2 (timeout-killed) phases (A3).
 
@@ -10754,7 +16551,12 @@ def _validate_rc_parity(
                         "recognizable build keywords — LLM prose check (soft)"
                     )
         elif name.startswith("verify") or name in SC_VERIFY_PHASE_NAMES:
-            shard_issues = _validate_verify_completion(scratchpad, name)
+            shard_issues = _validate_verify_completion(
+                scratchpad,
+                name,
+                execution_policy=execution_policy,
+                launch_digest=launch_digest,
+            )
             if shard_issues:
                 issues.extend(shard_issues)
             # Every hypothesis ID in hypotheses.md must have >=1
@@ -10864,6 +16666,38 @@ def _canonical_internal_id_key(raw: str) -> str:
     return re.sub(r"-0+(\d)", r"-\1", fid)
 
 
+def _report_disposition_run_id(scratchpad: Path, explicit: str | None = None) -> str:
+    """Resolve the durable run identity used by P0-R typed decisions."""
+    if explicit:
+        return str(explicit)
+    checkpoint = Path(scratchpad) / "_v2_checkpoint.json"
+    try:
+        payload = json.loads(checkpoint.read_text(encoding="utf-8", errors="strict"))
+        run_id = str(payload.get("run_id") or "").strip()
+        if run_id:
+            return run_id
+    except (OSError, UnicodeError, ValueError, TypeError):
+        pass
+    return "validation-unbound"
+
+
+def _authorized_report_nonbody_keys(
+    scratchpad: Path, *, run_id: str | None = None,
+) -> dict[str, dict[str, str]]:
+    try:
+        rows = _authorized_report_nonbody_ids(
+            Path(scratchpad),
+            run_id=_report_disposition_run_id(scratchpad, run_id),
+        )
+    except Exception:
+        return {}
+    return {
+        _canonical_internal_id_key(fid): dict(row)
+        for fid, row in rows.items()
+        if _canonical_internal_id_key(fid)
+    }
+
+
 def _verify_filename_finding_id(path: Path) -> str:
     m = re.match(r"verify_(?:F-)?([A-Z][A-Z0-9\-]*\d+)\.md$", path.name, re.IGNORECASE)
     if not m:
@@ -10940,29 +16774,72 @@ def _collect_report_promoted_ids(
     return promoted
 
 
-_REPORT_COVERAGE_ACK_STATUSES = {
-    "PROMOTED",
-    "MERGED",
-    "MERGE_INTO",
-    "DUPLICATE",
-    "APPENDIX_ONLY",
-    "DROP_FALSE_POSITIVE",
-    "DROP_NON_SECURITY",
-    "DROP_DESIGN_CONFIRMATION",
-    "DROP_UNACTIONABLE_SPECULATION",
-    "FALSE_POSITIVE",
-    "DEFERRED",
-    "EXCLUDED",
-}
+_REPORT_DROPOUT_RETENTION_SCHEMA = "plamen.report_dropout_retention.v1"
+_REPORT_DROPOUT_RETENTION_RECEIPT = "report_dropout_retention.json"
+_REPORT_DROPOUT_RETENTION_PROJECTION = "report_semantic_report_dropouts.md"
+
+
+def _report_dropout_retention_authorized_ids(scratchpad: Path) -> set[str]:
+    """Validate the typed receipt and its delivered human-review projection."""
+    receipt_path = scratchpad / _REPORT_DROPOUT_RETENTION_RECEIPT
+    projection_path = scratchpad / _REPORT_DROPOUT_RETENTION_PROJECTION
+    if not receipt_path.is_file() or not projection_path.is_file():
+        return set()
+    try:
+        payload = json.loads(receipt_path.read_text(encoding="utf-8", errors="strict"))
+        projection_bytes = projection_path.read_bytes()
+    except Exception:
+        return set()
+    if not isinstance(payload, dict) or payload.get("schema_version") != _REPORT_DROPOUT_RETENTION_SCHEMA:
+        return set()
+    receipt_sha = payload.get("receipt_sha256")
+    unsigned = dict(payload)
+    unsigned.pop("receipt_sha256", None)
+    expected_receipt_sha = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if receipt_sha != expected_receipt_sha:
+        return set()
+    if payload.get("projection_artifact") != _REPORT_DROPOUT_RETENTION_PROJECTION:
+        return set()
+    if payload.get("projection_sha256") != hashlib.sha256(projection_bytes).hexdigest():
+        return set()
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or payload.get("row_count") != len(rows):
+        return set()
+    authorized: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {
+            "candidate_id",
+            "retention_target",
+            "source_artifact",
+            "source_sha256",
+        }:
+            return set()
+        fid = _normalize_finding_id(str(row.get("candidate_id") or ""))
+        if not fid or row.get("retention_target") != "HUMAN_REVIEW":
+            return set()
+        source_name = str(row.get("source_artifact") or "")
+        if Path(source_name).name != source_name:
+            return set()
+        source_path = scratchpad / source_name
+        try:
+            source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        except Exception:
+            return set()
+        if row.get("source_sha256") != source_sha:
+            return set()
+        authorized.add(fid)
+    return authorized
 
 
 def _collect_report_coverage_acknowledged_ids(scratchpad: Path) -> set[str]:
-    """Return candidate IDs explicitly accounted for by report_coverage.md.
+    """Return IDs with exact delivered-human-review retention authority.
 
-    `report_coverage.md` is an internal ledger emitted by report_index. It is
-    allowed to acknowledge source IDs that should not become standalone client
-    body sections because they were merged, duplicated, demoted to appendix, or
-    explicitly dropped. Do not treat header rows or UNACCOUNTED rows as a pass.
+    ``report_coverage.md`` is a renderer ledger, not disposition authority.
+    Bare promoted, merged, excluded, deferred, or drop prose never satisfies
+    this reader. Only ``HUMAN_REVIEW_DELIVERED`` rows whose IDs also appear in
+    the current source-hash-bound retention receipt are acknowledged here.
     """
     path = scratchpad / "report_coverage.md"
     if not path.exists():
@@ -10971,7 +16848,13 @@ def _collect_report_coverage_acknowledged_ids(scratchpad: Path) -> set[str]:
         text = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return set()
+    # P0-R: report_coverage.md is a renderer ledger, not a disposition
+    # authority.  The only terminal delivery it can prove is the exact
+    # source-hash-bound HUMAN_REVIEW projection emitted by P0-AA.  PROMOTED is
+    # proven by the Master/body path; MERGED/APPENDIX/DROP require the typed
+    # independent-decision/applied-alias authority; bare DEFERRED is debt.
     acknowledged: set[str] = set()
+    dropout_retention_ids = _report_dropout_retention_authorized_ids(scratchpad)
     id_col: int | None = None
     status_cols: list[int] = []
     for raw in text.splitlines():
@@ -11021,12 +16904,13 @@ def _collect_report_coverage_acknowledged_ids(scratchpad: Path) -> set[str]:
                 continue
         if re.search(r"\b(?:CANDIDATE|FINDING|INTERNAL)\s+ID\b", id_cell, re.IGNORECASE):
             continue
-        if "UNACCOUNTED" in status_text or "AUTO_EXCLUDED" in status_text:
-            continue
-        if not any(status in status_text for status in _REPORT_COVERAGE_ACK_STATUSES):
+        if "HUMAN_REVIEW_DELIVERED" not in status_text:
             continue
         for m in _INTERNAL_FINDING_ID_RE.finditer(id_cell):
-            acknowledged.add(m.group(1))
+            fid = m.group(1)
+            if fid not in dropout_retention_ids:
+                continue
+            acknowledged.add(fid)
     return acknowledged
 
 
@@ -11104,6 +16988,16 @@ def _ensure_report_consolidation_map(
         for rec in active_records
         if str(rec.get("report_id") or "").strip()
     }
+    active_internal_to_report = {
+        _canonical_internal_id_key(str(rec.get("finding_id") or "")): str(
+            rec.get("report_id") or ""
+        ).strip()
+        for rec in active_records
+        if (
+            _canonical_internal_id_key(str(rec.get("finding_id") or ""))
+            and str(rec.get("report_id") or "").strip()
+        )
+    }
     try:
         active_report_ids = set(active_titles)
     except Exception:
@@ -11127,44 +17021,31 @@ def _ensure_report_consolidation_map(
                 continue
             rows.append((sid, rid, title))
 
-    coverage_path = scratchpad / "report_coverage.md"
-    if coverage_path.exists():
-        try:
-            coverage_text = coverage_path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            coverage_text = ""
-        for raw in coverage_text.splitlines():
-            line = raw.strip()
-            if not line.startswith("|") or re.fullmatch(r"\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?", line):
-                continue
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            if len(cells) >= 5:
-                id_cell = cells[1]
-                status_text = f"{cells[3]} {cells[4]}".upper()
-                reason = cells[4]
-            elif len(cells) >= 3:
-                id_cell = cells[1]
-                status_text = cells[2].upper()
-                reason = cells[2]
-            else:
-                continue
-            if "UNACCOUNTED" in status_text:
-                continue
-            if not any(status in status_text for status in _REPORT_COVERAGE_ACK_STATUSES):
-                continue
-            source_ids = [m.group(1) for m in _INTERNAL_FINDING_ID_RE.finditer(id_cell)]
-            if not source_ids:
-                continue
-            report_ids = []
-            for rm in re.finditer(r"\b([CHMLI]-\d{1,3})\b", reason, re.IGNORECASE):
-                rid = _normalize_report_id(rm.group(1)) or rm.group(1).upper()
-                if not active_report_ids or rid in active_report_ids:
-                    report_ids.append(rid)
-            if not report_ids:
-                continue
-            for sid in source_ids:
-                for rid in report_ids:
-                    rows.append((sid, rid, active_titles.get(rid, "coverage-accounted finding")))
+    # Renderer coverage prose cannot create consolidation authority.  Extend
+    # the map only from the independently replayed P0-R applied-alias receipt,
+    # and only when its terminal alias target is an actually active body
+    # record.  This replaces the former undefined lexical-status allow-list
+    # and prevents PROMOTED/MERGED prose from silently laundering a drop.
+    for source_key, disposition in sorted(
+        _authorized_report_nonbody_keys(scratchpad).items()
+    ):
+        if disposition.get("authority_kind") != "AUTHORIZED_ALIAS":
+            continue
+        target_key = _canonical_internal_id_key(
+            disposition.get("alias_target", "")
+        )
+        report_id = active_internal_to_report.get(target_key, "")
+        if not report_id or (
+            active_report_ids and report_id not in active_report_ids
+        ):
+            continue
+        rows.append(
+            (
+                source_key,
+                report_id,
+                active_titles.get(report_id, "authorized consolidated finding"),
+            )
+        )
     if not rows:
         return 0
     # Deduplicate while preserving stable order.
@@ -11273,10 +17154,11 @@ def _rewrite_public_report_references(
 def _check_promotion_symmetry(
     scratchpad: Path, project_root: str
 ) -> list[str]:
-    """Diff verify-receipts against report-acknowledged IDs.
+    """Diff CONFIRMED verifier receipts against authorized delivery.
 
-    Returns a list of FAIL messages. Empty = all CONFIRMED verifier
-    findings reached the report (body, appendix, or consolidated).
+    Raw renderer Markdown/JSON can account for identity but cannot authorize
+    a non-body disposition. A receipt passes only through a body section or
+    exact P0-R independent-decision/applied-alias authority.
     """
     pr = Path(project_root) / "AUDIT_REPORT.md"
     ri = scratchpad / "report_index.md"
@@ -11295,104 +17177,64 @@ def _check_promotion_symmetry(
             itxt = ri.read_text(encoding="utf-8", errors="replace")
         except Exception:
             itxt = ""
-    promoted = _collect_report_promoted_ids(rtxt, itxt)
-    internal_ack_text = ""
-    for internal_path in (
-        scratchpad / "report_consolidation_internal.md",
-        scratchpad / "report_traceability_internal.md",
-    ):
-        if internal_path.exists():
-            try:
-                internal_ack_text += "\n" + internal_path.read_text(
-                    encoding="utf-8", errors="replace"
-                )
-            except Exception:
-                pass
-    if internal_ack_text:
-        promoted.update(_collect_report_promoted_ids("", internal_ack_text))
-    promoted.update(_collect_report_coverage_acknowledged_ids(scratchpad))
-    records_path = scratchpad / "report_records.json"
-    if records_path.exists():
-        try:
-            records = json.loads(records_path.read_text(encoding="utf-8", errors="replace"))
-            for rec in records.get("active", []):
-                for fid in (rec.get("absorbed_finding_ids") or [rec.get("finding_id")]):
-                    if fid:
-                        promoted.add(str(fid))
-            for rec in records.get("excluded", []):
-                fid = rec.get("finding_id")
-                if fid:
-                    promoted.add(str(fid))
-        except Exception:
-            pass
-
-    # Stronger body-retention check: if an internal ID has a report-ID mapping,
-    # the corresponding `### [X-NN]` body section must exist unless the ID is
-    # explicitly excluded/consolidated. Merely appearing in report_index.md is
-    # not enough; that was the DCI-14 / graph-queue dropout class.
     assignments, _source = get_tier_assignments(scratchpad)
-    promoted_keys = {_canonical_internal_id_key(p) for p in promoted}
     internal_to_report = {
         _canonical_internal_id_key(a["finding_id"]): a["report_id"]
         for a in assignments
         if a.get("finding_id") and a.get("report_id")
     }
-    body_report_ids = set(re.findall(
+    # Driver-rendered active records may supply identity-to-body mapping when
+    # the legacy index view is unavailable. They can prove body delivery only;
+    # excluded records never grant non-body authority.
+    records_path = scratchpad / "report_records.json"
+    if records_path.is_file():
+        try:
+            records = json.loads(records_path.read_text(
+                encoding="utf-8", errors="strict"
+            ))
+            for record in records.get("active", []):
+                fid = _canonical_internal_id_key(
+                    str(record.get("finding_id") or "")
+                )
+                rid = str(record.get("report_id") or "").upper()
+                if fid and rid:
+                    internal_to_report.setdefault(fid, rid)
+        except (OSError, UnicodeError, ValueError, TypeError):
+            pass
+    body_report_ids = {rid.upper() for rid in re.findall(
         r"^#{1,3}\s*(?:\[REPORT-BLOCKED[^\]]*\]\s*)?\[([CHMLI]-\d+)\]", rtxt, re.MULTILINE
-    ))
-    explicitly_non_body: set[str] = set()
-    ri_text = itxt or ""
-    for section_name in (
-        r"Excluded\s+Findings",
-        r"Consolidation\s+Map",
-        r"Consolidated\s+Findings",
-    ):
-        m = re.search(
-            rf"(?im)^##\s+{section_name}.*?(?=^##\s|\Z)",
-            ri_text,
-            re.MULTILINE | re.DOTALL,
-        )
-        if m:
-            explicitly_non_body.update(
-                _canonical_internal_id_key(x.group(1))
-                for x in _INTERNAL_FINDING_ID_RE.finditer(m.group(0))
-            )
+    )}
+    authority = _authorized_report_nonbody_keys(scratchpad)
 
     # Material-harm body floor: a CONFIRMED finding dispositioned APPENDIX is
     # relocated to Appendix C (a row, not a `### [X-NN]` body section). That is
     # NOT a dropout — acknowledge it via its mapped internal id(s) so the
     # symmetry check does not flag the deliberate relocation.
-    appendix_rids = _appendix_disposition_report_ids(scratchpad)
-    if appendix_rids:
-        for a in assignments:
-            if (a.get("report_id") or "").upper() not in appendix_rids:
-                continue
-            fid_val = a.get("finding_id") or ""
-            if not fid_val:
-                continue
-            explicitly_non_body.add(_canonical_internal_id_key(fid_val))
-            for piece in re.split(r"[+,\s]+", fid_val):
-                piece = piece.strip()
-                if piece:
-                    explicitly_non_body.add(_canonical_internal_id_key(piece))
-
     dropped: list[str] = []
     for fid in sorted(receipts):
         key = _canonical_internal_id_key(fid)
         rid = internal_to_report.get(key)
-        if rid:
-            if rid not in body_report_ids and key not in explicitly_non_body:
-                dropped.append(fid)
+        if rid and rid.upper() in body_report_ids:
             continue
-        if key not in promoted_keys:
-            dropped.append(fid)
+        disposition = authority.get(key, {})
+        kind = disposition.get("authority_kind", "")
+        if kind in {"REFUTED", "AUTHORIZED_ZERO_HARM"}:
+            continue
+        if kind == "AUTHORIZED_ALIAS":
+            target_key = _canonical_internal_id_key(
+                disposition.get("alias_target", "")
+            )
+            target_rid = internal_to_report.get(target_key)
+            if target_rid and target_rid.upper() in body_report_ids:
+                continue
+        dropped.append(fid)
     if not dropped:
         return []
     sample = ", ".join(dropped[:5])
     more = f" (+{len(dropped)-5} more)" if len(dropped) > 5 else ""
     return [
         f"promotion dropout: {len(dropped)} CONFIRMED verifier finding(s) "
-        f"missing from report body / internal traceability / consolidation map: "
+        f"missing from report body or independently authorized non-body delivery: "
         f"{sample}{more}"
     ]
 
@@ -11608,21 +17450,27 @@ def _collect_consolidation_absorbed_ids(scratchpad: Path) -> set[str]:
     return ids
 
 
-def _report_index_dropped_ids(scratchpad: Path) -> list[str]:
+def _report_index_dropped_ids(
+    scratchpad: Path, *, run_id: str | None = None,
+) -> list[str]:
     """Return the reference IDs the report index has NOT accounted for.
 
     This is the EXACT reference/indexed computation used by
     _check_index_completeness, factored out so the dropout-recovery backfill
-    consumes the identical set with zero divergence. reference = verify IDs
-    union coverage-seed superset; indexed = master|excluded|absorbed|coverage.
+    consumes the identical set with zero divergence. Reference = verify IDs
+    union coverage-seed superset; indexed = master|typed non-body authority|
+    exact delivered-human-review receipt. Raw exclusion/consolidation prose is
+    identity telemetry only.
     """
     verify_ids = _collect_verify_hypothesis_ids(scratchpad)
     seed_ids = _collect_report_index_seed_ids(scratchpad)
     reference_ids = set(verify_ids) | set(seed_ids)
     if not reference_ids:
         return []
-    master_ids, excluded_ids, _master_list = _collect_index_acknowledged_ids(scratchpad)
-    absorbed_ids = _collect_consolidation_absorbed_ids(scratchpad)
+    master_ids, _excluded_ids, _master_list = _collect_index_acknowledged_ids(scratchpad)
+    authorized_nonbody = set(_authorized_report_nonbody_keys(
+        scratchpad, run_id=run_id
+    ))
     coverage_ids = _collect_report_coverage_acknowledged_ids(scratchpad)
 
     def _zn(s: str) -> str:
@@ -11630,27 +17478,110 @@ def _report_index_dropped_ids(scratchpad: Path) -> list[str]:
 
     norm_ref = {_zn(v): v for v in reference_ids}
     norm_indexed = {
-        _zn(i) for i in (master_ids | excluded_ids | absorbed_ids | coverage_ids)
+        _zn(i) for i in (master_ids | authorized_nonbody | coverage_ids)
     }
     dropped_norm = sorted(set(norm_ref) - norm_indexed)
     return [norm_ref[n] for n in dropped_norm]
 
 
+def _materialize_report_dropout_retention(
+    scratchpad: Path,
+    dropped: list[str],
+) -> str:
+    """Persist content-bearing human-review delivery before coverage ack."""
+    projection_lines = [
+        "# Report Index Dropout Retention",
+        "",
+        "**Retention target**: HUMAN_REVIEW",
+        "",
+        "The report-index projection omitted the candidates below. They remain",
+        "retained for independent human review and are not safety dispositions.",
+        "",
+    ]
+    receipt_rows: list[dict[str, str]] = []
+    for fid in sorted(dropped):
+        verify_path = _verify_file_for_id(scratchpad, fid)
+        source_path = (
+            verify_path
+            if verify_path.is_file()
+            else scratchpad / "report_index_coverage_seed.md"
+        )
+        if not source_path.is_file():
+            raise ValueError(f"report dropout {fid} has no retained source artifact")
+        source_bytes = source_path.read_bytes()
+        source_text = source_bytes.decode("utf-8", errors="replace").strip()
+        if source_path.name == "report_index_coverage_seed.md":
+            matching = [line for line in source_text.splitlines() if fid in line]
+            source_text = "\n".join(matching).strip() or source_text[:4000]
+        projection_lines.extend(
+            (
+                f"## Retained candidate {fid}",
+                "",
+                "- Retention: **HUMAN_REVIEW**",
+                f"- Source artifact: `{source_path.name}`",
+                "",
+                source_text or "(source artifact was empty; human review required)",
+                "",
+            )
+        )
+        receipt_rows.append(
+            {
+                "candidate_id": fid,
+                "retention_target": "HUMAN_REVIEW",
+                "source_artifact": source_path.name,
+                "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+            }
+        )
+    projection_text = "\n".join(projection_lines).rstrip() + "\n"
+    projection_bytes = projection_text.encode("utf-8")
+    unsigned: dict[str, Any] = {
+        "schema_version": _REPORT_DROPOUT_RETENTION_SCHEMA,
+        "projection_artifact": _REPORT_DROPOUT_RETENTION_PROJECTION,
+        "projection_sha256": hashlib.sha256(projection_bytes).hexdigest(),
+        "row_count": len(receipt_rows),
+        "rows": receipt_rows,
+    }
+    receipt_sha = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    receipt = {**unsigned, "receipt_sha256": receipt_sha}
+    # Projection first, receipt second, coverage acknowledgement last. A crash
+    # at either earlier boundary leaves the candidate unacknowledged and thus
+    # recoverable on resume rather than silently complete.
+    _atomic_validator_text(
+        scratchpad / _REPORT_DROPOUT_RETENTION_PROJECTION,
+        projection_text,
+    )
+    _atomic_validator_text(
+        scratchpad / _REPORT_DROPOUT_RETENTION_RECEIPT,
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+    )
+    if _report_dropout_retention_authorized_ids(scratchpad) != set(dropped):
+        raise ValueError("report dropout retention receipt failed self-validation")
+    return receipt_sha
+
+
 def _backfill_report_coverage_dropouts(scratchpad: Path) -> int:
-    """Recall-safe completeness guarantee: append every still-dropped reference
-    ID to report_coverage.md's Raw Candidate Ledger as a DEFERRED disposition so
-    the completeness gate passes deterministically instead of halting a finished
-    audit at the last mile.
+    """Deliver every still-dropped reference to explicit human review.
 
     This is the residual net behind the mechanical report-index builder: any
     reference ID that has no verify file (e.g. a depth auto-find with only a
-    coverage-seed entry) and therefore is not enumerated into the body still
-    gets an explicit, non-UNACCOUNTED ledger row. Findings are NEVER silently
-    dropped — they are mechanically accounted with a human-promotion note.
+    coverage-seed entry) receives a content-bearing human-review projection and
+    a source-hash-bound receipt before report_coverage may acknowledge it. A
+    bare DEFERRED token is never delivery authority.
     Returns the number of IDs backfilled.
     """
     dropped = _report_index_dropped_ids(scratchpad)
     if not dropped:
+        return 0
+    try:
+        retention_receipt_sha = _materialize_report_dropout_retention(
+            scratchpad, dropped
+        )
+    except Exception as exc:
+        logging.getLogger("plamen.validators").warning(
+            f"[report_index] dropout retention materialization failed: {exc!r}"
+        )
         return 0
     path = scratchpad / "report_coverage.md"
     try:
@@ -11659,10 +17590,16 @@ def _backfill_report_coverage_dropouts(scratchpad: Path) -> int:
         existing = ""
 
     rows = [
-        f"| mechanical-dropout-backfill | {fid} | unknown | DEFERRED | "
-        f"report_index dropout — mechanically backfilled for completeness; "
-        f"see verify_{fid}.md / coverage seed; pending human promotion to body |"
+        f"| mechanical-dropout-retention | {fid} | unknown | HUMAN_REVIEW_DELIVERED | "
+        f"report-dropout-retention receipt={retention_receipt_sha}; "
+        f"projection={_REPORT_DROPOUT_RETENTION_PROJECTION} |"
         for fid in dropped
+    ]
+    canonical_header = [
+        "| Source File | Candidate ID / Label | Severity Signal | Status | "
+        "Report ID / Refutation / Reason |",
+        "|-------------|----------------------|-----------------|--------|"
+        "---------------------------------|",
     ]
 
     # CRITICAL: the coverage parser (_collect_report_coverage_acknowledged_ids /
@@ -11682,7 +17619,20 @@ def _backfill_report_coverage_dropouts(scratchpad: Path) -> int:
         sec_end = m.end() + (nxt.start() if nxt else len(rest))
         head = existing[:sec_end].rstrip("\n")
         tail = existing[sec_end:]
-        new_text = head + "\n" + "\n".join(rows) + "\n"
+        # Do not assume the model-authored ledger uses the five-column schema.
+        # A three-column ``Source | Candidate | Disposition`` table would make
+        # a five-cell row invisible because its status parser remains bound to
+        # the original Disposition column.  Start a fresh canonical table
+        # inside the same ledger section so the parser resets its exact column
+        # map before reading the DRIVER retention rows.
+        new_text = (
+            head
+            + "\n\n"
+            + "\n".join(canonical_header)
+            + "\n"
+            + "\n".join(rows)
+            + "\n"
+        )
         if tail.strip():
             new_text += "\n" + tail.lstrip("\n")
     else:
@@ -11692,14 +17642,12 @@ def _backfill_report_coverage_dropouts(scratchpad: Path) -> int:
         new_text = (
             prefix
             + "\n## Raw Candidate Ledger\n"
-            + "| Source File | Candidate ID / Label | Severity Signal | Status | "
-            "Report ID / Refutation / Reason |\n"
-            + "|-------------|----------------------|-----------------|--------|"
-            "---------------------------------|\n"
+            + "\n".join(canonical_header)
+            + "\n"
             + "\n".join(rows) + "\n"
         )
     try:
-        path.write_text(new_text, encoding="utf-8")
+        _atomic_validator_text(path, new_text)
     except Exception as exc:  # pragma: no cover - filesystem failure
         logging.getLogger("plamen.validators").warning(
             f"[report_index] coverage dropout backfill write failed: {exc!r}"
@@ -11709,15 +17657,19 @@ def _backfill_report_coverage_dropouts(scratchpad: Path) -> int:
 
 
 def _check_index_completeness(
-    scratchpad: Path, project_root: str | None = None, write_retry_hint: bool = True
+    scratchpad: Path,
+    project_root: str | None = None,
+    write_retry_hint: bool = False,
+    *,
+    run_id: str | None = None,
 ) -> list[str]:
     """Post-Index gate: every verify hypothesis ID must be indexed or excluded.
 
     Generic across L1 and SC. Returns issue list; empty = pass.
 
-    On failure, writes a delta retry hint that names the missing IDs,
-    so the Index Agent retry sees an explicit checklist rather than
-    re-doing the same enumeration that just failed.
+    Predicate evaluation is observational by default.  The driver owns retry
+    publication explicitly after it evaluates the complete validator set.
+    ``write_retry_hint=True`` remains as an explicit compatibility opt-in.
     """
     verify_ids = _collect_verify_hypothesis_ids(scratchpad)
     # TASK C reconciliation backbone: the driver-written coverage seed is the
@@ -11734,7 +17686,9 @@ def _check_index_completeness(
     master_ids, excluded_ids, master_list = _collect_index_acknowledged_ids(
         scratchpad
     )
-    absorbed_ids = _collect_consolidation_absorbed_ids(scratchpad)
+    authorized_nonbody = set(_authorized_report_nonbody_keys(
+        scratchpad, run_id=run_id
+    ))
     if not master_ids and not excluded_ids:
         ri = scratchpad / "report_index.md"
         if ri.exists():
@@ -11786,7 +17740,9 @@ def _check_index_completeness(
     # between shards.
     norm_ref = {_zn(v): v for v in reference_ids}
     coverage_ids = _collect_report_coverage_acknowledged_ids(scratchpad)
-    norm_indexed = {_zn(i) for i in (master_ids | excluded_ids | absorbed_ids | coverage_ids)}
+    norm_indexed = {
+        _zn(i) for i in (master_ids | authorized_nonbody | coverage_ids)
+    }
     dropped_norm = sorted(set(norm_ref) - norm_indexed)
     dropped = [norm_ref[n] for n in dropped_norm]
     if not dropped:
@@ -11799,7 +17755,7 @@ def _check_index_completeness(
         more = f" (+{len(dropped)-5} more)" if len(dropped) > 5 else ""
         issues.append(
             f"index dropout: {len(dropped)} {src_label} finding ID(s) "
-            f"absent from Master Finding Index, Excluded Findings, Consolidation Map, and report_coverage.md: "
+            f"absent from Master Finding Index, authorized non-body decision/alias, and delivered human-review receipt: "
             f"{sample}{more}. See report_index{_RETRY_HINT_SUFFIX}."
         )
         return issues
@@ -11815,14 +17771,16 @@ def _check_index_completeness(
             f"finding/hypothesis ID(s). Specifically, these "
             f"{len(dropped)} ID(s) are present in the coverage seed / appear "
             "on disk as `verify_<ID>.md` but are NEITHER in the Master Finding "
-            "Index, Excluded Findings table, Consolidation Map, nor report_coverage.md:\n\n"
+            "Index, an exact typed non-body decision/applied alias, nor a "
+            "hash-bound delivered-human-review receipt:\n\n"
             + "\n".join(f"- `{i}`" for i in dropped)
             + "\n\n"
             "Read each missing finding (`verify_<ID>.md` when present, else the "
-            "coverage-seed row) and either (a) assign it a report ID in the "
-            "Master Finding Index, or (b) place it in the Excluded Findings "
-            "table with a stated reason (FALSE_POSITIVE / DUPLICATE OF X-NN / "
-            "CONSOLIDATED INTO X-NN). Silent omission is a workflow violation.\n"
+            "coverage-seed row) and assign it a report ID in the Master Finding "
+            "Index unless an already-applied semantic alias or exact independent "
+            "typed full-claim decision authorizes non-body treatment. Writing an "
+            "Excluded/Consolidation row is only a proposal and cannot satisfy "
+            "this gate. Silent omission is a workflow violation.\n"
         )
         hint_path.write_text(body, encoding="utf-8")
     except Exception:
@@ -11832,40 +17790,51 @@ def _check_index_completeness(
     more = f" (+{len(dropped)-5} more)" if len(dropped) > 5 else ""
     issues.append(
         f"index dropout: {len(dropped)} {src_label} finding ID(s) "
-            f"absent from Master Finding Index, Excluded Findings, Consolidation Map, and report_coverage.md: "
+        f"absent from Master Finding Index, authorized non-body decision/alias, and delivered human-review receipt: "
         f"{sample}{more}. See report_index{_RETRY_HINT_SUFFIX}."
     )
     return issues
+
+
+def _report_candidate_rows_for_validator(
+    scratchpad: Path,
+) -> list[dict[str, Any]]:
+    """Use the authenticated base-plus-delta report denominator postcutover."""
+
+    root = Path(scratchpad)
+    if report_candidate_universe_requires_typed_authority(root):
+        return current_report_candidate_universe_legacy_rows(root)
+    return parse_verification_queue_rows(root)
 
 
 def _repair_report_index_dropouts(scratchpad: Path) -> list[str]:
     """Mechanically index dropped verify IDs instead of degrading silently.
 
     The recovery is deliberately conservative: it never invents analysis and
-    never blanket-marks missing IDs as false positives. It reads each existing
-    `verify_<ID>.md`; verifier-excluded IDs go to Excluded Findings, while
-    reportable verifier statuses receive deterministic report IDs in a
-    separate Master Finding Index recovery table.
+    never reconstructs disposition authority from verifier/report prose.
+    Only exact P0-R authority may generate a non-body repair row; every other
+    dropped identity is restored to the body at its upstream queue severity
+    with an unresolved-authority marker.
     """
     idx_path = scratchpad / "report_index.md"
     if not idx_path.exists():
         return []
     verify_ids = _collect_verify_hypothesis_ids(scratchpad)
-    master_ids, excluded_ids, _ = _collect_index_acknowledged_ids(scratchpad)
-    absorbed_ids = _collect_consolidation_absorbed_ids(scratchpad)
+    master_ids, _excluded_ids, _ = _collect_index_acknowledged_ids(scratchpad)
+    authority = _authorized_report_nonbody_keys(scratchpad)
     # v2.4.8: normalize leading zeros (same as _check_index_completeness)
     # so repair doesn't inject duplicates when H-01 == H-1.
     def _zn(s: str) -> str:
         return re.sub(r"-0+(\d)", r"-\1", s)
     coverage_ids = _collect_report_coverage_acknowledged_ids(scratchpad)
-    norm_indexed = {_zn(i) for i in (master_ids | excluded_ids | absorbed_ids | coverage_ids)}
+    norm_indexed = {_zn(i) for i in (master_ids | set(authority) | coverage_ids)}
     dropped = sorted(v for v in verify_ids if _zn(v) not in norm_indexed)
     if not dropped:
         return []
 
     queue_rows = {
         (r.get("finding id") or "").strip(): r
-        for r in parse_verification_queue_rows(scratchpad)
+        for r in _report_candidate_rows_for_validator(scratchpad)
         if (r.get("finding id") or "").strip()
     }
     counters = _next_report_id_counters(scratchpad)
@@ -11887,7 +17856,10 @@ def _repair_report_index_dropouts(scratchpad: Path) -> list[str]:
             or "Recovered verified finding"
         )
         title = re.sub(r"\s+", " ", title).replace("|", "/").strip()
-        severity = _severity_name_from_text(verify_text, row)
+        severity = (
+            try_normalize_severity(row.get("severity", ""))
+            or _severity_name_from_text(verify_text, row)
+        )
         location = (
             _first_production_location_for_validator(
                 verify_text,
@@ -11902,24 +17874,15 @@ def _repair_report_index_dropouts(scratchpad: Path) -> list[str]:
             or "CODE-TRACE"
         ).replace("|", "/")
 
-        if any(tok in status for tok in (
-            "APPENDIX_ONLY",
-            "DROP_FALSE_POSITIVE",
-            "DROP_NON_SECURITY",
-            "DROP_DESIGN_CONFIRMATION",
-            "DROP_UNACTIONABLE_SPECULATION",
-            "FALSE_POSITIVE",
-            "REFUTED",
-            "INFEASIBLE",
-        )):
+        disposition = authority.get(_canonical_internal_id_key(fid), {})
+        if disposition.get("authority_kind") in {
+            "REFUTED", "AUTHORIZED_ZERO_HARM", "AUTHORIZED_ALIAS",
+        }:
             excluded_rows.append(
-                f"| {fid} | {status} | Recovered from verify_{fid}.md; verifier marked non-reportable. |"
-            )
-            repaired.append(fid)
-            continue
-        if "DUPLICATE" in status or "CONSOLIDATED" in status:
-            excluded_rows.append(
-                f"| {fid} | {status} | Recovered from verify_{fid}.md; verifier marked duplicate/consolidated. |"
+                f"| {fid} | {disposition['authority_kind']} | "
+                f"Recovered under typed authority event "
+                f"{disposition.get('authority_event_id') or 'unknown'}; "
+                f"raw verifier status={status or 'UNRESOLVED'}. |"
             )
             repaired.append(fid)
             continue
@@ -11929,7 +17892,9 @@ def _repair_report_index_dropouts(scratchpad: Path) -> list[str]:
         rid = f"{prefix}-{counters[prefix]:02d}"
         active_rows.append(
             f"| {rid} | {title} | {severity} | {location} | {evidence} | "
-            f"Mechanical index recovery from verify_{fid}.md |  | {fid} |"
+            f"Mechanical index recovery from verify_{fid}.md; non-body "
+            f"disposition unauthorized, raw verifier status="
+            f"{status or 'UNRESOLVED'} | UNRESOLVED-DISPOSITION | {fid} |"
         )
         repaired.append(fid)
 
@@ -12573,6 +18538,29 @@ def _validate_tier_body_against_manifest(
         except Exception as exc:
             issues.append(f"body validator: {body_name} unreadable ({exc})")
             continue
+        evidence_bundle_path = scratchpad / "report_evidence_records.json"
+        if evidence_bundle_path.exists():
+            try:
+                from report_evidence_authority import (
+                    project_report_evidence_markdown,
+                    validate_report_evidence_bundle,
+                )
+
+                evidence_bundle = validate_report_evidence_bundle(
+                    json.loads(evidence_bundle_path.read_text(encoding="utf-8"))
+                )
+                projected = project_report_evidence_markdown(body, evidence_bundle)
+                if projected != body:
+                    body_path.write_text(projected.rstrip() + "\n", encoding="utf-8")
+                    body = projected
+            except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                detail = (
+                    f"typed report evidence projection unavailable for {body_name}: "
+                    f"{type(exc).__name__}"
+                )
+                log.warning("[body validator %s] %s", body_name, detail)
+                if collect_content is not None:
+                    collect_content.append(detail)
         result = _validate_report_body(body, manifest)
         # GATE-2: substantive-Impact/PoC adequacy is prose quality -> WARN only,
         # never a hard issue (it no longer flips result["ok"]). Surface it for
@@ -12703,45 +18691,14 @@ def _collect_judge_unresolved_ids(scratchpad: Path) -> set[str]:
 
 
 def _collect_judge_downgrade_map(scratchpad: Path) -> dict[str, str]:
-    """Return {finding_id: target_severity} for DOWNGRADE rulings.
+    """Return no caps: skeptic/judge Markdown is proposal-only under P0-V.
 
-    v2.0.5 (P0.1+P0.2): refactored to share `_parse_skeptic_judge_table`
-    with `_collect_judge_unresolved_ids`, and prefer the
-    `judge_decisions.json` sidecar when fresh.
+    The shared typed severity ledger is the sole possible authority for a tier
+    change.  Keeping this compatibility function deliberately empty prevents
+    stale ``judge_decisions.json`` or legacy Markdown from silently regaining
+    downgrade authority through an older report path.
     """
-    result: dict[str, str] = {}
-    # v2.0.5 (P0.2): prefer the JSON sidecar.
-    try:
-        from plamen_parsers import read_judge_decisions_json_sidecar
-        sidecar_rows = read_judge_decisions_json_sidecar(scratchpad)
-    except ImportError:
-        sidecar_rows = []
-    if sidecar_rows:
-        for row in sidecar_rows:
-            if str(row.get("decision", "")).upper() != "DOWNGRADE":
-                continue
-            fid = row.get("finding_id")
-            final_sev = row.get("final_severity")
-            if fid and final_sev:
-                result[fid] = final_sev
-        return result
-    # Fallback: parse markdown table directly.
-    primary = scratchpad / "skeptic_judge_decisions.md"
-    if not primary.exists():
-        return result
-    try:
-        text = primary.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return result
-    from plamen_parsers import _parse_skeptic_judge_table as _pt
-    for row in _pt(text):
-        if row["decision"] != "DOWNGRADE":
-            continue
-        fid = row["finding_id"]
-        final_sev = row["final_severity"]
-        if final_sev and fid:
-            result[fid] = final_sev
-    return result
+    return {}
 
 
 def _collect_body_unresolved_report_ids(audit_report_text: str) -> set[str]:
@@ -12763,7 +18720,7 @@ def _collect_body_unresolved_report_ids(audit_report_text: str) -> set[str]:
 def _check_unresolved_authenticity(
     scratchpad: Path, project_root: str
 ) -> list[str]:
-    """Cross-check body [UNRESOLVED] sections against Judge UNRESOLVED rulings.
+    """Cross-check body [UNRESOLVED] sections against challenge artifacts.
 
     Two failure modes:
       (a) Body has [UNRESOLVED] for a finding the Judge did NOT rule
@@ -12952,90 +18909,327 @@ def _master_tier_counts(scratchpad: Path) -> dict[str, int]:
     return counts
 
 
+@dataclass(frozen=True)
+class ReportIndexSummaryParityDerivation:
+    """Pure, byte-bound plan for the report-index Summary projection."""
+
+    status: str
+    repair_required: bool
+    input_bytes: bytes
+    output_bytes: bytes
+    before_sha256: str
+    after_sha256: str
+    summary_before_sha256: str
+    summary_after_sha256: str
+    master_section_sha256: str
+    outside_summary_sha256: str
+    master_counts: tuple[tuple[str, int], ...]
+    summary_counts: tuple[tuple[str, int], ...]
+    deltas: tuple[tuple[str, str], ...]
+    issues: tuple[str, ...] = ()
+
+
+_REPORT_INDEX_SUMMARY_HEADING_RE = re.compile(
+    r"(?mi)^##[ \t]+Summary(?:[ \t]+Counts)?[ \t]*\r?$"
+)
+_REPORT_INDEX_MASTER_HEADING_RE = re.compile(
+    r"(?mi)^##[ \t]+Master[ \t]+Finding[ \t]+Index[ \t]*\r?$"
+)
+_REPORT_INDEX_NEXT_H2_RE = re.compile(r"(?m)^##[ \t]+")
+
+
+def _report_index_section_span(
+    text: str, heading: re.Pattern[str]
+) -> tuple[int, int] | None:
+    match = heading.search(text)
+    if match is None:
+        return None
+    next_heading = _REPORT_INDEX_NEXT_H2_RE.search(text, match.end())
+    return match.start(), (
+        next_heading.start() if next_heading is not None else len(text)
+    )
+
+
+def _summary_counts_from_section(section: str) -> dict[str, int]:
+    counts = {"C": 0, "H": 0, "M": 0, "L": 0, "I": 0}
+    found: set[str] = set()
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [
+            cell.strip().strip("*")
+            for cell in stripped.strip("|").split("|")
+        ]
+        if len(cells) < 2:
+            continue
+        label = cells[0].lower()
+        value = re.search(r"\b(\d+)\b", cells[1].replace(",", ""))
+        if value is None:
+            continue
+        tier = (
+            "C" if label.startswith("critical")
+            else "H" if label.startswith("high")
+            else "M" if label.startswith("med")
+            else "L" if label.startswith("low")
+            else "I" if label.startswith("info")
+            else ""
+        )
+        if tier:
+            counts[tier] = int(value.group(1))
+            found.add(tier)
+    return counts if found else {}
+
+
+def _master_counts_from_section(section: str) -> dict[str, int]:
+    ids: set[str] = set()
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|") or _is_separator_row(stripped):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        raw = cells[0].strip().strip("[]").upper()
+        match = re.fullmatch(r"([CHMLI])-0*(\d+)", raw)
+        if match is not None:
+            ids.add(f"{match.group(1)}-{int(match.group(2))}")
+    counts = {"C": 0, "H": 0, "M": 0, "L": 0, "I": 0}
+    for report_id in ids:
+        counts[report_id[0]] += 1
+    return counts
+
+
+def derive_report_index_summary_master_parity(
+    raw: bytes,
+) -> ReportIndexSummaryParityDerivation:
+    """Derive the exact Summary-only successor without touching disk."""
+
+    source = bytes(raw)
+    before_sha256 = hashlib.sha256(source).hexdigest()
+
+    def unchanged(
+        status: str,
+        *,
+        issues: tuple[str, ...] = (),
+        master_counts: Mapping[str, int] | None = None,
+        summary_counts: Mapping[str, int] | None = None,
+        summary_raw: bytes = b"",
+        master_raw: bytes = b"",
+        outside_raw: bytes | None = None,
+    ) -> ReportIndexSummaryParityDerivation:
+        return ReportIndexSummaryParityDerivation(
+            status=status,
+            repair_required=False,
+            input_bytes=source,
+            output_bytes=source,
+            before_sha256=before_sha256,
+            after_sha256=before_sha256,
+            summary_before_sha256=hashlib.sha256(summary_raw).hexdigest(),
+            summary_after_sha256=hashlib.sha256(summary_raw).hexdigest(),
+            master_section_sha256=hashlib.sha256(master_raw).hexdigest(),
+            outside_summary_sha256=hashlib.sha256(
+                source if outside_raw is None else outside_raw
+            ).hexdigest(),
+            master_counts=tuple(sorted((master_counts or {}).items())),
+            summary_counts=tuple(sorted((summary_counts or {}).items())),
+            deltas=(),
+            issues=issues,
+        )
+
+    try:
+        text = source.decode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        return unchanged(
+            "DEBT",
+            issues=(
+                "report_index Summary/Master parity input is not strict UTF-8: "
+                f"{exc}",
+            ),
+        )
+    if text.encode("utf-8") != source:
+        return unchanged(
+            "DEBT",
+            issues=("report_index Summary/Master parity UTF-8 round-trip drift",),
+        )
+
+    summary_span = _report_index_section_span(
+        text, _REPORT_INDEX_SUMMARY_HEADING_RE
+    )
+    master_span = _report_index_section_span(
+        text, _REPORT_INDEX_MASTER_HEADING_RE
+    )
+    if summary_span is None or master_span is None:
+        return unchanged("NOT_APPLICABLE")
+
+    summary_text = text[slice(*summary_span)]
+    master_text = text[slice(*master_span)]
+    outside_text = text[: summary_span[0]] + text[summary_span[1] :]
+    summary_raw = summary_text.encode("utf-8")
+    master_raw = master_text.encode("utf-8")
+    outside_raw = outside_text.encode("utf-8")
+    master_counts = _master_counts_from_section(master_text)
+    if sum(master_counts.values()) == 0:
+        return unchanged(
+            "NOT_APPLICABLE",
+            master_counts=master_counts,
+            summary_raw=summary_raw,
+            master_raw=master_raw,
+            outside_raw=outside_raw,
+        )
+    summary_counts = _summary_counts_from_section(summary_text)
+    if not summary_counts:
+        return unchanged(
+            "NOT_APPLICABLE",
+            master_counts=master_counts,
+            summary_counts=summary_counts,
+            summary_raw=summary_raw,
+            master_raw=master_raw,
+            outside_raw=outside_raw,
+        )
+    drift = any(
+        summary_counts.get(tier, 0) != master_counts.get(tier, 0)
+        for tier in "CHMLI"
+    )
+    if not drift:
+        return unchanged(
+            "CLEAN",
+            master_counts=master_counts,
+            summary_counts=summary_counts,
+            summary_raw=summary_raw,
+            master_raw=master_raw,
+            outside_raw=outside_raw,
+        )
+
+    projected_summary, deltas = _canonicalize_summary_table(
+        summary_text, master_counts
+    )
+    if projected_summary == summary_text or not deltas:
+        return unchanged(
+            "DEBT",
+            issues=(
+                "report_index Summary counts disagree with Master Finding Index "
+                "but the bounded Summary table is not mechanically repairable",
+            ),
+            master_counts=master_counts,
+            summary_counts=summary_counts,
+            summary_raw=summary_raw,
+            master_raw=master_raw,
+            outside_raw=outside_raw,
+        )
+    projected_text = (
+        text[: summary_span[0]]
+        + projected_summary
+        + text[summary_span[1] :]
+    )
+    output = projected_text.encode("utf-8")
+    projected_master_span = _report_index_section_span(
+        projected_text, _REPORT_INDEX_MASTER_HEADING_RE
+    )
+    projected_summary_span = _report_index_section_span(
+        projected_text, _REPORT_INDEX_SUMMARY_HEADING_RE
+    )
+    if projected_master_span is None or projected_summary_span is None:
+        return unchanged(
+            "DEBT",
+            issues=("report_index Summary projection destroyed section structure",),
+            master_counts=master_counts,
+            summary_counts=summary_counts,
+            summary_raw=summary_raw,
+            master_raw=master_raw,
+            outside_raw=outside_raw,
+        )
+    projected_master = projected_text[slice(*projected_master_span)]
+    projected_outside = (
+        projected_text[: projected_summary_span[0]]
+        + projected_text[projected_summary_span[1] :]
+    )
+    if projected_master != master_text or projected_outside != outside_text:
+        return unchanged(
+            "DEBT",
+            issues=(
+                "report_index Summary projection attempted to change bytes "
+                "outside the bounded Summary section",
+            ),
+            master_counts=master_counts,
+            summary_counts=summary_counts,
+            summary_raw=summary_raw,
+            master_raw=master_raw,
+            outside_raw=outside_raw,
+        )
+    projected_summary_raw = projected_text[
+        slice(*projected_summary_span)
+    ].encode("utf-8")
+    return ReportIndexSummaryParityDerivation(
+        status="REPAIR_REQUIRED",
+        repair_required=True,
+        input_bytes=source,
+        output_bytes=output,
+        before_sha256=before_sha256,
+        after_sha256=hashlib.sha256(output).hexdigest(),
+        summary_before_sha256=hashlib.sha256(summary_raw).hexdigest(),
+        summary_after_sha256=hashlib.sha256(projected_summary_raw).hexdigest(),
+        master_section_sha256=hashlib.sha256(master_raw).hexdigest(),
+        outside_summary_sha256=hashlib.sha256(outside_raw).hexdigest(),
+        master_counts=tuple(sorted(master_counts.items())),
+        summary_counts=tuple(sorted(summary_counts.items())),
+        deltas=tuple(deltas),
+        issues=(),
+    )
+
+
+def validate_report_index_summary_master_parity_derivation(
+    raw: bytes,
+    derivation: ReportIndexSummaryParityDerivation,
+) -> list[str]:
+    """Replay one pure derivation; never grant authority from supplied fields."""
+
+    if not isinstance(derivation, ReportIndexSummaryParityDerivation):
+        return ["report_index Summary/Master parity derivation has wrong type"]
+    expected = derive_report_index_summary_master_parity(bytes(raw))
+    if expected != derivation:
+        return [
+            "report_index Summary/Master parity derivation is stale or "
+            "not the canonical pure result"
+        ]
+    return list(expected.issues)
+
+
 def validate_report_index_summary_master_parity(scratchpad: Path) -> list[str]:
-    """A2: reconcile the Index Agent `## Summary` counts with the Master Finding
-    Index distinct report-ID set, and REPAIR the Summary in place when they
-    drift.
+    """Observe Summary/Master drift without publishing a repair.
 
-    A prior failure shape: the `## Summary` count table claimed 45 findings
-    while the Master Finding Index actually listed 74 distinct report IDs. Tier
-    writers dispatched against that inconsistent index then hallucinated IDs to
-    "fill" the gap between the summary count and the body, producing ghost
-    findings with no backing section.
-
-    This is the UPSTREAM root fix (at report_index, before tier writers
-    dispatch). The Master Finding Index is authoritative for cardinality — every
-    distinct report ID is one reportable finding. When the LLM's Summary table
-    disagrees, this gate rewrites the Summary table to match the Master via the
-    existing ``_canonicalize_summary_table`` helper so tier writers receive a
-    consistent index. It NEVER changes the Master rows themselves (no findings
-    are added or dropped — only the summary metadata is corrected), and it is a
-    NO-OP when the Summary already matches the Master (no false flag).
-
-    Returns a list of human-readable repair notes (empty = already consistent).
-    These are informational; the caller treats them as a self-heal, not a halt —
-    a corrected summary is strictly better than an inconsistent one, and
-    blocking the pipeline on a metadata mismatch the gate just fixed would be a
-    recall-negative false halt.
+    The canonical report-index DRIVER successor owns repair and publishes the
+    complete interacting bundle atomically.  Validators must not mutate either
+    a raw MODEL proposal or the committed canonical head.
     """
     ri = scratchpad / "report_index.md"
     if not ri.exists():
         return []
-    master_counts = _master_tier_counts(scratchpad)
-    # No Master rows parsed → nothing to reconcile against (don't touch the
-    # Summary; a different gate handles a genuinely empty/malformed Master).
-    if sum(master_counts.values()) == 0:
-        return []
-
-    summary_counts = _parse_report_index_summary_counts(scratchpad)
-    if not summary_counts:
-        # Master rows exist but no Summary table found: do not fabricate one
-        # here (a separate structural gate owns Summary presence). No false flag.
-        return []
-
-    # Compare LLM Summary vs Master cardinality per tier.
-    drift = {
-        char: (summary_counts.get(char, 0), master_counts.get(char, 0))
-        for char in ("C", "H", "M", "L", "I")
-        if summary_counts.get(char, 0) != master_counts.get(char, 0)
-    }
-    if not drift:
-        return []  # consistent — NO false flag
-
     try:
-        text = ri.read_text(encoding="utf-8", errors="replace")
+        derivation = derive_report_index_summary_master_parity(ri.read_bytes())
     except Exception as exc:
         return [
             "report_index Summary/Master parity: could not read report_index.md "
-            f"to repair drift {drift}: {exc}"
+            f"for observation: {exc}"
         ]
-    new_text, deltas = _canonicalize_summary_table(text, master_counts)
-    notes: list[str] = []
-    if deltas:
-        try:
-            ri.write_text(new_text, encoding="utf-8")
-            notes.append(
-                "report_index Summary/Master parity: rewrote `## Summary` to "
-                "match Master Finding Index cardinality "
-                f"(Master total={sum(master_counts.values())}); "
-                "deltas: " + ", ".join(f"{n} {d}" for n, d in deltas)
-            )
-        except Exception as exc:
-            notes.append(
-                "report_index Summary/Master parity: Summary disagrees with "
-                f"Master {drift} but in-place repair failed: {exc}"
-            )
-    else:
-        # Drift detected by tier-count comparison but the canonicalizer found no
-        # `| Severity | N |` rows to rewrite (Summary table in a non-canonical
-        # shape). Surface as a note so the inconsistency is visible, not silent.
-        notes.append(
-            "report_index Summary/Master parity: Summary counts disagree with "
-            f"Master Finding Index {drift} but the `## Summary` table is not in "
-            "the canonical `| Severity | N |` shape — could not auto-repair; "
-            "Master remains authoritative for tier-writer dispatch"
+    if derivation.issues:
+        return list(derivation.issues)
+    if not derivation.repair_required:
+        return []
+    summary_counts = dict(derivation.summary_counts)
+    master_counts = dict(derivation.master_counts)
+    drift = {
+        label: (
+            summary_counts.get(label, 0),
+            master_counts.get(label, 0),
         )
-    return notes
+        for label in ("C", "H", "M", "L", "I")
+        if summary_counts.get(label, 0) != master_counts.get(label, 0)
+    }
+    return [
+        "report_index Summary/Master parity: repair required; canonical "
+        f"DRIVER successor must publish the derived postimage (drift={drift})"
+    ]
 
 
 def _check_report_index_unresolved_authenticity(scratchpad: Path) -> list[str]:
@@ -13273,6 +19467,32 @@ def _report_internal_hypothesis_ids(
     ]
 
 
+def _registered_legacy_internal_ids(scratchpad: Path) -> set[str]:
+    """Derive private legacy IDs only from their producer-owned artifacts."""
+
+    identities: set[str] = set()
+    for path in _materialized_registered_producer_paths(
+        scratchpad, "pre_dedup_promotion"
+    ):
+        producer = _registered_producer_for_artifact(
+            path.name, consumer="pre_dedup_promotion"
+        )
+        if producer is None or not getattr(
+            producer, "legacy_local_id_patterns", ()
+        ):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="strict")
+        except (OSError, UnicodeError):
+            continue
+        for occurrence in classify_private_legacy_eip_ids(text):
+            if _registered_producer_accepts_local_id(
+                producer, occurrence.canonical_id
+            ):
+                identities.add(occurrence.canonical_id)
+    return identities
+
+
 def _run_report_quality_gate(
     scratchpad: Path, project_root: str
 ) -> list[str]:
@@ -13308,8 +19528,81 @@ def _run_report_quality_gate(
     except Exception:
         return ["AUDIT_REPORT.md unreadable"]
 
+    p1k_runtime_error = ""
+    p1k_not_triggered = not bool(_extract_report_ids_from_body(rtxt))
+    if not p1k_not_triggered:
+        try:
+            from report_evidence_authority import (
+                materialize_report_evidence_runtime,
+                project_report_evidence_markdown,
+                validate_report_evidence_bundle,
+            )
+
+            evidence_path = scratchpad / "report_evidence_records.json"
+            if not evidence_path.exists():
+                # Late defense for resumed/legacy scratchpads. Normal fresh
+                # runs materialize this after manifests, before body writers.
+                materialize_report_evidence_runtime(scratchpad)
+            evidence_bundle = validate_report_evidence_bundle(
+                json.loads(evidence_path.read_text(encoding="utf-8"))
+            )
+            projected = project_report_evidence_markdown(rtxt, evidence_bundle)
+            if projected != rtxt:
+                pr.write_text(projected.rstrip() + "\n", encoding="utf-8")
+                rtxt = projected
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            p1k_runtime_error = type(exc).__name__
+            limitation = (
+                "\n\n## Audit Completeness and Assurance Limitations\n\n"
+                "- Typed report-evidence reconciliation was unavailable during "
+                "final delivery. Findings remain present, but proof-scope and "
+                "report-field quality require human review.\n"
+            )
+            if "Typed report-evidence reconciliation was unavailable" not in rtxt:
+                rtxt = rtxt.rstrip() + limitation
+                try:
+                    pr.write_text(rtxt.rstrip() + "\n", encoding="utf-8")
+                except OSError:
+                    pass
+
     issues: list[str] = []
     checks: list[tuple[str, str, str]] = []  # (check, status, detail)
+
+    if p1k_not_triggered:
+        checks.append((
+            "typed_report_evidence_runtime",
+            "PASS",
+            "NOT_TRIGGERED (no report finding sections)",
+        ))
+    elif p1k_runtime_error:
+        checks.append((
+            "typed_report_evidence_runtime",
+            "WARN",
+            "typed boundary unavailable; client-visible assurance limitation "
+            f"delivered ({p1k_runtime_error})",
+        ))
+    else:
+        checks.append((
+            "typed_report_evidence_runtime",
+            "PASS",
+            "typed evidence authority projected before final quality checks",
+        ))
+
+    # The assembler stamps body headers from report_index.md.  Revalidate both
+    # the exact typed projection receipt and the resulting body claim before
+    # any later report mutation can treat an integrity demotion as proof-grade.
+    status_authority_issues = _validate_report_body_status_authority(
+        scratchpad, rtxt
+    )
+    if status_authority_issues:
+        detail = "; ".join(status_authority_issues[:6])
+        checks.append(("mechanical_status_authority", "FAIL", detail))
+        issues.append("report status authority: " + detail)
+    else:
+        checks.append((
+            "mechanical_status_authority", "PASS",
+            "report-index receipt and body status claims reconcile",
+        ))
 
     # Check 1: finding section count per severity tier. Use the body parser as
     # the single source of truth for section IDs; private header regexes have
@@ -13485,9 +19778,8 @@ def _run_report_quality_gate(
     # `_ID_ALL_NONHYPO` excludes H/CH because H-01 is also a report ID. Add
     # explicit privacy patterns for chain IDs and non-report-shaped hypothesis
     # IDs while preserving valid C/H/M/L/I-NN report section IDs.
-    from plamen_parsers import _ID_ALL_NONHYPO
+    from plamen_parsers import extract_unambiguous_internal_ids
     internal_id_patterns = [
-        rf"\b(?:{_ID_ALL_NONHYPO})\b",
         r"\bverify_[A-Za-z0-9_\-\[\].]+\.md\b",
     ]
     # Body-only checks still exclude Appendix A for finding-section accounting.
@@ -13552,10 +19844,17 @@ def _run_report_quality_gate(
         internal_hypothesis_ids.update(
             extract_hypothesis_ids(str(assignment.get("finding_id") or ""))
         )
+    internal_hypothesis_ids.update(
+        _registered_legacy_internal_ids(scratchpad)
+    )
     leaked.extend(_report_internal_hypothesis_ids(
         rtxt,
         public_report_ids=valid_report_ids,
         internal_hypothesis_ids=internal_hypothesis_ids,
+    ))
+    leaked.extend(extract_unambiguous_internal_ids(
+        rtxt,
+        known_internal_ids=internal_hypothesis_ids,
     ))
     for pat in internal_id_patterns:
         hits = re.findall(pat, rtxt, flags=re.IGNORECASE)
@@ -13964,6 +20263,45 @@ def _run_report_quality_gate(
         checks.append(("promotion_receipt", "PASS",
                         "all CONFIRMED verifier IDs reached report"))
 
+    if not p1k_runtime_error and not p1k_not_triggered:
+        try:
+            from report_evidence_authority import finalize_report_evidence_delivery
+
+            evidence_receipt = finalize_report_evidence_delivery(
+                scratchpad, report_path=pr
+            )
+            evidence_state = evidence_receipt["delivery_state"]
+            if evidence_state == "SEMANTICALLY_COMPLETE":
+                checks.append((
+                    "typed_report_evidence_delivery",
+                    "PASS",
+                    "typed record, manifests, Markdown, and final receipt reconcile",
+                ))
+            elif evidence_state == "DEGRADED_DELIVERY":
+                checks.append((
+                    "typed_report_evidence_delivery",
+                    "WARN",
+                    "all findings delivered with client-visible evidence/report limitations",
+                ))
+            else:
+                # Haltless but loud: preserve the report and every finding. The
+                # receipt remains non-clean, and the visible limitation makes
+                # the structural debt reviewable instead of laundering it as
+                # report completion.
+                checks.append((
+                    "typed_report_evidence_delivery",
+                    "WARN",
+                    "structural typed-evidence parity is incomplete; final receipt "
+                    "and client-visible limitation require human review",
+                ))
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            checks.append((
+                "typed_report_evidence_delivery",
+                "WARN",
+                "final typed delivery receipt unavailable; report retained for "
+                f"human review ({type(exc).__name__})",
+            ))
+
     # Write report_quality.md
     qp = scratchpad / "report_quality.md"
     try:
@@ -14153,20 +20491,32 @@ def _read_retry_hint(scratchpad: Path, phase_name: str) -> str:
                 "Phase 4b.5/RAG, chain analysis, verification, scoring, or report work",
                 "Phase 4b.5/RAG, final_scoring, chain analysis, verification, or report work",
             )
-            if "Initial confidence scoring is part of the depth phase" not in text:
+            text = text.replace(
+                "Initial confidence scoring is part of the depth phase in "
+                "Core/Thorough. If confidence_scores.md is missing or too "
+                "small, spawn the Phase 4b Confidence Scoring Agent and "
+                "write confidence_scores.md before returning.",
+                "Transient confidence routing is part of the depth phase in "
+                "Core/Thorough. Return its proposal to the coordinator; do "
+                "not create or modify confidence_scores.md. The driver "
+                "publishes the canonical artifact after the wave.",
+            )
+            if "Transient confidence routing is part of the depth phase" not in text:
                 patched = text.replace(
                     "- Do NOT write rag_validation.md or any later-phase artifact.\n",
                     "- Do NOT write rag_validation.md or any later-phase artifact.\n"
-                    "- Initial confidence scoring is part of the depth phase in Core/Thorough. "
-                    "If confidence_scores.md is missing or too small, spawn the Phase 4b "
-                    "Confidence Scoring Agent and write confidence_scores.md before returning.\n",
+                    "- Transient confidence routing is part of the depth phase in "
+                    "Core/Thorough. Return its proposal to the coordinator; do not "
+                    "create or modify confidence_scores.md. The driver publishes "
+                    "the canonical artifact after the wave.\n",
                 )
                 if patched == text:
                     patched = (
                         text.rstrip()
-                        + "\n- Initial confidence scoring is part of the depth phase in Core/Thorough. "
-                        "If confidence_scores.md is missing or too small, spawn the Phase 4b "
-                        "Confidence Scoring Agent and write confidence_scores.md before returning.\n"
+                        + "\n- Transient confidence routing is part of the depth "
+                        "phase in Core/Thorough. Return its proposal to the "
+                        "coordinator; do not create or modify confidence_scores.md. "
+                        "The driver publishes the canonical artifact after the wave.\n"
                     )
                 text = patched
         return text
@@ -14410,7 +20760,10 @@ def _sync_degraded_sentinels_to_checkpoint(
         # phases are correctly cleaned. The naive `.degraded` strip diverged
         # from _clear_stale_degraded_sentinels' mapping.
         phase_name = _phase_name_from_sentinel(p.name)
-        if phase_name in checkpoint.completed:
+        if (
+            phase_name in checkpoint.completed
+            and phase_name not in checkpoint.degraded
+        ):
             try:
                 p.unlink(missing_ok=True)
             except Exception:
@@ -14484,7 +20837,7 @@ def _generate_verify_core_if_missing(scratchpad: Path) -> bool:
             t, ("Verdict", "Final Verdict", "Status")
         )
         verdict = (
-            _verifier_status_from_text(f"Verdict: {verdict_field}")
+            _verifier_status_from_text(t)
             if verdict_field else ""
         ) or "-"
         tag_field = _field_from_markdown(
@@ -14871,7 +21224,7 @@ def _skeptic_manifest_ids(scratchpad: Path) -> list[str]:
 
 
 def _validate_skeptic_scope(scratchpad: Path) -> list[str]:
-    """Ensure the dedicated skeptic phase covers every Critical/High finding."""
+    """Ensure the skeptic covers every manifest-triggered challenge finding."""
     manifest_ids = _skeptic_manifest_ids(scratchpad)
     if manifest_ids:
         expected = set(manifest_ids)
@@ -14908,7 +21261,10 @@ def _validate_skeptic_scope(scratchpad: Path) -> list[str]:
         except Exception:
             pass
     if not texts:
-        return [f"skeptic scope: missing skeptic/judge artifacts for {len(expected)} C/H finding(s)"]
+        return [
+            "skeptic scope: missing skeptic/judge artifacts for "
+            f"{len(expected)} manifest-triggered skeptic challenge finding(s)"
+        ]
     combined = "\n".join(texts)
     covered = set(_INTERNAL_FINDING_ID_RE.findall(combined))
 
@@ -14939,7 +21295,8 @@ def _validate_skeptic_scope(scratchpad: Path) -> list[str]:
         more = f" (+{len(missing)-8} more)" if len(missing) > 8 else ""
         return [
             f"skeptic scope: reviewed {len(expected)-len(missing)}/{len(expected)} "
-            f"Critical/High finding(s); missing {sample}{more}"
+            "manifest-triggered skeptic challenge finding(s); "
+            f"missing {sample}{more}"
         ]
     return []
 
@@ -15057,6 +21414,23 @@ def _quarantine_phase_overreach(
 # Phase-specific dynamic artifact patterns that should be quarantined on retry
 # but are NOT in the phase's expected_artifacts (they're produced dynamically).
 _RETRY_QUARANTINE_EXTRAS: dict[str, list[str]] = {
+    # Recon's canonical files are mechanical-prepass/canonical-merge
+    # authority and are inputs to the isolated worker leaves.  Retry owns the
+    # leaf shards, never those canonical files.  Keeping the exact roster here
+    # also lets restore/cleanup use the same transaction denominator.
+    "recon": [
+        "recon_build_static.md",
+        "recon_design_context.md",
+        "recon_inventory_surface.md",
+        "recon_templates_patterns.md",
+        "recon_l1_threat_fork.md",
+        "recon_l1_subsystem_attack_trust.md",
+        "recon_l1_build_templates.md",
+        "recon_l1_subsystem_scope.md",
+        "recon_l1_attack_trust.md",
+        "recon_l1_build_static.md",
+        "recon_l1_templates_patterns.md",
+    ],
     "crossbatch": ["cross_batch_consistency.md"],
     "verify_aggregate": ["verify_core.md"],
     "graph_sweeps": ["graph_*.md"],
@@ -15082,6 +21456,34 @@ def _retry_quarantine_dir(scratchpad: Path, phase_name: str) -> Path:
     return scratchpad / "_retry_quarantine" / phase_name
 
 
+def _retry_owned_output_patterns(
+    phase: Phase,
+    *,
+    include_recon_canonical: bool = False,
+) -> list[str]:
+    """Return only outputs the retried producer is authorized to replace."""
+
+    extras = list(_RETRY_QUARANTINE_EXTRAS.get(phase.name, []))
+    if phase.name == "recon" and not include_recon_canonical:
+        # Python-managed recon leaves own only their isolated shards.  The
+        # phase's declared expected_artifacts are prepass/canonical-merge
+        # products and form the leaves' semantic input authority.
+        return extras
+    return [*(phase.expected_artifacts or []), *extras]
+
+
+def _is_isolated_chain_tail_retry(phase: Phase) -> bool:
+    """Whether generic retry handling is looking at a typed tail transaction."""
+    if phase.name != "chain_iter2":
+        return False
+    return any(
+        str(pattern).replace("\\", "/").lstrip("./").startswith(
+            "_chain_tail_shards/"
+        )
+        for pattern in (phase.expected_artifacts or [])
+    )
+
+
 def _pattern_implicated_by_missing(pattern: str, missing: list[str]) -> bool:
     """Ship 8.15: True iff an artifact `pattern` is named in any gate-failure
     message in `missing`. For concrete filenames, substring match. For glob
@@ -15096,8 +21498,43 @@ def _pattern_implicated_by_missing(pattern: str, missing: list[str]) -> bool:
     return any(pattern in m for m in missing)
 
 
+def _has_active_committed_report_head(
+    scratchpad: Path,
+    filename: str,
+) -> bool:
+    """Return whether exact current report bytes have live producer authority."""
+
+    if filename not in {
+        "report_index.md",
+        "report_coverage.md",
+        "report_records.json",
+    }:
+        return False
+    identity = f"scratchpad:{filename}"
+    try:
+        ledger = read_artifact_ledger(Path(scratchpad))
+    except Exception:
+        return False
+    binding = ledger.get("artifact_bindings", {}).get(identity)
+    if not isinstance(binding, Mapping):
+        return False
+    run_id = str(binding.get("run_id") or "").strip()
+    if not run_id:
+        return False
+    return not semantic_input_prebind_producer_authority_issues(
+        Path(scratchpad),
+        Path(scratchpad).parent,
+        (identity,),
+        run_id=run_id,
+    )
+
+
 def _quarantine_stale_on_retry(
-    scratchpad: Path, phase: Phase, missing: list[str]
+    scratchpad: Path,
+    phase: Phase,
+    missing: list[str],
+    *,
+    include_recon_canonical: bool = False,
 ) -> list[str]:
     """Rename stale phase outputs so the RESUMPTION PROTOCOL won't skip them.
 
@@ -15118,13 +21555,24 @@ def _quarantine_stale_on_retry(
     """
     if phase.name in _ACCUMULATE_ON_RETRY_PHASES:
         return []
+    if _is_isolated_chain_tail_retry(phase):
+        # The typed scheduler owns retry/resume inside these immutable shard
+        # paths. Generic quarantine would break their exact artifact binding.
+        return []
 
     renamed: list[str] = []
 
     # Collect all patterns to quarantine: expected_artifacts + dynamic extras
-    patterns: list[str] = list(phase.expected_artifacts or [])
-    extras = _RETRY_QUARANTINE_EXTRAS.get(phase.name, [])
-    patterns.extend(extras)
+    patterns = _retry_owned_output_patterns(
+        phase,
+        include_recon_canonical=include_recon_canonical,
+    )
+    if phase.name == "recon" and include_recon_canonical:
+        # The sealed direct retry transaction quarantines the canonical
+        # predecessor denominator.  Its already-committed worker shards stay
+        # live because canonical retry capture authenticates them before
+        # adopting the isolated root-level candidate generation.
+        patterns = list(phase.expected_artifacts or [])
 
     # Ship 8.15: TARGETED REPAIR. Quarantine ONLY the artifacts implicated by
     # the gate-failure messages, not every expected artifact. Observed: a 443-byte
@@ -15136,9 +21584,12 @@ def _quarantine_stale_on_retry(
     # Fallback: if NO expected artifact is named in any message (a global /
     # structural failure that doesn't cite a file), keep the old broad
     # behavior so the retry is not left blind with all-present artifacts.
-    implicated = [p for p in patterns if _pattern_implicated_by_missing(p, missing)]
-    if implicated:
-        patterns = implicated
+    if not (phase.name == "recon" and include_recon_canonical):
+        implicated = [
+            p for p in patterns if _pattern_implicated_by_missing(p, missing)
+        ]
+        if implicated:
+            patterns = implicated
 
     # For skeptic, exclude skeptic_judge_decisions.md (it's a downstream
     # artifact consumed by report_index, not a skeptic-phase own output
@@ -15161,17 +21612,31 @@ def _quarantine_stale_on_retry(
         for src in matches:
             if src.name in exclude:
                 continue
+            if (
+                phase.name == "report_index"
+                and src.parent == Path(scratchpad)
+                and _has_active_committed_report_head(
+                    Path(scratchpad), src.name
+                )
+            ):
+                # A retry gets attempt-scoped raw outputs.  The committed
+                # canonical generation remains the live predecessor until a
+                # complete successor transaction supersedes it.
+                continue
             try:
-                if src.stat().st_size < 500:
+                if src.stat().st_size < 500 and not (
+                    phase.name == "recon" and include_recon_canonical
+                ):
                     continue  # stub, not stale — leave for RESUMPTION
                 qdir = _retry_quarantine_dir(scratchpad, phase.name)
-                qdir.mkdir(parents=True, exist_ok=True)
-                dst = qdir / src.name
+                relative = src.relative_to(scratchpad)
+                dst = qdir / relative
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 # Don't overwrite a prior backup from the same phase.
                 if dst.exists():
                     continue
                 src.rename(dst)
-                renamed.append(src.name)
+                renamed.append(relative.as_posix())
             except Exception as e:
                 log.debug(
                     f"[{phase.name}] quarantine-on-retry of "
@@ -15187,8 +21652,13 @@ def _restore_quarantined_on_retry_failure(
 
     The stale content is better than nothing for downstream phases.
     """
-    patterns: list[str] = list(phase.expected_artifacts or [])
-    patterns.extend(_RETRY_QUARANTINE_EXTRAS.get(phase.name, []))
+    if _is_isolated_chain_tail_retry(phase):
+        return
+
+    patterns = _retry_owned_output_patterns(
+        phase,
+        include_recon_canonical=(phase.name == "recon"),
+    )
 
     for pattern in patterns:
         if pattern == "AUDIT_REPORT.md":
@@ -15209,12 +21679,16 @@ def _restore_quarantined_on_retry_failure(
                 backups.append(legacy_bp)
 
         for backup in backups:
-            original = scratchpad / backup.name
+            try:
+                original = scratchpad / backup.relative_to(qdir)
+            except ValueError:
+                original = scratchpad / backup.name
             if backup.parent == scratchpad and backup.name.endswith(".attempt1"):
                 original = scratchpad / backup.name.removesuffix(".attempt1")
             # Only restore if the retry didn't produce a replacement
             if not original.exists() or original.stat().st_size < 100:
                 try:
+                    original.parent.mkdir(parents=True, exist_ok=True)
                     backup.rename(original)
                 except Exception:
                     pass
@@ -15233,8 +21707,13 @@ def _cleanup_quarantine_backups(
 
     The retry produced valid replacements; the backups are no longer needed.
     """
-    patterns: list[str] = list(phase.expected_artifacts or [])
-    patterns.extend(_RETRY_QUARANTINE_EXTRAS.get(phase.name, []))
+    if _is_isolated_chain_tail_retry(phase):
+        return
+
+    patterns = _retry_owned_output_patterns(
+        phase,
+        include_recon_canonical=(phase.name == "recon"),
+    )
 
     for pattern in patterns:
         if pattern == "AUDIT_REPORT.md":
@@ -15261,6 +21740,14 @@ def _cleanup_quarantine_backups(
                 pass
     qdir = _retry_quarantine_dir(scratchpad, phase.name)
     try:
+        if qdir.exists():
+            for child in sorted(
+                (p for p in qdir.rglob("*") if p.is_dir()),
+                key=lambda p: len(p.parts),
+                reverse=True,
+            ):
+                if not any(child.iterdir()):
+                    child.rmdir()
         if qdir.exists() and not any(qdir.iterdir()):
             qdir.rmdir()
             parent = qdir.parent
@@ -15349,6 +21836,131 @@ def _quarantine_foreign_phase_writes(
     return moved, failed
 
 
+def _quarantine_canonical_report_fail_closed(
+    report: Path,
+    quarantine: Path,
+    *,
+    run_id: str = "",
+    reason: str,
+) -> Optional[Path]:
+    """Quarantine canonical report bytes or leave an adjacent NO_SHIP marker.
+
+    Every caller that removes ``AUDIT_REPORT.md`` uses this one Windows-safe
+    path.  An existing verified quarantine copy is reused idempotently.  If a
+    sharing violation prevents removal, the canonical bytes remain untouched
+    but an adjacent machine-readable marker makes that residue non-deliverable.
+    """
+
+    report = Path(report)
+    quarantine = Path(quarantine)
+    if not report.is_file():
+        return None
+
+    def atomic_json(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(
+                json.dumps(payload, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(tmp, path)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    try:
+        source_bytes = report.read_bytes()
+        digest = hashlib.sha256(source_bytes).hexdigest()
+        quarantine.mkdir(parents=True, exist_ok=True)
+        destination = quarantine / f"AUDIT_REPORT.{digest}.md"
+
+        if destination.exists():
+            if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+                raise RuntimeError(
+                    "canonical report quarantine digest collision"
+                )
+        else:
+            try:
+                report.rename(destination)
+            except OSError:
+                tmp = destination.with_name(
+                    f".{destination.name}.{os.getpid()}.tmp"
+                )
+                try:
+                    tmp.write_bytes(source_bytes)
+                    if hashlib.sha256(tmp.read_bytes()).hexdigest() != digest:
+                        raise RuntimeError("canonical report quarantine copy mismatch")
+                    os.replace(tmp, destination)
+                finally:
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+        if report.exists():
+            try:
+                report.unlink()
+            except OSError as removal_exc:
+                failure = {
+                    "schema_version": (
+                        "plamen.canonical_report_quarantine_failure.v1"
+                    ),
+                    "run_id": str(run_id or ""),
+                    "source": report.name,
+                    "quarantine": str(destination),
+                    "sha256": digest,
+                    "reason": str(reason),
+                    "canonical_path_removed": False,
+                    "removal_error": repr(removal_exc),
+                    "no_timestamp_snapshot": True,
+                }
+                atomic_json(quarantine / "quarantine_failure.json", failure)
+                atomic_json(report.parent / "AUDIT_REPORT.NO_SHIP.json", failure)
+                return None
+
+        if report.exists():
+            failure = {
+                "schema_version": "plamen.canonical_report_quarantine_failure.v1",
+                "run_id": str(run_id or ""),
+                "source": report.name,
+                "quarantine": str(destination),
+                "sha256": digest,
+                "reason": str(reason),
+                "canonical_path_removed": False,
+                "removal_error": "canonical path remained after removal",
+                "no_timestamp_snapshot": True,
+            }
+            atomic_json(quarantine / "quarantine_failure.json", failure)
+            atomic_json(report.parent / "AUDIT_REPORT.NO_SHIP.json", failure)
+            return None
+
+        try:
+            (report.parent / "AUDIT_REPORT.NO_SHIP.json").unlink(missing_ok=True)
+        except OSError:
+            pass
+        return destination
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        failure = {
+            "schema_version": "plamen.canonical_report_quarantine_failure.v1",
+            "run_id": str(run_id or ""),
+            "source": report.name,
+            "reason": str(reason),
+            "canonical_path_removed": not report.exists(),
+            "error": repr(exc),
+            "no_timestamp_snapshot": True,
+        }
+        try:
+            atomic_json(quarantine / "quarantine_failure.json", failure)
+            if report.exists():
+                atomic_json(report.parent / "AUDIT_REPORT.NO_SHIP.json", failure)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+        return None
+
+
 def _quarantine_report_without_completed_assemble(
     scratchpad: Path,
     project_root: str,
@@ -15366,12 +21978,14 @@ def _quarantine_report_without_completed_assemble(
         return None
     overflow = scratchpad / "_overflow" / "startup_report_guard"
     try:
-        overflow.mkdir(parents=True, exist_ok=True)
-        dst = overflow / report.name
-        if dst.exists():
-            import time as _t
-            dst = overflow / f"{report.stem}.{int(_t.time())}{report.suffix}"
-        report.rename(dst)
+        dst = _quarantine_canonical_report_fail_closed(
+            report,
+            overflow,
+            run_id=str(getattr(checkpoint, "run_id", "") or ""),
+            reason="report_assemble is not completed in checkpoint",
+        )
+        if dst is None:
+            return None
         try:
             with (scratchpad / "violations.md").open("a", encoding="utf-8") as f:
                 f.write(
@@ -15486,9 +22100,100 @@ def _rewind_completed_after_overflow(
     return removed
 
 
-def _skeptic_expected_findings(scratchpad: Path) -> list[dict[str, str]]:
-    """Return reportable Critical/High findings the skeptic must cover."""
+def _skeptic_expected_findings(scratchpad: Path) -> list[dict[str, Any]]:
+    """Return every verifier result that requires an independent challenge.
+
+    P0-V replaces the severity-gated High/Critical appeal with semantic
+    triggers.  In Thorough mode a provisional Low/Medium rating must not hide a
+    supported mechanism, a proposed non-body disposition, evidence-integrity
+    debt, grouped proof ambiguity, a severity disagreement, or an unresolved
+    external premise.  High/Critical adversarial review is preserved as an
+    additional trigger.  This function only defines skeptic *proposal* work;
+    it grants no disposition or severity authority.
+    """
     queue_rows = parse_verification_queue_rows(scratchpad)
+    authority = _mechanical_successor_authority_view(scratchpad)
+    authority_rows = authority.get("verdicts", {})
+    global_unbound = bool(
+        authority.get("mechanical_present") and authority.get("status") == "DEGRADED"
+    )
+    independent_challenges: dict[str, dict[str, object]] = {}
+    challenge_path = scratchpad / "independent_severity_challenges.json"
+    try:
+        challenge_payload = json.loads(
+            challenge_path.read_text(encoding="utf-8", errors="strict")
+        )
+        if (
+            isinstance(challenge_payload, dict)
+            and challenge_payload.get("schema_version")
+            == "plamen.independent_severity_challenges.v1"
+            and challenge_payload.get("report_authoritative") is False
+        ):
+            independent_challenges = {
+                str(item.get("finding_id") or "").upper(): dict(item)
+                for item in challenge_payload.get("challenges") or []
+                if isinstance(item, dict) and item.get("finding_id")
+            }
+    except (OSError, UnicodeError, ValueError, TypeError):
+        independent_challenges = {}
+
+    typed_challenges: set[str] = set()
+    try:
+        typed_payload = json.loads(
+            (scratchpad / "severity_decision_ledger.shadow.json").read_text(
+                encoding="utf-8", errors="strict"
+            )
+        )
+        for decision in typed_payload.get("decisions") or []:
+            if not isinstance(decision, dict):
+                continue
+            if decision.get("status") != "RESOLVED":
+                candidate_id = str(decision.get("candidate_id") or "").upper()
+                if candidate_id:
+                    typed_challenges.add(candidate_id)
+    except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+        pass
+
+    try:
+        hypothesis_constituents = _parse_hypothesis_constituents(
+            scratchpad,
+            include_split_parent_aliases=True,
+            include_composition_aliases=True,
+        )
+    except Exception:
+        hypothesis_constituents = {}
+    inventory_verdicts: dict[str, str] = {}
+    inventory_text, inventory_source, inventory_authority_issues = (
+        _authoritative_postcutover_inventory(scratchpad)
+    )
+    if inventory_text:
+        try:
+            for block in _inventory_blocks(inventory_text):
+                block_id = (
+                    _normalize_finding_id(block.get("id", ""))
+                    or block.get("id", "")
+                )
+                if block_id:
+                    inventory_verdicts[block_id] = (
+                        _field_from_markdown(
+                            block.get("block", ""), ("Verdict",)
+                        )
+                        or ""
+                    ).upper()
+        except Exception as exc:
+            inventory_verdicts = {}
+            inventory_authority_issues = list(
+                inventory_authority_issues
+            ) + [
+                "authenticated inventory metadata is unparseable: "
+                f"{type(exc).__name__}: {exc}"
+            ]
+
+    external_projection = _external_assumption_undemotion_projection(scratchpad)
+    external_challenge_ids = set(external_projection["valid_floors"]) | set(
+        external_projection.get("debt_ids", set())
+    )
+    external_debt_ids = set(external_projection.get("debt_ids", set()))
     out: list[dict[str, str]] = []
     seen: set[str] = set()
     for row in queue_rows:
@@ -15501,12 +22206,8 @@ def _skeptic_expected_findings(scratchpad: Path) -> list[dict[str, str]]:
         except Exception:
             vtxt = ""
         status = _verifier_status_from_text(vtxt)
-        if not _is_reportable_verdict(status):
-            continue
         severity = _severity_name_from_text(vtxt, row)
-        if _severity_bucket(severity) not in {"critical", "high"}:
-            continue
-        seen.add(fid)
+        severity_bucket = _severity_bucket(severity)
         title = (
             _field_from_markdown(vtxt, ("Title", "Finding", "Finding Title"))
             or row.get("title")
@@ -15519,6 +22220,95 @@ def _skeptic_expected_findings(scratchpad: Path) -> list[dict[str, str]]:
         evidence = _field_from_markdown(
             vtxt, ("Evidence Tag", "Evidence Tags", "Evidence")
         )
+        authority_row = authority_rows.get(fid.upper())
+        authority_state = "ABSENT"
+        integrity_state = ""
+        authority_issue = ""
+        effective_status = status
+        if isinstance(authority_row, dict):
+            authority_state = str(
+                authority_row.get("authority_state") or "UNBOUND"
+            )
+            integrity_state = str(authority_row.get("integrity_state") or "")
+            authority_issue = str(authority_row.get("authority_issue") or "")
+            evidence = str(authority_row.get("effective_tag") or evidence)
+            if authority_state == "BOUND" and integrity_state == "INFLATED_PROSE":
+                effective_status = "CONTESTED"
+        elif global_unbound:
+            authority_state = "UNBOUND"
+            integrity_state = "MECHANICAL_UNAVAILABLE"
+            if any(tag in evidence for tag in EVIDENCE_TAGS_PROD):
+                if "[MECHANICAL-UNAVAILABLE]" not in evidence:
+                    evidence += " [MECHANICAL-UNAVAILABLE]"
+            else:
+                evidence = "[CODE-TRACE] [MECHANICAL-UNAVAILABLE]"
+            authority_issue = "mechanical authority denominator is degraded"
+        triggers: list[str] = []
+        if severity_bucket in {"critical", "high"}:
+            triggers.append("HIGH_RISK_ADVERSARIAL_REVIEW")
+        if not _is_reportable_verdict(status):
+            triggers.append("PROPOSED_NONBODY_DISPOSITION")
+        elif (
+            severity_bucket in {"low", "informational"}
+            and any(
+                token in status
+                for token in ("CONFIRMED", "PARTIAL", "CONTESTED", "UNRESOLVED")
+            )
+        ):
+            triggers.append("LOW_SEVERITY_SUPPORTED_MECHANISM")
+        if any(token in status for token in ("CONTESTED", "PARTIAL", "UNRESOLVED")):
+            triggers.append("VERIFIER_DISAGREEMENT")
+        if (
+            integrity_state
+            and integrity_state not in {"CONSISTENT", "ABSENT"}
+        ) or authority_state == "UNBOUND":
+            triggers.append("EVIDENCE_INTEGRITY_REVIEW")
+        if inventory_authority_issues:
+            triggers.append("INVENTORY_AUTHORITY_REVIEW")
+            inventory_issue = "; ".join(inventory_authority_issues[:3])
+            authority_issue = "; ".join(
+                part
+                for part in (authority_issue, inventory_issue)
+                if part
+            )
+        constituents = list(hypothesis_constituents.get(fid, []))
+        if len(constituents) > 1:
+            triggers.append("GROUPED_PROOF_SCOPE_AMBIGUITY")
+        depth_verdict = _aggregate_depth_verdict(
+            fid, inventory_verdicts, hypothesis_constituents
+        )
+        if depth_verdict:
+            depth_reportable = "REFUTED" not in depth_verdict
+            verify_reportable = _is_reportable_verdict(status)
+            if depth_reportable != verify_reportable:
+                triggers.append("DEPTH_VERIFIER_DISAGREEMENT")
+        if (
+            fid in external_challenge_ids
+            or _UNPROVEN_EXTERNAL_STAMP.upper() in vtxt.upper()
+            or "[EXTERNAL-ASSUMPTION" in vtxt.upper()
+        ):
+            triggers.append("UNRESOLVED_EXTERNAL_PREMISE")
+        if fid in external_debt_ids:
+            triggers.append("EVIDENCE_INTEGRITY_REVIEW")
+            r10_issue = "; ".join(
+                str(problem.get("code") or "R10_RECEIPT_INVALID")
+                for problem in external_projection["issues"]
+                if not problem.get("finding_id")
+                or problem.get("finding_id") == fid
+            )
+            authority_issue = "; ".join(
+                part
+                for part in (authority_issue, r10_issue)
+                if part
+            )
+        if fid.upper() in independent_challenges:
+            triggers.append("BLIND_SEVERITY_DISAGREEMENT")
+        if fid.upper() in typed_challenges:
+            triggers.append("TYPED_SEVERITY_CHALLENGE")
+        triggers = list(dict.fromkeys(triggers))
+        if not triggers:
+            continue
+        seen.add(fid)
         out.append({
             "finding_id": fid,
             "title": title,
@@ -15526,11 +22316,18 @@ def _skeptic_expected_findings(scratchpad: Path) -> list[dict[str, str]]:
             "location": location,
             "verify_file": vp.name,
             "evidence_tag": evidence,
+            "integrity_state": integrity_state,
+            "mechanical_authority_state": authority_state,
+            "mechanical_authority_issue": authority_issue,
+            "inventory_authority_source": inventory_source,
+            "verdict_status": effective_status,
+            "challenge_triggers": triggers,
+            "constituent_ids": constituents,
         })
     return out
 
 
-def _write_skeptic_manifest(scratchpad: Path) -> list[dict[str, str]]:
+def _write_skeptic_manifest(scratchpad: Path) -> list[dict[str, Any]]:
     """Write the manifest that makes skeptic scope explicit and retryable."""
     rows = _skeptic_expected_findings(scratchpad)
     path = scratchpad / "skeptic_manifest.json"
@@ -15727,6 +22524,105 @@ def _read_inventory_merge_receipt(scratchpad: Path) -> dict[str, int]:
     return out
 
 
+def _legacy_inventory_identity_coverage_issues(
+    chunk_paths: Iterable[Path],
+    inv_text: str,
+) -> list[str]:
+    """Diff every pre-manifest chunk identity against final Source IDs.
+
+    The historical merge receipt records cardinalities only.  Cardinality can
+    detect a failed write, but it cannot prove which inputs survived a
+    many-to-one merge.  This compatibility path therefore treats each
+    ``(chunk artifact, local finding ID)`` as the denominator and accepts a
+    final inventory block only when its explicit ``Source ID(s)`` field names
+    that identity.  A bare local ID is sufficient only when it is unique
+    across the legacy chunks; collisions require ``artifact.md:ID`` (or the
+    existing ``::``/``#`` qualified spellings).
+
+    Current manifest-backed runs do not call this helper.  Their richer,
+    source-block-hash-bound reconciliation remains authoritative.
+    """
+    identities: list[tuple[str, str]] = []
+    unaddressable: list[str] = []
+    for path in chunk_paths:
+        for ordinal, entry in enumerate(_parse_inventory_chunk(path), start=1):
+            raw_id = str(entry.get("local_id") or "").strip()
+            finding_id = (
+                _normalize_finding_id(raw_id)
+                or _strip_md(raw_id).strip().upper()
+            )
+            if not finding_id or not re.fullmatch(
+                r"[A-Z][A-Z0-9_-]{0,95}-\d+", finding_id
+            ):
+                unaddressable.append(f"{path.name}#parsed-{ordinal}")
+                continue
+            identities.append((path.name, finding_id))
+
+    id_counts: dict[str, int] = {}
+    for _artifact, finding_id in identities:
+        id_counts[finding_id] = id_counts.get(finding_id, 0) + 1
+
+    # This existing structural reader is deliberately scoped to Source-ID
+    # fields inside real finding blocks, so prose/receipt mentions cannot
+    # satisfy the legacy identity denominator.
+    bare_referents = _inventory_structural_source_referents(inv_text)
+    qualified_referents: set[tuple[str, str]] = set()
+    for block in _inventory_blocks(inv_text):
+        raw_block = str(block.get("block") or "")
+        source_values: list[str] = []
+        first = _field_from_markdown(raw_block, ("Source IDs", "Source ID"))
+        if first:
+            source_values.append(first)
+        for match in re.finditer(
+            r"(?im)^\s*[-*]?\s*(?:\*\*)?Source\s+IDs?(?:\*\*)?\s*:\s*(.+?)\s*$",
+            raw_block,
+        ):
+            value = match.group(1).strip()
+            if value and value not in source_values:
+                source_values.append(value)
+        for value in source_values:
+            for artifact, finding_id in identities:
+                pattern = (
+                    rf"(?<![A-Za-z0-9_.-]){re.escape(artifact)}\s*"
+                    rf"(?:::|#|:)\s*{re.escape(finding_id)}"
+                    rf"(?![A-Za-z0-9_-])"
+                )
+                if re.search(pattern, value, re.IGNORECASE):
+                    qualified_referents.add((artifact, finding_id))
+
+    issues: list[str] = []
+    if unaddressable:
+        issues.append(
+            "legacy parsed chunk row(s) lack an addressable local identity: "
+            + ", ".join(sorted(unaddressable)[:12])
+        )
+    missing: list[str] = []
+    ambiguous: list[str] = []
+    for artifact, finding_id in identities:
+        if (artifact, finding_id) in qualified_referents:
+            continue
+        if id_counts.get(finding_id, 0) == 1 and finding_id in bare_referents:
+            continue
+        if id_counts.get(finding_id, 0) > 1:
+            ambiguous.append(f"{artifact}:{finding_id}")
+        else:
+            missing.append(f"{artifact}:{finding_id}")
+    if missing:
+        issues.append(
+            "missing exact raw identity in final inventory Source IDs: "
+            + ", ".join(sorted(missing)[:12])
+        )
+    if ambiguous:
+        collision_ids = sorted({item.rsplit(":", 1)[-1] for item in ambiguous})
+        issues.append(
+            "ambiguous legacy raw identity "
+            + ", ".join(collision_ids[:12])
+            + "; qualify every colliding Source ID with its chunk artifact: "
+            + ", ".join(sorted(ambiguous)[:12])
+        )
+    return issues
+
+
 def _inventory_parity_artifact(scratchpad: Path) -> Path:
     """Return the immutable inventory artifact that the merge receipt covers."""
     for name in (
@@ -15919,12 +22815,12 @@ def _generate_depth_retry_hint(
         "Repair rules:",
         "- Stay inside the depth phase only. Do NOT execute Phase 4b.5/RAG, final_scoring, chain analysis, verification, or report work.",
         "- Do NOT write rag_validation.md or any later-phase artifact.",
-        "- Initial confidence scoring is part of the depth phase in Core/Thorough. If confidence_scores.md is missing or too small, spawn the Phase 4b Confidence Scoring Agent and write confidence_scores.md before returning.",
+        "- Recompute the transient routing proposal in Core/Thorough and return it to the coordinator. Do not create or modify confidence_scores.md; the driver publishes the canonical artifact after the wave. If routing is unavailable, treat every unresolved Medium+ candidate as UNCERTAIN.",
         "- If semantic_invariants.md triggered SEMANTIC_GAP_INVESTIGATOR, spawn that niche agent now and write niche_semantic_gap_findings.md. Do not collapse missing-write/lifecycle-gap signals into generic snapshot prose.",
         "- For every graph-artifact issue, update the named depth output so it references every produced graph artifact, or add an explicit [GRAPH-ARTIFACT: UNAVAILABLE:<file>] tag for unavailable artifacts.",
         "- For every SC subsystem coverage issue, read and cite the exact missing files named above, or add explicit [SCOPE-COVERED: <file>] tags after reviewing them.",
-        "- If confidence_scores.md has all identical composite values, REDO scoring: read each finding's depth output and assign per-finding Evidence/Consensus/Quality scores based on actual depth evidence tags ([BOUNDARY], [VARIATION], [TRACE]) present.",
-        "- If iter2 is flagged as missing: after fixing confidence_scores.md, check if any Medium+ findings are UNCERTAIN (composite < 0.7). If yes, spawn a DA iteration 2 agent for those findings and write depth_da_*_findings.md or depth_iter2_*_findings.md.",
+        "- If transient routing is formulaic or unavailable, default every unresolved Medium+ candidate to UNCERTAIN rather than skipping work.",
+        "- If iter2 is flagged as missing, use the transient table (or the recall-safe default) and spawn DA iteration-2 work for the affected findings. Keep all candidate verdicts unchanged.",
         "",
         "Ensure ALL never-cut artifacts are produced and all depth "
         "agents include step execution traces. Prior output files "
@@ -16015,6 +22911,22 @@ def _generate_depth_repair_hint(
     misdescribe the L1 repair target. The SC branch is the verbatim original
     (reached on the default ``pipeline="sc"``), so SC output is byte-identical.
     """
+    driver_confidence_outputs = (
+        "confidence_scores.md",
+        "confidence_consensus_authority.json",
+        "consensus_map.md",
+    )
+    model_missing = [
+        item
+        for item in (missing or [])
+        if not any(name in str(item) for name in driver_confidence_outputs)
+    ]
+    driver_missing = [
+        item
+        for item in (missing or [])
+        if any(name in str(item) for name in driver_confidence_outputs)
+    ]
+
     if (pipeline or "sc") == "l1":
         lines = [
             "## RETRY HINT — depth targeted repair (L1)",
@@ -16028,11 +22940,20 @@ def _generate_depth_repair_hint(
             "",
             "Produce ONLY the missing / stub artifacts below, then STOP:",
         ]
-        lines.extend(f"- {m}" for m in (missing or []))
+        lines.extend(f"- {m}" for m in model_missing)
+        if driver_missing:
+            lines.extend([
+                "",
+                "- Driver-owned confidence artifacts are not model repair "
+                "targets. Return a transient routing proposal only; the "
+                "driver records any unresolved publication failure as "
+                "typed repair debt.",
+            ])
         lines.extend([
             "",
-            "- If `confidence_scores.md` is missing or a stub, write it for the "
-            "L1 depth findings.",
+            "- Recompute transient confidence routing for the L1 depth "
+            "findings and return the proposal to the coordinator. Do not "
+            "create or modify driver-owned confidence artifacts.",
             "- In Thorough mode only: write a substantive "
             "`perturbation_findings.md` and `design_stress_findings.md` if "
             "missing or stubs, and `skill_execution_gaps.md` if applicable.",
@@ -16052,14 +22973,23 @@ def _generate_depth_repair_hint(
         "",
         "Produce ONLY the missing / stub artifacts below, then STOP:",
     ]
-    lines.extend(f"- {m}" for m in (missing or []))
+    lines.extend(f"- {m}" for m in model_missing)
+    if driver_missing:
+        lines.extend([
+            "",
+            "- Driver-owned confidence artifacts are not model repair "
+            "targets. Return a transient routing proposal only; the driver "
+            "records any unresolved publication failure as typed repair debt.",
+        ])
     lines.extend([
         "",
         "- Write a substantive `perturbation_findings.md` if it is missing "
         "or a stub (one `### Perturbation Block` table per Medium+ finding).",
-        "- If `confidence_scores.md` shows Medium+ findings in the UNCERTAIN "
-        "band, run depth iteration 2 (Devil's-Advocate) for those findings "
-        "and write `depth_da_*_findings.md`.",
+        "- If the driver-published confidence telemetry shows Medium+ "
+        "findings in the UNCERTAIN band, or the transient routing helper is "
+        "unavailable, run depth iteration 2 (Devil's-Advocate) for every "
+        "affected unresolved Medium+ finding and write "
+        "`depth_da_*_findings.md`.",
         "- Do NOT write `hypotheses.md`, `finding_mapping.md`, or any chain / "
         "synthesis / verification / report artifact — those belong to later "
         "phases. Writing them wastes the attempt.",
@@ -16117,10 +23047,11 @@ def _generate_report_index_retry_hint(issues: list[str]) -> str:
             "Accepted canonical adjustment reasons:",
             "- `TRUSTED-ACTOR(original_sev)`",
             "- `UNRESOLVED(original_sev)` or `PARTIAL(original_sev)`",
-            "- `POC-FAIL(original_sev)`",
             "- `PROVEN(original_sev)` only when PROVEN_ONLY=true",
             "- `CHAIN-UPGRADE(original_sev)` / `CHAIN-DOWNGRADE(original_sev)` "
             "with the chain ID and enabling relation.",
+            "- `POC-FAIL-PROPOSAL(no-tier-change)` is review context only; "
+            "it is never a reason for a severity difference.",
             "",
             "Do NOT silently place a Medium verified finding in a Low row, "
             "and do NOT silently upgrade an Informational finding to Low. "
@@ -16286,12 +23217,16 @@ def _generate_verify_targeted_repair_hint(fids: list[str]) -> str:
         lines.append(
             f"- `verify_{fid}.md`: either (a) keep `Attempted: YES` and add a "
             f"concrete `Test File:` AND `Command:` (no N/A / NONE), OR "
-            f"(b) change to `Attempted: NO` and add "
+            f"(b) only when execution is genuinely infeasible, change to "
+            f"`Attempted: NO` and propose "
             f"`PoC Not Attempted Because: <VALID_BLOCKER>` using exactly one of "
             f"`NO_BUILD_ENVIRONMENT`, `EXTERNAL_DEPENDENCY_NO_FORK_OR_ADDRESS`, "
             f"`DEPLOYMENT_ONLY_REQUIRES_LIVE_EXTERNAL`, `PURE_SPEC_OR_DOCS_ONLY`, "
             f"`STRUCTURAL_NO_EXECUTABLE_HARM_ASSERTION`, "
-            f"`CROSS_VM_ENCODING_NO_RUNTIME`."
+            f"`CROSS_VM_ENCODING_NO_RUNTIME`. Verifier prose is not waiver "
+            f"authority: non-execution still requires separate, independently "
+            f"validated typed blocker evidence, and a locally testable row "
+            f"cannot be waived while its build/test harness is available."
         )
     lines.extend([
         "",
@@ -16682,24 +23617,58 @@ def _parse_inventory_evidence_validation(scratchpad: Path) -> dict[str, dict[str
     return out
 
 
-def _filter_verification_queue_by_evidence(scratchpad: Path) -> list[str]:
-    """Remove out-of-scope / hallucinated-location rows before expensive verify.
+def _write_verification_queue_evidence_debt(
+    scratchpad: Path,
+    rows: list[dict[str, str]],
+) -> None:
+    """Write advisory repair debt for candidates retained in verification."""
+    ordered = sorted(rows, key=lambda row: row.get("finding id", ""))
+    lines = [
+        "# Verification Queue Evidence Repair Debt",
+        "",
+        "Every row remains active for independent verification. This artifact",
+        "records repair/human-review work; it is never exclusion authority.",
+        "",
+        "| Finding ID | Routing | Evidence Debt |",
+        "|------------|---------|---------------|",
+    ]
+    for row in ordered:
+        debt = str(row.get("evidence debt", "") or "").replace("|", "/").replace("\n", " ")
+        lines.append(
+            f"| {row.get('finding id', '')} | RETAINED_ACTIVE | {debt} |"
+        )
+    lines.extend(("", f"Total: {len(ordered)} retained active debt item(s)", ""))
+    (scratchpad / "verification_queue_evidence_debt.md").write_text(
+        "\n".join(lines), encoding="utf-8"
+    )
+    payload = {
+        "schema_version": "plamen.verification_queue_evidence_debt.v1",
+        "authority": "ADVISORY_REPAIR_ONLY",
+        "row_count": len(ordered),
+        "rows": [
+            {
+                "finding_id": row.get("finding id", ""),
+                "routing": "RETAINED_ACTIVE",
+                "evidence_debt": row.get("evidence debt", ""),
+            }
+            for row in ordered
+        ],
+    }
+    (scratchpad / "verification_queue_evidence_debt.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
-    Two drop policies:
-      - HARD (location ground truth, drop on its own): the cited file genuinely
-        does not exist, the cited line exceeds the file length, the location
-        resolved to a non-production (test/fuzz/mock/harness) path, or (Low/
-        Informational only — Gate 3) the finding cites a concrete function/
-        method identifier absent from the ENTIRE project source index. These
-        are mechanical facts, not judgment — a finding citing absent/non-
-        production/hallucinated code is not an in-scope production
-        vulnerability. Medium+ findings are NEVER hard-dropped by Gate 3 (see
-        `_validate_inventory_evidence` — they are flagged, not appendix-routed).
-      - CONSERVATIVE (both-bad): only suppress when BOTH location and provenance
-        are unresolved/invalid. A merely unparseable/prose location with a usable
-        Source ID still proceeds to verifier/location recovery.
-    All removals are written to verification_queue_evidence_excluded.md (ledger,
-    not a silent drop — this is an appendix routing, not a body deletion).
+
+def _filter_verification_queue_by_evidence(scratchpad: Path) -> list[str]:
+    """Retain evidence-defective candidates and attach explicit repair debt.
+
+    Location/provenance validation can establish that a citation is weak; it
+    cannot independently establish that the candidate is safe. Missing or
+    non-production locations, unverified identifiers, and jointly invalid
+    location/provenance therefore stay in the active verification denominator.
+    The advisory debt ledger tells the verifier and human reviewer what must be
+    recovered. This function retains its historical list return type, but the
+    recall-safe policy returns no removed IDs.
     """
     records = _parse_inventory_evidence_validation(scratchpad)
     if not records:
@@ -16707,112 +23676,51 @@ def _filter_verification_queue_by_evidence(scratchpad: Path) -> list[str]:
     rows = parse_verification_queue_rows(scratchpad)
     if not rows:
         return []
-    kept: list[dict[str, str]] = []
-    removed: list[dict[str, str]] = []
-    for row in rows:
-        fid = _normalize_finding_id(row.get("finding id") or "") or (row.get("finding id") or "").strip()
+    # Evidence validation is diagnostic and repair-oriented.  It can prove
+    # that a citation/location is weak; it cannot independently prove that the
+    # underlying candidate is safe.  Retain every queued candidate and carry
+    # the defect forward as explicit verifier-visible debt.
+    retained: list[dict[str, str]] = []
+    debt_rows: list[dict[str, str]] = []
+    for original in rows:
+        row = dict(original)
+        fid = (
+            _normalize_finding_id(row.get("finding id") or "")
+            or (row.get("finding id") or "").strip()
+        )
         rec = records.get(fid)
-        if not rec:
-            kept.append(row)
-            continue
-        loc_status_val = rec.get("location status")
-        loc_reason_val = (rec.get("location reason") or "").lower()
-        loc_bad = loc_status_val not in ("OK", "RECOVERED_BASENAME")
-        src_bad = rec.get("source status") in ("SOURCE_INVALID", "SOURCE_MISSING")
-        # HARD ground-truth drop (on its own): the inventory location resolved to
-        # a real file that lives in a test/fuzz/mock/harness tree — out of audit
-        # scope regardless of provenance.
-        #
-        # NOTE: we deliberately do NOT hard-drop a file-not-found location even on
-        # its own. At the INVENTORY stage a not-found path with a GOOD Source ID is
-        # a real finding whose location field is wrong-but-recoverable from its
-        # provenance (the lenient policy the COMP/F-INV tests pin). The genuinely
-        # hallucinated-location case observed in practice is a DOWNSTREAM (report
-        # tier-writer) corruption that overwrites the validated report_index
-        # location — that is caught at report-assembly, not here.
-        loc_hard_invalid = loc_status_val in ("LOCATION_NONPRODUCTION", "IDENTIFIER_UNVERIFIED")
-        if loc_hard_invalid or (loc_bad and src_bad):
-            row = dict(row)
-            if loc_status_val == "IDENTIFIER_UNVERIFIED":
-                row["exclusion reason"] = (
-                    "Unverified identifier (appendix, not dropped): "
-                    f"{rec.get('location reason') or 'cited identifier not found anywhere in the project source index'}"
+        if rec:
+            loc_status = rec.get("location status") or "MISSING"
+            source_status = rec.get("source status") or "MISSING"
+            loc_bad = loc_status not in ("OK", "RECOVERED_BASENAME")
+            source_bad = source_status in ("SOURCE_INVALID", "SOURCE_MISSING")
+            requires_repair = loc_status in (
+                "LOCATION_NONPRODUCTION",
+                "IDENTIFIER_UNVERIFIED",
+            ) or (loc_bad and source_bad)
+            if requires_repair:
+                row["evidence debt"] = (
+                    f"location_status={loc_status}; "
+                    f"source_status={source_status}; "
+                    f"location_reason={rec.get('location reason') or 'unspecified'}; "
+                    f"source_reason={rec.get('source reason') or 'unspecified'}"
                 )
-            elif loc_hard_invalid:
-                row["exclusion reason"] = (
-                    f"Out-of-scope location ({loc_status_val}): "
-                    f"{rec.get('location reason') or 'cited code is not an in-scope production file'}"
-                )
-            else:
-                row["exclusion reason"] = (
-                    f"Evidence invalid: location_status={loc_status_val}; "
-                    f"source_status={rec.get('source status')}"
-                )
-            removed.append(row)
-        else:
-            kept.append(row)
-    if not removed:
-        return []
-    existing_removed: list[dict[str, str]] = []
-    excluded_path = scratchpad / "verification_queue_evidence_excluded.md"
-    if excluded_path.exists():
-        try:
-            text = excluded_path.read_text(encoding="utf-8", errors="replace")
-            headers, existing_rows = _parse_markdown_table(text, ["severity"])
-            keys = [_norm_key(h) for h in headers]
-            for raw_row in existing_rows:
-                d = {
-                    keys[i]: raw_row[i].strip()
-                    for i in range(min(len(keys), len(raw_row)))
-                }
-                fid_existing = (
-                    _normalize_finding_id(d.get("finding id", ""))
-                    or d.get("finding id", "")
-                )
-                if fid_existing:
-                    existing_removed.append({
-                        "finding id": fid_existing,
-                        "severity": d.get("severity", ""),
-                        "title": d.get("title", ""),
-                        "exclusion reason": (
-                            d.get("exclusion reason", "")
-                            or "Previously excluded from active verification"
-                        ),
-                    })
-        except Exception:
-            existing_removed = []
-    merged_removed: dict[str, dict[str, str]] = {}
-    for row in existing_removed + removed:
-        fid = _normalize_finding_id(row.get("finding id", "")) or row.get("finding id", "")
-        if fid:
-            row = dict(row)
-            row["finding id"] = fid
-            merged_removed[fid] = row
-    for idx, row in enumerate(kept, start=1):
+                debt_rows.append(row)
+        retained.append(row)
+    for idx, row in enumerate(retained, start=1):
         row["queue #"] = str(idx)
-    _write_queue_subset_manifest(scratchpad / "verification_queue.md", kept)
-    _write_queue_excluded_manifest(excluded_path, list(merged_removed.values()))
-    return [(r.get("finding id") or "").strip() for r in removed if r.get("finding id")]
-
+    _write_queue_subset_manifest(scratchpad / "verification_queue.md", retained)
+    _write_verification_queue_evidence_debt(scratchpad, debt_rows)
+    return []
 
 def _validate_inventory_parity(scratchpad: Path) -> list[str]:
-    """Detect findings_inventory.md that is truncated relative to source.
+    """Require an exact disposition for every assigned discovery identity.
 
-    Hook: defends against the SIGKILL-at-timeout failure mode where the
-    inventory agent is killed mid-write. The partial file can still satisfy
-    the byte-size gate (it was growing when cut), but has been observed to
-    contain only 5-20% of the findings that the breadth/scanner/niche agents
-    actually produced. Downstream depth/chain/verify then cascade on the
-    truncated set and the final report silently drops most findings.
-
-    Signal: set-difference on finding signals parsed from source agent
-    outputs vs. the inventory. Primary signal is bracketed finding IDs;
-    fallback is heading-derived IDs and Location-line tags so that breadth
-    agents that skip the `[XX-N]` prefix still produce evidence. If both
-    the inventory file exists AND every upstream source artifact is empty
-    of signals, the gate FAILS loudly rather than passing vacuously —
-    that state is itself evidence that upstream phases did not produce
-    the expected artifacts.
+    P0-L replaces percentage-based truncation heuristics with an exact current
+    denominator. Every canonical raw finding must reach a concrete final block,
+    a source-bound typed merge, an independently supported refutation, or a
+    content-bearing NEEDS_INVENTORY_REVIEW item. The latter is persisted before
+    returning an issue so repair/degrade cannot make the candidate disappear.
     """
     inv_path = _inventory_parity_artifact(scratchpad)
     if not inv_path.exists():
@@ -16821,184 +23729,108 @@ def _validate_inventory_parity(scratchpad: Path) -> list[str]:
         inv_text = inv_path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return ["findings_inventory.md unreadable"]
+    try:
+        receipt = _reconcile_exact_inventory(scratchpad, persist=False)
+        validation_issues: list[str] = []
+    except Exception as exc:
+        return [
+            "inventory exact reconciliation failed toward retention/debt: "
+            f"{type(exc).__name__}: {exc}"
+        ]
 
-    # In sharded inventory mode, final `findings_inventory.md` is a merge of
-    # `findings_inventory_chunk_*.md`, not a fresh merge over raw breadth and
-    # graph artifacts. The parity source must match the phase contract,
-    # otherwise legitimate deduplication looks like truncation.
-    chunk_sources = sorted(scratchpad.glob("findings_inventory_chunk_*.md"))
-    if chunk_sources:
-        source_files = chunk_sources
-        source_label = "inventory chunks"
-    else:
-        source_files = []
-        for pat in _INVENTORY_SOURCE_PATTERNS:
-            source_files.extend(sorted(scratchpad.glob(pat)))
-        source_label = "upstream artifacts"
-    source_ids: set[str] = set()
-    source_blocks = 0
-    parsed_chunk_entries = 0
-    observed_chunk_blocks = 0
-    source_files_seen = 0
-    for p in source_files:
-        if p.name in {"findings_inventory.md", "hypotheses.md",
-                      "chain_hypotheses.md"}:
-            continue
-        try:
-            txt = p.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            continue
-        source_files_seen += 1
-        if chunk_sources:
-            # In chunk mode, the parser used by the mechanical merge is the
-            # authoritative contract. The loose signal regex is diagnostic only:
-            # using it for hard parity recreates the parser/gate mismatch that
-            # caused permanent inventory retry loops.
-            entries = _parse_inventory_chunk(p)
-            parsed_chunk_entries += len(entries)
-            _, loose_blocks = _extract_finding_signals(txt)
-            observed_chunk_blocks += loose_blocks
-            for entry in entries:
-                local_id = _normalize_finding_id(str(entry.get("local_id", "")))
-                if local_id:
-                    source_ids.add(local_id)
-                for sid in entry.get("source_ids", []) or []:
-                    norm = _normalize_finding_id(str(sid))
-                    if norm:
-                        source_ids.add(norm)
-            source_blocks = parsed_chunk_entries
-        else:
-            ids, blocks = _extract_finding_signals(txt)
-            source_ids |= ids
-            source_blocks += blocks
-
-    if chunk_sources and not source_ids and source_blocks == 0 and observed_chunk_blocks == 0:
-        # Some tests/light paths create chunk placeholders with no findings.
-        # Empty chunk files are not authoritative; fall back to raw artifacts.
-        source_files = []
-        for pat in _INVENTORY_SOURCE_PATTERNS:
-            source_files.extend(sorted(scratchpad.glob(pat)))
-        source_label = "upstream artifacts"
-        source_ids = set()
-        source_blocks = 0
-        source_files_seen = 0
-        for p in source_files:
-            if p.name in {"findings_inventory.md", "hypotheses.md",
-                          "chain_hypotheses.md"}:
-                continue
-            try:
-                txt = p.read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                continue
-            source_files_seen += 1
-            ids, blocks = _extract_finding_signals(txt)
-            source_ids |= ids
-            source_blocks += blocks
-
-    inv_ids, loose_inv_blocks = _extract_finding_signals(inv_text)
-    # For the inventory artifact itself, the block count contract is the
-    # canonical finding-section parser. `_extract_finding_signals()` also
-    # counts table ID rows as loose blocks, which is useful for upstream
-    # breadth/chunk diagnostics but wrong for the final inventory: source-ID
-    # traceability tables can contain many IDs without being additional
-    # inventory findings. Comparing the merge receipt against that loose count
-    # caused permanent retry loops such as `receipt merged=79` vs
-    # `inventory blocks=111`.
-    canonical_inv_blocks = len(_inventory_blocks(inv_text))
-    inv_blocks = canonical_inv_blocks or loose_inv_blocks
-
-    issues: list[str] = []
-
-    # Gate path A: zero source signal + inventory body indicates a problem.
-    # A non-trivial inventory cannot be satisfied by zero upstream findings.
-    inv_body_len = len(inv_text.strip())
-    if not source_ids and source_blocks == 0:
-        if source_files_seen == 0 and inv_body_len < 512:
-            # No upstream artifacts AND inventory is essentially empty
-            # (e.g., Light mode with zero findings). Treat as vacuous OK.
-            return []
+    issues = [
+        "inventory exact reconciliation receipt: " + issue
+        for issue in validation_issues
+    ]
+    debt_count = int(
+        receipt.get("summary", {}).get("HUMAN_REVIEW_DEBT", 0) or 0
+    )
+    if debt_count:
         issues.append(
-            "inventory parity: zero finding signals in upstream artifacts "
-            f"({source_files_seen} {source_label} scanned) but inventory has "
-            f"{len(inv_ids)} IDs / {inv_blocks} heading blocks — upstream "
-            "breadth/scanner outputs may be missing or empty; cannot "
-            "validate parity"
+            "inventory exact reconciliation: "
+            f"{debt_count}/{receipt.get('denominator_count', 0)} raw discovery "
+            "identity(s) remain NEEDS_INVENTORY_REVIEW; exact coverage / "
+            "finding-block retention detects truncation at any count; "
+            "substantive source blocks are preserved in "
+            "inventory_reconciliation_human_review.md"
         )
-        return issues
-
-    # Gate path B: set-difference on IDs.
-    coverage = 1.0
-    if source_ids:
-        covered = source_ids & inv_ids
-        missing = source_ids - inv_ids
-        coverage = len(covered) / len(source_ids)
-        if coverage < 0.45:
-            sample = sorted(missing)[:8]
-            issues.append(
-                f"inventory parity: coverage {coverage:.0%} "
-                f"({len(covered)}/{len(source_ids)} source IDs from {source_label}); "
-                f"truncation suspected; missing sample: {sample}"
-            )
-
-    receipt = _read_inventory_merge_receipt(scratchpad)
-    promoted_inventory_blocks = _count_depth_promotion_inventory_blocks(inv_text)
-    promoted_receipt_count = _read_depth_promotion_receipt_count(scratchpad)
-    niche_inventory_blocks = _count_niche_promotion_inventory_blocks(inv_text)
-    accounted_promotions = (
-        max(promoted_inventory_blocks, promoted_receipt_count) + niche_inventory_blocks
-    )
-    expected_inventory_blocks = (
-        receipt.get("merged", 0) + accounted_promotions
-        if receipt else 0
-    )
-    receipt_accounts_for_merge = bool(
-        chunk_sources
-        and receipt.get("parsed") == parsed_chunk_entries
-        and receipt.get("merged", -1) > 0
-        and (
-            receipt.get("merged") == inv_blocks
-            or (
-                accounted_promotions > 0
-                and expected_inventory_blocks == inv_blocks
-            )
-        )
-    )
-    if chunk_sources and receipt and not receipt_accounts_for_merge:
+    artifact_issues = list(receipt.get("artifact_issues") or [])
+    if artifact_issues:
         issues.append(
-            "inventory parity: mechanical merge receipt mismatch "
-            f"(receipt parsed={receipt.get('parsed')}, merged={receipt.get('merged')}; "
-            f"parsed chunk entries={parsed_chunk_entries}, "
-            f"observed loose source blocks={observed_chunk_blocks or source_blocks}, "
-            f"promoted inventory blocks={promoted_inventory_blocks}, "
-            f"promotion receipt count={promoted_receipt_count}, "
-            f"niche inventory blocks={niche_inventory_blocks}, "
-            f"inventory blocks={inv_blocks})"
+            "inventory exact reconciliation artifact binding: "
+            + "; ".join(str(item) for item in artifact_issues[:12])
         )
 
-    # Gate path C: block count sanity. If source had N heading blocks but
-    # inventory collapses them into far fewer blocks, flag even when ID text
-    # still appears somewhere in the inventory. A list of absorbed IDs is not
-    # a substitute for retained finding bodies.
-    block_retention = inv_blocks / max(source_blocks, 1)
-    chunk_exact_merge_accounted = bool(
-        chunk_sources and (
-            (source_ids and coverage >= 0.95 and inv_blocks > 0)
-            or receipt_accounts_for_merge
-        )
+    inv_blocks = len(_inventory_blocks(inv_text))
+    legacy_table_receipt_accounted = False
+    chunk_paths = sorted(scratchpad.glob("findings_inventory_chunk_*.md"))
+    has_current_shard_plan = any(
+        scratchpad.glob("inventory_chunk_*.manifest.md")
     )
+    merge_receipt = _read_inventory_merge_receipt(scratchpad)
     if (
-        source_blocks >= 5
-        and block_retention < 0.45
-        and not chunk_exact_merge_accounted
+        receipt.get("denominator_count", 0) == 0
+        and chunk_paths
+        and not has_current_shard_plan
+        and merge_receipt
+    ):
+        # Compatibility for pre-manifest scratchpads whose chunk producer
+        # emitted only the old catalog table (no content-bearing Finding
+        # blocks). Current runs cannot take this branch because their shard
+        # plan is hash-bound above. Preserve the historical mechanical receipt
+        # contract narrowly, including its count check, while requiring an
+        # exact enumerate/diff of every parsed legacy identity.  A bare count
+        # receipt is not lossless merge authority.
+        parsed_entries = sum(len(_parse_inventory_chunk(path)) for path in chunk_paths)
+        promoted_inventory_blocks = _count_depth_promotion_inventory_blocks(inv_text)
+        promoted_receipt_count = _read_depth_promotion_receipt_count(scratchpad)
+        niche_inventory_blocks = _count_niche_promotion_inventory_blocks(inv_text)
+        accounted_promotions = (
+            max(promoted_inventory_blocks, promoted_receipt_count)
+            + niche_inventory_blocks
+        )
+        expected_blocks = int(merge_receipt.get("merged", 0)) + accounted_promotions
+        legacy_count_receipt_accounted = bool(
+            merge_receipt.get("parsed") == parsed_entries
+            and int(merge_receipt.get("merged", 0)) > 0
+            and expected_blocks == inv_blocks
+        )
+        legacy_identity_issues = _legacy_inventory_identity_coverage_issues(
+            chunk_paths, inv_text
+        )
+        legacy_table_receipt_accounted = bool(
+            legacy_count_receipt_accounted and not legacy_identity_issues
+        )
+        if legacy_table_receipt_accounted:
+            issues = [
+                issue for issue in issues
+                if "raw-source denominator is empty" not in issue
+            ]
+        if not legacy_count_receipt_accounted:
+            issues.append(
+                "inventory exact reconciliation: legacy mechanical merge "
+                "receipt mismatch "
+                f"(receipt parsed={merge_receipt.get('parsed')}, "
+                f"merged={merge_receipt.get('merged')}; parsed chunk "
+                f"entries={parsed_entries}; promoted={accounted_promotions}; "
+                f"inventory blocks={inv_blocks})"
+            )
+        issues.extend(
+            "inventory exact reconciliation: legacy identity coverage: " + issue
+            for issue in legacy_identity_issues
+        )
+    if (
+        receipt.get("denominator_count", 0) == 0
+        and inv_blocks > 0
+        and not legacy_table_receipt_accounted
     ):
         issues.append(
-            f"inventory parity: inventory contains {inv_blocks} finding "
-            f"blocks vs {source_blocks} in {source_label} "
-            f"({block_retention:.0%} retention); "
-            "truncation suspected"
+            "inventory exact reconciliation: zero finding signals in the "
+            "current raw-source denominator while final inventory contains "
+            f"{inv_blocks} finding block(s) but the current raw-source "
+            "denominator is empty"
         )
-
-    return issues
+    return sorted(set(issues))
 
 
 def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> list[str]:
@@ -17091,47 +23923,10 @@ def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> li
         # (>=30%, computed below) is surfaced, so the log aligns exactly with
         # the gate's actual decision.
 
-    # Mechanical-default pass: a tiny set of fields have an unambiguous
-    # pre-verify default, so a chunk that merely omitted them should be
-    # auto-filled IN PLACE rather than burning a whole-chunk retry. Only
-    # `Preferred Tag` qualifies: a not-yet-verified inventory finding is
-    # `[CODE-TRACE]` by definition (the value verify assigns absent a PoC).
-    # Content fields (Source IDs, Severity, Location, Description, Impact) have
-    # NO safe default and still trigger a retry below. Recall-safe: this only
-    # ADDS a labeled field that was already implied; it never edits content.
-    _DEFAULTABLE = {"Preferred Tag": "[CODE-TRACE]"}
-    inserts_at: list[tuple[int, str]] = []
-    for idx, match in enumerate(detail_matches):
-        start = match.end()
-        end = detail_matches[idx + 1].start() if idx + 1 < len(detail_matches) else len(text)
-        block = text[start:end]
-        lines = []
-        for field, default in _DEFAULTABLE.items():
-            group = next((g for g in required_field_groups if g[0] == field), None)
-            if group and not has_field(block, group):
-                lines.append(f"**{field}**: {default}")
-        if lines:
-            inserts_at.append((end, "\n" + "\n".join(lines) + "\n"))
-    if inserts_at:
-        new_text = text
-        for pos, snippet in sorted(inserts_at, key=lambda p: p[0], reverse=True):
-            new_text = new_text[:pos] + snippet + new_text[pos:]
-        try:
-            out.write_text(new_text, encoding="utf-8")
-            for field in _DEFAULTABLE:
-                field_miss_counts.pop(field, None)
-            log.info(
-                "[_validate_inventory_chunk_structure] mechanically defaulted "
-                "%d block(s) missing %s to its pre-verify value — no retry needed",
-                len(inserts_at), "/".join(_DEFAULTABLE),
-            )
-        except OSError as exc:
-            # Could not rewrite; fall through to the normal pervasive check so
-            # the field is not silently lost (it will retry instead).
-            log.warning(
-                "[_validate_inventory_chunk_structure] could not write "
-                "defaulted chunk (%s); leaving to pervasive-drift retry", exc,
-            )
+    # This validator is deliberately pure.  It must not repair the MODEL
+    # output or publish reconciliation sidecars.  Missing fields remain retry
+    # evidence; the separately armed DRIVER reconciliation transaction owns
+    # every persisted derivative.
 
     # Pervasive-drift promotion: if ANY required field is missing from
     # >= 30% of detail blocks, promote to a hard retry-hint. The LLM's
@@ -17167,6 +23962,33 @@ def _validate_inventory_chunk_structure(scratchpad: Path, phase_name: str) -> li
                 + "labeled fields so downstream report writers can find both."
             )
 
+    try:
+        reconciliation = _reconcile_exact_inventory(
+            scratchpad, phase_name=phase_name, persist=False
+        )
+    except Exception as exc:
+        issues.append(
+            "inventory chunk pure reconciliation failed toward repair/debt: "
+            f"{type(exc).__name__}: {exc}"
+        )
+    else:
+        debt_count = int(
+            reconciliation.get("summary", {}).get("HUMAN_REVIEW_DEBT", 0)
+            or 0
+        )
+        if debt_count:
+            issues.append(
+                "inventory chunk exact reconciliation: "
+                f"{debt_count}/{reconciliation.get('denominator_count', 0)} "
+                "assigned raw identity(s) remain NEEDS_INVENTORY_REVIEW"
+            )
+        artifact_issues = list(reconciliation.get("artifact_issues") or [])
+        if artifact_issues:
+            issues.append(
+                "inventory chunk exact reconciliation artifact binding: "
+                + "; ".join(str(item) for item in artifact_issues[:12])
+            )
+
     return issues
 
 
@@ -17190,6 +24012,325 @@ def _verify_file_present_for_id(scratchpad: Path, fid: str, *, min_bytes: int = 
         if p.exists() and p.stat().st_size >= min_bytes:
             return True
     return False
+
+
+def _verifier_completion_authority_issues(
+    scratchpad: Path,
+    fid: str,
+    *,
+    min_bytes: int = 100,
+) -> list[str]:
+    """Replay the exact per-item verifier completion receipt.
+
+    File presence, length, a verdict token, or an evidence tag is not verifier
+    completion authority.  A current canonical output is complete only when
+    its typed queue identity, work-plan assignment, severity proposal, and v2
+    output receipt all bind the exact current bytes.  The receipt is created
+    only after the verifier schema/operator gates; this reader never creates or
+    repairs one and therefore cannot bless stray or partial model output.
+    """
+
+    root = Path(scratchpad)
+    work_id = str(fid or "").strip()
+    if not work_id:
+        return ["verifier work-item identity is empty"]
+    try:
+        plan = read_queue_work_plan(root)
+        items = {
+            item.work_item_id: item
+            for item in _read_typed_queue_work_items(
+                root / "verification_queue.md"
+            )
+        }
+        item = items.get(work_id)
+        if item is None:
+            return [f"{work_id}: absent from the typed verification queue"]
+        owner_shard = next(
+            (
+                shard
+                for shard in plan.shards
+                if work_id in shard.ordered_work_item_ids
+            ),
+            None,
+        )
+        if owner_shard is None:
+            return [f"{work_id}: absent from QueueWorkPlan output ownership"]
+        expected_identity = VerifierOutputIdentity.for_assignment(
+            item, plan, owner_shard.shard_id
+        )
+        output_path = root / expected_identity.expected_output_file
+        identity_path, receipt_path = _verifier_sidecar_paths(root, work_id)
+        proposal_path = root / f"verify_{work_id}.severity_proposal.json"
+        required = (output_path, identity_path, receipt_path, proposal_path)
+        missing = [path.name for path in required if not path.is_file()]
+        if missing:
+            return [
+                f"{work_id}: exact verifier completion artifacts missing: "
+                + ", ".join(missing)
+            ]
+        output_bytes = output_path.read_bytes()
+        if len(output_bytes) < min_bytes:
+            return [
+                f"{work_id}: canonical verifier output is below {min_bytes} bytes"
+            ]
+        recorded_identity = VerifierOutputIdentity.from_dict(
+            json.loads(
+                identity_path.read_text(encoding="utf-8", errors="strict"),
+                object_pairs_hook=_strict_verifier_receipt_object,
+            )
+        )
+        if recorded_identity != expected_identity:
+            return [f"{work_id}: verifier identity sidecar is stale"]
+        proposal_bytes = proposal_path.read_bytes()
+        proposal = parse_severity_proposal(proposal_bytes)
+        expected_constituents = [work_id, *item.constituents]
+        if (
+            proposal.get("candidate_id") != work_id
+            or proposal.get("constituent_ids") != expected_constituents
+        ):
+            return [f"{work_id}: severity proposal identity is stale"]
+        receipt = VerifierOutputReceipt.from_json(
+            receipt_path.read_text(encoding="utf-8", errors="strict")
+        )
+        verifier_output_bytes = output_bytes
+        successor_path = root / f"verify_{work_id}.mechanical_successor.receipt.json"
+        if successor_path.is_file():
+            # Mechanical verification is an immutable append-only successor.
+            # The original model receipt therefore binds the exact prefix,
+            # while the successor receipt binds the transformed current file.
+            # Do not mistake that authorized append for stale verifier output.
+            from mechanical_successor_receipts import MechanicalSuccessorReceipt
+
+            successor_raw = successor_path.read_bytes()
+            successor = MechanicalSuccessorReceipt.from_json(
+                successor_raw.decode("utf-8", errors="strict")
+            )
+            original_size = successor.original_output_size_bytes
+            verifier_output_bytes = output_bytes[:original_size]
+            verifier_receipt_raw = receipt_path.read_bytes()
+            if (
+                successor.finding_id != work_id
+                or successor.verify_file != output_path.name
+                or len(output_bytes) != successor.transformed_output_size_bytes
+                or hashlib.sha256(output_bytes).hexdigest()
+                != successor.transformed_output_sha256
+                or len(verifier_output_bytes) != original_size
+                or hashlib.sha256(verifier_output_bytes).hexdigest()
+                != successor.original_output_sha256
+                or len(verifier_receipt_raw)
+                != successor.original_verifier_receipt_size_bytes
+                or hashlib.sha256(verifier_receipt_raw).hexdigest()
+                != successor.original_verifier_receipt_sha256
+                or receipt.digest
+                != successor.original_verifier_receipt_digest
+            ):
+                return [
+                    f"{work_id}: mechanical successor does not preserve the "
+                    "bound verifier output"
+                ]
+        receipt.validate_against(
+            item,
+            plan,
+            verifier_output_bytes,
+            severity_proposal=proposal_bytes,
+            launch_digest=receipt.launch_digest,
+            verifier_backend=receipt.verifier_backend,
+        )
+        if receipt.identity != expected_identity:
+            return [f"{work_id}: verifier receipt assignment is stale"]
+
+        # Current driver runs add a bounded dynamic roster and PhaseIO ledger.
+        # If either substrate is present, both must validate; a loose sidecar
+        # cannot bypass a DEBT unit receipt or stale model transaction.  The
+        # receipt-only branch remains solely for pre-roster compatibility
+        # fixtures/runs where neither authority substrate exists.
+        roster_path = root / "verification_runtime_roster.json"
+        ledger_path = root / "_artifact_state.json"
+        if roster_path.is_file() or ledger_path.is_file():
+            if not roster_path.is_file() or not ledger_path.is_file():
+                return [
+                    f"{work_id}: verifier authority substrate is split or incomplete"
+                ]
+            roster = VerifierWorkRoster.from_json(
+                roster_path.read_text(encoding="utf-8", errors="strict")
+            )
+            if (
+                roster.parent_queue_work_plan_digest != plan.digest
+                or roster.ordered_work_item_ids != plan.ordered_work_item_ids
+            ):
+                return [f"{work_id}: dynamic verifier roster is stale"]
+            runtime_unit = next(
+                (
+                    unit
+                    for unit in roster.work_units
+                    if work_id in unit.ordered_work_item_ids
+                ),
+                None,
+            )
+            if runtime_unit is None:
+                return [f"{work_id}: dynamic verifier unit assignment is missing"]
+            unit_root = root / "_verifier_runtime_units" / runtime_unit.work_unit_id
+            unit_receipt_path = unit_root / "unit_receipt.json"
+            gate_path = unit_root / "gate_receipt.json"
+            if not unit_receipt_path.is_file() or not gate_path.is_file():
+                return [f"{work_id}: dynamic verifier completion receipt is missing"]
+            unit_receipt = VerifierUnitReceipt.from_json(
+                unit_receipt_path.read_text(encoding="utf-8", errors="strict")
+            )
+            if (
+                unit_receipt.status != "COMPLETED"
+                or unit_receipt.work_unit_id != runtime_unit.work_unit_id
+                or unit_receipt.work_unit_resume_digest != runtime_unit.resume_digest
+            ):
+                return [f"{work_id}: dynamic verifier unit retained debt"]
+            current_output_receipts = tuple(
+                hashlib.sha256(
+                    (root / f"verify_{candidate_id}.receipt.json").read_bytes()
+                ).hexdigest()
+                for candidate_id in runtime_unit.ordered_work_item_ids
+            )
+            if unit_receipt.output_receipt_digests != current_output_receipts:
+                return [f"{work_id}: dynamic verifier output receipts changed"]
+            gate_digest = hashlib.sha256(gate_path.read_bytes()).hexdigest()
+            if unit_receipt.gate_receipt_digests != (gate_digest,):
+                return [f"{work_id}: dynamic verifier gate receipt changed"]
+
+            ledger = read_artifact_ledger(root)
+            control_owner = ""
+            for control_path in (gate_path, unit_receipt_path):
+                relative = control_path.relative_to(root).as_posix()
+                control_identity = f"scratchpad:{relative}"
+                control_binding = ledger.get("artifact_bindings", {}).get(
+                    control_identity
+                )
+                if not isinstance(control_binding, dict):
+                    return [
+                        f"{work_id}: verifier control receipt lacks PhaseIO ownership"
+                    ]
+                candidate_owner = str(control_binding.get("owner_key") or "")
+                if (
+                    control_binding.get("status") != "ACTIVE"
+                    or control_binding.get("writer") != "DRIVER"
+                    or control_binding.get("sha256")
+                    != hashlib.sha256(control_path.read_bytes()).hexdigest()
+                    or not candidate_owner.endswith(
+                        f"/{owner_shard.shard_id}/"
+                        f"method_receipt.{runtime_unit.work_unit_id}"
+                    )
+                    or (control_owner and candidate_owner != control_owner)
+                ):
+                    return [
+                        f"{work_id}: verifier control receipt authority is stale"
+                    ]
+                control_owner = candidate_owner
+            control_unit = ledger.get("work_units", {}).get(control_owner)
+            if (
+                not isinstance(control_unit, dict)
+                or control_unit.get("run_id")
+                != ledger["artifact_bindings"][
+                    f"scratchpad:{gate_path.relative_to(root).as_posix()}"
+                ].get("run_id")
+                or control_unit.get("semantic_status") != "ACTIVE"
+            ):
+                return [f"{work_id}: verifier control transaction is stale"]
+            output_identity = f"scratchpad:{output_path.name}"
+            binding = ledger.get("artifact_bindings", {}).get(output_identity)
+            if not isinstance(binding, dict):
+                return [f"{work_id}: verifier output lacks PhaseIO ownership"]
+            owner_key = str(binding.get("owner_key") or "")
+            expected_suffix = (
+                f"/{owner_shard.shard_id}/"
+                f"method_model.{runtime_unit.work_unit_id}"
+            )
+            model_unit = ledger.get("work_units", {}).get(owner_key)
+            if (
+                binding.get("status") != "ACTIVE"
+                or binding.get("writer") != "MODEL"
+                # The model transaction owns the immutable verifier prefix.
+                # A validated mechanical-successor receipt above owns the
+                # relationship from that exact prefix to current transformed
+                # bytes; never rewrite the historical model producer binding.
+                or binding.get("sha256")
+                != hashlib.sha256(verifier_output_bytes).hexdigest()
+                or binding.get("size") != len(verifier_output_bytes)
+                or not owner_key.endswith(expected_suffix)
+                or not isinstance(model_unit, dict)
+                or model_unit.get("run_id") != binding.get("run_id")
+                or model_unit.get("contract_digest")
+                != binding.get("contract_digest")
+                or model_unit.get("semantic_status") != "ACTIVE"
+            ):
+                return [f"{work_id}: verifier PhaseIO output authority is stale"]
+            manifest = model_unit.get("contract_manifest")
+            artifacts = model_unit.get("artifacts")
+            if not isinstance(manifest, dict) or not isinstance(artifacts, dict):
+                return [f"{work_id}: verifier PhaseIO work unit is malformed"]
+            outputs = manifest.get("outputs")
+            if not isinstance(outputs, list) or not outputs:
+                return [f"{work_id}: verifier PhaseIO output denominator is empty"]
+            for spec in outputs:
+                if not isinstance(spec, dict) or spec.get("writer") != "MODEL":
+                    return [f"{work_id}: verifier PhaseIO output schema is invalid"]
+                identity = str(spec.get("identity") or "")
+                record = artifacts.get(identity)
+                live_binding = ledger.get("artifact_bindings", {}).get(identity)
+                if not isinstance(record, dict) or not isinstance(live_binding, dict):
+                    return [f"{work_id}: verifier PhaseIO output is unowned"]
+                root_name, relative = identity.split(":", 1)
+                base = root if root_name == "scratchpad" else root.parent
+                path = base / relative
+                expected_bytes = (
+                    verifier_output_bytes
+                    if identity == output_identity
+                    else path.read_bytes() if path.is_file() else b""
+                )
+                if (
+                    not path.is_file()
+                    or record.get("status") != "ACTIVE"
+                    or live_binding.get("status") != "ACTIVE"
+                    or record.get("owner_key") != owner_key
+                    or live_binding.get("owner_key") != owner_key
+                    or record.get("sha256")
+                    != hashlib.sha256(expected_bytes).hexdigest()
+                    or record.get("size") != len(expected_bytes)
+                    or live_binding.get("sha256") != record.get("sha256")
+                    or live_binding.get("size") != record.get("size")
+                ):
+                    return [f"{work_id}: verifier PhaseIO output bytes changed"]
+            for input_identity, input_binding in (
+                model_unit.get("input_bindings") or {}
+            ).items():
+                if not isinstance(input_binding, dict):
+                    return [f"{work_id}: verifier PhaseIO input is malformed"]
+                root_name, relative = str(input_identity).split(":", 1)
+                base = root if root_name == "scratchpad" else root.parent
+                path = base / relative
+                if (
+                    input_binding.get("status") != "ACTIVE"
+                    or not path.is_file()
+                    or input_binding.get("sha256")
+                    != hashlib.sha256(path.read_bytes()).hexdigest()
+                ):
+                    return [f"{work_id}: verifier PhaseIO semantic input is stale"]
+    except Exception as exc:
+        return [
+            f"{work_id}: verifier completion authority invalid: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    return []
+
+
+def _verifier_output_has_completion_authority(
+    scratchpad: Path,
+    fid: str,
+    *,
+    min_bytes: int = 100,
+) -> bool:
+    """Return whether exact typed completion authority replays for one ID."""
+
+    return not _verifier_completion_authority_issues(
+        scratchpad, fid, min_bytes=min_bytes
+    )
 
 
 def _verification_queue_schema_issue(scratchpad: Path) -> str | None:
@@ -17249,23 +24390,665 @@ def _validate_verify_files_for_queue(scratchpad: Path, *, min_bytes: int = 100) 
     return [msg]
 
 
-def _validate_report_index_inputs(scratchpad: Path) -> list[str]:
+# Runtime-debt is proof-free retention, but it still influences the report
+# denominator.  Its consumer therefore uses deliberately finite reads and
+# payload budgets instead of accepting arbitrary JSON through Path.read_text.
+_RUNTIME_DEBT_MAX_JSON_BYTES = 8 * 1024 * 1024
+_RUNTIME_DEBT_MAX_CHECKPOINT_BYTES = 4 * 1024 * 1024
+_RUNTIME_DEBT_MAX_LEDGER_BYTES = 64 * 1024 * 1024
+_RUNTIME_DEBT_MAX_QUEUE_BYTES = 64 * 1024 * 1024
+_RUNTIME_DEBT_MAX_PLAN_BYTES = 16 * 1024 * 1024
+_RUNTIME_DEBT_MAX_PENDING_ROWS = 20_000
+_RUNTIME_DEBT_MAX_ISSUES = 2_048
+_RUNTIME_DEBT_MAX_ISSUE_CHARS = 4_096
+_RUNTIME_DEBT_MAX_STRING_CHARS = 32_768
+_RUNTIME_DEBT_MAX_CONTAINER_ITEMS = 50_000
+_RUNTIME_DEBT_MAX_TOTAL_NODES = 300_000
+
+
+def _read_runtime_debt_regular_bytes(
+    path: Path,
+    *,
+    max_bytes: int,
+    label: str,
+) -> bytes:
+    """Read one exact, bounded regular file without following a symlink."""
+
+    candidate = Path(path)
+    try:
+        before = candidate.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable: {type(exc).__name__}") from exc
+    if not stat.S_ISREG(before.st_mode):
+        kind = "symlink" if stat.S_ISLNK(before.st_mode) else "non-regular entry"
+        raise ValueError(f"{label} must be a regular file, not a {kind}")
+    if before.st_size > max_bytes:
+        raise ValueError(
+            f"{label} exceeds size budget ({before.st_size}>{max_bytes} bytes)"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(candidate, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError(f"{label} must remain a regular file while open")
+        if (
+            (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or opened.st_size > max_bytes
+        ):
+            raise ValueError(f"{label} changed before bounded read")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"{label} exceeds size budget while reading")
+        after = os.fstat(descriptor)
+        if (
+            (opened.st_dev, opened.st_ino, opened.st_size)
+            != (after.st_dev, after.st_ino, after.st_size)
+            or total != after.st_size
+        ):
+            raise ValueError(f"{label} changed during bounded read")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _runtime_debt_strict_json_object(
+    path: Path,
+    *,
+    max_bytes: int,
+    label: str,
+) -> tuple[dict[str, Any], bytes]:
+    """Load a bounded JSON object with duplicate/non-finite rejection."""
+
+    raw = _read_runtime_debt_regular_bytes(
+        path, max_bytes=max_bytes, label=label
+    )
+
+    def _pairs(rows: list[tuple[str, Any]]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in rows:
+            if key in out:
+                raise ValueError(f"duplicate key {key!r}")
+            out[key] = value
+        return out
+
+    value = json.loads(
+        raw.decode("utf-8", errors="strict"),
+        object_pairs_hook=_pairs,
+        parse_constant=lambda token: (_ for _ in ()).throw(
+            ValueError(f"non-finite value {token!r}")
+        ),
+    )
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} root is not an object")
+    return value, raw
+
+
+def _runtime_debt_payload_budget_issue(payload: Mapping[str, Any]) -> str:
+    """Return one bounded, deterministic payload-budget violation."""
+
+    pending = payload.get("pending_work_item_ids")
+    rows = payload.get("pending_queue_rows")
+    issues = payload.get("issues")
+    if isinstance(pending, list) and len(pending) > _RUNTIME_DEBT_MAX_PENDING_ROWS:
+        return (
+            "verification runtime debt pending row count budget exceeded "
+            f"({len(pending)}>{_RUNTIME_DEBT_MAX_PENDING_ROWS})"
+        )
+    if isinstance(rows, list) and len(rows) > _RUNTIME_DEBT_MAX_PENDING_ROWS:
+        return (
+            "verification runtime debt pending row count budget exceeded "
+            f"({len(rows)}>{_RUNTIME_DEBT_MAX_PENDING_ROWS})"
+        )
+    if isinstance(issues, list) and len(issues) > _RUNTIME_DEBT_MAX_ISSUES:
+        return (
+            "verification runtime debt issue count budget exceeded "
+            f"({len(issues)}>{_RUNTIME_DEBT_MAX_ISSUES})"
+        )
+    if isinstance(issues, list):
+        for issue in issues:
+            if isinstance(issue, str) and len(issue) > _RUNTIME_DEBT_MAX_ISSUE_CHARS:
+                return "verification runtime debt issue string length budget exceeded"
+
+    stack: list[Any] = [payload]
+    nodes = 0
+    while stack:
+        value = stack.pop()
+        nodes += 1
+        if nodes > _RUNTIME_DEBT_MAX_TOTAL_NODES:
+            return "verification runtime debt total node budget exceeded"
+        if isinstance(value, str):
+            if len(value) > _RUNTIME_DEBT_MAX_STRING_CHARS:
+                return "verification runtime debt string length budget exceeded"
+        elif isinstance(value, list):
+            if len(value) > _RUNTIME_DEBT_MAX_CONTAINER_ITEMS:
+                return "verification runtime debt container item budget exceeded"
+            stack.extend(value)
+        elif isinstance(value, dict):
+            if len(value) > _RUNTIME_DEBT_MAX_CONTAINER_ITEMS:
+                return "verification runtime debt container item budget exceeded"
+            for key, item in value.items():
+                if len(str(key)) > 256:
+                    return "verification runtime debt key length budget exceeded"
+                stack.append(item)
+    return ""
+
+
+def _runtime_debt_input_set_digest(records: Mapping[str, Any]) -> str:
+    semantic = [
+        {
+            "identity": identity,
+            "input_class": row.get("input_class", ""),
+            "status": row.get("status", ""),
+            "size": row.get("size", 0),
+            "sha256": row.get("sha256", ""),
+            "producer_work_unit_key": row.get("producer_work_unit_key", ""),
+            "producer_contract_digest": row.get("producer_contract_digest", ""),
+        }
+        for identity, row in sorted(records.items())
+        if isinstance(row, dict)
+    ]
+    return hashlib.sha256(
+        json.dumps(semantic, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _runtime_debt_live_authority_issues(
+    root: Path,
+    *,
+    payload: Mapping[str, Any],
+    debt_bytes: bytes,
+    input_bytes: Mapping[str, bytes],
+) -> list[str]:
+    """Require current PhaseIO ownership whenever a live substrate exists."""
+
+    checkpoint_path = root / "_v2_checkpoint.json"
+    ledger_path = root / "_artifact_state.json"
+    has_checkpoint = os.path.lexists(checkpoint_path)
+    has_ledger = os.path.lexists(ledger_path)
+    if not has_checkpoint and not has_ledger:
+        # Compatibility is intentionally limited to isolated pre-ledger
+        # fixtures/runs.  It cannot cross a current-run substrate boundary.
+        return []
+
+    current_run = ""
+    if has_checkpoint:
+        try:
+            checkpoint, _ = _runtime_debt_strict_json_object(
+                checkpoint_path,
+                max_bytes=_RUNTIME_DEBT_MAX_CHECKPOINT_BYTES,
+                label="verification runtime debt checkpoint",
+            )
+        except Exception as exc:
+            return [
+                "verification runtime debt checkpoint is invalid: "
+                f"{type(exc).__name__}: {str(exc)[:512]}"
+            ]
+        current_run = str(checkpoint.get("run_id") or "").strip()
+        if not current_run:
+            return ["verification runtime debt checkpoint has no current run_id"]
+        if re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+            current_run,
+        ) is None:
+            return ["verification runtime debt checkpoint run_id is malformed"]
+        if str(payload.get("run_id") or "") != current_run:
+            return ["verification runtime debt run binding is stale"]
+
+    if not has_ledger:
+        return ["verification runtime debt live receipt lacks PhaseIO ownership ledger"]
+    try:
+        ledger, _ = _runtime_debt_strict_json_object(
+            ledger_path,
+            max_bytes=_RUNTIME_DEBT_MAX_LEDGER_BYTES,
+            label="verification runtime debt PhaseIO ledger",
+        )
+    except Exception as exc:
+        return [
+            "verification runtime debt PhaseIO ledger is invalid: "
+            f"{type(exc).__name__}: {str(exc)[:512]}"
+        ]
+    if ledger.get("version") != 2 or any(
+        not isinstance(ledger.get(key), dict)
+        for key in ("artifact_bindings", "work_units")
+    ):
+        return ["verification runtime debt PhaseIO ledger schema is invalid"]
+
+    identity = "scratchpad:verification_runtime_debt.json"
+    binding = ledger["artifact_bindings"].get(identity)
+    if not isinstance(binding, dict):
+        return ["verification runtime debt JSON lacks exact PhaseIO ownership"]
+    owner_key = str(binding.get("owner_key") or "")
+    owner_parts = owner_key.split("/")
+    if len(owner_parts) != 6 or owner_parts[-2:] != ["verify", "runtime_debt"]:
+        return ["verification runtime debt owner is not exact /verify/runtime_debt"]
+    payload_run = str(payload.get("run_id") or "").strip()
+    if not payload_run or (current_run and payload_run != current_run):
+        return ["verification runtime debt run binding is stale"]
+    debt_sha = hashlib.sha256(debt_bytes).hexdigest()
+    unit = ledger["work_units"].get(owner_key)
+    if (
+        binding.get("identity") != identity
+        or binding.get("root") != "scratchpad"
+        or binding.get("path") != "verification_runtime_debt.json"
+        or binding.get("status") != "ACTIVE"
+        or binding.get("writer") != "DRIVER"
+        or binding.get("run_id") != payload_run
+        or binding.get("sha256") != debt_sha
+        or binding.get("size") != len(debt_bytes)
+        or not isinstance(unit, dict)
+    ):
+        return ["verification runtime debt exact PhaseIO ownership is stale"]
+    if (
+        unit.get("work_unit_key") != owner_key
+        or unit.get("run_id") != payload_run
+        or unit.get("semantic_status") != "ACTIVE"
+        or unit.get("contract_digest") != binding.get("contract_digest")
+        or unit.get("launch_digest") != binding.get("launch_digest")
+    ):
+        return ["verification runtime debt PhaseIO work unit is not ACTIVE/current"]
+
+    manifest = unit.get("contract_manifest")
+    if not isinstance(manifest, dict):
+        return ["verification runtime debt PhaseIO contract manifest is malformed"]
+    manifest_digest = hashlib.sha256(
+        json.dumps(
+            manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    expected_inputs = set(input_bytes)
+    outputs = manifest.get("outputs")
+    output_by_identity = {
+        str(row.get("identity") or ""): row
+        for row in outputs
+        if isinstance(row, dict)
+    } if isinstance(outputs, list) else {}
+    expected_outputs = {
+        "scratchpad:verification_runtime_debt.json",
+        "scratchpad:verification_runtime_debt.md",
+    }
+    json_spec = output_by_identity.get(identity)
+    manifest_inputs = manifest.get("immutable_inputs")
+    bounded_inputs = manifest.get("bounded_lookup_inputs")
+    if (
+        manifest.get("key") != owner_key
+        or manifest.get("model_invoked") is not False
+        or manifest_digest != unit.get("contract_digest")
+        or not isinstance(outputs, list)
+        or len(outputs) != len(expected_outputs)
+        or set(output_by_identity) != expected_outputs
+        or any(
+            not isinstance(row, dict)
+            or row.get("owner_key") != owner_key
+            or row.get("writer") != "DRIVER"
+            for row in outputs
+        )
+        or not isinstance(manifest_inputs, list)
+        or len(manifest_inputs) != len(expected_inputs)
+        or set(manifest_inputs) != expected_inputs
+        or bounded_inputs != []
+        or not isinstance(json_spec, dict)
+        or json_spec.get("owner_key") != owner_key
+        or json_spec.get("writer") != "DRIVER"
+        or json_spec.get("schema_version")
+        != "plamen.verification_runtime_debt.v2"
+    ):
+        return ["verification runtime debt PhaseIO contract does not match exact work unit"]
+
+    artifacts = unit.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != expected_outputs:
+        return ["verification runtime debt PhaseIO output denominator is malformed"]
+    for output_identity in sorted(expected_outputs):
+        output_record = artifacts.get(output_identity)
+        live_binding = ledger["artifact_bindings"].get(output_identity)
+        relative = output_identity.split(":", 1)[1]
+        try:
+            raw = _read_runtime_debt_regular_bytes(
+                root / relative,
+                max_bytes=(
+                    _RUNTIME_DEBT_MAX_JSON_BYTES
+                    if output_identity == identity
+                    else _RUNTIME_DEBT_MAX_QUEUE_BYTES
+                ),
+                label=f"verification runtime debt output {relative}",
+            )
+        except Exception as exc:
+            return [
+                "verification runtime debt PhaseIO output is invalid: "
+                f"{type(exc).__name__}: {str(exc)[:512]}"
+            ]
+        digest = hashlib.sha256(raw).hexdigest()
+        if (
+            not isinstance(output_record, dict)
+            or not isinstance(live_binding, dict)
+            or output_record.get("owner_key") != owner_key
+            or live_binding.get("owner_key") != owner_key
+            or output_record.get("run_id") != payload_run
+            or live_binding.get("run_id") != payload_run
+            or output_record.get("status") != "ACTIVE"
+            or live_binding.get("status") != "ACTIVE"
+            or output_record.get("writer") != "DRIVER"
+            or live_binding.get("writer") != "DRIVER"
+            or output_record.get("contract_digest") != manifest_digest
+            or live_binding.get("contract_digest") != manifest_digest
+            or output_record.get("launch_digest") != unit.get("launch_digest")
+            or live_binding.get("launch_digest") != unit.get("launch_digest")
+            or output_record.get("sha256") != digest
+            or live_binding.get("sha256") != digest
+            or output_record.get("size") != len(raw)
+            or live_binding.get("size") != len(raw)
+        ):
+            return ["verification runtime debt PhaseIO output bytes are stale"]
+
+    input_bindings = unit.get("input_bindings")
+    if not isinstance(input_bindings, dict) or set(input_bindings) != expected_inputs:
+        return ["verification runtime debt PhaseIO input denominator is malformed"]
+    if unit.get("input_set_digest") != _runtime_debt_input_set_digest(input_bindings):
+        return ["verification runtime debt PhaseIO input receipt digest is invalid"]
+    for input_identity, raw in sorted(input_bytes.items()):
+        record = input_bindings.get(input_identity)
+        if (
+            not isinstance(record, dict)
+            or record.get("identity") != input_identity
+            or record.get("status") != "ACTIVE"
+            or record.get("sha256") != hashlib.sha256(raw).hexdigest()
+            or record.get("size") != len(raw)
+        ):
+            return [
+                f"verification runtime debt semantic input is stale: {input_identity}"
+            ]
+    return []
+
+
+def _verification_runtime_debt_coverage(
+    scratchpad: Path,
+    missing_ids: Iterable[str],
+) -> tuple[set[str], list[str]]:
+    """Replay exact additive report retention for unexecuted verifier work.
+
+    This receipt grants no proof and no negative disposition.  Its sole effect
+    is to let report generation retain exact pending queue identities as
+    CONTESTED/HUMAN_REVIEW instead of halting and losing them.  Therefore a
+    malformed/stale receipt covers nothing; it can never hide a candidate.
+    """
+
+    root = Path(scratchpad)
+    path = root / "verification_runtime_debt.json"
+    wanted = tuple(dict.fromkeys(str(value) for value in missing_ids if str(value)))
+    if not wanted or not os.path.lexists(path):
+        return set(), []
+
+    def _pairs(rows: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in rows:
+            if key in result:
+                raise ValueError(f"duplicate key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        debt_bytes = _read_runtime_debt_regular_bytes(
+            path,
+            max_bytes=_RUNTIME_DEBT_MAX_JSON_BYTES,
+            label="verification runtime debt",
+        )
+        payload = json.loads(
+            debt_bytes.decode("utf-8", errors="strict"),
+            object_pairs_hook=_pairs,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"non-finite value {value!r}")
+            ),
+        )
+    except Exception as exc:
+        return set(), [
+            "verification runtime debt is unreadable: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    if not isinstance(payload, dict):
+        return set(), ["verification runtime debt root is not an object"]
+    budget_issue = _runtime_debt_payload_budget_issue(payload)
+    if budget_issue:
+        return set(), [budget_issue]
+    expected = {
+        "schema_version", "state", "proof_authority", "verifier_status",
+        "report_verification_projection", "run_id", "queue_artifact",
+        "queue_sha256", "queue_work_plan_artifact",
+        "queue_work_plan_sha256", "pending_work_item_ids",
+        "pending_queue_rows", "issues", "fallback_action", "receipt_digest",
+    }
+    if set(payload) != expected or payload.get(
+        "schema_version"
+    ) != "plamen.verification_runtime_debt.v2":
+        return set(), ["verification runtime debt schema is invalid"]
+    unsigned = dict(payload)
+    receipt_digest = unsigned.pop("receipt_digest", None)
+    computed = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if receipt_digest != computed:
+        return set(), ["verification runtime debt digest is invalid"]
+    if (
+        payload.get("state") != "COMPLETED_WITH_DEBT"
+        or payload.get("proof_authority") != "NONE"
+        or payload.get("verifier_status") != "UNRESOLVED"
+        or payload.get("report_verification_projection") != "CONTESTED"
+        or payload.get("fallback_action")
+        != "HUMAN_REVIEW_OR_RETRY_EXACT_WORK_UNITS"
+        or not str(payload.get("run_id") or "").strip()
+        or payload.get("queue_artifact") != "verification_queue.md"
+    ):
+        return set(), ["verification runtime debt authority fields are invalid"]
+    queue_path = root / "verification_queue.md"
+    try:
+        queue_bytes = _read_runtime_debt_regular_bytes(
+            queue_path,
+            max_bytes=_RUNTIME_DEBT_MAX_QUEUE_BYTES,
+            label="verification runtime debt queue",
+        )
+        queue_sha = hashlib.sha256(queue_bytes).hexdigest()
+    except (OSError, ValueError) as exc:
+        return set(), [f"verification runtime debt queue is unavailable: {exc}"]
+    if payload.get("queue_sha256") != queue_sha:
+        return set(), ["verification runtime debt queue binding is stale"]
+    plan_name = str(payload.get("queue_work_plan_artifact") or "")
+    plan_sha = str(payload.get("queue_work_plan_sha256") or "")
+    if bool(plan_name) != bool(plan_sha):
+        return set(), ["verification runtime debt work-plan binding is malformed"]
+    if plan_name:
+        if plan_name != "verification_queue.work_plan.json":
+            return set(), ["verification runtime debt work-plan name is invalid"]
+        try:
+            plan_bytes = _read_runtime_debt_regular_bytes(
+                root / plan_name,
+                max_bytes=_RUNTIME_DEBT_MAX_PLAN_BYTES,
+                label="verification runtime debt work plan",
+            )
+            current_plan_sha = hashlib.sha256(plan_bytes).hexdigest()
+        except (OSError, ValueError) as exc:
+            return set(), [f"verification runtime debt work plan is unavailable: {exc}"]
+        if current_plan_sha != plan_sha:
+            return set(), ["verification runtime debt work-plan binding is stale"]
+    pending = payload.get("pending_work_item_ids")
+    pending_rows = payload.get("pending_queue_rows")
+    if (
+        not isinstance(pending, list)
+        or not isinstance(pending_rows, list)
+        or any(not isinstance(value, str) or not value for value in pending)
+        or len(pending) != len(set(pending))
+        or len(pending_rows) != len(pending)
+    ):
+        return set(), ["verification runtime debt pending denominator is malformed"]
+    current_rows = {
+        str(row.get("finding id") or ""): row
+        for row in parse_verification_queue_rows(root)
+        if str(row.get("finding id") or "")
+    }
+    if [str(row.get("finding id") or "") for row in pending_rows if isinstance(row, dict)] != pending:
+        return set(), ["verification runtime debt row denominator is malformed"]
+    if any(
+        not isinstance(row, dict) or current_rows.get(fid) != row
+        for fid, row in zip(pending, pending_rows)
+    ):
+        return set(), ["verification runtime debt queue rows are stale"]
+    # Parsing helpers currently consume the queue by path.  Recheck the exact
+    # bounded bytes after parsing so a concurrent replacement cannot make the
+    # row comparison and digest comparison refer to different queue versions.
+    try:
+        post_parse_queue = _read_runtime_debt_regular_bytes(
+            queue_path,
+            max_bytes=_RUNTIME_DEBT_MAX_QUEUE_BYTES,
+            label="verification runtime debt queue",
+        )
+    except (OSError, ValueError) as exc:
+        return set(), [f"verification runtime debt queue is unavailable: {exc}"]
+    if post_parse_queue != queue_bytes:
+        return set(), ["verification runtime debt queue changed during replay"]
+    if plan_name:
+        try:
+            post_parse_plan = _read_runtime_debt_regular_bytes(
+                root / plan_name,
+                max_bytes=_RUNTIME_DEBT_MAX_PLAN_BYTES,
+                label="verification runtime debt work plan",
+            )
+        except (OSError, ValueError) as exc:
+            return set(), [
+                f"verification runtime debt work plan is unavailable: {exc}"
+            ]
+        if post_parse_plan != plan_bytes:
+            return set(), [
+                "verification runtime debt work plan changed during replay"
+            ]
+
+    live_issues = _runtime_debt_live_authority_issues(
+        root,
+        payload=payload,
+        debt_bytes=debt_bytes,
+        input_bytes={
+            "scratchpad:verification_queue.md": queue_bytes,
+            **(
+                {"scratchpad:verification_queue.work_plan.json": plan_bytes}
+                if plan_name
+                else {}
+            ),
+        },
+    )
+    if live_issues:
+        return set(), live_issues
+    covered = set(wanted) & set(pending)
+    return covered, []
+
+
+def _validate_report_verification_denominator(
+    scratchpad: Path, *, min_bytes: int = 100
+) -> list[str]:
+    """Require proof output or an exact, visibly unverified retention receipt."""
+
+    schema_issue = _verification_queue_schema_issue(scratchpad)
+    if schema_issue:
+        return [schema_issue]
+    root = Path(scratchpad)
+    if report_candidate_universe_requires_typed_authority(root):
+        try:
+            universe = load_current_report_candidate_universe_authority(root)
+            late_statuses = (
+                load_post_verify_late_delivery_statuses(root)
+                if any(
+                    row.source_kind != "BASE_VERIFICATION_QUEUE"
+                    for row in universe.candidates
+                )
+                else {}
+            )
+        except Exception as exc:
+            return [
+                "verify-output parity: authenticated base-plus-post-verify "
+                f"candidate universe is unavailable: {type(exc).__name__}: {exc}"
+            ]
+        expected = [
+            row.item.work_item_id for row in universe.candidates
+        ]
+        missing = [
+            row.item.work_item_id
+            for row in universe.candidates
+            if (
+                row.source_kind == "BASE_VERIFICATION_QUEUE"
+                and not _verifier_output_has_completion_authority(
+                    root, row.item.work_item_id, min_bytes=min_bytes
+                )
+            )
+            or (
+                row.source_kind != "BASE_VERIFICATION_QUEUE"
+                and row.item.work_item_id not in late_statuses
+            )
+        ]
+    else:
+        rows = parse_verification_queue_rows(root)
+        expected = [
+            str(row.get("finding id") or "").strip()
+            for row in rows
+            if str(row.get("finding id") or "").strip()
+        ]
+        missing = [
+            fid for fid in expected
+            if not _verifier_output_has_completion_authority(
+                root, fid, min_bytes=min_bytes
+            )
+        ]
+    if not missing:
+        return []
+    covered, debt_issues = _verification_runtime_debt_coverage(
+        scratchpad, missing
+    )
+    uncovered = [fid for fid in missing if fid not in covered]
+    if not uncovered:
+        return []
+    sample = ", ".join(uncovered[:8])
+    suffix = f"; runtime debt invalid: {'; '.join(debt_issues)}" if debt_issues else ""
+    return [
+        f"verify-output parity: {len(uncovered)} active queue row(s) have "
+        f"neither verifier output nor exact CONTESTED retention: {sample}{suffix}"
+    ]
+
+
+def _validate_report_index_inputs(
+    scratchpad: Path,
+    *,
+    expected_run_id: str = "",
+    expected_mode: str = "",
+    expected_severities: Mapping[str, str] | None = None,
+) -> list[str]:
     """E2: report_index must reject unverified queue rows.
 
     Same set-difference as E1 but framed for the report_index gate so the halt
     message is specific to the index phase. Belt-and-suspenders with E1.
     """
-    issues = _validate_verify_files_for_queue(scratchpad)
+    issues = _validate_report_verification_denominator(scratchpad)
     if issues:
         return ["report_index: " + issues[0] + " — refuse to write report_index.md"]
-    out = _validate_report_index_severity_provenance(scratchpad)
-    triage = _validate_report_index_triage_safety(scratchpad)
-    if triage:
-        import logging as _logging
-        _logging.getLogger("plamen.validators").warning(
-            "[report_index] triage safety (WARNING, non-blocking): %s",
-            "; ".join(triage),
-        )
+    out = _validate_report_index_severity_provenance(
+        scratchpad,
+        expected_run_id=expected_run_id,
+        expected_mode=expected_mode,
+        expected_severities=expected_severities,
+    )
+    out.extend(_validate_report_index_status_authority(scratchpad))
+    out.extend(_validate_report_index_triage_safety(scratchpad))
     return out
 
 
@@ -17276,7 +25059,7 @@ def _validate_report_index_prewrite_inputs(scratchpad: Path) -> list[str]:
     resume that file can be stale or known-bad from a prior attempt. Content
     validators run only after the current phase has written the new index.
     """
-    issues = _validate_verify_files_for_queue(scratchpad)
+    issues = _validate_report_verification_denominator(scratchpad)
     if issues:
         return ["report_index: " + issues[0] + " - refuse to write report_index.md"]
     if issues:
@@ -17463,8 +25246,8 @@ def _reason_is_chain_restatement(reason: str) -> bool:
     return has_chain and has_absorb
 
 
-def _validate_report_index_triage_safety(scratchpad: Path) -> list[str]:
-    """Reject unsafe client-worthiness triage for Medium+ findings."""
+def _legacy_validate_report_index_triage_safety(scratchpad: Path) -> list[str]:
+    """Legacy lexical triage classifier retained for migration diagnostics."""
     idx_path = scratchpad / "report_index.md"
     if not idx_path.exists():
         return []
@@ -17595,6 +25378,20 @@ def _validate_report_index_triage_safety(scratchpad: Path) -> list[str]:
     ]
 
 
+def _validate_report_index_triage_safety(scratchpad: Path) -> list[str]:
+    """Require exact decision authority for every non-body index proposal.
+
+    The legacy lexical classifier may produce diagnostics or a veto, but it
+    cannot authorize REFUTED/CONTESTED/LOW_CONFIDENCE/DUPLICATE/APPENDIX.
+    This gate applies to every severity and treats missing typed authority as
+    visible report-disposition debt.
+    """
+    return _validate_decision_authorized_index_dispositions(
+        Path(scratchpad),
+        run_id=_report_disposition_run_id(Path(scratchpad)),
+    )
+
+
 def _report_index_adjustment_reason_present(*values: str) -> bool:
     text = _llm_norm(" ".join(v or "" for v in values)).strip()
     if not text:
@@ -17604,7 +25401,7 @@ def _report_index_adjustment_reason_present(*values: str) -> bool:
         return False
     return bool(re.search(
         r"trust|actor|assumption|proven|poc|fail|cap|unresolved|partial|"
-        r"chain|upgrade|downgrade|demot|human|contest|was|from|->|=>|"
+        r"chain|upgrade|downgrade|demot|human|contest|adjudicat|was|from|->|=>|"
         # v2.0.7 (P1.1): SEVERITY_OVERRIDE is the new driver-emitted token
         # for severity-provenance auto-repair. Recognize it as a canonical
         # reason so the provenance gate doesn't re-flag rows the repair
@@ -17620,36 +25417,28 @@ def _report_index_adjustment_reason_present(*values: str) -> bool:
         # VERIFIED / UNVERIFIED) is deliberately NOT added: it is a STATUS, not a
         # severity-change REASON, and must never excuse a silent severity delta.
         r"structural|untestable|"
-        # M4: INDEPENDENT-MIN(<claimed>) is the Trust Adj. token for the
-        # blind-first independent-severity cap (mirrors EXTERNAL-ASSUMPTION-
-        # CAP's registration above). The token itself does not contain "cap"
-        # as a substring, so "independent" must be its own alternative.
-        r"independent",
+        # Blind-first independent severity is challenge-only under P0-P.  An
+        # `INDEPENDENT-MIN(...)` prose token is therefore intentionally not a
+        # recognized authority for a report-tier change.
+        r"(?!)",
         text,
         re.IGNORECASE,
     ))
 
 
 def _poc_demotion_caps_for_validator(scratchpad: Path) -> dict[str, str]:
-    path = scratchpad / "poc_demotions.md"
-    if not path.exists():
-        return {}
-    try:
-        text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return {}
-    caps: dict[str, str] = {}
-    headers, rows = _parse_markdown_table(text, ["finding id", "capped at"])
-    if not headers:
-        return caps
-    keys = [_norm_key(h) for h in headers]
-    for row in rows:
-        d = {keys[i]: row[i].strip() for i in range(min(len(keys), len(row)))}
-        fid = _normalize_finding_id(d.get("finding id", "")) or d.get("finding id", "")
-        cap = normalize_severity(d.get("capped at", ""))
-        if fid and cap:
-            caps[fid] = cap
-    return caps
+    """Return live typed PoC-negative severity caps.
+
+    There is deliberately no live issuer yet.  ``poc_demotions.md`` was a
+    Markdown projection of a failed/non-established execution attempt, not a
+    separately adjudicated lifecycle decision.  Treating that projection as a
+    cap let one negative run lower otherwise-supported severity.  Keep the
+    compatibility function so report validators share the same explicit
+    cutover boundary as the mechanical renderer, but return no authority until
+    a provider-bound negative adjudicator receipt is introduced.
+    """
+    _ = scratchpad
+    return {}
 
 
 def _cap_report_index_severity(severity: str, cap: str) -> str:
@@ -17799,10 +25588,23 @@ def _external_assumption_cap_applies(vtxt: str) -> bool:
 # this gate handles the INVERSE demotion — a finding CONFIRMED-in-scope at DEPTH
 # that a verifier DEMOTED (verdict CONTESTED / harm dismissed) purely on an
 # UNCITED best-case external assumption. The disposition (not a severity number)
-# is what was silently lost; the driver-side compute hook
-# `_apply_external_assumption_undemotions` re-emits + stamps + re-queues, and
-# `external_assumption_undemotions.md` is the read-back ledger these two helpers
-# serve. Recall-safe: an absent/unparseable ledger is a strict no-op.
+# is what was silently lost. The driver-side compute hook emits an exact-source-
+# bound JSON receipt and an optional non-authoritative Markdown view; it never
+# mutates receipt-bound verifier evidence.
+
+_R10_UNDEMOTION_SCHEMA = "plamen.external_assumption_undemotions.v1"
+_R10_UNDEMOTION_DEBT_SCHEMA = "plamen.external_assumption_undemotion_debt.v1"
+_R10_UNDEMOTION_JSON = "external_assumption_undemotions.json"
+_R10_UNDEMOTION_MARKDOWN = "external_assumption_undemotions.md"
+_R10_UNDEMOTION_DEBT = "external_assumption_undemotion_debt.json"
+_R10_COMPUTE_SCHEMA = "plamen.external_assumption_undemotion_compute.v1"
+_R10_COMPUTE_JSON = "external_assumption_undemotion_compute.json"
+_R10_PRE_MECHANICAL_STATE = "PRE_MECHANICAL_UNRECONCILED"
+_R10_RECEIPT_AUTHORITY = "SOURCE_BOUND_PRE_MECHANICAL_RECALL_FLOOR"
+_R10_VALID_SEVERITIES = frozenset(
+    {"Critical", "High", "Medium", "Low", "Informational"}
+)
+
 
 def _floor_report_index_severity(severity: str, floor: str) -> str:
     """Inverse of `_cap_report_index_severity`: never LOWERS; raises `severity`
@@ -17814,32 +25616,1463 @@ def _floor_report_index_severity(severity: str, floor: str) -> str:
     return fl if order.index(fl) < order.index(sev) else sev
 
 
-def _load_external_assumption_undemotions(scratchpad: Path) -> dict[str, str]:
-    """Read the driver-computed ledger `external_assumption_undemotions.md`.
+def _canonical_validator_json_bytes(payload: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
 
-    Mirrors `_load_independent_severity_caps` / `_poc_demotion_caps_for_validator`.
-    Returns {finding_id: restored_floor_severity}. Recall-safe {} on absent /
-    unparseable ledger.
+
+def _r10_receipt_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("finding_id") or "").casefold(),
+            str((row.get("source_verify") or {}).get("relative_path") or ""),
+        ),
+    )
+    unsigned: dict[str, Any] = {
+        "authority": _R10_RECEIPT_AUTHORITY,
+        "report_authoritative": True,
+        "row_count": len(ordered),
+        "rows": ordered,
+        "schema_version": _R10_UNDEMOTION_SCHEMA,
+        "sequencing_state": _R10_PRE_MECHANICAL_STATE,
+    }
+    payload = dict(unsigned)
+    payload["receipt_digest"] = hashlib.sha256(
+        _canonical_validator_json_bytes(unsigned)
+    ).hexdigest()
+    return payload
+
+
+def _write_r10_undemotion_debt(
+    scratchpad: Path,
+    issues: Iterable[Mapping[str, str]],
+    *,
+    review_candidates: Iterable[str] = (),
+) -> dict[str, Any]:
+    normalized_issues = sorted(
+        (
+            {
+                "code": str(issue.get("code") or "RECEIPT_INVALID"),
+                "detail": str(issue.get("detail") or "typed receipt is invalid"),
+                "finding_id": str(issue.get("finding_id") or ""),
+            }
+            for issue in issues
+        ),
+        key=lambda issue: (
+            issue["finding_id"].casefold(),
+            issue["code"],
+            issue["detail"],
+        ),
+    )
+    payload: dict[str, Any] = {
+        "authority": "NONE_HUMAN_REVIEW_ONLY",
+        "issue_count": len(normalized_issues),
+        "issues": normalized_issues,
+        "report_authoritative": False,
+        "review_candidates": sorted(
+            {
+                str(fid).strip()
+                for fid in review_candidates
+                if str(fid).strip()
+            },
+            key=str.casefold,
+        ),
+        "schema_version": _R10_UNDEMOTION_DEBT_SCHEMA,
+        "severity_authority": "NONE",
+    }
+    _atomic_validator_bytes(
+        Path(scratchpad) / _R10_UNDEMOTION_DEBT,
+        _canonical_validator_json_bytes(payload),
+    )
+    return payload
+
+
+def _r10_secondary_result_shape_projection(
+    scratchpad: Path,
+) -> dict[str, Any]:
+    """Secondary shape/source check, never an authority source by itself.
+
+    The public projection calls this only after current-source predicate replay
+    and exact result-byte equality have succeeded.
     """
-    path = scratchpad / "external_assumption_undemotions.md"
-    if not path.exists():
-        return {}
+    root = Path(scratchpad)
+    receipt_path = root / _R10_UNDEMOTION_JSON
+    compatibility_path = root / _R10_UNDEMOTION_MARKDOWN
+    debt_path = root / _R10_UNDEMOTION_DEBT
+    empty = {"valid_floors": {}, "fallback_floors": {}, "issues": []}
+    if not receipt_path.is_file():
+        if not compatibility_path.is_file() and not debt_path.is_file():
+            return empty
+        issues = [{
+            "code": "TYPED_RECEIPT_MISSING",
+            "detail": (
+                "R10 compatibility/debt state exists but its authoritative "
+                "typed receipt is missing"
+            ),
+            "finding_id": "",
+        }]
+        debt = _write_r10_undemotion_debt(root, issues)
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "issues": issues,
+        }
+
     try:
-        text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
+        raw_receipt = receipt_path.read_bytes()
+        payload = json.loads(raw_receipt.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        issues = [{
+            "code": "TYPED_RECEIPT_UNREADABLE",
+            "detail": f"R10 typed receipt cannot be decoded: {type(exc).__name__}",
+            "finding_id": "",
+        }]
+        debt = _write_r10_undemotion_debt(root, issues)
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "issues": issues,
+        }
+
+    issues: list[dict[str, str]] = []
+
+    def issue(code: str, detail: str, finding_id: str = "") -> None:
+        issues.append({"code": code, "detail": detail, "finding_id": finding_id})
+
+    expected_top = {
+        "authority",
+        "receipt_digest",
+        "report_authoritative",
+        "row_count",
+        "rows",
+        "schema_version",
+        "sequencing_state",
+    }
+    if not isinstance(payload, dict):
+        issue("RECEIPT_SHAPE_INVALID", "typed receipt root is not an object")
+        payload = {}
+    elif set(payload) != expected_top:
+        issue("RECEIPT_SHAPE_INVALID", "typed receipt has an unexpected field set")
+    if payload.get("schema_version") != _R10_UNDEMOTION_SCHEMA:
+        issue("RECEIPT_SCHEMA_INVALID", "typed receipt schema version is unsupported")
+    if payload.get("authority") != _R10_RECEIPT_AUTHORITY:
+        issue("RECEIPT_AUTHORITY_INVALID", "typed receipt authority is invalid")
+    if payload.get("report_authoritative") is not True:
+        issue("RECEIPT_AUTHORITY_INVALID", "typed receipt is not report-authoritative")
+    if payload.get("sequencing_state") != _R10_PRE_MECHANICAL_STATE:
+        issue(
+            "SEQUENCING_STATE_INVALID",
+            "R10 receipt is not explicitly pre-mechanical and unreconciled",
+        )
+
+    digest = payload.get("receipt_digest")
+    unsigned = {key: value for key, value in payload.items() if key != "receipt_digest"}
+    expected_digest = hashlib.sha256(
+        _canonical_validator_json_bytes(unsigned)
+    ).hexdigest()
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        issue("RECEIPT_DIGEST_INVALID", "typed receipt digest is malformed")
+    elif digest != expected_digest:
+        issue("RECEIPT_DIGEST_MISMATCH", "typed receipt digest does not match payload")
+    if not issues and raw_receipt != _canonical_validator_json_bytes(payload):
+        issue("RECEIPT_NOT_CANONICAL", "typed receipt bytes are not canonical JSON")
+
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        issue("RECEIPT_ROWS_INVALID", "typed receipt rows is not a list")
+        rows = []
+    row_count = payload.get("row_count")
+    if (
+        isinstance(row_count, bool)
+        or not isinstance(row_count, int)
+        or row_count != len(rows)
+    ):
+        issue("RECEIPT_ROW_COUNT_MISMATCH", "typed receipt row count is inconsistent")
+
+    expected_row_keys = {
+        "basis",
+        "depth_state",
+        "evidence_class",
+        "finding_id",
+        "restored_floor",
+        "source_verify",
+        "successor_binding",
+        "verifier_state",
+    }
+    valid_rows: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    prior_sort_key: Optional[tuple[str, str]] = None
+    root_resolved = root.resolve()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            issue("ROW_SHAPE_INVALID", f"row {index} is not an object")
+            continue
+        fid = str(row.get("finding_id") or "").strip()
+        if set(row) != expected_row_keys:
+            issue("ROW_SHAPE_INVALID", f"row {index} has an unexpected field set", fid)
+        normalized_fid = _normalize_finding_id(fid)
+        if not fid or not normalized_fid or normalized_fid != fid:
+            issue("FINDING_ID_INVALID", f"row {index} finding identity is not canonical", fid)
+        if fid in seen:
+            issue("FINDING_ID_DUPLICATE", "finding identity occurs more than once", fid)
+        seen.add(fid)
+        floor = row.get("restored_floor")
+        if floor not in _R10_VALID_SEVERITIES:
+            issue("RESTORED_FLOOR_INVALID", "restored floor is not canonical", fid)
+
+        depth_state = row.get("depth_state")
+        if not isinstance(depth_state, dict) or set(depth_state) != {"verdict"}:
+            issue("DEPTH_STATE_INVALID", "depth state is not typed", fid)
+        elif not isinstance(depth_state.get("verdict"), str):
+            issue("DEPTH_STATE_INVALID", "depth verdict is not a string", fid)
+        verifier_state = row.get("verifier_state")
+        if not isinstance(verifier_state, dict) or set(verifier_state) != {
+            "poc_attempted", "severity", "verdict"
+        }:
+            issue("VERIFIER_STATE_INVALID", "verifier state is not typed", fid)
+        elif (
+            verifier_state.get("severity") not in _R10_VALID_SEVERITIES
+            or verifier_state.get("poc_attempted") not in {"YES", "NO", "UNKNOWN"}
+            or not isinstance(verifier_state.get("verdict"), str)
+        ):
+            issue("VERIFIER_STATE_INVALID", "verifier state values are invalid", fid)
+        if row.get("evidence_class") != "UNPROVEN_EXTERNAL_PREMISE":
+            issue("EVIDENCE_CLASS_INVALID", "evidence class is invalid", fid)
+        if not isinstance(row.get("basis"), str) or not row.get("basis"):
+            issue("BASIS_INVALID", "undemotion basis is empty", fid)
+
+        source = row.get("source_verify")
+        source_rel = ""
+        source_digest = ""
+        if not isinstance(source, dict) or set(source) != {
+            "byte_length", "relative_path", "sha256"
+        }:
+            issue("SOURCE_IDENTITY_INVALID", "source verifier identity is not typed", fid)
+        else:
+            source_rel = str(source.get("relative_path") or "")
+            source_digest = str(source.get("sha256") or "")
+            rel = PurePosixPath(source_rel)
+            path_safe = (
+                bool(source_rel)
+                and not rel.is_absolute()
+                and ".." not in rel.parts
+                and len(rel.parts) == 1
+                and rel.name.startswith("verify_")
+                and rel.suffix == ".md"
+            )
+            if not path_safe:
+                issue("SOURCE_PATH_INVALID", "source verifier path is unsafe", fid)
+            else:
+                source_path = root / rel.name
+                expected_source = _find_verify_file(root, fid)
+                try:
+                    source_bytes = source_path.read_bytes()
+                except OSError:
+                    source_bytes = None
+                if (
+                    expected_source is None
+                    or source_path.resolve().parent != root_resolved
+                    or source_path.resolve() != expected_source.resolve()
+                ):
+                    issue("SOURCE_PATH_MISMATCH", "source path does not bind this finding", fid)
+                elif source_bytes is None:
+                    issue("SOURCE_MISSING", "source verifier evidence is missing", fid)
+                elif (
+                    isinstance(source.get("byte_length"), bool)
+                    or not isinstance(source.get("byte_length"), int)
+                    or source.get("byte_length") != len(source_bytes)
+                    or not re.fullmatch(r"[0-9a-f]{64}", source_digest)
+                    or source_digest != hashlib.sha256(source_bytes).hexdigest()
+                ):
+                    issue("SOURCE_IDENTITY_MISMATCH", "source verifier bytes changed", fid)
+
+        successor = row.get("successor_binding")
+        expected_successor = f"verify_{fid}.mechanical_successor.receipt.json"
+        if not isinstance(successor, dict) or set(successor) != {
+            "source_verify_sha256",
+            "state",
+            "successor_receipt_relative_path",
+            "successor_verify_sha256",
+        }:
+            issue("SUCCESSOR_BINDING_INVALID", "successor binding is not typed", fid)
+        elif (
+            successor.get("state") != _R10_PRE_MECHANICAL_STATE
+            or successor.get("source_verify_sha256") != source_digest
+            or successor.get("successor_receipt_relative_path") != expected_successor
+            or successor.get("successor_verify_sha256") is not None
+        ):
+            issue(
+                "SUCCESSOR_BINDING_INVALID",
+                "pre-mechanical successor identity is inconsistent",
+                fid,
+            )
+
+        sort_key = (fid.casefold(), source_rel)
+        if prior_sort_key is not None and sort_key <= prior_sort_key:
+            issue("ROW_ORDER_INVALID", "typed rows are not unique canonical order", fid)
+        prior_sort_key = sort_key
+        if floor in _R10_VALID_SEVERITIES:
+            valid_rows.append((fid, str(floor), source_rel))
+
+    if issues:
+        debt = _write_r10_undemotion_debt(root, issues)
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "issues": issues,
+        }
+
+    try:
+        debt_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return {
+        "valid_floors": {fid: floor for fid, floor, _source in valid_rows},
+        "fallback_floors": {},
+        "issues": [],
+    }
+
+
+def _r10_typed_rows_from_fired(
+    scratchpad: Path,
+    fired: Iterable[Mapping[str, str]],
+) -> list[dict[str, Any]]:
+    """Rebuild typed R10 rows only from current source evidence.
+
+    The result sidecar is deliberately not an input.  This is the independent
+    semantic re-derivation that prevents a recomputed self-digest from turning
+    edited row vocabulary or an edited floor into authority.
+    """
+    root = Path(scratchpad)
+    rows: list[dict[str, Any]] = []
+    for item in fired:
+        fid = str(item.get("finding_id") or "").strip()
+        vf = _find_verify_file(root, fid)
+        if not fid or vf is None:
+            continue
+        try:
+            verify_bytes = vf.read_bytes()
+            vtxt = verify_bytes.decode("utf-8", errors="replace")
+            relative = vf.relative_to(root).as_posix()
+        except (OSError, ValueError):
+            continue
+        source_digest = hashlib.sha256(verify_bytes).hexdigest()
+        rows.append({
+            "basis": str(item.get("basis") or ""),
+            "depth_state": {
+                "verdict": str(item.get("depth_verdict") or "")
+            },
+            "evidence_class": "UNPROVEN_EXTERNAL_PREMISE",
+            "finding_id": fid,
+            "restored_floor": str(item.get("restored_floor") or ""),
+            "source_verify": {
+                "byte_length": len(verify_bytes),
+                "relative_path": relative,
+                "sha256": source_digest,
+            },
+            "successor_binding": {
+                "source_verify_sha256": source_digest,
+                "state": _R10_PRE_MECHANICAL_STATE,
+                "successor_receipt_relative_path": (
+                    f"verify_{fid}.mechanical_successor.receipt.json"
+                ),
+                "successor_verify_sha256": None,
+            },
+            "verifier_state": {
+                "poc_attempted": _poc_attempted_value(vtxt) or "UNKNOWN",
+                "severity": str(item.get("verifier_sev") or ""),
+                "verdict": _verifier_status_from_text(vtxt),
+            },
+        })
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row["finding_id"]).casefold(),
+            str(row["source_verify"]["relative_path"]),
+        ),
+    )
+
+
+def _r10_file_binding(path: Path, root: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        data = path.read_bytes()
+        relative = path.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+    return {
+        "byte_length": len(data),
+        "relative_path": relative,
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def _r10_queue_projection(
+    scratchpad: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Resolve the current queue and validate typed authority when present."""
+    root = Path(scratchpad)
+    queue_path = root / "verification_queue.md"
+    rows = parse_verification_queue_rows(root)
+    typed_path = queue_path.with_suffix(".work_items.json")
+    if not typed_path.is_file():
+        # Pre-cutover/isolated fixtures have no typed authority. Bind the exact
+        # current parsed denominator plus queue bytes, but never mint a sidecar
+        # from this read-only consumer.
+        record_bytes = _canonical_validator_json_bytes({"records": rows})
+        return rows, {
+            "issues": [],
+            "record_set_sha256": hashlib.sha256(record_bytes).hexdigest(),
+            "status": "LEGACY_EXACT_INPUT_BOUND",
+        }
+    try:
+        items = _require_typed_queue_authority(queue_path, rows)
+        record_bytes = _canonical_validator_json_bytes({
+            "records": [item.to_json() for item in items]
+        })
+        return rows, {
+            "issues": [],
+            "record_set_sha256": hashlib.sha256(record_bytes).hexdigest(),
+            "status": "TYPED_CURRENT",
+        }
+    except Exception as exc:
+        return [], {
+            "issues": [
+                "typed queue authority is invalid: "
+                f"{type(exc).__name__}: {exc}"
+            ],
+            "record_set_sha256": "",
+            "status": "INVALID",
+        }
+
+
+def _r10_semantic_input_authority(
+    scratchpad: Path,
+    queue_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Resolve the exact R10 candidate denominator and producer authority.
+
+    A typed queue is a cutover marker: once present, every semantic source
+    consulted by R10 must be an active current-run producer output.  Queue
+    hashes never umbrella-authorize inventory, mapping, research, or verifier
+    prose.  Legacy isolated fixtures remain byte-replayable only while no typed
+    queue or artifact ledger exists; they are not the live driver path.
+    """
+
+    root = Path(scratchpad)
+    rows = [dict(row) for row in queue_rows]
+    typed_queue = (root / "verification_queue.work_items.json").is_file()
+    ledger_present = (root / "_artifact_state.json").is_file()
+    strict = typed_queue or ledger_present or successor_projection_present(root)
+    exact_paths: set[str] = set()
+    producer_paths: set[str] = set()
+    issues: list[str] = []
+    candidates: list[dict[str, Any]] = []
+
+    def include(name: str, *, producer: bool = False) -> None:
+        path = root / name
+        if not path.is_file() or path.is_symlink():
+            return
+        exact_paths.add(name)
+        if producer:
+            producer_paths.add(name)
+
+    include("verification_queue.md", producer=strict)
+    for name in (
+        "verification_queue.work_items.json",
+        "verification_queue.work_plan.json",
+    ):
+        include(name, producer=strict)
+
+    inventory_text, inventory_source, inventory_issues = (
+        _authoritative_postcutover_inventory(root)
+    )
+    if strict:
+        if not successor_projection_present(root):
+            issues.append(
+                "R10 typed queue has no authenticated preverify inventory "
+                "successor"
+            )
+        issues.extend(str(value) for value in inventory_issues)
+        for name in (
+            PREVERIFY_INVENTORY_SUCCESSOR_NAME,
+            PREVERIFY_DELIVERY_SUCCESSOR_NAME,
+        ):
+            include(name, producer=True)
+        if inventory_source:
+            include(inventory_source, producer=True)
+    elif inventory_source:
+        include(inventory_source)
+
+    mapping_names = (
+        "finding_mapping.md",
+        "hypotheses.md",
+        "chain_grouping_relations.json",
+        "chain_grouping_assurance_reconciliation.json",
+    )
+    for name in mapping_names:
+        include(name, producer=strict)
+
+    research_name = "external_dependency_research.md"
+    if (root / research_name).is_file():
+        include(research_name, producer=strict)
+    elif strict:
+        issues.append(
+            "R10 external dependency research producer output/explicit stub "
+            "is absent"
+        )
+
+    for ordinal, row in enumerate(rows):
+        fid = str(row.get("finding id") or "").strip()
+        verifier_issues: list[str] = []
+        verify_path = _find_verify_file(root, fid) if fid else None
+        if strict:
+            verifier_issues = _verifier_completion_authority_issues(
+                root, fid, min_bytes=1
+            )
+            issues.extend(verifier_issues)
+        if verify_path is not None:
+            include(verify_path.name)
+        for suffix in (
+            ".identity.json",
+            ".receipt.json",
+            ".severity_proposal.json",
+            ".mechanical_successor.receipt.json",
+        ):
+            include(f"verify_{fid}{suffix}")
+        candidates.append({
+            "finding_id": fid,
+            "ordinal": ordinal,
+            "queue_row_sha256": hashlib.sha256(
+                _canonical_validator_json_bytes(row)
+            ).hexdigest(),
+            "verifier_authority_issues": sorted(set(verifier_issues)),
+            "verifier_source": (
+                _r10_file_binding(verify_path, root)
+                if verify_path is not None else None
+            ),
+        })
+
+    run_id = ""
+    if strict:
+        try:
+            ledger = read_artifact_ledger(root)
+            queue_binding = ledger.get("artifact_bindings", {}).get(
+                "scratchpad:verification_queue.md"
+            )
+            if isinstance(queue_binding, Mapping):
+                run_id = str(queue_binding.get("run_id") or "")
+            if not run_id:
+                issues.append("R10 typed queue has no current-run ledger owner")
+            else:
+                producer_identities = tuple(
+                    f"scratchpad:{name}" for name in sorted(producer_paths)
+                )
+                issues.extend(
+                    semantic_input_prebind_producer_authority_issues(
+                        root,
+                        root.parent,
+                        producer_identities,
+                        run_id=run_id,
+                    )
+                    if producer_identities else [
+                        "R10 semantic producer denominator is empty"
+                    ]
+                )
+        except Exception as exc:
+            issues.append(
+                "R10 semantic producer authority is unavailable: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    return {
+        "candidate_count": len(candidates),
+        "candidate_digest": hashlib.sha256(
+            _canonical_validator_json_bytes({"candidates": candidates})
+        ).hexdigest(),
+        "candidates": candidates,
+        "exact_input_paths": sorted(exact_paths),
+        "inventory_source_artifact": inventory_source,
+        "inventory_utf8_sha256": hashlib.sha256(
+            inventory_text.encode("utf-8")
+        ).hexdigest(),
+        "issues": sorted(set(str(value) for value in issues if str(value))),
+        "producer_bound_paths": sorted(producer_paths),
+        "run_id": run_id,
+        "status": (
+            "LEGACY_EXACT_INPUT_BOUND"
+            if not strict else "INVALID"
+            if issues else "AUTHENTICATED_CURRENT"
+        ),
+        "strict": strict,
+    }
+
+
+def _r10_compute_payload(
+    scratchpad: Path,
+    mode: str,
+    fired: Iterable[Mapping[str, str]],
+    typed_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build a canonical, fully re-derivable R10 compute attestation."""
+    root = Path(scratchpad)
+    queue_rows, queue_authority = _r10_queue_projection(root)
+    semantic_authority = _r10_semantic_input_authority(root, queue_rows)
+    denominator: list[dict[str, Any]] = []
+    for ordinal, row in enumerate(queue_rows):
+        fid = str(row.get("finding id") or "").strip()
+        vf = _find_verify_file(root, fid) if fid else None
+        denominator.append({
+            "claimed_severity": str(row.get("severity") or "").strip(),
+            "finding_id": fid,
+            "ordinal": ordinal,
+            "poc_class": str(row.get("poc class") or "").strip(),
+            "verify_source": (
+                _r10_file_binding(vf, root) if vf is not None else None
+            ),
+        })
+
+    inventory_text, inventory_source, inventory_issues = (
+        _authoritative_postcutover_inventory(root)
+    )
+    mapping_issues: list[str] = []
+    try:
+        active_mapping = _parse_hypothesis_constituents(root)
+    except Exception as exc:
+        active_mapping = {}
+        mapping_issues.append(
+            "active hypothesis mapping is unparseable: "
+            f"{type(exc).__name__}: {exc}"
+        )
+    try:
+        proposal_mapping = _parse_hypothesis_constituents(
+            root,
+            include_split_parent_aliases=True,
+            include_composition_aliases=True,
+        )
+    except Exception as exc:
+        proposal_mapping = {}
+        mapping_issues.append(
+            "proposal hypothesis mapping is unparseable: "
+            f"{type(exc).__name__}: {exc}"
+        )
+    try:
+        research_surfaces = _external_dependency_research_surfaces_local(root)
     except Exception:
-        return {}
-    out: dict[str, str] = {}
-    headers, rows = _parse_markdown_table(text, ["finding id", "restored floor"])
-    if not headers:
-        return out
-    keys = [_norm_key(h) for h in headers]
-    for row in rows:
-        d = {keys[i]: row[i].strip() for i in range(min(len(keys), len(row)))}
-        fid = _normalize_finding_id(d.get("finding id", "")) or d.get("finding id", "")
-        floor = normalize_severity(d.get("restored floor", ""))
-        if fid and floor:
-            out[fid] = floor
-    return out
+        research_surfaces = []
+
+    input_files = []
+    for name in (
+        "verification_queue.md",
+        "verification_queue.json",
+        "finding_mapping.md",
+        "hypotheses.md",
+        "chain_grouping_relations.json",
+        "chain_grouping_assurance_reconciliation.json",
+        "external_dependency_research.md",
+    ):
+        binding = _r10_file_binding(root / name, root)
+        if binding is not None:
+            input_files.append(binding)
+
+    fired_rows = list(fired)
+    semantic_issues = list(semantic_authority.get("issues") or [])
+    authority_ok = not semantic_issues and str(mode).strip().lower() != "light"
+    authorized_rows = list(typed_rows) if authority_ok else []
+    authorized_fired = fired_rows if authority_ok else []
+    result_payload = (
+        _r10_receipt_payload(authorized_rows) if authorized_rows else None
+    )
+    result_bytes = (
+        _canonical_validator_json_bytes(result_payload)
+        if result_payload is not None
+        else None
+    )
+    unsigned: dict[str, Any] = {
+        "authority": "PHASEIO_OWNED_REDERIVABLE_COMPUTE_ATTESTATION",
+        "fired_count": len(authorized_fired),
+        "fired_ids": sorted(
+            [str(row.get("finding_id") or "") for row in authorized_fired],
+            key=str.casefold,
+        ),
+        "input_projection": {
+            "active_hypothesis_constituents": {
+                str(key): list(value)
+                for key, value in sorted(active_mapping.items())
+            },
+            "input_files": sorted(
+                input_files, key=lambda item: item["relative_path"]
+            ),
+            "inventory": {
+                "authority_issues": sorted(set(inventory_issues)),
+                "source_artifact": inventory_source,
+                "utf8_byte_length": len(inventory_text.encode("utf-8")),
+                "utf8_sha256": hashlib.sha256(
+                    inventory_text.encode("utf-8")
+                ).hexdigest(),
+            },
+            "mapping_authority_issues": sorted(set(mapping_issues)),
+            "proposal_hypothesis_constituents": {
+                str(key): list(value)
+                for key, value in sorted(proposal_mapping.items())
+            },
+            "queue_authority": queue_authority,
+            "research_surfaces": [list(item) for item in research_surfaces],
+            "semantic_authority": semantic_authority,
+        },
+        "mode": str(mode or "").strip().lower(),
+        "outcome": "FIRED" if authorized_fired else "CLEAN_ZERO",
+        "predicate_fired_count": len(fired_rows),
+        "predicate_fired_ids": sorted(
+            [str(row.get("finding_id") or "") for row in fired_rows],
+            key=str.casefold,
+        ),
+        "result_receipt_sha256": (
+            hashlib.sha256(result_bytes).hexdigest()
+            if result_bytes is not None
+            else None
+        ),
+        "schema_version": _R10_COMPUTE_SCHEMA,
+        "sequencing_state": _R10_PRE_MECHANICAL_STATE,
+        "source_denominator": denominator,
+    }
+    payload = dict(unsigned)
+    payload["receipt_digest"] = hashlib.sha256(
+        _canonical_validator_json_bytes(unsigned)
+    ).hexdigest()
+    return payload
+
+
+def _r10_current_review_candidates(scratchpad: Path) -> set[str]:
+    try:
+        rows = parse_verification_queue_rows(Path(scratchpad))
+    except Exception:
+        rows = []
+    return {
+        str(row.get("finding id") or "").strip()
+        for row in rows
+        if str(row.get("finding id") or "").strip()
+    }
+
+
+def _r10_projection_debt(
+    scratchpad: Path,
+    issues: Iterable[Mapping[str, Any]],
+    *,
+    review_candidates: Iterable[str],
+) -> dict[str, Any]:
+    """Preserve a committed DRIVER debt receipt while routing zero authority.
+
+    A report-side replay must not rewrite an output that is already owned by
+    the R10 PhaseIO work unit.  The current candidate set remains the review
+    denominator; the committed receipt remains byte-immutable.
+    """
+
+    root = Path(scratchpad)
+    candidates = sorted({str(value) for value in review_candidates if str(value)})
+    debt_path = root / _R10_UNDEMOTION_DEBT
+    try:
+        debt_bytes = debt_path.read_bytes()
+        ledger = read_artifact_ledger(root)
+        binding = ledger.get("artifact_bindings", {}).get(
+            f"scratchpad:{_R10_UNDEMOTION_DEBT}"
+        )
+    except (OSError, TypeError, ValueError):
+        binding = None
+        debt_bytes = b""
+    if (
+        isinstance(binding, Mapping)
+        and binding.get("status") == "ACTIVE"
+        and binding.get("writer") == "DRIVER"
+        and str(binding.get("owner_key") or "").endswith(
+            "/external_assumption_undemotion_reconcile"
+        )
+        and binding.get("sha256") == hashlib.sha256(debt_bytes).hexdigest()
+    ):
+        return {"review_candidates": candidates}
+    return _write_r10_undemotion_debt(
+        root, issues, review_candidates=candidates
+    )
+
+
+def _r10_phaseio_output_authority_issues(
+    scratchpad: Path,
+    compute: Mapping[str, Any],
+    *,
+    expected_run_id: str = "",
+    expected_mode: str = "",
+    allow_committed_authority_debt: bool = False,
+) -> list[str]:
+    """Replay the committed R10 producer and its conditional output universe."""
+
+    root = Path(scratchpad)
+    queue_rows, _queue_authority = _r10_queue_projection(root)
+    current = _r10_semantic_input_authority(root, queue_rows)
+    enforce_producer_authority = (
+        str(compute.get("mode") or "").strip().lower() != "light"
+    )
+    committed_authority_debt = bool(
+        compute.get("input_projection", {})
+        .get("semantic_authority", {})
+        .get("issues", [])
+    ) and (root / _R10_UNDEMOTION_DEBT).is_file()
+    if not current.get("strict"):
+        return [
+            "R10 legacy exact-input compatibility state has no PhaseIO "
+            "severity authority"
+        ]
+    issues: list[str] = []
+    try:
+        ledger = read_artifact_ledger(root)
+    except Exception as exc:
+        return [f"R10 PhaseIO ledger is unavailable: {type(exc).__name__}: {exc}"]
+    compute_identity = f"scratchpad:{_R10_COMPUTE_JSON}"
+    binding = ledger.get("artifact_bindings", {}).get(compute_identity)
+    if not isinstance(binding, Mapping):
+        return ["R10 compute has no committed PhaseIO owner"]
+    owner_key = str(binding.get("owner_key") or "")
+    unit = ledger.get("work_units", {}).get(owner_key)
+    run = str(expected_run_id or "").strip()
+    mode = str(expected_mode or "").strip().lower()
+    if run and binding.get("run_id") != run:
+        issues.append("R10 compute producer belongs to a different run")
+    if mode and str(compute.get("mode") or "").strip().lower() != mode:
+        issues.append("R10 compute mode differs from the report consumer mode")
+    compute_path = root / _R10_COMPUTE_JSON
+    try:
+        compute_bytes = compute_path.read_bytes()
+    except OSError:
+        compute_bytes = b""
+    if (
+        binding.get("status") != "ACTIVE"
+        or binding.get("writer") != "DRIVER"
+        or not owner_key.endswith(
+            "/external_assumption_undemotion_reconcile"
+        )
+        or binding.get("sha256")
+        != hashlib.sha256(compute_bytes).hexdigest()
+    ):
+        issues.append("R10 compute PhaseIO binding is stale or non-authoritative")
+    if (
+        not isinstance(unit, Mapping)
+        or unit.get("semantic_status") != "ACTIVE"
+        or unit.get("execution_state") != "OUTPUT_COMMITTED"
+        or unit.get("run_id") != binding.get("run_id")
+        or unit.get("contract_digest") != binding.get("contract_digest")
+        or unit.get("launch_digest") != binding.get("launch_digest")
+    ):
+        issues.append("R10 PhaseIO work unit is not an active committed producer")
+        return list(dict.fromkeys(issues))
+
+    expected_inputs = {
+        f"scratchpad:{name}"
+        for name in current.get("exact_input_paths", [])
+    }
+    input_bindings = unit.get("input_bindings")
+    if not isinstance(input_bindings, Mapping):
+        issues.append("R10 PhaseIO input bindings are absent")
+        input_bindings = {}
+    elif set(input_bindings) != expected_inputs:
+        issues.append("R10 PhaseIO input denominator differs from current sources")
+    producer_bound = {
+        f"scratchpad:{name}"
+        for name in current.get("producer_bound_paths", [])
+    }
+    for identity, record in input_bindings.items():
+        if not isinstance(record, Mapping):
+            issues.append(f"{identity}: R10 PhaseIO input binding is malformed")
+            continue
+        root_name, relative = str(identity).split(":", 1)
+        base = root if root_name == "scratchpad" else root.parent
+        path = base / relative
+        try:
+            live = path.read_bytes()
+        except OSError:
+            live = b""
+        if (
+            not path.is_file()
+            or record.get("status") != "ACTIVE"
+            or record.get("sha256") != hashlib.sha256(live).hexdigest()
+            or record.get("size") != len(live)
+        ):
+            issues.append(f"{identity}: R10 PhaseIO input bytes changed")
+        if (
+            enforce_producer_authority
+            and identity in producer_bound
+            and not (
+                allow_committed_authority_debt and committed_authority_debt
+            )
+        ):
+            issues.extend(
+                semantic_input_producer_authority_issues(
+                    ledger,
+                    record,
+                    run_id=str(unit.get("run_id") or ""),
+                )
+            )
+
+    expected_outputs = {
+        f"scratchpad:{name}"
+        for name in (
+            _R10_COMPUTE_JSON,
+            _R10_UNDEMOTION_JSON,
+            _R10_UNDEMOTION_MARKDOWN,
+            _R10_UNDEMOTION_DEBT,
+        )
+    }
+    artifacts = unit.get("artifacts")
+    if not isinstance(artifacts, Mapping) or set(artifacts) != expected_outputs:
+        issues.append("R10 PhaseIO conditional output denominator is incomplete")
+        artifacts = {}
+    fired = compute.get("outcome") == "FIRED"
+    authority_debt = bool(
+        compute.get("input_projection", {})
+        .get("semantic_authority", {})
+        .get("issues", [])
+    ) and str(compute.get("mode") or "").lower() != "light"
+    expected_presence = {
+        f"scratchpad:{_R10_COMPUTE_JSON}": True,
+        f"scratchpad:{_R10_UNDEMOTION_JSON}": fired,
+        f"scratchpad:{_R10_UNDEMOTION_MARKDOWN}": fired,
+        f"scratchpad:{_R10_UNDEMOTION_DEBT}": authority_debt,
+    }
+    for identity, should_exist in expected_presence.items():
+        record = artifacts.get(identity)
+        relative = identity.split(":", 1)[1]
+        path = root / relative
+        if not isinstance(record, Mapping):
+            continue
+        if path.is_file() != should_exist:
+            issues.append(f"{identity}: R10 conditional presence is inconsistent")
+        if should_exist:
+            try:
+                live = path.read_bytes()
+            except OSError:
+                live = b""
+            live_binding = ledger.get("artifact_bindings", {}).get(identity)
+            if (
+                record.get("status") != "ACTIVE"
+                or record.get("writer") != "DRIVER"
+                or record.get("owner_key") != owner_key
+                or record.get("sha256") != hashlib.sha256(live).hexdigest()
+                or record.get("size") != len(live)
+                or not isinstance(live_binding, Mapping)
+                or live_binding.get("status") != "ACTIVE"
+                or live_binding.get("owner_key") != owner_key
+                or live_binding.get("sha256") != record.get("sha256")
+                or live_binding.get("size") != record.get("size")
+            ):
+                issues.append(
+                    f"{identity}: R10 committed output bytes are not current"
+                )
+        if identity == compute_identity:
+            continue
+        receipt = record.get("conditional_receipt")
+        expected_state = "PRODUCED" if should_exist else "NOT_TRIGGERED"
+        if (
+            not isinstance(receipt, Mapping)
+            or receipt.get("state") != expected_state
+            or receipt.get("artifact_identity") != identity
+        ):
+            issues.append(f"{identity}: R10 conditional receipt is inconsistent")
+    return list(dict.fromkeys(issues))
+
+
+def _r10_report_prework_input_paths(
+    scratchpad: Path,
+    *,
+    expected_run_id: str,
+    expected_mode: str,
+) -> tuple[str, ...]:
+    """Return only the current committed R10 artifacts a report may bind.
+
+    The mandatory compute receipt and every produced conditional output are
+    ordinary immutable inputs.  Absent conditional identities are bound by
+    the report-prework unit's explicit-absence receipt, so the mutable ledger
+    never becomes an input to a transaction that must update that same ledger.
+    """
+
+    root = Path(scratchpad)
+    compute_path = root / _R10_COMPUTE_JSON
+    try:
+        compute_raw = compute_path.read_bytes()
+        compute = json.loads(compute_raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        raise ValueError(
+            "R10 report prework requires its mandatory committed compute "
+            f"receipt: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(compute, Mapping):
+        raise ValueError("R10 report prework compute receipt is not an object")
+    unsigned = {
+        key: value for key, value in compute.items()
+        if key != "receipt_digest"
+    }
+    if (
+        compute.get("schema_version") != _R10_COMPUTE_SCHEMA
+        or compute.get("authority")
+        != "PHASEIO_OWNED_REDERIVABLE_COMPUTE_ATTESTATION"
+        or compute.get("sequencing_state") != _R10_PRE_MECHANICAL_STATE
+        or compute.get("receipt_digest")
+        != hashlib.sha256(
+            _canonical_validator_json_bytes(unsigned)
+        ).hexdigest()
+        or compute_raw != _canonical_validator_json_bytes(dict(compute))
+    ):
+        raise ValueError("R10 report prework compute receipt is non-canonical")
+    issues = _r10_phaseio_output_authority_issues(
+        root,
+        compute,
+        expected_run_id=str(expected_run_id or ""),
+        expected_mode=str(expected_mode or ""),
+        allow_committed_authority_debt=True,
+    )
+    if issues:
+        raise ValueError("; ".join(issues[:8]))
+    current_fired = _apply_external_assumption_undemotions(
+        root,
+        str(expected_mode or ""),
+        _materialize=False,
+    )
+    current_rows = _r10_typed_rows_from_fired(root, current_fired)
+    expected_compute = _r10_compute_payload(
+        root,
+        str(expected_mode or ""),
+        current_fired,
+        current_rows,
+    )
+    if dict(compute) != expected_compute:
+        raise ValueError(
+            "R10 report prework compute receipt is stale against current "
+            "source replay"
+        )
+    paths = [_R10_COMPUTE_JSON]
+    for name in (
+        _R10_UNDEMOTION_JSON,
+        _R10_UNDEMOTION_MARKDOWN,
+        _R10_UNDEMOTION_DEBT,
+    ):
+        if (root / name).is_file():
+            paths.append(name)
+    return tuple(paths)
+
+
+def _materialize_r10_driver_outputs(
+    scratchpad: Path,
+    mode: str,
+) -> dict[str, Any]:
+    """Materialize the exact R10 DRIVER output universe after PhaseIO arm.
+
+    Invalid semantic authority can produce only the mandatory compute receipt
+    and zero-authority re-verification debt.  It cannot leave a result or
+    compatibility projection behind, even when the raw predicate would fire.
+    """
+
+    root = Path(scratchpad)
+    fired = _apply_external_assumption_undemotions(
+        root, mode, _materialize=False
+    )
+    typed_rows = _r10_typed_rows_from_fired(root, fired)
+    compute = _r10_compute_payload(root, mode, fired, typed_rows)
+    authority_issues = list(
+        compute.get("input_projection", {})
+        .get("semantic_authority", {})
+        .get("issues", [])
+        or []
+    )
+    if str(mode or "").strip().lower() == "light":
+        authority_issues = []
+    if authority_issues:
+        _atomic_validator_bytes(
+            root / _R10_COMPUTE_JSON,
+            _canonical_validator_json_bytes(compute),
+        )
+        for stale_name in (
+            _R10_UNDEMOTION_JSON,
+            _R10_UNDEMOTION_MARKDOWN,
+        ):
+            try:
+                (root / stale_name).unlink(missing_ok=True)
+            except OSError:
+                pass
+        _write_r10_undemotion_debt(
+            root,
+            [{
+                "code": "INPUT_AUTHORITY_INVALID",
+                "detail": "; ".join(authority_issues[:6]),
+                "finding_id": "",
+            }],
+            review_candidates=_r10_current_review_candidates(root),
+        )
+        return compute
+    _apply_external_assumption_undemotions(root, mode, _materialize=True)
+    return json.loads(
+        (root / _R10_COMPUTE_JSON).read_text(
+            encoding="utf-8", errors="strict"
+        )
+    )
+
+
+def _external_assumption_undemotion_projection(
+    scratchpad: Path,
+    *,
+    expected_run_id: str = "",
+    expected_mode: str = "",
+) -> dict[str, Any]:
+    """Validate R10 only by replaying its predicate over current sources.
+
+    Both JSON digests are integrity checks, not decision authority.  The
+    PhaseIO-owned compute receipt is mandatory after the R10 hook runs and is
+    compared byte-for-byte with a fresh dry computation.  Invalid or absent
+    state can route candidates to review, but grants no report severity.
+    """
+    root = Path(scratchpad)
+    compute_path = root / _R10_COMPUTE_JSON
+    result_path = root / _R10_UNDEMOTION_JSON
+    compatibility_path = root / _R10_UNDEMOTION_MARKDOWN
+    debt_path = root / _R10_UNDEMOTION_DEBT
+    empty = {
+        "valid_floors": {},
+        "fallback_floors": {},
+        "debt_ids": set(),
+        "issues": [],
+    }
+    queue_candidates = _r10_current_review_candidates(root)
+    has_verify_denominator = any(
+        _find_verify_file(root, fid) is not None for fid in queue_candidates
+    )
+    prior_state = any(
+        path.exists()
+        for path in (result_path, compatibility_path, debt_path)
+    )
+    if not compute_path.is_file():
+        if not prior_state and not has_verify_denominator:
+            return empty
+        issues = [{
+            "code": "COMPUTE_RECEIPT_MISSING",
+            "detail": (
+                "R10 has post-verification source state but its mandatory "
+                "PhaseIO compute/absence attestation is missing"
+            ),
+            "finding_id": "",
+        }]
+        debt = _r10_projection_debt(
+            root, issues, review_candidates=queue_candidates
+        )
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "debt_ids": set(debt["review_candidates"]),
+            "issues": issues,
+        }
+
+    try:
+        compute_raw = compute_path.read_bytes()
+        compute = json.loads(compute_raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        issues = [{
+            "code": "COMPUTE_RECEIPT_UNREADABLE",
+            "detail": f"R10 compute receipt is unreadable: {type(exc).__name__}",
+            "finding_id": "",
+        }]
+        debt = _r10_projection_debt(
+            root, issues, review_candidates=queue_candidates
+        )
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "debt_ids": set(debt["review_candidates"]),
+            "issues": issues,
+        }
+
+    structural_issue = ""
+    if not isinstance(compute, Mapping):
+        structural_issue = "compute receipt root is not an object"
+    elif compute.get("schema_version") != _R10_COMPUTE_SCHEMA:
+        structural_issue = "compute receipt schema is unsupported"
+    elif compute.get("authority") != "PHASEIO_OWNED_REDERIVABLE_COMPUTE_ATTESTATION":
+        structural_issue = "compute receipt authority is invalid"
+    elif compute.get("sequencing_state") != _R10_PRE_MECHANICAL_STATE:
+        structural_issue = "compute receipt sequencing state is invalid"
+    elif compute.get("mode") not in {"light", "core", "thorough"}:
+        structural_issue = "compute receipt mode is invalid"
+    else:
+        unsigned = {
+            key: value for key, value in compute.items()
+            if key != "receipt_digest"
+        }
+        digest = compute.get("receipt_digest")
+        expected_digest = hashlib.sha256(
+            _canonical_validator_json_bytes(unsigned)
+        ).hexdigest()
+        if digest != expected_digest:
+            structural_issue = "compute receipt digest mismatch"
+        elif compute_raw != _canonical_validator_json_bytes(dict(compute)):
+            structural_issue = "compute receipt bytes are non-canonical"
+    if structural_issue:
+        issues = [{
+            "code": "COMPUTE_RECEIPT_INVALID",
+            "detail": structural_issue,
+            "finding_id": "",
+        }]
+        debt = _r10_projection_debt(
+            root, issues, review_candidates=queue_candidates
+        )
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "debt_ids": set(debt["review_candidates"]),
+            "issues": issues,
+        }
+
+    _current_queue_rows, _current_queue_authority = _r10_queue_projection(root)
+    if _current_queue_authority.get("issues"):
+        issues = [{
+            "code": "QUEUE_AUTHORITY_INVALID",
+            "detail": "; ".join(
+                list(_current_queue_authority.get("issues") or [])[:6]
+            ),
+            "finding_id": "",
+        }]
+        debt = _r10_projection_debt(
+            root, issues, review_candidates=queue_candidates
+        )
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "debt_ids": set(debt["review_candidates"]),
+            "issues": issues,
+        }
+
+    phaseio_issues = _r10_phaseio_output_authority_issues(
+        root,
+        compute,
+        expected_run_id=str(expected_run_id or ""),
+        expected_mode=str(expected_mode or ""),
+    )
+    if phaseio_issues:
+        issues = [{
+            "code": "INPUT_AUTHORITY_INVALID",
+            "detail": "; ".join(phaseio_issues[:6]),
+            "finding_id": "",
+        }]
+        if (
+            str(compute.get("mode") or "").strip().lower() == "light"
+            and phaseio_issues == [
+                "R10 legacy exact-input compatibility state has no PhaseIO "
+                "severity authority"
+            ]
+        ):
+            # Light disables R10.  Preserve the explicit non-authoritative
+            # diagnostic without inventing re-verification work for a gate
+            # that is intentionally inactive in this mode.
+            return {
+                "valid_floors": {},
+                "fallback_floors": {},
+                "debt_ids": set(),
+                "issues": issues,
+            }
+        debt = _r10_projection_debt(
+            root, issues, review_candidates=queue_candidates
+        )
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "debt_ids": set(debt["review_candidates"]),
+            "issues": issues,
+        }
+
+    mode = str(compute["mode"])
+    fired = _apply_external_assumption_undemotions(
+        root, mode, _materialize=False
+    )
+    typed_rows = _r10_typed_rows_from_fired(root, fired)
+    expected_compute = _r10_compute_payload(root, mode, fired, typed_rows)
+    if (
+        dict(compute) != expected_compute
+        or compute_raw != _canonical_validator_json_bytes(expected_compute)
+    ):
+        derived_ids = {
+            str(row.get("finding_id") or "") for row in fired
+            if str(row.get("finding_id") or "")
+        }
+        review_ids = derived_ids or queue_candidates
+        issues = [{
+            "code": "COMPUTE_RECEIPT_STALE",
+            "detail": (
+                "R10 compute receipt does not match a current-source "
+                "predicate replay"
+            ),
+            "finding_id": "",
+        }]
+        debt = _r10_projection_debt(
+            root, issues, review_candidates=review_ids
+        )
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "debt_ids": set(debt["review_candidates"]),
+            "issues": issues,
+        }
+
+    queue_authority = (
+        expected_compute.get("input_projection", {}).get("queue_authority", {})
+    )
+    input_projection = expected_compute.get("input_projection", {})
+    inventory_authority_issues = (
+        input_projection.get("inventory", {}).get("authority_issues", [])
+    )
+    mapping_authority_issues = input_projection.get(
+        "mapping_authority_issues", []
+    )
+    input_authority_issues = (
+        list(queue_authority.get("issues") or [])
+        + list(inventory_authority_issues or [])
+        + list(mapping_authority_issues or [])
+        + list(
+            input_projection.get("semantic_authority", {}).get("issues")
+            or []
+        )
+    )
+    if mode == "light":
+        # R10 is disabled in Light mode.  The mandatory compute receipt still
+        # binds the complete observed denominator, but none of those sources
+        # can grant severity or negative authority and missing optional
+        # producer substrates must not create spurious re-verification debt.
+        if compute.get("outcome") != "CLEAN_ZERO":
+            input_authority_issues.append(
+                "R10 Light mode compute outcome is not CLEAN_ZERO"
+            )
+        else:
+            input_authority_issues = []
+    if input_authority_issues:
+        issues = [{
+            "code": (
+                "QUEUE_AUTHORITY_INVALID"
+                if queue_authority.get("issues")
+                else "INPUT_AUTHORITY_INVALID"
+            ),
+            "detail": "; ".join(input_authority_issues[:3]),
+            "finding_id": "",
+        }]
+        debt = _r10_projection_debt(
+            root, issues, review_candidates=queue_candidates
+        )
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "debt_ids": set(debt["review_candidates"]),
+            "issues": issues,
+        }
+
+    if compute.get("outcome") == "CLEAN_ZERO":
+        if result_path.exists() or compatibility_path.exists():
+            issues = [{
+                "code": "CLEAN_ZERO_RESULT_PRESENT",
+                "detail": "CLEAN_ZERO compute state has a stale result artifact",
+                "finding_id": "",
+            }]
+            debt = _r10_projection_debt(
+                root, issues, review_candidates=queue_candidates
+            )
+            return {
+                "valid_floors": {},
+                "fallback_floors": {},
+                "debt_ids": set(debt["review_candidates"]),
+                "issues": issues,
+            }
+        try:
+            debt_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return empty
+
+    expected_result = _r10_receipt_payload(typed_rows)
+    expected_result_bytes = _canonical_validator_json_bytes(expected_result)
+    try:
+        observed_result_bytes = result_path.read_bytes()
+    except OSError:
+        observed_result_bytes = b""
+    if observed_result_bytes != expected_result_bytes:
+        derived_ids = {str(row["finding_id"]) for row in typed_rows}
+        issues = [{
+            "code": "RESULT_RECEIPT_REDERIVATION_MISMATCH",
+            "detail": (
+                "R10 result receipt is missing or differs from the current "
+                "predicate replay"
+            ),
+            "finding_id": "",
+        }]
+        debt = _r10_projection_debt(
+            root, issues, review_candidates=derived_ids
+        )
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "debt_ids": set(debt["review_candidates"]),
+            "issues": issues,
+        }
+    expected_floors = {
+        str(row["finding_id"]): str(row["restored_floor"])
+        for row in typed_rows
+    }
+    secondary = _r10_secondary_result_shape_projection(root)
+    if (
+        secondary.get("issues")
+        or secondary.get("valid_floors") != expected_floors
+    ):
+        issues = [{
+            "code": "RESULT_RECEIPT_SHAPE_INVALID",
+            "detail": (
+                "R10 result passed replay equality but failed the independent "
+                "typed shape/source/successor check"
+            ),
+            "finding_id": "",
+        }]
+        debt = _r10_projection_debt(
+            root, issues, review_candidates=expected_floors
+        )
+        return {
+            "valid_floors": {},
+            "fallback_floors": {},
+            "debt_ids": set(debt["review_candidates"]),
+            "issues": issues,
+        }
+    try:
+        debt_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return {
+        "valid_floors": expected_floors,
+        "fallback_floors": {},
+        "debt_ids": set(),
+        "issues": [],
+    }
+
+
+def _load_external_assumption_undemotions(
+    scratchpad: Path,
+    *,
+    expected_run_id: str = "",
+    expected_mode: str = "",
+) -> dict[str, str]:
+    """Return floors from a fully validated, source-bound typed R10 receipt."""
+    return dict(
+        _external_assumption_undemotion_projection(
+            scratchpad,
+            expected_run_id=expected_run_id,
+            expected_mode=expected_mode,
+        )["valid_floors"]
+    )
 
 
 # Supplementary external-best-case-demotion cue: a verifier that DISMISSES the
@@ -18059,6 +27292,47 @@ def _matches_external_integration_harm(*texts: str) -> bool:
     )
 
 
+_EXTERNAL_INTEGRATION_PROVENANCE_RE = re.compile(
+    r"\b(?:untrusted|trusted|misbehaving|third[- ]party|external)\s+"
+    r"(?:contract|program|integration|dependency|router|oracle|bridge|adapter|"
+    r"service|callee|protocol)\b"
+    r"|\bexternal\s+(?:call|callback|return(?:ed)?\s+value|response|hook)\b"
+    r"|\b(?:router|oracle|bridge|adapter|dependency|integration)\s+"
+    r"(?:call|callback|return(?:ed)?\s+value|response|hook)\b",
+    re.IGNORECASE,
+)
+_EXTERNAL_SKIP_LEDGER_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\*{0,2})?PoC\s+Not\s+Attempted\s+Because"
+    r"(?:\*{0,2})?\s*:\s*.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _has_external_integration_provenance(content: str) -> bool:
+    """Require evidence that the harm actually crosses an external boundary.
+
+    Harm words such as ``loss of funds`` are intentionally insufficient: they
+    describe ordinary in-scope bugs too.  The PoC skip ledger is also removed
+    before matching so a verifier cannot manufacture provenance merely by
+    selecting ``EXTERNAL_DEPENDENCY_NO_FORK_OR_ADDRESS``.  This is a
+    content-level discriminator; mapped producer-owned provenance remains the
+    stronger guard used by the R10 demotion gate.
+    """
+    if not content:
+        return False
+    evidence = _EXTERNAL_SKIP_LEDGER_LINE_RE.sub("", content)
+    evidence = re.sub(
+        r"\bEXTERNAL_DEPENDENCY_NO_FORK_OR_ADDRESS\b",
+        "",
+        evidence,
+        flags=re.IGNORECASE,
+    )
+    return bool(
+        _EXTERNAL_PROVENANCE_MARKER_RE.search(evidence)
+        or _EXTERNAL_INTEGRATION_PROVENANCE_RE.search(evidence)
+    )
+
+
 # A concrete deployed address the verifier prose names — a RESOLVABLE target a
 # `--fork-url` PoC can pin against. This requires an actual address TOKEN, not
 # just the words "deployed address": a bare phrase like "no deployed address is
@@ -18143,55 +27417,83 @@ def _egress_rpc_reachable(scratchpad: Path) -> bool:
         return False
 
 
-def _expected_report_index_severities(scratchpad: Path) -> dict[str, str]:
+def _expected_report_index_severities(
+    scratchpad: Path,
+    *,
+    expected_run_id: str = "",
+    expected_mode: str = "",
+) -> dict[str, str]:
     caps = _poc_demotion_caps_for_validator(scratchpad)
-    independent_caps = _load_independent_severity_caps(scratchpad)
-    undemotions = _load_external_assumption_undemotions(scratchpad)
+    external_projection = _external_assumption_undemotion_projection(
+        scratchpad,
+        expected_run_id=expected_run_id,
+        expected_mode=expected_mode,
+    )
+    undemotions = external_projection["valid_floors"]
     proven_only = _config_proven_only(scratchpad)
     out: dict[str, str] = {}
-    for row in parse_verification_queue_rows(scratchpad):
+    strict_completion = any(
+        (Path(scratchpad) / name).is_file()
+        for name in (
+            "verification_runtime_roster.json",
+            "verification_runtime_debt.json",
+        )
+    )
+    for row in _report_candidate_rows_for_validator(scratchpad):
         fid = (row.get("finding id") or "").strip()
         if not fid:
+            continue
+        if row.get("source kind") not in {
+            None, "", "BASE_VERIFICATION_QUEUE"
+        }:
+            # Late-candidate severity is an upstream routing proposal until a
+            # dedicated typed adjudicator consumes the recovery evidence.
+            # Raw late verifier prose, especially a negative conclusion, may
+            # never demote it.
+            out[fid] = normalize_severity(
+                str(row.get("severity") or "")
+            ) or "Medium"
+            continue
+        if strict_completion and not _verifier_output_has_completion_authority(
+            Path(scratchpad), fid
+        ):
+            # Uncommitted verifier prose has no demotion, severity, or safety
+            # authority.  Preserve the queue's last independently admitted
+            # severity until exact verifier completion (or later typed
+            # adjudication) exists.
+            out[fid] = normalize_severity(
+                str(row.get("severity") or "")
+            ) or "Low"
             continue
         vf = _verify_file_for_id(scratchpad, fid)
         try:
             vtxt = _llm_norm(vf.read_text(encoding="utf-8", errors="replace"))
         except Exception:
             vtxt = ""
-        sev = _enforce_severity_matrix(vtxt, row)
-        status = _verifier_status_from_text(vtxt)
-        # PARTIAL/UNRESOLVED auto-demotion: only fires when the verifier
-        # did NOT explicitly assign a Severity field. If the verifier
-        # wrote `**Severity**: Medium` AND `**Verdict**: PARTIAL`, they
-        # already considered the partial-evidence context when picking
-        # Medium — demoting here second-guesses the verifier.
-        # Observed INV-128 case: explicit Severity: Medium + Verdict: PARTIAL
-        # → pre-suppression driver demoted to Low → LLM correctly wrote
-        # Medium per the explicit field → provenance gate halted.
-        verifier_assigned_severity = bool(
-            _field_from_markdown(vtxt, ("Severity", "Final Severity"))
+        sev = _enforce_severity_matrix(
+            vtxt,
+            row,
+            scratchpad=scratchpad,
+            source_artifact=vf,
         )
-        if (
-            not verifier_assigned_severity
-            and any(tok in status for tok in ("UNRESOLVED", "PARTIAL"))
-        ):
-            sev = _demote_severity_once(sev)
+        status = _verifier_status_from_text(vtxt)
+        # P0-V: PARTIAL/UNRESOLVED are evidence states, not automatic
+        # discounts.  Preserve the highest still-supported upstream/matrix
+        # severity until a separately authored, premise-bound typed decision
+        # authorizes a different tier.
         if fid in caps:
             sev = _cap_report_index_severity(sev, caps[fid])
-        # M4: blind-first independent severity cap (anti-inflation). Only
-        # ever lowers (never raises, never drops) — see
-        # `_apply_independent_severity_caps` for the full derivation.
-        if fid in independent_caps:
-            sev = _cap_report_index_severity(sev, independent_caps[fid])
+        # P0-P: blind-first severity disagreements are challenge-only.  This
+        # projection never consumes their Markdown/JSON views as a cap.
         # R10 demotion-side gate (MIRROR of the assert-side external-assumption
         # CAP below). A finding CONFIRMED-in-scope at DEPTH that was DEMOTED
         # (verdict CONTESTED / harm dismissed) by the verifier purely on an
         # UNCITED best-case external assumption must not silently lose its
         # disposition. FLOOR its report severity to the depth-CLAIMED (queue)
         # severity and `continue` so the proven-only Low-cap cannot push it
-        # below. The ledger is written by the driver post-verify hook
-        # `_apply_external_assumption_undemotions` (which also stamps
-        # [UNPROVEN-EXTERNAL] + re-queues). Recall-safe: empty ledger => no-op.
+        # below. The source-bound JSON receipt is written by the driver post-
+        # verify hook `_apply_external_assumption_undemotions`. Markdown is not
+        # read as authority and verifier evidence remains immutable.
         # Placed BEFORE the CAP/UNPROVEN blocks so a general-case veto floors to
         # FULL claimed severity (may exceed Medium), superseding their Medium
         # floor; on a Low-claimed finding it is inert numerically but still
@@ -18200,6 +27502,9 @@ def _expected_report_index_severities(scratchpad: Path) -> dict[str, str]:
             sev = _floor_report_index_severity(sev, undemotions[fid])
             out[fid] = sev
             continue
+        # Corrupt/stale/missing R10 state grants zero severity authority. Its
+        # typed debt is consumed by skeptic/human-review routing only; ordinary
+        # verifier caps and evidence rules continue to apply here.
         # Fix 3: NARROW always-on external-assumption severity brake. Fires
         # (regardless of proven_only) ONLY on the three-guard conjunction —
         # CODE-TRACE-only + Attempted:NO-with-external-blocker + external-
@@ -18240,7 +27545,14 @@ def _expected_report_index_severities(scratchpad: Path) -> dict[str, str]:
         # the current blanket cap this can only RAISE severity (case 2), never
         # lower it.
         if proven_only and not has_proof_grade_evidence(vtxt):
-            poc_class = _effective_poc_class(row.get("poc class") or "", vtxt)
+            poc_class = _effective_poc_class(
+                row.get("poc class") or "",
+                vtxt,
+                row.get("severity", ""),
+                scratchpad,
+                finding_id=fid,
+                source_artifact=vf,
+            )
             if not _structurally_untestable(scratchpad, vtxt, poc_class):
                 sev = _cap_report_index_severity(sev, "Low")
             # else: verifier-blessed structural untestability → preserve sev
@@ -18267,7 +27579,9 @@ _UNEXECUTED_PROOF_FLAGS = frozenset({
 
 
 def _effective_tag_is_proof_grade(
-    tag_text: str, integrity_context: str = "",
+    tag_text: str,
+    integrity_context: str = "",
+    execution_scope_assessment: Optional[Mapping[str, Any]] = None,
 ) -> bool:
     """Interpret an effective evidence tag for report-label purposes only.
 
@@ -18285,10 +27599,437 @@ def _effective_tag_is_proof_grade(
         for flag in _UNEXECUTED_PROOF_FLAGS
     ):
         return False
-    return has_proof_grade_evidence(upper)
+    # P1-E: an execution display tag authenticates neither the oracle nor the
+    # semantic scope of what it asserted.  Only a candidate-bound typed
+    # assessment whose reconciliation explicitly grants HARM scope may render
+    # a local execution as VERIFIED.  Production/on-chain evidence remains a
+    # separate authority class above.
+    if execution_scope_assessment is None:
+        return False
+    try:
+        from evidence_capabilities import reconcile_execution_evidence_tags
+
+        reconciliation = reconcile_execution_evidence_tags(
+            f"{tag_text or ''}\n{integrity_context or ''}",
+            execution_scope_assessment,
+        )
+    except Exception:
+        return False
+    return bool(reconciliation.get("proof_grade_harm"))
 
 
-def _effective_proof_grade_from_manifest_row(row: object) -> Optional[bool]:
+_MECHANICAL_AUTHORITY_SUMMARY_SCHEMA = (
+    "plamen.mechanical_successor_authority_summary.v1"
+)
+_MECHANICAL_VERDICT_SCHEMA = "plamen.verdict_manifest.v1"
+_MECHANICAL_AUTHORITY_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _strict_mechanical_json(path: Path, label: str) -> tuple[dict[str, Any], bytes]:
+    """Read one mechanical authority document without JSON-key collapse."""
+
+    raw = path.read_bytes()
+    if len(raw) > _MECHANICAL_AUTHORITY_MAX_BYTES:
+        raise ValueError(f"{label} exceeds the authority byte budget")
+
+    def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError(f"{label} contains duplicate JSON key {key!r}")
+            out[key] = value
+        return out
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_pairs,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ValueError(f"{label} contains non-finite JSON number {token}")
+            ),
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError(f"invalid {label}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must contain a JSON object")
+    return value, raw
+
+
+def _mechanical_successor_authority_view(scratchpad: Path) -> dict[str, Any]:
+    """Return the read-only authority state consumed after mechanical verify.
+
+    A finding is ``BOUND`` only when four independent facts reconcile: its
+    mechanical result row, its recomputed verdict-manifest row, its immutable
+    successor receipt/transformed bytes, and the phase authority summary.  Any
+    partial, legacy, malformed, or rejected state stays visible as ``UNBOUND``.
+    Consumers then retain the finding and upstream severity but may neither
+    grant execution proof nor apply an unbound mechanical demotion.
+
+    This function deliberately never repairs or rewrites disk state.  The
+    mechanical executor owns receipt recovery; downstream code is only a
+    discriminator and debt projector.
+    """
+
+    root = Path(scratchpad)
+    result_path = root / "mechanical_verify_manifest.json"
+    verdict_path = root / "verdict_manifest.json"
+    summary_path = root / "mechanical_successor_authority.json"
+    mechanical_present = any(
+        path.exists() for path in (result_path, verdict_path, summary_path)
+    )
+    if not mechanical_present:
+        return {
+            "status": "ABSENT",
+            "issues": [],
+            "verdicts": {},
+            "mechanical_present": False,
+        }
+
+    issues: list[str] = []
+    results: list[dict[str, Any]] = []
+    result_by_id: dict[str, dict[str, Any]] = {}
+    result_by_file: dict[str, dict[str, Any]] = {}
+    result_manifest_valid = False
+    try:
+        manifest, _ = _strict_mechanical_json(
+            result_path, "mechanical result manifest"
+        )
+        if set(manifest) != {"generated_at", "counts", "results"}:
+            raise ValueError("mechanical result manifest schema mismatch")
+        if not isinstance(manifest.get("results"), list):
+            raise ValueError("mechanical result rows must be a list")
+        counts: dict[str, int] = {}
+        for index, raw_row in enumerate(manifest["results"]):
+            if not isinstance(raw_row, dict):
+                raise ValueError(f"mechanical result row {index} is not an object")
+            row = dict(raw_row)
+            finding_id = row.get("finding_id")
+            verify_file = row.get("verify_file")
+            status = row.get("status")
+            if (
+                not isinstance(finding_id, str)
+                or not finding_id
+                or finding_id != finding_id.strip()
+                or not isinstance(verify_file, str)
+                or verify_file != f"verify_{finding_id}.md"
+                or not isinstance(status, str)
+                or not status
+            ):
+                raise ValueError(
+                    f"mechanical result row {index} has invalid identity/status"
+                )
+            identity_key = finding_id.casefold()
+            file_key = verify_file.casefold()
+            if identity_key in result_by_id or file_key in result_by_file:
+                raise ValueError(
+                    "mechanical result manifest contains a duplicate/case-colliding identity"
+                )
+            result_by_id[identity_key] = row
+            result_by_file[file_key] = row
+            results.append(row)
+            counts[status] = counts.get(status, 0) + 1
+        if manifest.get("counts") != counts:
+            raise ValueError("mechanical result status counts do not reconcile")
+        result_manifest_valid = True
+    except Exception as exc:
+        issues.append(f"mechanical result authority invalid: {exc}")
+        results = []
+        result_by_id = {}
+        result_by_file = {}
+
+    verdict_by_id: dict[str, dict[str, Any]] = {}
+    verdict_by_file: dict[str, dict[str, Any]] = {}
+    verdict_manifest_valid = False
+    try:
+        verdict_manifest, _ = _strict_mechanical_json(
+            verdict_path, "verdict manifest"
+        )
+        if set(verdict_manifest) != {
+            "schema_version", "mechanical_source", "generated_at",
+            "row_count", "verdicts",
+        }:
+            raise ValueError("verdict manifest schema mismatch")
+        if verdict_manifest.get("schema_version") != _MECHANICAL_VERDICT_SCHEMA:
+            raise ValueError("verdict manifest version mismatch")
+        verdict_rows = verdict_manifest.get("verdicts")
+        if not isinstance(verdict_rows, list):
+            raise ValueError("verdict manifest rows must be a list")
+        if verdict_manifest.get("row_count") != len(verdict_rows):
+            raise ValueError("verdict manifest row_count mismatch")
+        expected_fields = {
+            "finding_id", "verify_file", "mechanical_status",
+            "verifier_prose_tag", "integrity_state", "effective_tag",
+        }
+        for index, raw_row in enumerate(verdict_rows):
+            if not isinstance(raw_row, dict) or set(raw_row) != expected_fields:
+                raise ValueError(f"verdict row {index} schema mismatch")
+            finding_id = raw_row.get("finding_id")
+            verify_file = raw_row.get("verify_file")
+            if (
+                not isinstance(finding_id, str)
+                or not finding_id
+                or finding_id != finding_id.strip()
+                or not isinstance(verify_file, str)
+                or verify_file != f"verify_{finding_id}.md"
+            ):
+                raise ValueError(f"verdict row {index} identity is invalid")
+            identity_key = finding_id.casefold()
+            file_key = verify_file.casefold()
+            if identity_key in verdict_by_id or file_key in verdict_by_file:
+                raise ValueError(
+                    "verdict manifest contains a duplicate/case-colliding identity"
+                )
+            verdict_by_id[identity_key] = dict(raw_row)
+            verdict_by_file[file_key] = dict(raw_row)
+        verdict_manifest_valid = True
+    except Exception as exc:
+        issues.append(f"verdict authority invalid: {exc}")
+        verdict_by_id = {}
+        verdict_by_file = {}
+
+    # The executor's exact zero-work path writes the two empty manifests and
+    # returns before creating a successor summary.  There is no finding-level
+    # authority to bind, so this is a clean neutral result, not phase debt.
+    if (
+        result_manifest_valid
+        and verdict_manifest_valid
+        and not results
+        and not verdict_by_id
+    ):
+        return {
+            "status": "CLEAN",
+            "issues": [],
+            "verdicts": {},
+            "mechanical_present": True,
+        }
+
+    summary: dict[str, Any] | None = None
+    rejected_by_id: dict[str, dict[str, str]] = {}
+    try:
+        summary, _ = _strict_mechanical_json(
+            summary_path, "mechanical successor authority summary"
+        )
+        if set(summary) != {
+            "schema_version", "status", "run_identity", "driver_identity",
+            "committed_count", "rejected_count", "rejections",
+        }:
+            raise ValueError("mechanical successor authority summary schema mismatch")
+        if summary.get("schema_version") != _MECHANICAL_AUTHORITY_SUMMARY_SCHEMA:
+            raise ValueError("mechanical successor authority summary version mismatch")
+        if summary.get("status") not in {"CLEAN", "DEGRADED"}:
+            raise ValueError("mechanical successor authority status is invalid")
+        if (
+            isinstance(summary.get("committed_count"), bool)
+            or not isinstance(summary.get("committed_count"), int)
+            or summary["committed_count"] < 0
+            or isinstance(summary.get("rejected_count"), bool)
+            or not isinstance(summary.get("rejected_count"), int)
+            or summary["rejected_count"] < 0
+            or not isinstance(summary.get("run_identity"), str)
+            or not isinstance(summary.get("driver_identity"), str)
+            or not isinstance(summary.get("rejections"), list)
+        ):
+            raise ValueError("mechanical successor authority summary values are invalid")
+        for index, rejection in enumerate(summary["rejections"]):
+            if (
+                not isinstance(rejection, dict)
+                or set(rejection) != {"finding_id", "verify_file", "reason"}
+            ):
+                raise ValueError(f"successor rejection row {index} schema mismatch")
+            finding_id = rejection.get("finding_id")
+            verify_file = rejection.get("verify_file")
+            reason = rejection.get("reason")
+            if (
+                not isinstance(finding_id, str)
+                or not finding_id
+                or finding_id != finding_id.strip()
+                or verify_file != f"verify_{finding_id}.md"
+                or not isinstance(reason, str)
+                or not reason.strip()
+            ):
+                raise ValueError(f"successor rejection row {index} is invalid")
+            key = finding_id.casefold()
+            if key in rejected_by_id:
+                raise ValueError("successor authority has duplicate rejection identity")
+            rejected_by_id[key] = dict(rejection)
+        if summary["rejected_count"] != len(rejected_by_id):
+            raise ValueError("successor authority rejected_count mismatch")
+        expected_status = "DEGRADED" if rejected_by_id else "CLEAN"
+        if summary["status"] != expected_status:
+            raise ValueError("successor authority status disagrees with rejections")
+        if summary["committed_count"] + summary["rejected_count"] != len(results):
+            raise ValueError("successor authority denominator does not reconcile")
+        checkpoint_path = root / "_v2_checkpoint.json"
+        if checkpoint_path.is_file():
+            try:
+                checkpoint, _ = _strict_mechanical_json(checkpoint_path, "checkpoint")
+                checkpoint_run = checkpoint.get("run_id")
+                if checkpoint_run and checkpoint_run != summary["run_identity"]:
+                    raise ValueError("successor authority run identity mismatch")
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+    except Exception as exc:
+        issues.append(f"mechanical successor summary invalid: {exc}")
+        summary = None
+        rejected_by_id = {}
+
+    # Empty execution has no per-finding successor obligation.  The executor's
+    # historical no-work path did not emit a summary; keep that exact case
+    # clean while still rejecting any stray verdict row.
+    if not results:
+        if verdict_by_id:
+            issues.append("verdict manifest has rows without mechanical results")
+        return {
+            "status": "DEGRADED" if issues else "CLEAN",
+            "issues": sorted(dict.fromkeys(issues)),
+            "verdicts": {},
+            "mechanical_present": True,
+        }
+
+    authority_rows: dict[str, dict[str, Any]] = {}
+    bound_count = 0
+    for result in results:
+        finding_id = result["finding_id"]
+        key = finding_id.casefold()
+        row_issues: list[str] = []
+        actual_verdict = verdict_by_id.get(key)
+        if actual_verdict is None:
+            row_issues.append("matching verdict row is missing")
+        elif actual_verdict.get("verify_file", "").casefold() != result[
+            "verify_file"
+        ].casefold():
+            row_issues.append("verdict row file identity disagrees")
+        else:
+            try:
+                import mechanical_verify as _mechanical_verify
+
+                verify_path = root / result["verify_file"]
+                prose_tag = _mechanical_verify._extract_verifier_prose_tag(
+                    verify_path
+                )
+                verify_text = _mechanical_verify._read_verify_text(verify_path)
+                integrity_state, effective_tag = (
+                    _mechanical_verify._classify_integrity(
+                        prose_tag, result["status"], verify_text
+                    )
+                )
+                expected_verdict = {
+                    "finding_id": finding_id,
+                    "verify_file": result["verify_file"],
+                    "mechanical_status": result["status"],
+                    "verifier_prose_tag": prose_tag,
+                    "integrity_state": integrity_state,
+                    "effective_tag": effective_tag,
+                }
+                if actual_verdict != expected_verdict:
+                    row_issues.append(
+                        "verdict row does not equal the deterministic integrity classification"
+                    )
+            except Exception as exc:
+                row_issues.append(f"verdict recomputation failed: {exc}")
+
+        prepared = None
+        if summary is None:
+            row_issues.append("successor authority summary is unavailable")
+        else:
+            try:
+                from mechanical_successor_receipts import (
+                    MechanicalSuccessorReceipt,
+                    prepare_mechanical_successor,
+                )
+
+                prepared = prepare_mechanical_successor(
+                    root / result["verify_file"],
+                    result,
+                    result_path,
+                    run_identity=summary["run_identity"],
+                    driver_identity=summary["driver_identity"],
+                )
+                if not prepared.receipt_path.is_file():
+                    raise ValueError("successor receipt is missing")
+                raw_receipt = prepared.receipt_path.read_bytes()
+                parsed_receipt = MechanicalSuccessorReceipt.from_json(
+                    raw_receipt.decode("utf-8", errors="strict")
+                )
+                if parsed_receipt != prepared.receipt:
+                    raise ValueError("successor receipt authority disagrees")
+                if raw_receipt != prepared.receipt_bytes:
+                    raise ValueError("successor receipt bytes are non-canonical")
+                if prepared.verify_path.read_bytes() != prepared.transformed_bytes:
+                    raise ValueError("successor transformed bytes are not committed")
+            except Exception as exc:
+                row_issues.append(f"successor receipt invalid: {exc}")
+
+        declared_rejected = key in rejected_by_id
+        receipt_valid = prepared is not None and not any(
+            issue.startswith("successor receipt invalid") for issue in row_issues
+        )
+        if declared_rejected and receipt_valid:
+            row_issues.append("summary rejects a fully validated successor receipt")
+        if not declared_rejected and not receipt_valid and summary is not None:
+            row_issues.append("summary commits a successor without valid authority")
+
+        is_bound = not row_issues and not declared_rejected
+        if is_bound:
+            bound_count += 1
+            projected = dict(actual_verdict or {})
+            projected["authority_state"] = "BOUND"
+            projected["authority_issue"] = ""
+        else:
+            # Recall-safe fail-open: keep the candidate and its non-mechanical
+            # severity/disposition, but mint neither a proof upgrade nor an
+            # unbound demotion from the mechanical row.
+            prose_evidence = str(
+                (actual_verdict or {}).get("verifier_prose_tag") or ""
+            )
+            if any(tag in prose_evidence for tag in EVIDENCE_TAGS_PROD):
+                unbound_effective_tag = (
+                    prose_evidence
+                    if "[MECHANICAL-UNAVAILABLE]" in prose_evidence
+                    else f"{prose_evidence} [MECHANICAL-UNAVAILABLE]"
+                )
+            else:
+                unbound_effective_tag = "[CODE-TRACE] [MECHANICAL-UNAVAILABLE]"
+            projected = {
+                "finding_id": finding_id,
+                "verify_file": result["verify_file"],
+                "mechanical_status": result.get("status", ""),
+                "verifier_prose_tag": prose_evidence,
+                "integrity_state": "MECHANICAL_UNAVAILABLE",
+                "effective_tag": unbound_effective_tag,
+                "authority_state": "UNBOUND",
+                "authority_issue": "; ".join(dict.fromkeys(row_issues))
+                or (rejected_by_id.get(key) or {}).get("reason", "unbound"),
+            }
+            issues.append(
+                f"{finding_id} mechanical successor authority: "
+                f"{projected['authority_issue']}"
+            )
+        authority_rows[finding_id.upper()] = projected
+
+    extra_verdicts = set(verdict_by_id) - set(result_by_id)
+    if extra_verdicts:
+        issues.append("verdict manifest has identities absent from mechanical results")
+    extra_rejections = set(rejected_by_id) - set(result_by_id)
+    if extra_rejections:
+        issues.append("successor summary rejects identities outside the result manifest")
+    if summary is not None and summary.get("committed_count") != bound_count:
+        issues.append(
+            "successor summary committed_count disagrees with validated bound rows"
+        )
+
+    return {
+        "status": "DEGRADED" if issues else "CLEAN",
+        "issues": sorted(dict.fromkeys(issues)),
+        "verdicts": authority_rows,
+        "mechanical_present": True,
+    }
+
+
+def _effective_proof_grade_from_manifest_row(
+    row: object,
+    execution_scope_assessment: Optional[Mapping[str, Any]] = None,
+) -> Optional[bool]:
     """Return the structured manifest's report-label proof grade.
 
     ``None`` means the row is unusable and the caller should use the legacy
@@ -18308,7 +28049,10 @@ def _effective_proof_grade_from_manifest_row(row: object) -> Optional[bool]:
     if any(tag in effective_upper for tag in EVIDENCE_TAGS_PROD):
         return True
     if mechanical_status == "PASS" and integrity_state in {"", "CONSISTENT"}:
-        return True
+        return _effective_tag_is_proof_grade(
+            effective_tag,
+            execution_scope_assessment=execution_scope_assessment,
+        )
     if (
         mechanical_status and mechanical_status != "PASS"
         and has_mechanical_proof(effective_upper)
@@ -18316,7 +28060,10 @@ def _effective_proof_grade_from_manifest_row(row: object) -> Optional[bool]:
         return False
     if integrity_state in {"MECHANICAL_UNAVAILABLE", "POC_UNVERIFIED_HARNESS"}:
         return False
-    return _effective_tag_is_proof_grade(effective_tag)
+    return _effective_tag_is_proof_grade(
+        effective_tag,
+        execution_scope_assessment=execution_scope_assessment,
+    )
 
 
 def _effective_proof_grade_from_verify(vtxt: str) -> bool:
@@ -18352,22 +28099,59 @@ def _expected_report_index_statuses(scratchpad: Path) -> dict[str, str]:
     space as `_expected_report_index_severities`). Emitted to `status_binding.md`
     by the driver so the Index Agent stops re-deriving the label from raw prose
     (which produced the 71-index / 12-body / 17-PoC collision)."""
+    return _expected_report_index_statuses_with_authority(
+        scratchpad, _mechanical_successor_authority_view(scratchpad)
+    )
+
+
+def _expected_report_index_statuses_with_authority(
+    scratchpad: Path,
+    authority: dict[str, Any],
+) -> dict[str, str]:
+    """Internal single-read variant for multi-step status projections."""
     out: dict[str, str] = {}
-    manifest_by_id: dict[str, dict] = {}
+    strict_completion = any(
+        (Path(scratchpad) / name).is_file()
+        for name in (
+            "verification_runtime_roster.json",
+            "verification_runtime_debt.json",
+        )
+    )
+    manifest_by_id: dict[str, dict] = dict(authority.get("verdicts") or {})
+    global_unbound = bool(
+        authority.get("mechanical_present") and authority.get("status") == "DEGRADED"
+    )
     try:
-        from mechanical_verify import read_verdict_manifest
-        for manifest_row in read_verdict_manifest(scratchpad):
-            if not isinstance(manifest_row, dict):
-                continue
-            manifest_id = str(manifest_row.get("finding_id") or "").strip()
-            if manifest_id:
-                manifest_by_id[manifest_id.upper()] = manifest_row
+        late_statuses = load_post_verify_late_delivery_statuses(scratchpad)
     except Exception:
-        # Legacy/malformed resumes retain the verify-file derivation.
-        manifest_by_id = {}
-    for row in parse_verification_queue_rows(scratchpad):
+        late_statuses = {}
+    for row in _report_candidate_rows_for_validator(scratchpad):
         fid = (row.get("finding id") or "").strip()
         if not fid:
+            continue
+        if row.get("source kind") not in {
+            None, "", "BASE_VERIFICATION_QUEUE"
+        }:
+            late = late_statuses.get(fid)
+            late_verdict = str(
+                getattr(late, "verifier_status", "") or ""
+            ).upper()
+            if late_verdict in {
+                "REFUTED", "SAFE", "ZERO_HARM", "ZERO-HARM",
+                "NO_MATERIAL_HARM",
+            }:
+                out[fid] = "CONTESTED"
+            elif late_verdict == "CONFIRMED":
+                out[fid] = "CONFIRMED"
+            elif late_verdict in {"CONTESTED", "UNRESOLVED"}:
+                out[fid] = "CONTESTED"
+            else:
+                out[fid] = "UNVERIFIED"
+            continue
+        if strict_completion and not _verifier_output_has_completion_authority(
+            Path(scratchpad), fid
+        ):
+            out[fid] = "CONTESTED"
             continue
         vf = _verify_file_for_id(scratchpad, fid)
         try:
@@ -18375,9 +28159,52 @@ def _expected_report_index_statuses(scratchpad: Path) -> dict[str, str]:
         except Exception:
             vtxt = ""
         status = _verifier_status_from_text(vtxt)
-        manifest_grade = _effective_proof_grade_from_manifest_row(
-            manifest_by_id.get(fid.upper())
+        manifest_row = manifest_by_id.get(fid.upper())
+        authority_state = (
+            str(manifest_row.get("authority_state") or "UNBOUND")
+            if isinstance(manifest_row, dict) else ""
         )
+        integrity_state = (
+            str(manifest_row.get("integrity_state") or "").upper()
+            if isinstance(manifest_row, dict) else ""
+        )
+        # The old driver enforced INFLATED_PROSE by mutating the verifier's
+        # Verdict field to CONTESTED.  Preserve that exact disposition through
+        # typed authority instead; verifier-authored bytes now stay immutable.
+        if authority_state == "BOUND" and integrity_state == "INFLATED_PROSE":
+            status = "CONTESTED"
+        if authority_state == "BOUND":
+            try:
+                from execution_scope_runtime import (
+                    load_execution_scope_assessment,
+                )
+
+                p1e = load_execution_scope_assessment(scratchpad, fid)
+                p1e_assessment = (
+                    p1e.get("assessment")
+                    if p1e.get("status") in {
+                        "VALID_LIMITED", "VALID_RICH", "EVIDENCE_DEBT"
+                    }
+                    else None
+                )
+            except Exception:
+                p1e_assessment = None
+            manifest_grade = _effective_proof_grade_from_manifest_row(
+                manifest_row,
+                p1e_assessment,
+            )
+        elif (
+            authority_state == "UNBOUND"
+            or global_unbound
+            or (authority.get("mechanical_present") and manifest_row is None)
+        ):
+            # Legacy/partial/rejected authority is recall-safe fail-open: keep
+            # the verifier disposition, but never label it execution-VERIFIED.
+            # Production evidence is a separate authority class and remains
+            # proof-grade independently of the local mechanical successor.
+            manifest_grade = any(tag in vtxt for tag in EVIDENCE_TAGS_PROD)
+        else:
+            manifest_grade = None
         out[fid] = canonical_verification_status(
             status,
             manifest_grade if manifest_grade is not None
@@ -18426,16 +28253,756 @@ def _report_index_rows_for_severity_audit(scratchpad: Path) -> list[dict[str, st
         out.append({
             "report_id": rid.upper(),
             "severity": d.get("severity", ""),
-            "verification": d.get("verification", ""),
+            # L1's deterministic index historically called this column
+            # ``Verdict`` while the SC index calls it ``Verification``.
+            # They are the same downstream status surface.
+            "verification": d.get("verification", "") or d.get("verdict", ""),
             "trust_adj": trust,
             "internal": internal,
         })
     return out
 
 
-def _validate_report_index_severity_provenance(scratchpad: Path) -> list[str]:
+_REPORT_STATUS_PROJECTION_SCHEMA = "plamen.report_index_status_projection.v1"
+_REPORT_STATUS_PROJECTION_FILE = "report_index_status_projection.json"
+_REPORT_STATUS_TOKEN_RE = re.compile(
+    r"(?<![A-Z])(?:\[\s*)?"
+    r"(UNVERIFIED|VERIFIED|CONFIRMED|CONTESTED)"
+    r"(?:\s*\])?(?![A-Z])",
+    re.IGNORECASE,
+)
+_REPORT_STATUS_RANK = {
+    "UNVERIFIED": 0,
+    "CONTESTED": 1,
+    "CONFIRMED": 2,
+    "VERIFIED": 3,
+}
+
+
+def _report_status_tokens(value: str) -> list[str]:
+    """Return distinct canonical status tokens without substring collisions."""
+    return list(dict.fromkeys(
+        match.group(1).upper()
+        for match in _REPORT_STATUS_TOKEN_RE.finditer(value or "")
+    ))
+
+
+def _canonicalize_report_status_cell(value: str, expected: str) -> str:
+    """Replace only status vocabulary, preserving evidence/constituent IDs."""
+    remainder = _REPORT_STATUS_TOKEN_RE.sub("", value or "")
+    remainder = re.sub(r"\[\s*\]", "", remainder)
+    remainder = re.sub(r"\s+", " ", remainder).strip()
+    remainder = re.sub(r"(?:\s*[;,/]\s*)+$", "", remainder).strip()
+    return f"{remainder}; {expected}" if remainder else expected
+
+
+def _report_status_aggregate(statuses: list[str]) -> str:
+    """Conservatively combine constituent evidence without resurrection.
+
+    A consolidated row is only VERIFIED when every represented constituent is
+    VERIFIED.  One integrity-contested constituent dominates; otherwise the
+    least-proven constituent determines the row.  This prevents a separately
+    proven sibling from laundering an absorbed integrity downgrade.
+    """
+    usable = [status for status in statuses if status in _REPORT_STATUS_RANK]
+    if not usable:
+        return "UNVERIFIED"
+    if "CONTESTED" in usable:
+        return "CONTESTED"
+    if "UNVERIFIED" in usable:
+        return "UNVERIFIED"
+    if "CONFIRMED" in usable:
+        return "CONFIRMED"
+    return "VERIFIED"
+
+
+def _report_index_status_obligations(
+    scratchpad: Path,
+    authority: Optional[dict[str, Any]] = None,
+    expected: Optional[dict[str, str]] = None,
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Enumerate the exact finding-level status denominator.
+
+    A clean legacy run with no mechanical artifacts has no new projection
+    obligation.  Once any mechanical authority artifact exists, every result
+    identity is bound.  If that authority is degraded, every verification-
+    queue identity is included as a conservative GLOBAL_UNBOUND obligation so
+    a malformed/missing manifest can never silently retain proof-grade status.
+    """
+    authority = authority or _mechanical_successor_authority_view(scratchpad)
+    if not authority.get("mechanical_present"):
+        return [], []
+
+    expected = {
+        (_normalize_finding_id(fid) or fid).upper(): status
+        for fid, status in (
+            expected
+            if expected is not None
+            else _expected_report_index_statuses_with_authority(
+                scratchpad, authority
+            )
+        ).items()
+    }
+    rows = {
+        (_normalize_finding_id(fid) or fid).upper(): row
+        for fid, row in dict(authority.get("verdicts") or {}).items()
+        if isinstance(row, dict)
+    }
+    denominator_ids = set(rows)
+    # The verification queue, not the executor-authored result manifest, is
+    # the independent denominator.  A superficially CLEAN manifest that omits
+    # a queue identity is therefore GLOBAL_UNBOUND, never an invitation to
+    # fall back to an old prose proof tag.
+    for queue_row in _report_candidate_rows_for_validator(scratchpad):
+        raw = (queue_row.get("finding id") or "").strip()
+        fid = (_normalize_finding_id(raw) or raw).upper()
+        if fid:
+            denominator_ids.add(fid)
+
+    obligations: list[dict[str, str]] = []
+    issues: list[str] = []
+    for fid in sorted(denominator_ids):
+        status = expected.get(fid)
+        if status not in _REPORT_STATUS_RANK:
+            issues.append(
+                f"status projection denominator {fid} has no canonical expected status"
+            )
+            status = "UNVERIFIED"
+        row = rows.get(fid, {})
+        obligations.append({
+            "finding_id": fid,
+            "expected_status": status,
+            "authority_state": str(
+                row.get("authority_state") or "GLOBAL_UNBOUND"
+            ),
+            "integrity_state": str(
+                row.get("integrity_state") or "MECHANICAL_UNAVAILABLE"
+            ),
+        })
+    return obligations, issues
+
+
+def _status_projection_table_layout(
+    text: str,
+) -> tuple[list[str], int, int, int, list[dict[str, Any]], list[str]]:
+    """Parse the exact Master table while retaining mutable line identities."""
+    lines = text.splitlines(keepends=True)
+    issues: list[str] = []
+    heading = next((
+        index for index, line in enumerate(lines)
+        if re.match(r"^##\s+Master\s+Finding\s+Index\b", line.strip(), re.I)
+    ), -1)
+    if heading < 0:
+        return lines, -1, -1, -1, [], [
+            "report_index status projection: Master Finding Index missing"
+        ]
+    section_end = next((
+        index for index in range(heading + 1, len(lines))
+        if re.match(r"^##\s+", lines[index].strip())
+    ), len(lines))
+    header_line = -1
+    headers: list[str] = []
+    for index in range(heading + 1, section_end):
+        candidate = lines[index].strip()
+        if not candidate.startswith("|"):
+            continue
+        candidate_headers = [
+            _norm_key(cell) for cell in candidate.strip("|").split("|")
+        ]
+        if "report id" in candidate_headers:
+            header_line = index
+            headers = candidate_headers
+            break
+    if header_line < 0:
+        return lines, -1, -1, -1, [], [
+            "report_index status projection: Master table header missing"
+        ]
+
+    report_cols = [i for i, name in enumerate(headers) if name == "report id"]
+    status_cols = [
+        i for i, name in enumerate(headers)
+        if name in {"verification", "verdict"}
+    ]
+    internal_cols = [
+        i for i, name in enumerate(headers)
+        if name in {
+            "internal hypothesis", "internal hypothesis id", "hypothesis",
+            "finding id", "internal id", "internal hypothesis ids",
+        }
+    ]
+    report_col = report_cols[0]
+    status_col = status_cols[0] if status_cols else -1
+    internal_col = internal_cols[0] if internal_cols else -1
+    if len(report_cols) != 1:
+        issues.append(
+            "report_index status projection: report identity column is not singular"
+        )
+    if not status_cols:
+        issues.append(
+            "report_index status projection: Verification/Verdict column missing"
+        )
+    elif len(status_cols) != 1:
+        issues.append(
+            "report_index status projection: Verification/Verdict column is not singular"
+        )
+    if not internal_cols:
+        issues.append(
+            "report_index status projection: internal finding identity column missing"
+        )
+    elif len(internal_cols) != 1:
+        issues.append(
+            "report_index status projection: internal identity column is not singular"
+        )
+
+    rows: list[dict[str, Any]] = []
+    seen_report_ids: set[str] = set()
+    for index in range(header_line + 2, section_end):
+        raw_line = lines[index].rstrip("\r\n")
+        if not raw_line.strip().startswith("|"):
+            break
+        cells = [cell.strip() for cell in raw_line.strip().strip("|").split("|")]
+        if report_col >= len(cells):
+            continue
+        rid = (_normalize_report_id(cells[report_col]) or "").upper()
+        if not re.fullmatch(r"[CHMLI]-\d+", rid, re.I):
+            continue
+        if rid in seen_report_ids:
+            issues.append(
+                f"report_index status projection: duplicate report identity {rid}"
+            )
+        seen_report_ids.add(rid)
+        internal = cells[internal_col] if 0 <= internal_col < len(cells) else ""
+        ids = sorted(dict.fromkeys(
+            (_normalize_finding_id(fid) or fid).upper()
+            for fid in _INTERNAL_FINDING_ID_RE.findall(internal)
+        ))
+        rows.append({
+            "line_index": index,
+            "report_id": rid,
+            "cells": cells,
+            "internal_ids": ids,
+            "newline": (
+                "\r\n" if lines[index].endswith("\r\n")
+                else "\n" if lines[index].endswith("\n")
+                else ""
+            ),
+        })
+    return lines, report_col, status_col, internal_col, rows, issues
+
+
+def _report_index_consolidation_ids(text: str) -> dict[str, list[str]]:
+    """Map report IDs to constituent IDs explicitly named by consolidation."""
+    match = re.search(
+        r"(?ims)^##\s+Consolidation\s+Map\b.*?(?=^##\s+|\Z)", text or ""
+    )
+    if not match:
+        return {}
+    headers, rows = _parse_markdown_table(match.group(0), ["report id"])
+    if not headers:
+        return {}
+    keys = [_norm_key(header) for header in headers]
+    rid_col = next((i for i, key in enumerate(keys) if key == "report id"), -1)
+    ids_col = next((
+        i for i, key in enumerate(keys)
+        if key in {
+            "absorbed findings", "absorbed finding ids", "constituents",
+            "internal findings", "internal hypothesis ids",
+        }
+    ), -1)
+    if rid_col < 0 or ids_col < 0:
+        return {}
+    out: dict[str, list[str]] = {}
+    for row in rows:
+        if max(rid_col, ids_col) >= len(row):
+            continue
+        rid = (_normalize_report_id(row[rid_col]) or "").upper()
+        if not rid:
+            continue
+        out[rid] = sorted(dict.fromkeys(
+            (_normalize_finding_id(fid) or fid).upper()
+            for fid in _INTERNAL_FINDING_ID_RE.findall(row[ids_col])
+        ))
+    return out
+
+
+def _report_index_status_projection_state(
+    scratchpad: Path,
+    text: str,
+) -> dict[str, Any]:
+    """Derive one deterministic status projection from current authority."""
+    authority = _mechanical_successor_authority_view(scratchpad)
+    expected_statuses = _expected_report_index_statuses_with_authority(
+        scratchpad, authority
+    )
+    obligations, issues = _report_index_status_obligations(
+        scratchpad, authority, expected_statuses
+    )
+    obligation_by_id = {
+        row["finding_id"]: row for row in obligations
+    }
+    expected_all = {
+        (_normalize_finding_id(fid) or fid).upper(): status
+        for fid, status in expected_statuses.items()
+    }
+    (
+        lines, _report_col, status_col, _internal_col, rows, table_issues,
+    ) = _status_projection_table_layout(text)
+    issues.extend(table_issues)
+    consolidation = _report_index_consolidation_ids(text)
+    mapped: dict[str, list[str]] = {fid: [] for fid in obligation_by_id}
+    changes: list[str] = []
+
+    for row in rows:
+        row["all_ids"] = sorted(dict.fromkeys(
+            list(row["internal_ids"])
+            + list(consolidation.get(row["report_id"], []))
+        ))
+        row["authority_ids"] = [
+            fid for fid in row["all_ids"] if fid in obligation_by_id
+        ]
+        for fid in row["authority_ids"]:
+            mapped[fid].append(row["report_id"])
+        if not row["authority_ids"] or status_col < 0:
+            continue
+        statuses = [
+            expected_all[fid] for fid in row["all_ids"]
+            if expected_all.get(fid) in _REPORT_STATUS_RANK
+        ]
+        if not statuses:
+            statuses = [
+                obligation_by_id[fid]["expected_status"]
+                for fid in row["authority_ids"]
+            ]
+        expected = _report_status_aggregate(statuses)
+        cells = list(row["cells"])
+        if status_col >= len(cells):
+            cells.extend([""] * (status_col + 1 - len(cells)))
+        actual_tokens = _report_status_tokens(cells[status_col])
+        if actual_tokens != [expected]:
+            cells[status_col] = _canonicalize_report_status_cell(
+                cells[status_col], expected
+            )
+            lines[row["line_index"]] = (
+                "| " + " | ".join(cells) + " |" + row["newline"]
+            )
+            changes.append(
+                f"{row['report_id']} expected {expected}, found "
+                f"{','.join(actual_tokens) or '(missing)'}"
+            )
+
+    for fid, report_ids in sorted(mapped.items()):
+        if not report_ids:
+            issues.append(
+                f"report_index status projection: denominator {fid} is unmapped"
+            )
+        elif len(set(report_ids)) != 1:
+            issues.append(
+                f"report_index status projection: denominator {fid} maps to "
+                f"multiple rows {', '.join(sorted(set(report_ids)))}"
+            )
+
+    projected_text = "".join(lines)
+    # Reparse the projected bytes so bindings describe only the committed
+    # projection, never pre-repair author prose.
+    _, _, final_status_col, _, final_rows, final_table_issues = (
+        _status_projection_table_layout(projected_text)
+    )
+    issues.extend(final_table_issues)
+    final_consolidation = _report_index_consolidation_ids(projected_text)
+    bindings: list[dict[str, Any]] = []
+    for row in final_rows:
+        all_ids = sorted(dict.fromkeys(
+            list(row["internal_ids"])
+            + list(final_consolidation.get(row["report_id"], []))
+        ))
+        authority_ids = [fid for fid in all_ids if fid in obligation_by_id]
+        if not authority_ids:
+            continue
+        statuses = [
+            expected_all[fid] for fid in all_ids
+            if expected_all.get(fid) in _REPORT_STATUS_RANK
+        ] or [obligation_by_id[fid]["expected_status"] for fid in authority_ids]
+        expected = _report_status_aggregate(statuses)
+        actual = ""
+        if 0 <= final_status_col < len(row["cells"]):
+            tokens = _report_status_tokens(row["cells"][final_status_col])
+            actual = tokens[0] if len(tokens) == 1 else "+".join(tokens)
+        row_identity = {
+            "report_id": row["report_id"],
+            "internal_finding_ids": all_ids,
+            "authority_finding_ids": authority_ids,
+        }
+        bindings.append({
+            **row_identity,
+            "row_identity_sha256": hashlib.sha256(
+                json.dumps(
+                    row_identity, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest(),
+            "expected_status": expected,
+            "actual_status": actual,
+        })
+        if actual != expected:
+            issues.append(
+                f"report_index status projection: {row['report_id']} expected "
+                f"{expected}, found {actual or '(missing)'}"
+            )
+
+    authority_debt = list(authority.get("issues") or [])
+    authority_rows = {
+        (_normalize_finding_id(fid) or fid).upper()
+        for fid in dict(authority.get("verdicts") or {})
+    }
+    authority_debt.extend(
+        f"mechanical successor authority omitted queue identity {row['finding_id']}"
+        for row in obligations
+        if row["finding_id"] not in authority_rows
+    )
+    if authority.get("status") == "DEGRADED" and not authority_debt:
+        authority_debt = [
+            "mechanical successor authority is degraded without detail"
+        ]
+    denominator_bytes = json.dumps(
+        obligations, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return {
+        "projected_text": projected_text,
+        "changes": changes,
+        "obligations": obligations,
+        "bindings": sorted(bindings, key=lambda row: row["report_id"]),
+        "authority_status": str(authority.get("status") or "ABSENT"),
+        "authority_debt": sorted(dict.fromkeys(str(x) for x in authority_debt)),
+        "projection_issues": sorted(dict.fromkeys(str(x) for x in issues)),
+        "denominator_sha256": hashlib.sha256(denominator_bytes).hexdigest(),
+        "report_row_count": len(final_rows),
+    }
+
+
+def _report_index_status_projection_receipt(
+    scratchpad: Path,
+    text: str,
+    *,
+    state: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    state = state or _report_index_status_projection_state(scratchpad, text)
+    source_bytes = text.encode("utf-8")
+    status = "DEGRADED" if (
+        state["authority_debt"] or state["projection_issues"]
+    ) else "CLEAN"
+    return {
+        "schema_version": _REPORT_STATUS_PROJECTION_SCHEMA,
+        "source_artifact": "report_index.md",
+        "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "authority_status": state["authority_status"],
+        "authority_denominator_count": len(state["obligations"]),
+        "authority_denominator_sha256": state["denominator_sha256"],
+        "report_row_count": state["report_row_count"],
+        "binding_count": len(state["bindings"]),
+        "bindings": state["bindings"],
+        "authority_debt": state["authority_debt"],
+        "projection_issues": state["projection_issues"],
+        "status": status,
+    }
+
+
+def _canonical_status_projection_bytes(receipt: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+
+
+def _atomic_validator_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def _project_report_index_status_authority(scratchpad: Path) -> dict[str, Any]:
+    """Project typed successor authority into the derived report index.
+
+    Verifier/source Markdown is never touched.  The receipt is a canonical,
+    idempotent function of the final report index plus the validated successor
+    view; a second invocation writes byte-identical outputs.
+    """
+    root = Path(scratchpad)
+    index_path = root / "report_index.md"
+    text = index_path.read_text(encoding="utf-8", errors="strict")
+    state = _report_index_status_projection_state(root, text)
+    projected = state["projected_text"]
+    if projected != text:
+        _atomic_validator_bytes(index_path, projected.encode("utf-8"))
+        state = _report_index_status_projection_state(root, projected)
+    receipt = _report_index_status_projection_receipt(
+        root, projected, state=state
+    )
+    _atomic_validator_bytes(
+        root / _REPORT_STATUS_PROJECTION_FILE,
+        _canonical_status_projection_bytes(receipt),
+    )
+    return receipt
+
+
+def _validate_report_index_status_authority(scratchpad: Path) -> list[str]:
+    """Validate exact status projection bytes, identity and denominator."""
+    root = Path(scratchpad)
+    index_path = root / "report_index.md"
+    if not index_path.is_file():
+        authority = _mechanical_successor_authority_view(root)
+        if not authority.get("mechanical_present"):
+            return []
+        return ["report_index status authority missing report_index.md"]
+    try:
+        text = index_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError) as exc:
+        return [f"report_index status authority unreadable: {exc}"]
+    state = _report_index_status_projection_state(root, text)
+    if state["changes"]:
+        return [
+            "report_index status authority mismatch: "
+            + "; ".join(state["changes"][:6])
+        ]
+    expected = _report_index_status_projection_receipt(
+        root, text, state=state
+    )
+    receipt_path = root / _REPORT_STATUS_PROJECTION_FILE
+    if not receipt_path.is_file():
+        # Backward-compatible legacy runs with no mechanical authority have no
+        # new denominator.  Once authority exists, absence is typed evidence.
+        if (
+            expected["authority_status"] == "ABSENT"
+            and expected["authority_denominator_count"] == 0
+        ):
+            return []
+        return ["report_index status projection receipt missing"]
+    try:
+        actual, raw = _strict_mechanical_json(
+            receipt_path, "report index status projection receipt"
+        )
+    except Exception as exc:
+        return [f"report_index status projection receipt invalid: {exc}"]
+    if actual != expected:
+        return [
+            "report_index status projection receipt is stale or disagrees "
+            "with current authority/index bytes"
+        ]
+    if raw != _canonical_status_projection_bytes(expected):
+        return ["report_index status projection receipt bytes are non-canonical"]
+    return list(expected.get("projection_issues") or [])
+
+
+def _report_index_status_projection_debt(scratchpad: Path) -> list[str]:
+    """Return valid projection debt for the phase commit controller."""
+    validation = _validate_report_index_status_authority(scratchpad)
+    if validation:
+        return validation
+    path = Path(scratchpad) / _REPORT_STATUS_PROJECTION_FILE
+    if not path.is_file():
+        return []
+    try:
+        receipt, _ = _strict_mechanical_json(
+            path, "report index status projection receipt"
+        )
+    except Exception as exc:
+        return [f"report index status projection receipt invalid: {exc}"]
+    return list(dict.fromkeys(
+        list(receipt.get("authority_debt") or [])
+        + list(receipt.get("projection_issues") or [])
+    ))
+
+
+def _report_dedup_status_aliases(scratchpad: Path) -> tuple[dict[str, str], set[str]]:
+    """Return aliases only after replaying typed applied report authority."""
+    root = Path(scratchpad)
+    receipt_path = root / "report_dedup_applied_alias_receipt.json"
+    pre_path = root / "AUDIT_REPORT.pre-dedup.md"
+    post_path = root / "report_dedup.canonical_candidate.md"
+    if not all(path.is_file() for path in (receipt_path, pre_path, post_path)):
+        return {}, set()
+    try:
+        import report_dedup_authority as authority
+        from report_mutation_transaction import (
+            capture_report_transaction_inputs,
+            report_mutation_transaction_state,
+        )
+
+        manifest_path = (
+            root / "_report_transactions" / "report_dedup" / "transaction.json"
+        )
+        manifest = json.loads(
+            manifest_path.read_text(encoding="utf-8", errors="strict")
+        )
+        if report_mutation_transaction_state(
+            scratchpad=root,
+            run_id=str(manifest.get("run_id") or ""),
+            phase="report_dedup",
+        ) != "COMMITTED":
+            return {}, set()
+        sidecars = {
+            str(row.get("path") or ""): row
+            for row in manifest.get("sidecars") or []
+        }
+        for path in (receipt_path, pre_path, post_path):
+            row = sidecars.get(path.name)
+            raw_sidecar = path.read_bytes()
+            if (
+                not row
+                or row.get("sha256") != hashlib.sha256(raw_sidecar).hexdigest()
+                or row.get("size_bytes") != len(raw_sidecar)
+            ):
+                return {}, set()
+
+        raw = receipt_path.read_bytes()
+        payload = json.loads(raw.decode("utf-8", errors="strict"))
+        if raw != authority.canonical_receipt_bytes(payload):
+            return {}, set()
+        input_names = list(authority.REQUIRED_EXACT_INPUT_PATHS)
+        current_inputs = capture_report_transaction_inputs(root, input_names)
+        semantic_aliases: dict[str, dict[str, str]] = {}
+        try:
+            import semantic_dedup_authority as semantic_authority
+
+            if any(
+                (root / name).is_file()
+                for name in (
+                    semantic_authority.PRIMARY_RECEIPT_NAME,
+                    semantic_authority.SUPPLEMENTAL_RECEIPT_NAME,
+                )
+            ):
+                semantic_aliases = semantic_authority.load_applied_aliases(root)
+        except Exception:
+            return {}, set()
+        authority.validate_receipt(
+            payload,
+            pre_report=pre_path.read_text(encoding="utf-8", errors="strict"),
+            post_report=post_path.read_text(encoding="utf-8", errors="strict"),
+            exact_inputs=current_inputs,
+            source_ids_by_report_id=_dedup_source_ids_by_report_id(root),
+            semantic_aliases=semantic_aliases,
+        )
+    except Exception:
+        return {}, set()
+    aliases = {
+        str(row["absorbed"]).upper(): str(row["survivor"]).upper()
+        for row in payload.get("applied_aliases", [])
+    }
+    qo_ids = {
+        str(item).upper()
+        for item in payload.get("post_report", {}).get(
+            "retained_projection_ids", []
+        )
+    }
+    return aliases, qo_ids
+
+
+def _validate_report_body_status_authority(
+    scratchpad: Path,
+    report_text: str,
+) -> list[str]:
+    """Ensure assembly/final mutations cannot resurrect an inflated status."""
+    receipt_path = Path(scratchpad) / _REPORT_STATUS_PROJECTION_FILE
+    if not receipt_path.is_file():
+        authority = _mechanical_successor_authority_view(Path(scratchpad))
+        if not authority.get("mechanical_present"):
+            # Isolated legacy/final-assurance fixtures predate mechanical
+            # successor authority and have no new status denominator.
+            return []
+    receipt_issues = _validate_report_index_status_authority(scratchpad)
+    if receipt_issues:
+        return receipt_issues
+    if not receipt_path.is_file():
+        return []
+    try:
+        receipt, _ = _strict_mechanical_json(
+            receipt_path, "report index status projection receipt"
+        )
+    except Exception as exc:
+        return [f"report body status authority unavailable: {exc}"]
+    aliases, qo_ids = _report_dedup_status_aliases(scratchpad)
+    appendix_ids: set[str] = set()
+    appendix = re.search(
+        r"(?ims)^##\s+Appendix C:[^\n]*\n.*?(?=^##\s+|\Z)",
+        report_text or "",
+    )
+    if appendix:
+        appendix_ids = {
+            match.group(1).upper()
+            for match in re.finditer(
+                r"(?im)^\|\s*([CHMLI]-\d+)\s*\|", appendix.group(0)
+            )
+        }
+    expected_by_final_id: dict[str, list[str]] = {}
+    dedup_active = bool(aliases or qo_ids)
+    for binding in receipt.get("bindings") or []:
+        rid = str(binding.get("report_id") or "").upper()
+        if rid in qo_ids:
+            continue
+        seen: set[str] = set()
+        while rid in aliases and rid not in seen:
+            seen.add(rid)
+            rid = aliases[rid]
+        if rid and rid not in appendix_ids:
+            expected_by_final_id.setdefault(rid, []).append(
+                str(binding.get("expected_status") or "UNVERIFIED")
+            )
+    issues: list[str] = []
+    for rid, statuses in sorted(expected_by_final_id.items()):
+        expected = _report_status_aggregate(statuses)
+        header = re.search(
+            rf"(?im)^#{{2,3}}\s+(?:\[REPORT-BLOCKED[^\]]*\]\s*)?"
+            rf"\[\s*{re.escape(rid)}\s*\][^\n]*$",
+            report_text or "",
+        )
+        if not header:
+            issues.append(f"report body status authority: {rid} section missing")
+            continue
+        tokens = _report_status_tokens(header.group(0))
+        actual = tokens[-1] if len(tokens) == 1 else "+".join(tokens)
+        # The assembler must match exactly.  A later recall-safe dedup may
+        # retain a weaker survivor label, but it may never overclaim stronger
+        # evidence than the strongest merged constituent.
+        mismatch = actual != expected
+        if dedup_active and actual in _REPORT_STATUS_RANK:
+            mismatch = _REPORT_STATUS_RANK[actual] > _REPORT_STATUS_RANK[expected]
+        if mismatch:
+            issues.append(
+                f"report body status authority: {rid} expected {expected}, "
+                f"found {actual or '(missing)'}"
+            )
+    return issues
+
+
+def _validate_report_index_severity_provenance(
+    scratchpad: Path,
+    *,
+    expected_run_id: str = "",
+    expected_mode: str = "",
+    expected_severities: Mapping[str, str] | None = None,
+) -> list[str]:
     """Reject silent severity changes in LLM-authored report_index.md."""
-    expected_by_id = _expected_report_index_severities(scratchpad)
+    expected_by_id = (
+        {
+            str(finding_id): normalize_severity(str(severity))
+            for finding_id, severity in expected_severities.items()
+            if str(finding_id).strip()
+            and normalize_severity(str(severity))
+        }
+        if expected_severities is not None
+        else _expected_report_index_severities(
+            scratchpad,
+            expected_run_id=expected_run_id,
+            expected_mode=expected_mode,
+        )
+    )
     if not expected_by_id:
         return []
     rows = _report_index_rows_for_severity_audit(scratchpad)
@@ -18467,6 +29034,10 @@ def _validate_report_index_severity_provenance(scratchpad: Path) -> list[str]:
             row.get("trust_adj", ""),
             row.get("verification", ""),
             row.get("severity", ""),
+        ) and _typed_report_severity_adjustment_authorizes(
+            scratchpad,
+            ids,
+            final_severity=final,
         ):
             continue
         issues.append(
@@ -18479,7 +29050,235 @@ def _validate_report_index_severity_provenance(scratchpad: Path) -> list[str]:
     return [sample + ("; ..." if len(issues) > 5 else "")]
 
 
-def _repair_report_index_severity_provenance(scratchpad: Path) -> list[dict[str, str]]:
+def _restore_unsupported_downgrade_rows(
+    text: str,
+    repairs: list[dict[str, str]],
+) -> tuple[str, list[dict[str, str]], dict[str, str]]:
+    """Restore unsupported downgrade rows to their upstream tier.
+
+    ``repairs`` is the legacy provenance detector's exact candidate set.  This
+    transformer is header-aware and collision-safe: it changes the Severity
+    cell, allocates a report ID in the restored tier, and retains the driver
+    token only as a historical explanation.  It never lowers a tier.
+    """
+
+    if not repairs:
+        return text, repairs, {}
+    by_report_id = {
+        str(row.get("report_id") or "").strip().strip("[]").upper(): row
+        for row in repairs
+        if str(row.get("report_id") or "").strip()
+    }
+    lines = text.splitlines(keepends=True)
+    in_master = False
+    columns: dict[str, int] = {}
+    # Only the first cell of Master-style rows owns the report namespace.
+    # Internal finding IDs often use the same H-/M- spelling and must not
+    # manufacture false allocation collisions.
+    used_ids = {
+        (_normalize_report_id(match.group(1)) or match.group(1)).upper()
+        for match in re.finditer(
+            r"(?im)^\s*\|\s*\[?([CHMLI]-\d+)\]?\s*\|",
+            text,
+        )
+    }
+    renames: dict[str, str] = {}
+    prefix_by_severity = {
+        "Critical": "C",
+        "High": "H",
+        "Medium": "M",
+        "Low": "L",
+        "Informational": "I",
+    }
+
+    for index, original in enumerate(lines):
+        stripped = original.strip()
+        if re.match(r"^##\s+Master\s+Finding\s+Index\b", stripped, re.I):
+            in_master = True
+            columns = {}
+            continue
+        if in_master and re.match(r"^##\s+", stripped):
+            break
+        if not in_master or not stripped.startswith("|") or _is_separator_row(stripped):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not columns:
+            normalized = [_norm_key(cell) for cell in cells]
+            if "report id" not in normalized:
+                continue
+            columns["report_id"] = normalized.index("report id")
+            if "severity" in normalized:
+                columns["severity"] = normalized.index("severity")
+            for alias in ("trust adj", "trust adjustment", "severity trail", "sev trail", "adjustment", "reason"):
+                if alias in normalized:
+                    columns["trust_adj"] = normalized.index(alias)
+                    break
+            continue
+        rid_index = columns.get("report_id", -1)
+        severity_index = columns.get("severity", -1)
+        if not (0 <= rid_index < len(cells) and 0 <= severity_index < len(cells)):
+            continue
+        old_id = (_normalize_report_id(cells[rid_index]) or cells[rid_index]).upper()
+        repair = by_report_id.get(old_id)
+        if repair is None:
+            continue
+        restored_severity = str(repair.get("upstream_severity") or "").strip()
+        prefix = prefix_by_severity.get(restored_severity)
+        if not prefix:
+            continue
+        old_number_match = re.search(r"(\d+)$", old_id)
+        preferred_number = int(old_number_match.group(1)) if old_number_match else 1
+        width = max(2, len(old_number_match.group(1)) if old_number_match else 2)
+        candidate = f"{prefix}-{preferred_number:0{width}d}"
+        if candidate in used_ids and candidate != old_id:
+            number = 1
+            while f"{prefix}-{number:0{width}d}" in used_ids:
+                number += 1
+            candidate = f"{prefix}-{number:0{width}d}"
+        used_ids.discard(old_id)
+        used_ids.add(candidate)
+        cells[rid_index] = candidate
+        cells[severity_index] = restored_severity
+        trust_index = columns.get("trust_adj", -1)
+        if 0 <= trust_index < len(cells):
+            cells[trust_index] = re.sub(
+                r"reason=llm-downgrade-no-judge",
+                "reason=unsupported-downgrade-restored",
+                cells[trust_index],
+                flags=re.I,
+            )
+        newline = "\r\n" if original.endswith("\r\n") else "\n" if original.endswith("\n") else ""
+        lines[index] = "| " + " | ".join(cells) + " |" + newline
+        renames[old_id] = candidate
+        repair["previous_report_id"] = old_id
+        repair["report_id"] = candidate
+        repair["action"] = "applied severity restoration to upstream authority"
+    return "".join(lines), repairs, renames
+
+
+def _typed_report_severity_adjustment_authorizes(
+    scratchpad: Path,
+    internal_ids: list[str],
+    *,
+    final_severity: str,
+) -> bool:
+    """Require explicit cutover plus report-authoritative typed decisions.
+
+    Legacy Trust-Adj prose is explanation, never authority.  The shadow
+    severity program may authorize a different tier only after a deliberate
+    benchmark cutover in ``config.json`` and only when every constituent maps
+    to a resolved, evidence-bound decision with the exact projected tier.
+    """
+
+    config_path = Path(scratchpad) / "config.json"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+    if config.get("severity_authority_cutover") is not True:
+        return False
+    run_id = str(config.get("severity_authority_run_id") or "").strip()
+    source_authority = config.get("severity_authority_source_receipts")
+    if not run_id or not isinstance(source_authority, Mapping):
+        return False
+    ledger_path = Path(scratchpad) / "severity_decision_ledger.shadow.json"
+    try:
+        ledger = load_severity_decision_ledger(
+            ledger_path,
+            expected_run_id=run_id,
+            expected_source_receipt_digests={
+                str(candidate): str(digest)
+                for candidate, digest in source_authority.items()
+            },
+        )
+    except Exception:
+        return False
+    decisions = [
+        decision
+        for decision in ledger.get("decisions") or []
+        if isinstance(decision, Mapping)
+    ]
+    resolved_by_id: dict[str, str] = {}
+    for decision in decisions:
+        try:
+            projection = project_report_severity(decision)
+        except Exception:
+            continue
+        projection = constrain_trust_sensitive_report_projection(
+            scratchpad,
+            decision=decision,
+            projection=projection,
+            run_id=run_id,
+        )
+        if projection.get("severity_status") != "RESOLVED":
+            continue
+        severity = str(projection.get("severity") or "")
+        members = {
+            str(decision.get("candidate_id") or "").upper(),
+            *(
+                str(member).upper()
+                for member in decision.get("constituent_ids") or []
+            ),
+        }
+        for member in members:
+            if member:
+                resolved_by_id[member] = severity
+    normalized_ids = [
+        (_normalize_finding_id(value) or value).upper()
+        for value in internal_ids
+        if value
+    ]
+    return bool(normalized_ids) and all(
+        resolved_by_id.get(value) == final_severity
+        for value in normalized_ids
+    )
+
+
+def _apply_report_id_renames_to_coverage(
+    scratchpad: Path,
+    renames: Mapping[str, str],
+) -> None:
+    """Project pre-tier report-ID renames into report coverage idempotently."""
+
+    if not renames:
+        return
+    path = Path(scratchpad) / "report_coverage.md"
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8", errors="strict")
+    projected = text
+    for old_id, new_id in sorted(renames.items()):
+        projected = re.sub(
+            rf"(?<![A-Z0-9-]){re.escape(old_id)}(?![A-Z0-9-])",
+            new_id,
+            projected,
+            flags=re.I,
+        )
+    if projected != text:
+        _atomic_report_projection_text(path, projected)
+
+
+def _atomic_report_projection_text(path: Path, text: str) -> None:
+    """Atomically replace one report-stage projection with exact text."""
+
+    target = Path(path)
+    temporary = target.with_name(
+        f".{target.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    )
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _repair_report_index_severity_provenance(
+    scratchpad: Path,
+    *,
+    expected_run_id: str = "",
+    expected_mode: str = "",
+    expected_severities: Mapping[str, str] | None = None,
+) -> list[dict[str, str]]:
     """Mechanically resolve severity-provenance violations without halting.
 
     Background: the provenance validator catches silent LLM severity changes
@@ -18516,7 +29315,20 @@ def _repair_report_index_severity_provenance(scratchpad: Path) -> list[dict[str,
     idx_path = scratchpad / "report_index.md"
     if not idx_path.exists():
         return []
-    expected_by_id = _expected_report_index_severities(scratchpad)
+    expected_by_id = (
+        {
+            str(finding_id): normalize_severity(str(severity))
+            for finding_id, severity in expected_severities.items()
+            if str(finding_id).strip()
+            and normalize_severity(str(severity))
+        }
+        if expected_severities is not None
+        else _expected_report_index_severities(
+            scratchpad,
+            expected_run_id=expected_run_id,
+            expected_mode=expected_mode,
+        )
+    )
     if not expected_by_id:
         return []
     try:
@@ -18549,6 +29361,10 @@ def _repair_report_index_severity_provenance(scratchpad: Path) -> list[dict[str,
             row.get("trust_adj", ""),
             row.get("verification", ""),
             row.get("severity", ""),
+        ) and _typed_report_severity_adjustment_authorizes(
+            scratchpad,
+            ids,
+            final_severity=final,
         ):
             continue
         # Only auto-repair DOWNGRADES (LLM put lower than upstream).
@@ -18638,9 +29454,21 @@ def _repair_report_index_severity_provenance(scratchpad: Path) -> list[dict[str,
             "upstream_severity": source,
             "action": f"applied {override_token}",
         })
+    fixed_text, repairs, report_id_renames = (
+        _restore_unsupported_downgrade_rows(fixed_text, repairs)
+    )
     if fixed_text != text:
         try:
-            idx_path.write_text(fixed_text, encoding="utf-8")
+            # Arm the provenance record before either projection changes.  If
+            # a later write fails, the unchanged report-index row remains a
+            # retryable provenance violation and the durable mapping makes the
+            # partial transaction visible instead of silently orphaning it.
+            if repairs:
+                _write_severity_override_ledger(scratchpad, repairs)
+            _apply_report_id_renames_to_coverage(
+                scratchpad, report_id_renames
+            )
+            _atomic_report_projection_text(idx_path, fixed_text)
         except Exception as exc:
             # Failure to write is best-effort: log and let the validator
             # re-fail on this artifact (visible halt, not silent corruption).
@@ -18651,12 +29479,17 @@ def _repair_report_index_severity_provenance(scratchpad: Path) -> list[dict[str,
                 "upstream_severity": "",
                 "action": f"could not write patched report_index.md: {exc}",
             }]
-    # v2.0.7 (P1.2): persist the override ledger as JSON (canonical
-    # machine-readable source) + markdown (derived human view). The
-    # authenticity gate consults the JSON to validate each
-    # SEVERITY_OVERRIDE token in report_index.md.
-    if repairs:
-        _write_severity_override_ledger(scratchpad, repairs)
+        # Summary is presentation-only; Master rows are authoritative.  Its
+        # repair must never roll back or misclassify an already-committed
+        # severity restoration.
+        try:
+            validate_report_index_summary_master_parity(scratchpad)
+        except Exception as exc:
+            log.warning(
+                "report-index summary reconciliation after severity "
+                "restoration failed non-authoritatively: %r",
+                exc,
+            )
     return repairs
 
 
@@ -18679,8 +29512,12 @@ def _write_severity_override_ledger(
             "internal_id": r.get("internal", ""),
             "llm_severity": r.get("llm_severity", ""),
             "upstream_severity": r.get("upstream_severity", ""),
-            "reason": "llm-downgrade-no-judge",
-            "applied_at": datetime.now(timezone.utc).isoformat(),
+            "previous_report_id": r.get("previous_report_id", ""),
+            "reason": (
+                "unsupported-downgrade-restored"
+                if r.get("previous_report_id")
+                else "llm-downgrade-no-judge"
+            ),
             "action": r.get("action", ""),
         })
     payload = {
@@ -18688,17 +29525,21 @@ def _write_severity_override_ledger(
         "row_count": len(overrides),
         "overrides": overrides,
     }
-    # Atomic JSON write
+    # Atomic JSON write.  This is authority, not telemetry: failure is
+    # propagated so callers cannot mutate report projections without the
+    # corresponding durable provenance record.
+    json_path = scratchpad / "_severity_override_ledger.json"
+    tmp = json_path.with_name(
+        f".{json_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    )
     try:
-        json_path = scratchpad / "_severity_override_ledger.json"
-        tmp = json_path.with_suffix(json_path.suffix + ".tmp")
         tmp.write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        tmp.replace(json_path)
-    except OSError:
-        pass
+        os.replace(tmp, json_path)
+    finally:
+        tmp.unlink(missing_ok=True)
     # Derived markdown view (human-readable)
     try:
         ledger = scratchpad / "severity_overrides.md"
@@ -18926,7 +29767,15 @@ def _validate_obligation_ledger_retention(scratchpad: Path, coverage_text: str) 
     return issues[:10]
 
 
-def _validate_report_coverage_semantic_contract(scratchpad: Path) -> list[str]:
+@dataclass(frozen=True)
+class ReportCoverageSemanticValidation:
+    issues: tuple[str, ...]
+    human_review_bytes: bytes | None
+
+
+def _evaluate_report_coverage_semantic_contract(
+    scratchpad: Path,
+) -> ReportCoverageSemanticValidation:
     """Report-index recall contract.
 
     Hard-fail only on low-ambiguity loss classes. Broader semantic hints are
@@ -18935,11 +29784,11 @@ def _validate_report_coverage_semantic_contract(scratchpad: Path) -> list[str]:
     """
     coverage_path = scratchpad / "report_coverage.md"
     if not coverage_path.exists():
-        return []
+        return ReportCoverageSemanticValidation((), None)
     try:
         text = _llm_norm(coverage_path.read_text(encoding="utf-8", errors="replace"))
     except Exception:
-        return []
+        return ReportCoverageSemanticValidation((), None)
 
     mode = _scratchpad_audit_mode(scratchpad)
     facets = _load_candidate_semantic_facets_for_validator(scratchpad)
@@ -19066,24 +29915,21 @@ def _validate_report_coverage_semantic_contract(scratchpad: Path) -> list[str]:
             f"{msg.replace('|', '/')} | obligation_ledger.json |"
         )
 
+    human_review_bytes = None
     if risk_rows:
-        try:
-            (scratchpad / "report_semantic_retention_risks.md").write_text(
-                "# Report Semantic Retention Risks\n\n"
-                "Non-blocking retention telemetry (human review). Rows below "
-                "have Medium+ semantic facets or typed obligations with a "
-                "non-body disposition whose reason does not name an absorbing "
-                "report ID, a concrete refutation token, or a tracked "
-                "deferral/appendix disposition. These are flagged, not "
-                "silently dropped, and do NOT halt the pipeline.\n\n"
-                "| Candidate | Severity | Status | Reason | Extracted Facets |\n"
-                "|-----------|----------|--------|--------|------------------|\n"
-                + "\n".join(risk_rows)
-                + "\n",
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
+        human_review_bytes = (
+            "# Report Semantic Retention Risks\n\n"
+            "Non-blocking retention telemetry (human review). Rows below "
+            "have Medium+ semantic facets or typed obligations with a "
+            "non-body disposition whose reason does not name an absorbing "
+            "report ID, a concrete refutation token, or a tracked "
+            "deferral/appendix disposition. These are flagged, not "
+            "silently dropped, and do NOT halt the pipeline.\n\n"
+            "| Candidate | Severity | Status | Reason | Extracted Facets |\n"
+            "|-----------|----------|--------|--------|------------------|\n"
+            + "\n".join(risk_rows)
+            + "\n"
+        ).encode("utf-8")
 
     # This contract is now fully haltless (repair-then-degrade, per CLAUDE.md):
     # both retention classes it detects — Thorough mode-limited Medium+ deferrals
@@ -19092,7 +29938,28 @@ def _validate_report_coverage_semantic_contract(scratchpad: Path) -> list[str]:
     # added to the returned hard-fail `issues` list. `issues` therefore stays
     # empty; it is retained as the return type for the report_index driver gate,
     # which now finds no blocking coverage issue from this check and proceeds.
-    return issues[:10]
+    return ReportCoverageSemanticValidation(
+        tuple(issues[:10]), human_review_bytes
+    )
+
+
+def _validate_report_coverage_semantic_contract(scratchpad: Path) -> list[str]:
+    """Legacy compatibility wrapper around the pure bytes/issues evaluator.
+
+    The report-capture cutover calls the evaluator and publishes through its
+    DRIVER transaction.  This wrapper retains pre-cutover behavior until that
+    serial runtime switch lands, avoiding a half-migrated recall regression.
+    """
+
+    result = _evaluate_report_coverage_semantic_contract(scratchpad)
+    if result.human_review_bytes is not None:
+        try:
+            (scratchpad / "report_semantic_retention_risks.md").write_bytes(
+                result.human_review_bytes
+            )
+        except Exception:
+            pass
+    return list(result.issues)
 
 
 def _validate_report_coverage_accounting(scratchpad: Path) -> list[str]:
@@ -19151,7 +30018,9 @@ def _validate_report_coverage_accounting(scratchpad: Path) -> list[str]:
             unaccounted.append((candidate, source))
 
     if not unaccounted:
-        return _validate_report_coverage_semantic_contract(scratchpad)
+        return list(
+            _evaluate_report_coverage_semantic_contract(scratchpad).issues
+        )
     sample = ", ".join(
         f"{fid} from {source}" for fid, source in unaccounted[:8]
     )
@@ -19160,7 +30029,9 @@ def _validate_report_coverage_accounting(scratchpad: Path) -> list[str]:
         "report_index: raw candidate ledger has "
         f"{len(unaccounted)} UNACCOUNTED candidate(s): {sample}{more}"
     ]
-    issues.extend(_validate_report_coverage_semantic_contract(scratchpad))
+    issues.extend(
+        _evaluate_report_coverage_semantic_contract(scratchpad).issues
+    )
     return issues
 
 
@@ -19235,11 +30106,7 @@ def _validate_crossbatch_full_coverage(scratchpad: Path) -> list[str]:
 
 
 def _validate_skeptic_full_ch_coverage(scratchpad: Path) -> list[str]:
-    """E3: skeptic must cover every Critical/High reportable verify file.
-
-    Reads verify files, filters to CONFIRMED + (Critical|High), and confirms
-    each ID appears in both aggregate skeptic artifacts.
-    """
+    """Require exact coverage of the current driver-owned trigger manifest."""
     ch_ids: list[str] = list(dict.fromkeys(_skeptic_manifest_ids(scratchpad)))
     if not ch_ids:
         skeptic_files = list(scratchpad.glob("skeptic_*.md"))
@@ -19277,7 +30144,7 @@ def _validate_skeptic_full_ch_coverage(scratchpad: Path) -> list[str]:
     for name in ("skeptic_findings.md", "skeptic_judge_decisions.md"):
         p = scratchpad / name
         if not p.exists():
-            issues.append(f"{name} missing for {len(ch_ids)} Critical/High finding(s)")
+            issues.append(f"{name} missing for {len(ch_ids)} triggered finding(s)")
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -19294,6 +30161,61 @@ def _validate_skeptic_full_ch_coverage(scratchpad: Path) -> list[str]:
     if not issues:
         return []
     return ["skeptic coverage: " + "; ".join(issues)]
+
+
+def _validate_skeptic_challenge_receipt(scratchpad: Path) -> list[str]:
+    """Validate the hash-bound, challenge-only receipt for exact scope.
+
+    The sidecar reader validates source and manifest hashes.  This wrapper also
+    enforces denominator equality and complete typed rows so Markdown-only or
+    partial legacy checkpoints cannot bypass P0-V on resume.
+    """
+    expected_rows = _skeptic_expected_findings(Path(scratchpad))
+    expected = {
+        str(row.get("finding_id") or "").upper()
+        for row in expected_rows
+        if row.get("finding_id")
+    }
+    if not expected:
+        return []
+    try:
+        payload = read_skeptic_challenges_json_sidecar(Path(scratchpad))
+    except Exception as exc:
+        return [f"skeptic challenge receipt invalid: {type(exc).__name__}: {exc}"]
+    if not isinstance(payload, dict) or not payload:
+        return [
+            "skeptic challenge receipt missing, stale, malformed, or not "
+            "bound to the current manifest/Markdown sources"
+        ]
+    if payload.get("authority") != "CHALLENGE_ONLY" or (
+        payload.get("report_authoritative") is not False
+    ):
+        return ["skeptic challenge receipt claims forbidden report authority"]
+    rows = payload.get("challenges")
+    if not isinstance(rows, list):
+        return ["skeptic challenge receipt has no typed challenge list"]
+    actual: set[str] = set()
+    incomplete: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            incomplete.append("<non-object>")
+            continue
+        fid = str(row.get("finding_id") or "").upper()
+        if fid:
+            actual.add(fid)
+        if row.get("schema_status") != "COMPLETE":
+            incomplete.append(fid or "<missing-id>")
+    if actual != expected or len(rows) != len(expected):
+        return [
+            "skeptic challenge receipt denominator mismatch: expected "
+            f"{sorted(expected)}, got {sorted(actual)} ({len(rows)} row(s))"
+        ]
+    if incomplete:
+        return [
+            "skeptic challenge receipt contains incomplete row(s): "
+            + ", ".join(sorted(set(incomplete)))
+        ]
+    return []
 
 
 def _validate_assemble_not_degraded(scratchpad: Path) -> list[str]:
@@ -19582,6 +30504,7 @@ def _cross_type_consistency_leads(files: list[str]) -> list[str]:
 def _validate_sc_subsystem_coverage(
     scratchpad: Path, mode: str, min_bucket_files: int = 4,
     scope_file: str | None = None, project_root: str | None = None,
+    scope_match_mode: str = "legacy", language: str = "evm",
 ) -> list[str]:
     """Hard SC coverage gate from contract inventory / Slither flat files.
 
@@ -19601,11 +30524,26 @@ def _validate_sc_subsystem_coverage(
     """
     if mode != "thorough":
         return []
-    indexed = {
-        p for p in _collect_scip_indexed_paths(scratchpad)
-        if p.endswith((".sol", ".move", ".rs"))
-    }
+    match_mode = normalize_scope_match_mode(scope_match_mode)
+    scope_names = _load_scope_file_paths(
+        scope_file,
+        match_mode=match_mode,
+        pipeline="sc",
+        language=language,
+    )
+    if match_mode == "exact":
+        # Exact authority is the denominator even when a mechanical indexer
+        # does not support the selected ecosystem.
+        indexed = set(scope_names)
+    else:
+        source_suffixes = source_suffixes_for("sc", language)
+        indexed = {
+            p for p in _collect_scip_indexed_paths(scratchpad)
+            if p.lower().endswith(source_suffixes)
+        }
     if not indexed:
+        if match_mode == "exact":
+            return ["SC exact scope authority contains zero source files"]
         return []
 
     test_markers = (
@@ -19619,21 +30557,37 @@ def _validate_sc_subsystem_coverage(
         "test/", "tests/", "script/", "scripts/", "mock/", "mocks/",
         "fixture/", "fixtures/", "interface/", "interfaces/",
     )
-    prod = {
-        p for p in indexed
-        if not any(t in p.lower() for t in test_markers)
-        and not any(p.lower().startswith(pfx) for pfx in non_auditable_prefixes)
-    }
+    if match_mode == "exact":
+        # The acquisition boundary has already classified report-scope files;
+        # do not silently reclassify an explicitly authorized path here.
+        prod = set(indexed)
+    else:
+        prod = {
+            p for p in indexed
+            if not any(t in p.lower() for t in test_markers)
+            and not any(p.lower().startswith(pfx) for pfx in non_auditable_prefixes)
+        }
     # Narrow the required-coverage universe to in-scope files only. Out-of-scope
     # vendored libraries must never be demanded by this gate. Empty scope means
     # no scope file → require everything (behaviour unchanged).
-    scope_names = _load_scope_file_paths(scope_file)
-    if scope_names:
-        prod = {p for p in prod if _path_in_scope_file(p, scope_names)}
+    if scope_names and match_mode != "exact":
+        prod = {
+            p
+            for p in prod
+            if _path_in_scope_file(
+                p,
+                scope_names,
+                match_mode=match_mode,
+            )
+        }
     if not prod:
         return []
 
-    cited = _collect_cited_paths(scratchpad)
+    cited = (
+        _collect_exact_scope_citations(scratchpad, scope_names)
+        if match_mode == "exact"
+        else _collect_cited_paths(scratchpad)
+    )
     ack_paths: set[str] = set()
     for name in ("scope_leftover.md", "subsystem_coverage_gap.md", "sc_subsystem_coverage.md"):
         p = scratchpad / name
@@ -19646,20 +30600,30 @@ def _validate_sc_subsystem_coverage(
         for line in text.splitlines():
             if "ACKNOWLEDGED" not in line.upper():
                 continue
+            if match_mode == "exact":
+                ack_paths.update(
+                    path for path in scope_names
+                    if _exact_path_literal_present(line, path)
+                )
+                continue
             for m in re.finditer(
-                r"\b([A-Za-z0-9_./\\-]+\.(?:sol|move|rs))\b", line
+                r"\b([A-Za-z0-9_./\\-]+\.(?:sol|vy|move|rs|daml))\b", line
             ):
                 ack_paths.add(m.group(1).replace("\\", "/").lstrip("./"))
             for m in re.finditer(
                 r"\b([A-Za-z0-9_][A-Za-z0-9_./\\-]*[A-Za-z0-9_])\b", line
             ):
                 seg = m.group(1).replace("\\", "/").lstrip("./")
-                if "/" in seg and not seg.endswith((".sol", ".move", ".rs")):
+                if "/" in seg and not seg.endswith(
+                    (".sol", ".vy", ".move", ".rs", ".daml")
+                ):
                     ack_paths.add(seg)
 
     def covered(path: str) -> bool:
         if path in cited or path in ack_paths:
             return True
+        if match_mode == "exact":
+            return False
         for c in cited:
             c = c.replace("\\", "/").lstrip("./")
             if path.endswith("/" + c) or c.endswith("/" + path):
@@ -19817,7 +30781,9 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
                              language: str,
                              subsystem_scope: str | None = None,
                              backend: str = "claude",
-                             scope_file: str | None = None) -> list[str]:
+                             scope_file: str | None = None,
+                             scope_match_mode: str = "legacy",
+                             pipeline: str = "sc") -> list[str]:
     """Post-recon: assert every substantial module is cited.
 
     The failure mode this catches (Heimdallr arxiv 2601.17833, named as a
@@ -19835,13 +30801,8 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
     suffix-match on relative paths, never by basename — duplicate
     basenames across modules no longer false-cover each other.
     """
-    lang_key = (language or "").lower()
-    exts = {
-        "evm": [".sol"], "solana": [".rs"], "soroban": [".rs"],
-        "aptos": [".move"], "sui": [".move"],
-        "go": [".go"], "rust": [".rs"],
-        "l1": [".go", ".rs"], "mixed": [".go", ".rs"],
-    }.get(lang_key, [".sol", ".rs", ".move", ".go"])
+    match_mode = normalize_scope_match_mode(scope_match_mode)
+    exts = source_suffixes_for(pipeline, language)
     # Build-system / IDE noise + universally out-of-scope audit conventions.
     # Without the audit-convention tokens (interfaces, test, mock, script,
     # fixture) every SC repo with external-protocol interface stubs or a
@@ -19864,7 +30825,18 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
     root = Path(project_root)
     scope_prefix = _normalize_subsystem_scope(subsystem_scope)
     if not root.exists():
+        if match_mode == "exact":
+            return [
+                "exact scope project_root is missing; scope authority cannot "
+                f"be enumerated: {project_root}"
+            ]
         return []
+    scope_names = _load_scope_file_paths(
+        scope_file,
+        match_mode=match_mode,
+        pipeline=pipeline,
+        language=language,
+    )
 
     # v2.4.x: scope-narrowed walk. When subsystem_scope is set we only
     # need to enumerate files under the scope prefix — files outside the
@@ -19885,12 +30857,46 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
 
     # modules: key -> set of relative paths (POSIX form)
     modules: dict[str, set[str]] = {}
-    for ext in exts:
+    if match_mode == "exact":
+        outside_subsystem = sorted(
+            rel for rel in scope_names
+            if scope_prefix and not _path_in_subsystem_scope(rel, scope_prefix)
+        )
+        if outside_subsystem:
+            return [
+                "exact scope authority conflicts with subsystem_scope; "
+                "authorized files would be silently excluded: "
+                + ", ".join(outside_subsystem[:8])
+            ]
+        for rel in scope_names:
+            modules.setdefault(_module_key(rel), set()).add(rel)
+    walk_exts = () if match_mode == "exact" else exts
+    for ext in walk_exts:
         for walk_root in walk_roots:
             for p in walk_root.rglob(f"*{ext}"):
                 try:
                     rel = p.relative_to(root).as_posix()
                 except Exception:
+                    continue
+                # Known vendored/test-framework libraries are dependency-
+                # research inputs, not production source-coverage modules.
+                # The shared whitelist already governs scope-leftover policy;
+                # apply the same authority here unless the user explicitly
+                # named the library in a scope file. Exact scope remains fully
+                # authoritative and is never silently narrowed.
+                explicitly_scoped = bool(
+                    scope_names
+                    and _path_in_scope_file(
+                        rel,
+                        scope_names,
+                        match_mode=match_mode,
+                    )
+                )
+                if (
+                    match_mode != "exact"
+                    and _is_whitelisted_lib_path(rel)
+                    and not explicitly_scoped
+                ):
                     continue
                 parts_lower = [seg.lower() for seg in rel.split("/")]
                 if any(tok in parts_lower for tok in skip_tokens):
@@ -19910,6 +30916,11 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
                 modules.setdefault(key, set()).add(rel)
 
     if not modules:
+        if match_mode == "exact":
+            return [
+                "exact scope authority matched zero recon source files; "
+                "coverage cannot be claimed"
+            ]
         return []
 
     # When the wizard passed an explicit scope file, restrict the
@@ -19917,14 +30928,26 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
     # 200-contract repo with a 5-file scope list should not trip the
     # gate for the 195 contracts the user already declared out-of-scope.
     # `_path_in_scope_file` is permissive when `scope_names` is empty.
-    scope_names = _load_scope_file_paths(scope_file)
-    if scope_names:
+    if scope_names and match_mode != "exact":
         filtered: dict[str, set[str]] = {}
         for key, files in modules.items():
-            kept = {f for f in files if _path_in_scope_file(f, scope_names)}
+            kept = {
+                f
+                for f in files
+                if _path_in_scope_file(
+                    f,
+                    scope_names,
+                    match_mode=match_mode,
+                )
+            }
             if kept:
                 filtered[key] = kept
         modules = filtered
+        if not modules:
+            return [
+                "scope_file matched zero recon source files; coverage cannot "
+                "be claimed"
+            ]
         if not modules:
             # User's scope file matches nothing under the walked roots.
             # That's a configuration error worth a warning, but not a
@@ -19941,8 +30964,12 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
     # Match anything that looks like a file reference. Don't require a
     # trailing `:` or whitespace — citations sometimes appear at end of
     # line, inside backticks, or inside bullet lists.
+    suffix_pattern = "|".join(
+        re.escape(suffix.lstrip("."))
+        for suffix in sorted(exts, key=len, reverse=True)
+    )
     cite_re = re.compile(
-        r"([A-Za-z0-9_][A-Za-z0-9_/.\\-]*?\.(?:sol|rs|move|go))"
+        rf"([A-Za-z0-9_][A-Za-z0-9_/.\\-]*?\.(?:{suffix_pattern}))"
     )
     cited_paths: set[str] = set()
     for name in recon_files:
@@ -19953,12 +30980,23 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
             txt = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        for m in cite_re.finditer(txt):
-            raw = m.group(1).replace("\\", "/").lstrip("./")
-            if raw:
-                cited_paths.add(raw)
+        if match_mode == "exact":
+            cited_paths.update(
+                path for path in scope_names
+                if _exact_path_literal_present(txt, path)
+            )
+        else:
+            for m in cite_re.finditer(txt):
+                raw = m.group(1).replace("\\", "/").lstrip("./")
+                if raw:
+                    cited_paths.add(raw)
 
-    # ACKNOWLEDGED rows in scope_leftover.md — track full file paths.
+    # ACKNOWLEDGED declarations in scope_leftover.md — track full file and
+    # module paths. The canonical shape is a Markdown table row, but recon
+    # prompts also allow a whole-module ``ACKNOWLEDGED: <path>`` declaration.
+    # Claude commonly renders that as a path heading followed by an explicit
+    # ``Status: ACKNOWLEDGED`` line. Accept those exact shapes too; free-form
+    # prose that merely contains "acknowledged" remains non-authoritative.
     ack_paths: set[str] = set()
     lp = scratchpad / "scope_leftover.md"
     if lp.exists():
@@ -19970,20 +31008,72 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
             s = line.strip()
             if not s.startswith("|") or _is_separator_row(s):
                 continue
-            s_up = s.upper()
-            if "FILE" in s_up and ("STATUS" in s_up or "PATH" in s_up or "SCOPE" in s_up):
-                continue
             parts = [x.strip() for x in s.strip("|").split("|")]
+            header_cells = [cell.strip(" `*").upper() for cell in parts]
+            if (
+                header_cells
+                and header_cells[0] in {"FILE", "PATH", "SCOPE", "MODULE"}
+                and any(
+                    cell in {"STATUS", "PATH", "SCOPE"}
+                    for cell in header_cells[1:]
+                )
+            ):
+                continue
             if len(parts) >= 2 and any(p.upper().startswith("ACKNOWLEDGED") for p in parts[1:]):
-                raw = parts[0].replace("\\", "/").lstrip("./")
+                # Markdown paths are conventionally code-formatted in the
+                # canonical table (``| `lib/forge-std` | ... |``).  Keeping
+                # the backticks in the authority key makes a truthful
+                # ACKNOWLEDGED row impossible to match against the exact
+                # source-scope path and needlessly re-runs recon.
+                raw = parts[0].strip(" `*").replace("\\", "/").lstrip("./")
                 if raw:
                     ack_paths.add(raw)
+
+        direct_ack_re = re.compile(
+            r"^\s*(?:[-*+]\s*)?(?:\*\*)?ACKNOWLEDGED(?:\*\*)?\s*:\s*"
+            r"`?([A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)+)`?"
+            r"(?:\s|$)",
+            re.IGNORECASE,
+        )
+        heading_re = re.compile(
+            r"^\s*#{1,6}\s+(?:`([^`]+)`|"
+            r"([A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)+))"
+        )
+        status_ack_re = re.compile(
+            r"^\s*(?:[-*+]\s*)?(?:\*\*)?STATUS(?:\*\*)?\s*:\s*"
+            r"ACKNOWLEDGED(?:\b|\s*[:\-])",
+            re.IGNORECASE,
+        )
+        heading_path = ""
+        heading_budget = 0
+        for line in lt.splitlines():
+            direct = direct_ack_re.match(line)
+            if direct:
+                raw = direct.group(1).replace("\\", "/").strip("` ./")
+                if raw:
+                    ack_paths.add(raw)
+
+            heading = heading_re.match(line)
+            if heading:
+                heading_path = (heading.group(1) or heading.group(2) or "")
+                heading_path = heading_path.replace("\\", "/").strip("` ./")
+                heading_budget = 8
+                continue
+            if heading_budget > 0:
+                if status_ack_re.match(line) and heading_path:
+                    ack_paths.add(heading_path)
+                    heading_budget = 0
+                    heading_path = ""
+                elif line.strip():
+                    heading_budget -= 1
 
     def _is_covered(rel_path: str) -> bool:
         # Direct match, or suffix match (citation can be abbreviated to a
         # shorter path as long as the source path ends with it).
         if rel_path in cited_paths or rel_path in ack_paths:
             return True
+        if match_mode == "exact":
+            return False
         for c in cited_paths:
             if rel_path.endswith("/" + c) or c.endswith("/" + rel_path):
                 return True
@@ -20010,7 +31100,7 @@ def _validate_recon_coverage(scratchpad: Path, project_root: str,
             "ACKNOWLEDGED in scope_leftover): " + ", ".join(uncovered[:8])
         )
     if not cited_paths:
-        if backend == "codex":
+        if backend == "codex" and match_mode != "exact":
             log.warning(
                 "recon emitted zero file-path citations across all artifacts "
                 "(Codex backend — GPT models may cite by function/module name "
@@ -20654,11 +31744,10 @@ def _has_concrete_material_harm(content: str) -> bool:
         return False
     # RECALL-SAFE direction (load-bearing): this matcher gates the
     # SPEC_DOCS_NO_STATE_DELTA blocker (a skip is excused only when NO material
-    # harm is asserted). UNDER-matching wrongly excuses a real finding — the
-    # exact H-01 regression: the verifier's PoC-ledger phrase "No fund-drain
-    # assertion ..." made the shared NEGATION-AWARE `_poc_kw_present` guard
-    # suppress the many POSITIVE "drain of custodied IBT is achievable" mentions,
-    # so a flagship fund-drain read as "no harm" and skipped the force floor.
+    # harm is asserted). UNDER-matching wrongly excuses a real finding.
+    # A prior material-harm under-match showed that a negative proof-scope label
+    # near a SAFE token can suppress multiple positive harm statements about a
+    # custodied asset and skip the evidence floor.
     # OVER-matching only ever forces an (at worst wasted) PoC attempt and can
     # never drop a finding, so scan the FULL body with a PLAIN leading-boundary
     # keyword search (matches inflections: drain/drains/draining/drainable) and
@@ -20688,28 +31777,52 @@ _FULLY_TRUSTED_ABSENCE_OF_CONTROL_PATTERNS = (
 )
 
 
-def _has_fully_trusted_actor_blocker(content: str) -> bool:
-    """FULLY_TRUSTED_DESIGN blocker: reuses the structured `[TRUSTED-ACTOR]` /
-    `Trust Adj.` tagging (`_MATRIX_TRUST_FULLY_RE`) OR free-form fully-trusted-
-    authority language — an explicit `fully-trusted` marker CO-LOCATED with a
-    governance/DAO/timelock/multisig/upgrade-authority actor AND
-    absence-of-control language (no timelock, no M-of-N, "as designed"). An
-    explicit `semi-trusted` marker ALWAYS overrides to False — a semi-trusted
-    role is never this blocker."""
+def _has_fully_trusted_actor_blocker(
+    content: str,
+    scratchpad: Optional[Path] = None,
+    *,
+    finding_id: str = "",
+    source_artifact: Optional[Path] = None,
+    run_id: Optional[str] = None,
+) -> bool:
+    """Resolve the FULLY_TRUSTED_DESIGN blocker through typed authority.
+
+    Markdown markers and role/category words are proposal telemetry only. An
+    exact current-run record must bind the finding, actor, capability, action,
+    asset, source, primary scope evidence, and a distinct adjudicator. A
+    semi-trusted marker always rejects the blocker before authority lookup.
+    """
     if not content:
         return False
     if re.search(r"\bsemi[-\s]trusted\b", content, re.IGNORECASE):
         return False
-    if _MATRIX_TRUST_FULLY_RE.search(content):
-        return True
     has_marker = bool(re.search(r"\bfully[-\s_]trusted\b", content, re.IGNORECASE))
-    has_authority = any(
-        _poc_kw_present(p, content) for p in _FULLY_TRUSTED_AUTHORITY_ROLE_PATTERNS
+    if not has_marker and not _MATRIX_TRUST_FULLY_RE.search(content):
+        return False
+    fid = str(finding_id or "").strip()
+    if scratchpad is None or not fid:
+        return False
+    source = source_artifact or _find_verify_file(Path(scratchpad), fid)
+    if source is None:
+        return False
+    scope = _extract_trust_scope(content)
+    resolution = resolve_trust_evidence(
+        scratchpad,
+        finding_id=fid,
+        source_artifact=source,
+        actor=scope.get("actor", ""),
+        capability=scope.get("capability", ""),
+        action_scope=scope.get("action_scope", ""),
+        asset_scope=scope.get("asset_scope", ""),
+        run_id=run_id,
+        require_provider=True,
     )
-    has_absence = any(
-        _poc_kw_present(p, content) for p in _FULLY_TRUSTED_ABSENCE_OF_CONTROL_PATTERNS
+    record_trust_review_debt(
+        scratchpad,
+        resolution=resolution,
+        consumer="verification_exemption",
     )
-    return has_marker and has_authority and has_absence
+    return resolution.authorized
 
 
 # DEPLOY_OR_TX_ORDERING blocker: harm is a deploy-time / initialize-time
@@ -20764,14 +31877,20 @@ def _has_refuted_verdict(content: str) -> bool:
     harm is left to test."""
     if not content:
         return False
-    verdict = _field_from_markdown(content, ("Verdict", "Final Verdict", "Status"))
-    return bool(re.search(r"\bREFUTED\b", verdict or "", re.IGNORECASE))
+    # The shared exact-field discriminator resolves duplicate fields,
+    # contradictions, and negation to UNRESOLVED.  Reading the first raw field
+    # here would let an ambiguous verifier record silently escape the PoC floor.
+    return _verifier_status_from_text(content) == "REFUTED"
 
 
 def _has_valid_skip_blocker(
     content: str,
     severity: str = "",
     scratchpad: Optional[Path] = None,
+    *,
+    finding_id: str = "",
+    source_artifact: Optional[Path] = None,
+    run_id: Optional[str] = None,
 ) -> bool:
     """Closed, code-grounded taxonomy of blockers that legitimately excuse a
     concrete-material-harm finding from the force-by-default PoC floor.
@@ -20785,7 +31904,13 @@ def _has_valid_skip_blocker(
         return False
     if _has_refuted_verdict(content):
         return True
-    if _has_fully_trusted_actor_blocker(content):
+    if _has_fully_trusted_actor_blocker(
+        content,
+        scratchpad,
+        finding_id=finding_id,
+        source_artifact=source_artifact,
+        run_id=run_id,
+    ):
         return True
     if _has_deploy_ordering_blocker(content):
         return True
@@ -20796,7 +31921,10 @@ def _has_valid_skip_blocker(
     # harm is a valid blocker UNLESS a fork PoC is actually runnable here
     # (Medium+ severity + a named resolvable deployed address + reachable RPC
     # egress). With no reachable RPC (the common case) the blocker stays valid.
-    if _matches_external_integration_harm(content):
+    if (
+        _matches_external_integration_harm(content)
+        and _has_external_integration_provenance(content)
+    ):
         fork_actually_runnable = (
             scratchpad is not None
             and normalize_severity(severity) in {"Critical", "High", "Medium"}
@@ -20817,6 +31945,10 @@ def _effective_poc_class(
     content: Optional[str] = None,
     severity: str = "",
     scratchpad: Optional[Path] = None,
+    *,
+    finding_id: str = "",
+    source_artifact: Optional[Path] = None,
+    run_id: Optional[str] = None,
 ) -> str:
     """Resolve the effective PoC class, honoring a verifier reclassification.
 
@@ -20862,8 +31994,11 @@ def _effective_poc_class(
     # the fork-PoC mandate re-queues a real attempt (when RPC egress exists).
     # A queue estimate already at unit/property/integration is left as-is (only
     # a non-testable self-declaration is blocked). GENERIC — no protocol names.
-    if _matches_external_integration_harm(content) and \
-            _names_resolvable_deployed_address(content):
+    if (
+        _matches_external_integration_harm(content)
+        and _has_external_integration_provenance(content)
+        and _names_resolvable_deployed_address(content)
+    ):
         return poc_class if poc_class in {"unit", "property", "integration"} \
             else "integration"
     # STICKY FLOOR 3 (force-by-default, load-bearing): a finding whose verify
@@ -20879,7 +32014,12 @@ def _effective_poc_class(
     # harm. Label-independent — never honors ANY declared class (structural/
     # integration/spec/docs) for a concrete-harm/no-blocker finding.
     if _has_concrete_material_harm(content) and not _has_valid_skip_blocker(
-        content, severity, scratchpad
+        content,
+        severity,
+        scratchpad,
+        finding_id=finding_id,
+        source_artifact=source_artifact,
+        run_id=run_id,
     ):
         return poc_class if poc_class in {"unit", "property"} else "property"
     declared_raw, _shape = _field_anywhere(
@@ -20893,11 +32033,57 @@ def _effective_poc_class(
     return poc_class
 
 
+def _verification_policy_work_item(
+    row: dict[str, str],
+    *,
+    harness_available: Optional[bool] = None,
+) -> VerificationWorkItem:
+    severity_name = normalize_severity(row.get("severity", ""))
+    severity_key = severity_name.strip().lower()
+    if severity_key in {"information", "info"}:
+        severity_key = "informational"
+    try:
+        severity = PolicySeverity(severity_key)
+    except ValueError as exc:
+        raise ValueError(
+            f"unsupported verification-policy severity {severity_name!r}"
+        ) from exc
+
+    raw_class = (row.get("poc class") or "structural").strip().lower()
+    try:
+        claim_class = PolicyClaimClass(raw_class)
+    except ValueError:
+        claim_class = PolicyClaimClass.STRUCTURAL
+    finding_id = (row.get("finding id") or "").strip()
+    locally_testable = claim_class in {
+        PolicyClaimClass.UNIT,
+        PolicyClaimClass.PROPERTY,
+    }
+    return VerificationWorkItem(
+        finding_id=finding_id,
+        constituent_id=(row.get("constituent id") or "root").strip() or "root",
+        severity=severity,
+        claim_class=claim_class,
+        locally_testable=locally_testable,
+        # Unknown build state fails recall-safe for a locally-testable row: a
+        # verifier cannot manufacture a prose blocker merely because the
+        # machine-readable build signal is absent. A determinate failed build
+        # may be supplied by the caller so independently adjudicated,
+        # environment-typed blockers remain representable.
+        harness_available=(
+            locally_testable if harness_available is None else harness_available
+        ),
+    )
+
+
 def _poc_contract_required(
     row: dict[str, str],
     mode: str,
     content: Optional[str] = None,
     scratchpad: Optional[Path] = None,
+    *,
+    execution_policy: Optional[ExecutionPolicy] = None,
+    execution_blocker: Optional[ExecutionBlocker] = None,
 ) -> bool:
     """Whether a mandatory unit/property PoC is contractually required for *row*.
 
@@ -20919,6 +32105,20 @@ def _poc_contract_required(
     requirement (anti-gaming floor preserved — silently leaving it testable
     still requires the PoC).
     """
+    if execution_policy is not None:
+        build_succeeded = (
+            _build_succeeded(Path(scratchpad)) if scratchpad is not None else None
+        )
+        obligation = evaluate_obligation(
+            execution_policy,
+            _verification_policy_work_item(
+                row,
+                harness_available=build_succeeded,
+            ),
+            execution_blocker,
+        )
+        return obligation.decision is PolicyDecision.ATTEMPT_REQUIRED
+
     # Effective class honors a verifier's non-silent reclassification AWAY from
     # a locally-testable class (recall-safe: never relaxes below queue estimate
     # for a declared unit/property/omitted ledger). Shared with the aggregate
@@ -20927,7 +32127,16 @@ def _poc_contract_required(
     # concrete-material-harm finding with no valid code-grounded blocker is
     # forced into a testable class regardless of the declared/queue label.
     poc_class = _effective_poc_class(
-        row.get("poc class") or "", content, row.get("severity", ""), scratchpad
+        row.get("poc class") or "",
+        content,
+        row.get("severity", ""),
+        scratchpad,
+        finding_id=str(row.get("finding id") or "").strip(),
+        source_artifact=(
+            _find_verify_file(Path(scratchpad), str(row.get("finding id") or "").strip())
+            if scratchpad is not None and str(row.get("finding id") or "").strip()
+            else None
+        ),
     )
     if poc_class not in {"unit", "property"}:
         return False
@@ -20947,13 +32156,17 @@ def _poc_contract_required(
     # with NO spurious UNPROVEN and NO wasted retry. Critical/High/Medium
     # enforcement (and their fixable retries) is UNCHANGED in every mode — a
     # real fork-PoC still matters there and a retry can fix a fixable gap.
-    return sev in {"Critical", "High", "Medium"}
+    legacy_attempt_severities = frozenset(("Critical", "High", "Medium"))
+    return sev in legacy_attempt_severities
 
 
 def _validate_poc_contract_for_rows(
     scratchpad: Path,
     rows: list[dict[str, str]],
     mode: str,
+    *,
+    execution_policy: Optional[ExecutionPolicy] = None,
+    execution_blockers: Optional[Mapping[str, ExecutionBlocker]] = None,
 ) -> list[str]:
     """Hard verifier-shard contract for mandatory PoC attempts.
 
@@ -20967,19 +32180,6 @@ def _validate_poc_contract_for_rows(
     # on disk at gate time, which includes this shard's own outputs.
     mock_feasible, mock_example = _project_mock_feasible(scratchpad)
     for row in rows:
-        # First-pass cheap gate on MODE/SEVERITY only (no I/O, no class check):
-        # the queue `poc class` is a pre-code-read estimate that defaults
-        # hard-to-classify findings to `structural`, and the force-by-default
-        # sticky floor (STICKY FLOOR 3 in `_effective_poc_class`) can ONLY be
-        # evaluated against the verify CONTENT — so a class-only pre-filter
-        # here would silently exempt every lazy structural-seeded skip from
-        # ever having its content read. Mode/severity are class-independent
-        # and cost no I/O, so they remain a valid cheap pre-filter.
-        mode_l = (mode or "core").lower()
-        if mode_l == "light":
-            continue
-        if normalize_severity(row.get("severity", "")) not in {"Critical", "High", "Medium"}:
-            continue
         fid = (row.get("finding id") or "").strip()
         if not fid:
             continue
@@ -21000,7 +32200,14 @@ def _validate_poc_contract_for_rows(
         # floor is preserved inside `_poc_contract_required` (a declared
         # unit/property does NOT relax; a concrete-harm/no-blocker finding is
         # forced regardless of the declared label).
-        if not _poc_contract_required(row, mode, content, scratchpad):
+        if not _poc_contract_required(
+            row,
+            mode,
+            content,
+            scratchpad,
+            execution_policy=execution_policy,
+            execution_blocker=(execution_blockers or {}).get(fid),
+        ):
             continue
         has_poc_section, has_exec_section = _has_poc_ledger_sections(content)
         if not has_poc_section or not has_exec_section:
@@ -21037,7 +32244,12 @@ def _validate_poc_contract_for_rows(
         # force-required — using the raw queue class here would silently
         # re-open the exact escape hatch the force floors exist to close.
         poc_class = _effective_poc_class(
-            raw_poc_class, content, row.get("severity", ""), scratchpad
+            raw_poc_class,
+            content,
+            row.get("severity", ""),
+            scratchpad,
+            finding_id=fid,
+            source_artifact=path,
         )
         # MODE A floor: a resource-exhaustion / executable-harm finding is
         # testable regardless of a structural self-declaration. Retained
@@ -21064,7 +32276,7 @@ def _validate_poc_contract_for_rows(
             ):
                 issues.append(f"{fid} says Attempted:YES but lacks concrete Test File/Command")
             continue
-        if attempted_no and _valid_poc_skip(
+        if execution_policy is None and attempted_no and _valid_poc_skip(
             content, poc_class, scratchpad, row.get("severity", "")
         ):
             # Medium+ project-mock override (parity with the aggregate
@@ -21116,7 +32328,12 @@ def _validate_poc_contract_for_rows(
         # still fails — the verifier must DECLARE the reclassification — and
         # `_valid_poc_skip` still enforces mock-feasibility / class rules for
         # the declared class, so this opens no new bypass vector.
-        if attempted_no and not forced_executable and not force_floored:
+        if (
+            execution_policy is None
+            and attempted_no
+            and not forced_executable
+            and not force_floored
+        ):
             declared_raw = (
                 _field_from_markdown(content, ("PoC Class", "Poc Class", "PoC class")) or ""
             ).strip().lower()
@@ -21127,12 +32344,21 @@ def _validate_poc_contract_for_rows(
     return issues
 
 
-def _validate_poc_attempt_coverage(scratchpad: Path, mode: str) -> list[str]:
+def _validate_poc_attempt_coverage(
+    scratchpad: Path,
+    mode: str,
+    *,
+    execution_policy: Optional[ExecutionPolicy] = None,
+    execution_blockers: Optional[Mapping[str, ExecutionBlocker]] = None,
+) -> list[str]:
     """Post-verification soft gate: check verifiers attempted PoCs for testable findings.
 
     Returns list of warning strings (soft — logged to violations.md, not halt).
     """
-    if mode == "light":
+    if execution_policy is None and (mode or "core").lower() not in {
+        "core",
+        "thorough",
+    }:
         return []
 
     rows = parse_verification_queue_rows(scratchpad)
@@ -21144,6 +32370,32 @@ def _validate_poc_attempt_coverage(scratchpad: Path, mode: str) -> list[str]:
         queue_class = row.get("poc class", "structural").strip().lower()
         severity = (row.get("severity") or "").strip().lower()
         fid = row.get("finding id", "")
+
+        verify_path = _find_verify_file(scratchpad, fid)
+        if not verify_path:
+            continue
+        try:
+            content = verify_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        if execution_policy is not None:
+            if not _poc_contract_required(
+                row,
+                mode,
+                content,
+                scratchpad,
+                execution_policy=execution_policy,
+                execution_blocker=(execution_blockers or {}).get(fid),
+            ):
+                continue
+            if _poc_attempted_value(content) != "YES":
+                warnings.append(
+                    f"POC_ATTEMPT_SKIPPED: {fid} (poc_class={queue_class}, "
+                    f"severity={severity}) — shared execution policy requires "
+                    "an attempt; verifier-authored prose is not blocker authority"
+                )
+            continue
 
         # Fix 2 (fork-PoC mandate, INERT-SAFE): an external-integration
         # fund-drain / misrouting finding whose harm rides on an untrusted
@@ -21162,16 +32414,21 @@ def _validate_poc_attempt_coverage(scratchpad: Path, mode: str) -> list[str]:
             queue_class not in ("unit", "property")
             and severity in ("critical", "high", "medium")
         ):
-            fpath = _find_verify_file(scratchpad, fid)
+            fpath = verify_path
             if fpath:
-                try:
-                    fcontent = fpath.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    fcontent = ""
-                eff_class = _effective_poc_class(queue_class, fcontent)
+                fcontent = content
+                eff_class = _effective_poc_class(
+                    queue_class,
+                    fcontent,
+                    row.get("severity", ""),
+                    scratchpad,
+                    finding_id=fid,
+                    source_artifact=fpath,
+                )
                 if (
                     eff_class == "integration"
                     and _matches_external_integration_harm(fcontent)
+                    and _has_external_integration_provenance(fcontent)
                     and _names_resolvable_deployed_address(fcontent)
                     and not has_mechanical_proof(fcontent)
                     and _poc_attempted_value(fcontent) == "NO"
@@ -21201,20 +32458,26 @@ def _validate_poc_attempt_coverage(scratchpad: Path, mode: str) -> list[str]:
                         )
             continue
 
-        # First-pass cheap gate on the QUEUE class (no I/O): if not even the
-        # queue estimate makes this testable, skip without reading the file.
-        if queue_class not in ("unit", "property"):
-            continue
-        if mode == "core" and severity not in ("critical", "high", "medium"):
-            continue
-
-        verify_path = _find_verify_file(scratchpad, fid)
-        if not verify_path:
-            continue
-
-        try:
-            content = verify_path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
+        required = _poc_contract_required(
+            row, mode, content, scratchpad, execution_policy=execution_policy
+        )
+        if execution_policy is None:
+            # Isolated legacy soft-gate compatibility: Thorough historically
+            # audited Low/Info unit/property skips even though the legacy hard
+            # gate capped at Medium+. Live driver paths never use this branch.
+            effective_class = _effective_poc_class(
+                queue_class,
+                content,
+                row.get("severity", ""),
+                scratchpad,
+                finding_id=fid,
+                source_artifact=verify_path,
+            )
+            required = required or (
+                (mode or "core").lower() == "thorough"
+                and effective_class in {"unit", "property"}
+            )
+        if not required:
             continue
 
         # Second-pass gate using the verifier's DECLARED `PoC Class:` ledger
@@ -21228,7 +32491,14 @@ def _validate_poc_attempt_coverage(scratchpad: Path, mode: str) -> list[str]:
         # preserved: a ledger left at unit/property (or omitted) does NOT relax,
         # so a genuine unit/property finding with no reclassification + invalid
         # skip STILL warns below.
-        poc_class = _effective_poc_class(queue_class, content)
+        poc_class = _effective_poc_class(
+            queue_class,
+            content,
+            row.get("severity", ""),
+            scratchpad,
+            finding_id=fid,
+            source_artifact=verify_path,
+        )
         if poc_class not in ("unit", "property"):
             continue
 
@@ -21299,17 +32569,16 @@ def _per_constituent_claim_match(
     the verifier tested by Jaccard-matching the verify file's Finding Summary
     against each constituent's title and root cause.
 
-    Decision rule combines an absolute threshold with a winner-by-margin
-    check (Jaccard scores are inherently low; relative ranking is more
-    discriminating than an absolute cutoff):
+    P0-O treats this result as routing telemetry only. Title/root-cause
+    similarity can prioritize proof-scope repair, but it cannot authorize a
+    severity reduction. The decision rule combines an absolute threshold with
+    a winner-by-margin check:
 
       - "single_winner" — exactly one constituent above abs_threshold,
         AND its score exceeds the runner-up by at least `margin`
       - "shared_claim" — multiple constituents above abs_threshold, all
-        within `margin` of each other (verifier tested a shared property)
-      - "ambiguous" — no constituent above abs_threshold (verifier tested
-        a claim that doesn't match any constituent title — falls back to
-        cap-all behavior for safety)
+        within `margin` of each other (possible shared-property nomination)
+      - "ambiguous" — no constituent above abs_threshold
 
     scores is a list of (constituent_id, similarity) for ALL constituents.
     """
@@ -21352,13 +32621,13 @@ def _per_constituent_claim_match(
 
 
 def _poc_fail_asserts_harm(content: str, poc_section: str) -> bool:
-    """Impact-Premise gate for POC-FAIL demotion (force-by-default Edit 5).
+    """Impact-Premise gate for a POC-FAIL review proposal.
 
-    A demotion is a NEW severity reduction and must be evidence-backed by a
-    test that actually engaged the claimed harm, not merely a mechanism (per
-    `~/.plamen/rules/phase5-poc-execution.md` Impact Premise Verification).
+    Even a proposal must identify a test that engaged the claimed harm, not
+    merely a mechanism (per the PoC execution Impact Premise Verification).
+    Passing this predicate does not grant verdict or severity authority.
 
-    Returns False (no-demote; the finding falls back to CODE-TRACE at its
+    Returns False (no proposal; the finding falls back to CODE-TRACE at its
     pre-force disposition) ONLY when the ledger EXPLICITLY records
     `Attempted: NO` (a genuine, structurally-declared skip — nothing was ever
     run against the claimed harm) or an explicit no-executable-harm-assertion
@@ -21366,12 +32635,11 @@ def _poc_fail_asserts_harm(content: str, poc_section: str) -> bool:
     cannot be trusted to disprove that harm — this is exactly the "forced
     attempt that cannot assert the harm" case Edit 5 targets.
 
-    Returns True (demotion allowed) in every other case, including the
+    Returns True (a bounded review proposal is allowed) in every other case,
+    including the
     common already-shipped shape where the `Attempted` field is absent but a
     narrative execution outcome is present (legacy ledgers predate the
-    formal `Attempted:` field). Recall-safe: this can only SUPPRESS a
-    demotion for a declared-NO-attempt row, never sink a finding further and
-    never suppress a demotion for a genuine executed result.
+    formal `Attempted:` field). This function never mutates severity.
     """
     scoped = poc_section or content
     if re.search(r"no\s+executable\s+harm\s+assertion", scoped, re.IGNORECASE):
@@ -21382,37 +32650,38 @@ def _poc_fail_asserts_harm(content: str, poc_section: str) -> bool:
 
 
 def _apply_poc_fail_demotions(scratchpad: Path, mode: str) -> list[dict[str, str]]:
-    """Demote findings where PoC mechanically disproved the claimed harm.
+    """Project executed, harm-scoped PoC failures as review proposals.
 
-    For poc_class=unit findings with [POC-FAIL]: cap at Informational.
-    For poc_class=property findings with [POC-FAIL]: cap at Low.
-
-    v2.x Fix 4 (per-constituent safety net): when the failed hypothesis
-    absorbed multiple constituents (per finding_mapping.md) AND the
-    verifier's Finding Summary matches exactly ONE constituent's title
-    well (Jaccard >= 0.40), skip the hypothesis-level demotion. The
-    un-tested constituents survive at their original severity, and the
-    tested constituent gets a per-constituent demotion entry. This
-    prevents one weak constituent's PoC failure from sinking N true
-    positives in the same group.
-
-    Returns list of demotion records.
+    Standalone and grouped findings both require a valid P1-E assessment before
+    even a proposal is emitted.  P1-E assesses execution/scope; its terminal
+    state is still ``ADJUDICATION_REQUIRED`` and therefore cannot itself lower
+    severity.  Grouped findings additionally use P0-O to bound which exact
+    constituents the proposal concerns.  Every output is additive review work;
+    no output of this function is lifecycle or severity authority.
     """
     if mode == "light":
         return []
 
+    scratchpad = Path(scratchpad)
     rows = parse_verification_queue_rows(scratchpad)
     if not rows:
         return []
 
-    # Lazy-load hypothesis constituent mapping + inventory meta (Fix 4)
     try:
-        from plamen_parsers import _parse_hypothesis_constituents
-        hyp_constituents = _parse_hypothesis_constituents(
-            scratchpad, include_split_parent_aliases=True
+        from plamen_parsers import (
+            _parse_hypothesis_constituents,
+            normalize_hypothesis_id_token,
+        )
+        hyp_constituents = _parse_hypothesis_constituents(scratchpad)
+        proposal_hyp_constituents = _parse_hypothesis_constituents(
+            scratchpad,
+            include_split_parent_aliases=True,
+            include_composition_aliases=True,
         )
     except Exception:
         hyp_constituents = {}
+        proposal_hyp_constituents = {}
+        normalize_hypothesis_id_token = lambda _value: ""  # type: ignore[assignment]
     try:
         inventory_meta = _parse_inventory_finding_meta(scratchpad)
     except Exception:
@@ -21420,111 +32689,309 @@ def _apply_poc_fail_demotions(scratchpad: Path, mode: str) -> list[dict[str, str
 
     demotions: list[dict[str, str]] = []
     carveout_skips: list[dict[str, str]] = []
+    group_scope_receipts: list[dict[str, object]] = []
+    execution_scope_debts: list[dict[str, object]] = []
+
     for row in rows:
         poc_class = row.get("poc class", "structural")
-        # VERIF-4: include 'integration' (capped at Low like property) but ONLY
-        # on a genuine EXECUTED mechanical FAIL (checked below), never on a bare
-        # prose [POC-FAIL] without execution. 'structural' stays untouched
-        # (often no harness exists, so a FAIL is not harm-disproof).
         if poc_class not in ("unit", "property", "integration"):
             continue
 
         fid = row.get("finding id", "")
         severity = (row.get("severity") or "").strip()
-
         verify_path = _find_verify_file(scratchpad, fid)
         if not verify_path:
             continue
-
         try:
             content = verify_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
 
         poc_section_match = re.search(
-            r"#{2,3}\s*(?:PoC Attempt|Execution Result)(.*?)(?=\n#{2,3}\s|\Z)", content, re.DOTALL
+            r"#{2,3}\s*(?:PoC Attempt|Execution Result)(.*?)(?=\n#{2,3}\s|\Z)",
+            content,
+            re.DOTALL,
         )
         poc_section = poc_section_match.group(1) if poc_section_match else ""
         if "[POC-FAIL]" not in poc_section:
-            evidence_line = re.search(r"Evidence\s*Tag\s*:\s*\[POC-FAIL\]", content, re.IGNORECASE)
+            evidence_line = re.search(
+                r"Evidence\s*Tag\s*:\s*\[POC-FAIL\]", content, re.IGNORECASE
+            )
             if not evidence_line:
                 continue
-
         if has_mechanical_proof(content):
             continue
 
-        # Force-by-default Edit 5 (no-demote floor): a [POC-FAIL] whose ledger
-        # shows NO harm-asserting test (Impact-Premise unmet) is treated as
-        # CODE-TRACE and the finding falls back to its pre-force disposition
-        # — NEVER demoted below baseline. Only a harm-asserting PoC that ran
-        # and failed demotes.
-        if not _poc_fail_asserts_harm(content, poc_section):
-            continue
+        # P1-E negative authority is orthogonal to legacy prose scope.  A
+        # mechanically failing test proves only that the exact encoded attempt
+        # did not establish its assertion.  Standalone and grouped severity
+        # caps therefore require a current, candidate-bound runtime assessment
+        # whose typed reconciliation grants negative-disposition authority.
+        try:
+            from evidence_capabilities import reconcile_execution_evidence_tags
+            from execution_scope_runtime import load_execution_scope_assessment
+
+            execution_scope = load_execution_scope_assessment(scratchpad, fid)
+            assessment = execution_scope.get("assessment")
+            reconciliation = reconcile_execution_evidence_tags(
+                content,
+                assessment if isinstance(assessment, Mapping) else None,
+            )
+        except Exception as exc:
+            execution_scope = {
+                "status": "INVALID",
+                "assessment": None,
+                "issues": [f"P1E_SCOPE_CONSUMER_DEGRADED:{type(exc).__name__}:{exc}"],
+            }
+            reconciliation = {
+                "status": "INVALID_TYPED_EVIDENCE",
+                "negative_disposition_eligible": False,
+                "debts": ["INVALID_TYPED_EXECUTION_EVIDENCE"],
+            }
+        negative_scope_eligible = bool(
+            reconciliation.get("negative_disposition_eligible")
+        )
+        if not negative_scope_eligible:
+            execution_scope_debts.append(
+                {
+                    "candidate_id": fid,
+                    "severity_preserved": severity,
+                    "action": "REVERIFY_NEGATIVE_SCOPE",
+                    "assessment_status": str(
+                        execution_scope.get("status") or "INVALID"
+                    ),
+                    "reconciliation_status": str(
+                        reconciliation.get("status") or "INVALID"
+                    ),
+                    "issues": sorted(
+                        dict.fromkeys(
+                            [
+                                str(item)
+                                for item in execution_scope.get("issues", [])
+                                if str(item)
+                            ]
+                            + [
+                                str(item)
+                                for item in reconciliation.get("debts", [])
+                                if str(item)
+                            ]
+                        )
+                    ),
+                }
+            )
 
         if poc_class == "integration":
-            # VERIF-4: integration findings demote ONLY on a real executed FAIL
-            # (mechanical-verify annotation), not a bare prose [POC-FAIL] -- an
-            # integration finding that merely lacked a harness must not be sunk.
             if not re.search(
                 r"Mechanical[- ]?(?:Verified\s+)?(?:Status|Tag)\s*:\s*\[?FAIL",
-                content, re.IGNORECASE,
+                content,
+                re.IGNORECASE,
             ):
                 continue
             new_sev = "Low"
-            reason = "POC-FAIL on integration finding — executed harness disproved the claimed harm"
+            reason = "POC-FAIL on integration finding — encoded harness did not establish the claimed harm"
         elif poc_class == "unit":
             new_sev = "Informational"
-            reason = "POC-FAIL on unit-testable finding — claimed harm mechanically disproved"
+            reason = "POC-FAIL on unit-testable finding — encoded test did not establish the claimed harm"
         else:
             new_sev = "Low"
-            reason = "POC-FAIL on property-testable finding — invariant violation not reproduced"
+            reason = "POC-FAIL on property-testable finding — encoded campaign did not establish the invariant violation"
 
-        # v2.x Fix 4: per-constituent demotion. If this hypothesis absorbed
-        # multiple constituents, check whether the verifier tested only one
-        # constituent's claim. If so, spare the others.
+        lookup_ids = [fid.upper()]
+        try:
+            normalized = normalize_hypothesis_id_token(fid)
+        except Exception:
+            normalized = ""
+        if normalized and normalized not in lookup_ids:
+            lookup_ids.append(normalized)
+        legacy_group = re.fullmatch(
+            r"GRP-([CHMLI])-(\d{1,3})", fid.replace("_", "-"), re.IGNORECASE
+        )
+        if legacy_group:
+            normalized = f"{legacy_group.group(1).upper()}-{legacy_group.group(2)}"
+            if normalized not in lookup_ids:
+                lookup_ids.append(normalized)
+        mapped_constituents: list[str] = []
+        proposal_mapped_constituents: list[str] = []
+        for lookup_id in lookup_ids:
+            for constituent_id in hyp_constituents.get(lookup_id, []):
+                if constituent_id not in mapped_constituents:
+                    mapped_constituents.append(constituent_id)
+            for constituent_id in proposal_hyp_constituents.get(lookup_id, []):
+                if constituent_id not in proposal_mapped_constituents:
+                    proposal_mapped_constituents.append(constituent_id)
         constituent_ids = [
-            cid for cid in hyp_constituents.get(fid.upper(), [])
-            if cid in inventory_meta
+            cid for cid in mapped_constituents if cid in inventory_meta
         ]
+        proposal_constituent_ids = [
+            cid for cid in proposal_mapped_constituents if cid in inventory_meta
+        ]
+
+        if len(constituent_ids) < 2 and len(proposal_constituent_ids) >= 2:
+            # P0-W/P0-O authority boundary: a raw Markdown composition may
+            # schedule additive preservation work, but it cannot define the
+            # scope of a severity reduction or make a grouped queue row look
+            # standalone. Keep every proposed member at pre-demotion severity.
+            verify_sha = hashlib.sha256(verify_path.read_bytes()).hexdigest()
+            proposal_metas = [
+                (cid, inventory_meta[cid])
+                for cid in proposal_constituent_ids
+            ]
+            match_kind, scores = _per_constituent_claim_match(
+                content, proposal_metas
+            )
+            group_scope_receipts.append({
+                "hypothesis_id": fid,
+                "scope_status": "UNPROVEN_GROUP_RELATION",
+                "demotion_authority": "NONE",
+                "constituent_ids": sorted(proposal_constituent_ids),
+                "demoted_constituent_ids": [],
+                "preserved_constituent_ids": sorted(proposal_constituent_ids),
+                "reverification_constituent_ids": sorted(proposal_constituent_ids),
+                "requires_split_projection": False,
+                "scope_rows": [],
+                "scope_issues": ["proposal-only composition has no demotion authority"],
+                "reason": (
+                    "group relation is proposal-only; verify every member "
+                    "independently before any severity cap"
+                ),
+                "execution": {},
+                "execution_evidence_id": (
+                    "P0O-EV-PROPOSAL-" + verify_sha[:20].upper()
+                ),
+                "source_verify_file": verify_path.name,
+                "source_verify_sha256": verify_sha,
+                "lexical_routing_telemetry": {
+                    "match_kind": match_kind,
+                    "scores": [
+                        {
+                            "constituent_id": cid,
+                            "jaccard": round(float(score), 6),
+                        }
+                        for cid, score in sorted(scores)
+                    ],
+                    "authority": "NONE",
+                },
+                "pre_demotion_records": [
+                    {
+                        "constituent_id": cid,
+                        "severity": str(
+                            inventory_meta[cid].get("severity") or "Unknown"
+                        ),
+                        "title": str(inventory_meta[cid].get("title") or cid),
+                        "location": str(
+                            inventory_meta[cid].get("location") or "Unresolved"
+                        ),
+                    }
+                    for cid in sorted(proposal_constituent_ids)
+                ],
+            })
+            continue
+
         if len(constituent_ids) >= 2:
-            constituent_metas = [(cid, inventory_meta[cid]) for cid in constituent_ids]
-            match_kind, scores = _per_constituent_claim_match(content, constituent_metas)
-            if match_kind == "single_winner":
-                winner = max(scores, key=lambda x: x[1])
-                spared = [c for c, _ in scores if c != winner[0]]
-                # Demote the hypothesis (Index Agent caps the report row),
-                # but emit a carveout record so the Index Agent's STEP 1.5
-                # consolidation knows to split out the spared constituents
-                # as separate report rows at their original severity.
+            constituent_metas = [
+                (cid, inventory_meta[cid]) for cid in constituent_ids
+            ]
+            match_kind, scores = _per_constituent_claim_match(
+                content, constituent_metas
+            )
+            try:
+                from poc_demotion_scope import assess_grouped_poc_failure
+                scope_receipt = assess_grouped_poc_failure(
+                    scratchpad=scratchpad,
+                    hypothesis_id=fid,
+                    verify_path=verify_path,
+                    verify_content=content,
+                    constituent_ids=constituent_ids,
+                    inventory_meta=inventory_meta,
+                    lexical_match_kind=match_kind,
+                    lexical_scores=scores,
+                )
+            except Exception as exc:
+                # Repair-then-degrade: parser failure is absence of authority,
+                # never permission to broaden the cap.
+                scope_receipt = {
+                    "hypothesis_id": fid,
+                    "scope_status": "SCOPE_GATE_DEGRADED",
+                    "demotion_authority": "NONE",
+                    "constituent_ids": sorted(constituent_ids),
+                    "demoted_constituent_ids": [],
+                    "preserved_constituent_ids": sorted(constituent_ids),
+                    "reverification_constituent_ids": sorted(constituent_ids),
+                    "requires_split_projection": False,
+                    "scope_rows": [],
+                    "scope_issues": [f"{type(exc).__name__}: {exc}"],
+                    "reason": "scope gate degraded; group retained for human review",
+                    "execution": {},
+                    "execution_evidence_id": "",
+                    "source_verify_file": verify_path.name,
+                    "source_verify_sha256": "",
+                    "lexical_routing_telemetry": {
+                        "match_kind": match_kind,
+                        "scores": [
+                            {
+                                "constituent_id": cid,
+                                "jaccard": round(float(score), 6),
+                            }
+                            for cid, score in sorted(scores)
+                        ],
+                        "authority": "NONE",
+                    },
+                    "pre_demotion_records": [
+                        {
+                            "constituent_id": cid,
+                            "severity": inventory_meta[cid].get("severity", "Unknown"),
+                            "title": inventory_meta[cid].get("title", cid),
+                            "location": inventory_meta[cid].get("location", "Unresolved"),
+                        }
+                        for cid in sorted(constituent_ids)
+                    ],
+                }
+            group_scope_receipts.append(scope_receipt)
+            authority = str(scope_receipt.get("demotion_authority") or "NONE")
+            scoped_ids = [
+                str(value)
+                for value in scope_receipt.get("demoted_constituent_ids", [])
+            ]
+            spared = [
+                str(value)
+                for value in scope_receipt.get("preserved_constituent_ids", [])
+            ]
+            if negative_scope_eligible and authority == "GROUP_WIDE":
                 demotions.append({
                     "finding_id": fid,
                     "original_severity": severity,
                     "new_severity": new_sev,
                     "poc_class": poc_class,
-                    "reason": reason + f" (verifier tested constituent {winner[0]} "
-                                       f"with Jaccard {winner[1]:.2f}; "
-                                       f"{len(spared)} other constituent(s) spared)",
+                    "reason": reason + " (P0-O shared executed-harm binding covers every constituent)",
                 })
+            elif negative_scope_eligible and authority == "EXACT_CONSTITUENT_ONLY":
+                for scoped_id in scoped_ids:
+                    meta = inventory_meta.get(scoped_id, {})
+                    demotions.append({
+                        "finding_id": scoped_id,
+                        "original_severity": str(meta.get("severity") or severity),
+                        "new_severity": new_sev,
+                        "poc_class": poc_class,
+                        "reason": reason + (
+                            f" (P0-O exact executed-harm binding for {scoped_id}; "
+                            "group parent is not capped)"
+                        ),
+                    })
                 carveout_skips.append({
                     "hypothesis_id": fid,
-                    "tested_constituent": winner[0],
-                    "tested_jaccard": f"{winner[1]:.2f}",
+                    "tested_constituent": ",".join(scoped_ids),
+                    "tested_jaccard": "TELEMETRY_ONLY",
                     "spared_constituents": ",".join(spared),
                 })
-                continue
-            elif match_kind == "ambiguous":
-                # Verifier's claim doesn't match any constituent — keep
-                # current cap-all behavior (safe fallback). Annotate the
-                # reason so the report writer understands.
-                top_score = max((s for _, s in scores), default=0.0)
-                reason = (
-                    reason +
-                    f" (verifier claim-ambiguous: best constituent match Jaccard "
-                    f"{top_score:.2f} < 0.40 threshold; cap-all applied)"
-                )
-            # shared_claim → fall through to cap-all (verifier tested
-            # a property all constituents share, so demoting all is correct)
+            # All grouped outcomes terminate here. Ambiguous, mechanism-only,
+            # malformed, and degraded scope demote nothing.
+            continue
 
+        # Legacy standalone cap, still protected by the harm assertion floor.
+        if not negative_scope_eligible:
+            continue
+        if not _poc_fail_asserts_harm(content, poc_section):
+            continue
         demotions.append({
             "finding_id": fid,
             "original_severity": severity,
@@ -21533,57 +33000,210 @@ def _apply_poc_fail_demotions(scratchpad: Path, mode: str) -> list[dict[str, str
             "reason": reason,
         })
 
-    if demotions:
-        lines = [
-            "# PoC Fail Demotions\n\n",
-            "Findings mechanically disproved by executed PoCs. Index Agent MUST respect these severity caps.\n\n",
-            "| Finding ID | Original Severity | Capped At | PoC Class | Reason |\n",
-            "|-----------|-------------------|-----------|-----------|--------|\n",
-        ]
-        for d in demotions:
-            lines.append(
-                f"| {d['finding_id']} | {d['original_severity']} | {d['new_severity']} "
-                f"| {d['poc_class']} | {d['reason']} |\n"
-            )
-        (scratchpad / "poc_demotions.md").write_text("".join(lines), encoding="utf-8")
+    # The historical artifact name implied live authority and was consumed as
+    # such by report rendering.  Revoke it before publishing the proposal-only
+    # projection, including on resume from an older run.
+    demotions_path = scratchpad / "poc_demotions.md"
+    try:
+        if demotions_path.exists():
+            demotions_path.unlink()
+    except OSError:
+        # Consumers independently reject this legacy artifact.  Failure to
+        # remove it therefore cannot restore authority.
+        pass
 
+    for proposal in demotions:
+        proposal["current_severity"] = proposal["original_severity"]
+        proposal["proposed_severity"] = proposal["new_severity"]
+        proposal["action"] = "PROPOSE_NEGATIVE_REVIEW"
+        proposal["authority"] = "NONE"
+        proposal["severity_mutation_authorized"] = "false"
+
+    def _persist_demotion_rows(rows_to_write: list[dict[str, str]]) -> None:
+        proposal_md_path = scratchpad / "poc_demotion_proposals.md"
+        proposal_json_path = scratchpad / "poc_demotion_proposals.json"
+        if not rows_to_write:
+            for path in (proposal_md_path, proposal_json_path):
+                if path.exists():
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+            return
+        lines = [
+            "# PoC Negative Review Proposals (Non-authoritative)\n\n",
+            "A failed/non-established execution is evidence about one encoded "
+            "attempt, not a severity decision. Every row preserves current "
+            "severity and requires independent typed adjudication.\n\n",
+            "| Finding ID | Current Severity | Proposed Review Tier | PoC Class | Authority | Reason |\n",
+            "|-----------|------------------|----------------------|-----------|-----------|--------|\n",
+        ]
+        for proposal in rows_to_write:
+            lines.append(
+                f"| {proposal['finding_id']} | {proposal['current_severity']} | "
+                f"{proposal['proposed_severity']} | {proposal['poc_class']} | "
+                f"NONE | {proposal['reason']} |\n"
+            )
+        proposal_md_path.write_text("".join(lines), encoding="utf-8")
+
+        canonical_rows = sorted(
+            ({key: row[key] for key in sorted(row)} for row in rows_to_write),
+            key=lambda row: (
+                str(row.get("finding_id") or "").casefold(),
+                str(row.get("proposed_severity") or "").casefold(),
+            ),
+        )
+        unsigned = {
+            "schema_version": "plamen.poc_demotion_proposals.v1",
+            "authority": "NONE",
+            "severity_mutation_authorized": False,
+            "candidate_count": len(canonical_rows),
+            "candidates": canonical_rows,
+        }
+        raw_unsigned = json.dumps(
+            unsigned,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        payload = {
+            **unsigned,
+            "proposal_digest": hashlib.sha256(raw_unsigned).hexdigest(),
+        }
+        raw = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        temp = proposal_json_path.with_suffix(proposal_json_path.suffix + ".tmp")
+        temp.write_bytes(raw)
+        temp.replace(proposal_json_path)
+
+    _persist_demotion_rows(demotions)
+
+    carveout_path = scratchpad / "poc_demotion_carveouts.md"
     if carveout_skips:
-        clines = [
-            "# PoC Demotion Constituent Carveouts (Fix 4)\n\n",
-            "When a multi-constituent hypothesis received [POC-FAIL] but the "
-            "verifier's Finding Summary only matched ONE constituent's claim "
-            "well, the un-tested constituents are spared from the cap. The "
-            "Index Agent STEP 1.5 consolidation should split the spared "
-            "constituents into SEPARATE report rows at their original "
-            "severity, leaving only the tested constituent under the demotion.\n\n",
+        lines = [
+            "# PoC Demotion Constituent Carveouts (P0-O)\n\n",
+            "Only exact typed harm/assertion bindings are capped. Lexical "
+            "similarity is telemetry only; uncovered constituents retain their "
+            "pre-demotion severity and enter bounded re-verification.\n\n",
             "| Hypothesis ID | Tested Constituent | Tested Jaccard | Spared Constituents |\n",
             "|---------------|--------------------|-----------------|---------------------|\n",
         ]
-        for c in carveout_skips:
-            clines.append(
-                f"| {c['hypothesis_id']} | {c['tested_constituent']} "
-                f"| {c['tested_jaccard']} | {c['spared_constituents']} |\n"
+        for carveout in carveout_skips:
+            lines.append(
+                f"| {carveout['hypothesis_id']} | {carveout['tested_constituent']} | "
+                f"{carveout['tested_jaccard']} | {carveout['spared_constituents']} |\n"
             )
-        (scratchpad / "poc_demotion_carveouts.md").write_text(
-            "".join(clines), encoding="utf-8"
+        carveout_path.write_text("".join(lines), encoding="utf-8")
+    elif carveout_path.exists():
+        try:
+            carveout_path.unlink()
+        except OSError:
+            pass
+
+    scope_names = (
+        "poc_demotion_scope_receipt.json",
+        "poc_demotion_scope_repair.json",
+        "poc_demotion_scope_debt.md",
+    )
+    if group_scope_receipts or any((scratchpad / name).exists() for name in scope_names):
+        try:
+            from poc_demotion_scope import write_grouped_poc_scope_artifacts
+            write_grouped_poc_scope_artifacts(scratchpad, group_scope_receipts)
+        except Exception as exc:
+            # Receipt persistence failed: revoke only grouped caps and leave a
+            # loud severity-preserving human-review limitation.
+            grouped_ids = {
+                str(group.get("hypothesis_id") or "")
+                for group in group_scope_receipts
+            } | {
+                str(cid)
+                for group in group_scope_receipts
+                for cid in group.get("constituent_ids", [])
+            }
+            demotions = [
+                row for row in demotions
+                if row.get("finding_id") not in grouped_ids
+            ]
+            # The first projection was written before receipt persistence so
+            # consumers could never observe a cap without its authority. Revoke
+            # grouped rows on disk as well as in the return value.
+            _persist_demotion_rows(demotions)
+            if carveout_path.exists():
+                try:
+                    carveout_path.unlink()
+                except OSError:
+                    pass
+            try:
+                (scratchpad / "poc_demotion_scope_debt.md").write_text(
+                    "# Grouped PoC Proof-Scope Gate Degraded\n\n"
+                    f"{type(exc).__name__}: {exc}\n\n"
+                    "No grouped demotion is authoritative. Preserve every "
+                    "constituent at pre-demotion severity for human review.\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+
+    p1e_debt_path = scratchpad / "execution_scope_reverification.json"
+    if execution_scope_debts:
+        p1e_rows = sorted(
+            execution_scope_debts,
+            key=lambda item: str(item.get("candidate_id") or "").casefold(),
         )
+        p1e_unsigned = {
+            "schema_version": "plamen.execution_scope_reverification.v1",
+            "authority": "NONE",
+            "severity_mutation_authorized": False,
+            "candidate_count": len(p1e_rows),
+            "candidates": p1e_rows,
+        }
+        p1e_raw = json.dumps(
+            {
+                **p1e_unsigned,
+                "receipt_digest": hashlib.sha256(
+                    json.dumps(
+                        p1e_unsigned,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        try:
+            if not p1e_debt_path.exists() or p1e_debt_path.read_bytes() != p1e_raw:
+                temp = p1e_debt_path.with_suffix(p1e_debt_path.suffix + ".tmp")
+                temp.write_bytes(p1e_raw)
+                temp.replace(p1e_debt_path)
+        except OSError:
+            # Haltless but never permissive: persistence failure cannot restore
+            # the already-withheld severity cap.
+            pass
+    elif p1e_debt_path.exists():
+        try:
+            p1e_debt_path.unlink()
+        except OSError:
+            pass
 
     return demotions
 
 
 # ── M4: blind-first independent severity cap (anti-inflation) ─────────────
-# Mirrors the `poc_demotions.md` mechanical-cap precedent end-to-end. The
-# verifier prompt (phase5-verification-prompt.md) requires a MANDATORY
-# `Independent Severity` field, assessed from code+evidence ALONE, filled
-# BEFORE reconciling with the pre-assigned/claimed severity from the
-# verification queue. This function reads that field back and mechanically
-# caps `final = min(independent, claimed)` — i.e. it can ONLY LOWER severity,
-# it NEVER raises it, and it NEVER drops a finding:
-#   - Independent >= claimed (same or MORE severe)   -> no cap
-#   - Independent missing / unparseable / "N/A"      -> no cap (recall-safe;
-#     falls back to claimed)
-#   - Verdict REFUTED / FALSE_POSITIVE / duplicate    -> no cap (N/A class,
-#     the finding isn't in the body at all)
+# P0-P: the blind-first `Independent Severity` field is an observer, not
+# authority. Direction-neutral disagreements become hash-bound challenge work
+# for a distinct typed adjudicator. Same/missing/N/A/unparseable fields are
+# no-ops; no Markdown field can lower, raise, exclude, or merge a finding.
 _INDEPENDENT_SEVERITY_RANK: dict[str, int] = {
     "Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Informational": 4,
 }
@@ -21594,12 +33214,20 @@ _INDEPENDENT_SEVERITY_SKIP_VERDICTS = frozenset({
 })
 
 
-def _apply_independent_severity_caps(scratchpad: Path, mode: str) -> list[dict[str, str]]:
-    """M4: cap severity to min(independent, claimed) via the verifier's
-    blind-first Independent Severity assessment.
+def _apply_independent_severity_caps(
+    scratchpad: Path,
+    mode: str,
+    *,
+    persist: bool = True,
+) -> list[dict[str, str]]:
+    """Project blind-first severity disagreements as challenge-only work.
 
-    Returns a list of cap records and writes `independent_severity_caps.md`
-    (Finding ID | Claimed | Independent | Final) when any cap fires.
+    The legacy public name is retained for driver/tooling compatibility.
+    Returned rows are not caps: neither this field nor the Markdown/JSON views
+    written here may mutate report severity.  Both upward and downward
+    disagreements route to the separately launched typed adjudicator.  Until
+    an evidence-bound decision is explicitly cut over, upstream severity is
+    retained.
     """
     if mode == "light":
         return []
@@ -21608,7 +33236,18 @@ def _apply_independent_severity_caps(scratchpad: Path, mode: str) -> list[dict[s
     if not rows:
         return []
 
-    caps: list[dict[str, str]] = []
+    queue_path = scratchpad / "verification_queue.md"
+    try:
+        queue_sha256 = hashlib.sha256(queue_path.read_bytes()).hexdigest()
+    except OSError:
+        queue_sha256 = ""
+    queue_ids = [
+        str(row.get("finding id") or "")
+        for row in rows
+        if row.get("finding id")
+    ]
+    source_digests: dict[str, str] = {}
+    challenges: list[dict[str, str]] = []
     for row in rows:
         fid = row.get("finding id", "")
         claimed_raw = (row.get("severity") or "").strip()
@@ -21625,103 +33264,235 @@ def _apply_independent_severity_caps(scratchpad: Path, mode: str) -> list[dict[s
             content = verify_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-
-        status = _verifier_status_from_text(content)
-        if status in _INDEPENDENT_SEVERITY_SKIP_VERDICTS:
-            continue
+        source_digests[verify_path.name] = hashlib.sha256(
+            content.encode("utf-8")
+        ).hexdigest()
 
         field = _field_from_markdown(content, ("Independent Severity",))
         if not field:
-            # Missing field entirely -> no cap (recall-safe fallback to claimed).
             continue
         field_clean = field.strip().strip("`*_")
         if re.fullmatch(r"(?i)\s*n/?a\s*", field_clean):
             continue
         independent = try_normalize_severity(field_clean)
         if not independent or independent not in _INDEPENDENT_SEVERITY_RANK:
-            # Unparseable -> no cap (recall-safe fallback to claimed).
             continue
 
-        if _INDEPENDENT_SEVERITY_RANK[independent] <= _INDEPENDENT_SEVERITY_RANK[claimed]:
-            # Independent is the same or MORE severe than claimed -> never
-            # raise severity; no cap.
+        if independent == claimed:
             continue
 
-        caps.append({
+        direction = (
+            "UP"
+            if _INDEPENDENT_SEVERITY_RANK[independent]
+            < _INDEPENDENT_SEVERITY_RANK[claimed]
+            else "DOWN"
+        )
+        challenges.append({
             "finding_id": fid,
-            "claimed_severity": claimed,
-            "independent_severity": independent,
-            "final_severity": independent,
+            "upstream_severity": claimed,
+            "proposed_severity": independent,
+            "direction": direction,
+            "verifier_status": _verifier_status_from_text(content),
+            "source_artifact": verify_path.name,
+            "source_sha256": hashlib.sha256(
+                content.encode("utf-8")
+            ).hexdigest(),
+            "disposition": "REQUIRES_TYPED_ADJUDICATION",
         })
 
-    if caps:
-        lines = [
-            "# Independent Severity Caps\n\n",
-            "Findings where the verifier's blind-first Independent Severity "
-            "assessment (assessed from code+evidence alone, before seeing the "
-            "pre-assigned severity) is LOWER than the claimed/queue severity. "
-            "Index Agent MUST respect these severity caps — final = "
-            "min(independent, claimed), stamped Trust Adj. "
-            "INDEPENDENT-MIN(<claimed>).\n\n",
-            "| Finding ID | Claimed | Independent | Final |\n",
-            "|-----------|---------|-------------|-------|\n",
-        ]
-        for c in caps:
-            lines.append(
-                f"| {c['finding_id']} | {c['claimed_severity']} "
-                f"| {c['independent_severity']} | {c['final_severity']} |\n"
-            )
-        (scratchpad / "independent_severity_caps.md").write_text(
-            "".join(lines), encoding="utf-8"
+    if challenges:
+        unsigned = {
+            "schema_version": "plamen.independent_severity_challenges.v1",
+            "authority": "CHALLENGE_ONLY",
+            "report_authoritative": False,
+            "verification_queue_sha256": queue_sha256,
+            "queue_finding_ids": queue_ids,
+            "source_artifact_digests": dict(sorted(source_digests.items())),
+            "challenge_count": len(challenges),
+            "challenges": challenges,
+        }
+        canonical = json.dumps(
+            unsigned,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         )
+        payload = {
+            **unsigned,
+            "receipt_digest": hashlib.sha256(
+                canonical.encode("utf-8")
+            ).hexdigest(),
+        }
+        if persist:
+            _atomic_report_projection_text(
+                scratchpad / "independent_severity_challenges.json",
+                json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
+                + "\n",
+            )
+        lines = [
+            "# Independent Severity Challenges\n\n",
+            "Blind-first verifier disagreements are challenge signals only. "
+            "They do not lower or raise report severity without a separate, "
+            "typed, premise/evidence-bound adjudication decision.\n\n",
+            "| Finding ID | Upstream | Proposed | Direction | Disposition |\n",
+            "|-----------|----------|----------|-----------|-------------|\n",
+        ]
+        for c in challenges:
+            lines.append(
+                f"| {c['finding_id']} | {c['upstream_severity']} "
+                f"| {c['proposed_severity']} | {c['direction']} "
+                f"| {c['disposition']} |\n"
+            )
+        if persist:
+            _atomic_report_projection_text(
+                scratchpad / "independent_severity_challenges.md",
+                "".join(lines),
+            )
 
-    return caps
+    else:
+        # Exact-zero is a first-class receipt.  Leaving an older non-empty
+        # artifact in place would manufacture stale skeptic/adjudication work.
+        unsigned = {
+            "schema_version": "plamen.independent_severity_challenges.v1",
+            "authority": "CHALLENGE_ONLY",
+            "report_authoritative": False,
+            "verification_queue_sha256": queue_sha256,
+            "queue_finding_ids": queue_ids,
+            "source_artifact_digests": dict(sorted(source_digests.items())),
+            "challenge_count": 0,
+            "challenges": [],
+        }
+        payload = {
+            **unsigned,
+            "receipt_digest": hashlib.sha256(json.dumps(
+                unsigned,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")).hexdigest(),
+        }
+        if persist:
+            _atomic_report_projection_text(
+                scratchpad / "independent_severity_challenges.json",
+                json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
+                + "\n",
+            )
+            _atomic_report_projection_text(
+                scratchpad / "independent_severity_challenges.md",
+                "# Independent Severity Challenges\n\n"
+                "Exact result: 0 blind-first severity disagreements. This "
+                "challenge-only receipt grants no report authority.\n",
+            )
+
+    return challenges
+
+
+def _validate_independent_severity_challenge_receipt(
+    scratchpad: Path,
+) -> list[str]:
+    """Validate exact queue/source binding for P0-P's challenge projection."""
+    root = Path(scratchpad)
+    path = root / "independent_severity_challenges.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        return [
+            "independent severity challenge receipt missing/invalid: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    if not isinstance(payload, dict):
+        return ["independent severity challenge receipt must be an object"]
+    unsigned = {
+        key: value for key, value in payload.items() if key != "receipt_digest"
+    }
+    expected_digest = hashlib.sha256(json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    if payload.get("receipt_digest") != expected_digest:
+        return ["independent severity challenge receipt digest mismatch"]
+    if (
+        payload.get("schema_version")
+        != "plamen.independent_severity_challenges.v1"
+        or payload.get("authority") != "CHALLENGE_ONLY"
+        or payload.get("report_authoritative") is not False
+    ):
+        return ["independent severity challenge receipt authority/schema invalid"]
+    queue = root / "verification_queue.md"
+    try:
+        queue_digest = hashlib.sha256(queue.read_bytes()).hexdigest()
+    except OSError as exc:
+        return [f"independent severity challenge queue unreadable: {exc}"]
+    current_ids = [
+        str(row.get("finding id") or "")
+        for row in parse_verification_queue_rows(root)
+        if row.get("finding id")
+    ]
+    if payload.get("verification_queue_sha256") != queue_digest:
+        return ["independent severity challenge receipt queue hash mismatch"]
+    if payload.get("queue_finding_ids") != current_ids:
+        return ["independent severity challenge receipt queue denominator mismatch"]
+    challenges = payload.get("challenges")
+    if not isinstance(challenges, list) or payload.get("challenge_count") != len(challenges):
+        return ["independent severity challenge count/list mismatch"]
+    source_set = payload.get("source_artifact_digests")
+    if not isinstance(source_set, dict):
+        return ["independent severity challenge source set is malformed"]
+    for source_name, expected_source_digest in source_set.items():
+        try:
+            current_source_digest = hashlib.sha256((
+                root / str(source_name)
+            ).read_text(
+                encoding="utf-8", errors="replace"
+            ).encode("utf-8")).hexdigest()
+        except (OSError, UnicodeError):
+            return [
+                "independent severity challenge source missing: "
+                f"{source_name}"
+            ]
+        if current_source_digest != expected_source_digest:
+            return [
+                "independent severity challenge source-set hash mismatch: "
+                f"{source_name}"
+            ]
+    queue_set = set(current_ids)
+    seen: set[str] = set()
+    for row in challenges:
+        if not isinstance(row, dict):
+            return ["independent severity challenge row is not an object"]
+        fid = str(row.get("finding_id") or "")
+        if not fid or fid in seen or fid not in queue_set:
+            return ["independent severity challenge identity is duplicate/out-of-scope"]
+        seen.add(fid)
+        if row.get("direction") not in {"UP", "DOWN"} or (
+            row.get("disposition") != "REQUIRES_TYPED_ADJUDICATION"
+        ):
+            return [f"independent severity challenge {fid} has invalid work state"]
+        source_name = str(row.get("source_artifact") or "")
+        source_path = root / source_name
+        try:
+            source_digest = hashlib.sha256(source_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).encode("utf-8")).hexdigest()
+        except (OSError, UnicodeError):
+            return [f"independent severity challenge source missing: {source_name}"]
+        if row.get("source_sha256") != source_digest:
+            return [f"independent severity challenge {fid} source hash mismatch"]
+        if source_set.get(source_name) != source_digest:
+            return [f"independent severity challenge {fid} source-set mismatch"]
+    return []
 
 
 def _load_independent_severity_caps(scratchpad: Path) -> dict[str, str]:
-    """Return finding-ID severity caps from independent_severity_caps.md.
+    """Compatibility shim: blind-first prose artifacts grant no caps.
 
-    Mirrors `_poc_demotion_caps_for_validator` — read back the mechanically
-    computed ledger so `_expected_report_index_severities` (and the
-    report_index provenance gate) can apply the same min(independent,
-    claimed) cap the Index Agent is instructed to apply.
+    Stale ``independent_severity_caps.md`` files are deliberately ignored.
+    Report-authoritative typed projection is validated through the shared
+    severity ledger after an explicit cutover, never reconstructed here.
     """
-    path = scratchpad / "independent_severity_caps.md"
-    if not path.exists():
-        return {}
-    try:
-        text = _llm_norm(path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return {}
-    caps: dict[str, str] = {}
-    headers, rows = _parse_markdown_table(text, ["finding id", "final"])
-    if not headers:
-        return caps
-    keys = [_norm_key(h) for h in headers]
-    for row in rows:
-        d = {keys[i]: row[i].strip() for i in range(min(len(keys), len(row)))}
-        fid = _normalize_finding_id(d.get("finding id", "")) or d.get("finding id", "")
-        final = normalize_severity(d.get("final", ""))
-        if fid and final:
-            caps[fid] = final
-    return caps
-
-
-def _stamp_unproven_external(vf: Path, vtxt: str) -> None:
-    """Idempotently append [EXTERNAL-ASSUMPTION] + [UNPROVEN-EXTERNAL] markers to
-    a verify file so the existing consume block (`_unproven_external_stamped`)
-    keeps the finding in body at its proven-mechanism floor even if the ledger is
-    later absent (defense in depth)."""
-    if _UNPROVEN_EXTERNAL_STAMP.upper() in (vtxt or "").upper():
-        return
-    try:
-        with open(vf, "a", encoding="utf-8") as f:
-            f.write("\n\n<!-- R10 demotion-side gate -->\n"
-                    "[EXTERNAL-ASSUMPTION: verifier demotion rests on an uncited "
-                    "best-case external condition; worst-case external behavior "
-                    "assumed per R10] [UNPROVEN-EXTERNAL]\n")
-    except Exception:
-        pass
+    return {}
 
 
 def _aggregate_depth_verdict(
@@ -21764,35 +33535,57 @@ def _aggregate_depth_verdict(
     return ""
 
 
-def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[dict[str, str]]:
+def _apply_external_assumption_undemotions(
+    scratchpad: Path,
+    mode: str,
+    *,
+    _materialize: bool = True,
+) -> list[dict[str, str]]:
     """R10 demotion-side gate. For each queue finding that is CONFIRMED/PARTIAL
     (not REFUTED) at DEPTH yet DEMOTED by the verifier purely on an UNCITED
-    best-case external assumption: (1) write a row to
-    `external_assumption_undemotions.md` (Finding ID | Depth Verdict | Verifier
-    Sev | Restored Floor | Basis), (2) STAMP [EXTERNAL-ASSUMPTION] +
-    [UNPROVEN-EXTERNAL] into the verify file (idempotent) so the existing
-    consume block keeps the finding IN BODY at proven severity, flagged for
-    human review of the external leg. Structural MIRROR of the assert-side
-    `_external_assumption_cap_applies`. Recall-safe: [] on absent/unparseable
-    input.
+    best-case external assumption, emit a canonical typed receipt bound to the
+    exact verifier bytes. Verifier Markdown is immutable receipt-bound evidence;
+    the optional Markdown ledger is compatibility-only. Structural MIRROR of
+    the assert-side `_external_assumption_cap_applies`. Recall-safe: [] on
+    absent/unparseable input.
     """
     if mode == "light":
+        if _materialize:
+            compute_receipt = _r10_compute_payload(
+                scratchpad, mode, [], []
+            )
+            _atomic_validator_bytes(
+                scratchpad / _R10_COMPUTE_JSON,
+                _canonical_validator_json_bytes(compute_receipt),
+            )
+            for stale_name in (
+                _R10_UNDEMOTION_JSON,
+                _R10_UNDEMOTION_MARKDOWN,
+                _R10_UNDEMOTION_DEBT,
+            ):
+                try:
+                    (scratchpad / stale_name).unlink(missing_ok=True)
+                except OSError:
+                    pass
         return []
-    rows = parse_verification_queue_rows(scratchpad)
-    if not rows:
-        return []
+    rows, _queue_authority = _r10_queue_projection(scratchpad)
 
-    # Condition-1 source: depth Verdict per finding, read from inventory (queue
-    # rows carry NO verdict column). inv id == queue finding id (queue is built
-    # from inventory).
+    # Condition-1 source: depth Verdict per finding.  After live queue cutover
+    # this must be the authenticated frozen projection; reading the mutable
+    # canonical Markdown would omit chain-only delta candidates.
     inv_verdicts: dict[str, str] = {}
     inv_blocks_by_id: dict[str, str] = {}
-    inv_path = scratchpad / "findings_inventory.md"
-    if inv_path.exists():
+    inventory_text, _inventory_source, inventory_authority_issues = (
+        _authoritative_postcutover_inventory(scratchpad)
+    )
+    if inventory_authority_issues:
+        log.warning(
+            "[R10] authenticated inventory metadata unavailable: %s",
+            "; ".join(inventory_authority_issues[:3]),
+        )
+    if inventory_text:
         try:
-            for b in _inventory_blocks(
-                inv_path.read_text(encoding="utf-8", errors="replace")
-            ):
+            for b in _inventory_blocks(inventory_text):
                 bid = _normalize_finding_id(b.get("id", "")) or b.get("id", "")
                 if bid:
                     inv_verdicts[bid] = (
@@ -21808,11 +33601,17 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
     # is a hypothesis id and inventory uses INV-NNN. {} on absent mapping =>
     # _aggregate_depth_verdict falls through to the verifier-side gates.
     try:
-        hyp_constituents = _parse_hypothesis_constituents(
-            scratchpad, include_split_parent_aliases=True
+        active_hyp_constituents = _parse_hypothesis_constituents(scratchpad)
+    except Exception:
+        active_hyp_constituents = {}
+    try:
+        proposal_hyp_constituents = _parse_hypothesis_constituents(
+            scratchpad,
+            include_split_parent_aliases=True,
+            include_composition_aliases=True,
         )
     except Exception:
-        hyp_constituents = {}
+        proposal_hyp_constituents = {}
 
     # Condition-3 source: EXT-CITED grounding. Stub/empty ledger => [] => no
     # grounding. Local re-parse avoids a driver import cycle.
@@ -21822,6 +33621,7 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
         surfaces = []
 
     fired: list[dict[str, str]] = []
+    typed_rows: list[dict[str, Any]] = []
     for row in rows:
         fid = (row.get("finding id") or "").strip()
         claimed = normalize_severity((row.get("severity") or "").strip())
@@ -21831,7 +33631,8 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
         if not vf:
             continue
         try:
-            vtxt = vf.read_text(encoding="utf-8", errors="replace")
+            verify_bytes = vf.read_bytes()
+            vtxt = verify_bytes.decode("utf-8", errors="replace")
         except Exception:
             continue
 
@@ -21840,8 +33641,27 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
         # constituent inventory findings (queue id H-NN -> INV-NNN, incl. GRP
         # anti-absorption splits). '' => unresolved mapping => fall through to
         # the verifier-side gates (recall-safe, prior behavior preserved).
-        depth_verdict = _aggregate_depth_verdict(fid, inv_verdicts, hyp_constituents)
-        if depth_verdict == "REFUTED":            # every constituent refuted in-scope
+        active_depth_verdict = _aggregate_depth_verdict(
+            fid, inv_verdicts, active_hyp_constituents
+        )
+        proposal_depth_verdict = _aggregate_depth_verdict(
+            fid, inv_verdicts, proposal_hyp_constituents
+        )
+        # A proposal-only composition may add a positive preservation anchor,
+        # but it can never contribute negative authority.  In particular,
+        # all-REFUTED raw aliases cannot suppress this recall-preserving gate.
+        proposal_positive = bool(
+            proposal_depth_verdict
+            and (
+                "CONFIRM" in proposal_depth_verdict
+                or "PARTIAL" in proposal_depth_verdict
+            )
+        )
+        depth_verdict = (
+            active_depth_verdict
+            or (proposal_depth_verdict if proposal_positive else "")
+        )
+        if active_depth_verdict == "REFUTED":     # source-bound refutation only
             continue
         if depth_verdict and "CONFIRM" not in depth_verdict and "PARTIAL" not in depth_verdict:
             continue                               # only CONFIRMED/PARTIAL qualify
@@ -21866,8 +33686,11 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
         status = _verifier_status_from_text(vtxt)
         if status in {"FALSE_POSITIVE", "DROP_FALSE_POSITIVE", "DUPLICATE"}:
             continue
+        evidence_mapping = active_hyp_constituents
+        if proposal_positive:
+            evidence_mapping = proposal_hyp_constituents
         mapped_blocks = _mapped_inventory_blocks(
-            fid, inv_blocks_by_id, hyp_constituents
+            fid, inv_blocks_by_id, evidence_mapping
         )
         # Preserve the shipped explicit-tag route: only a direct inventory
         # block may supply its tag. Constituent aggregation is authorized here
@@ -21923,25 +33746,68 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
 
         # ---- FIRE ----
         restored = claimed                          # floor-to-claimed (recall-safe)
+        verifier_severity = normalize_severity(
+            _field_from_markdown(vtxt, ("Severity", "Final Severity")) or claimed
+        )
+        basis = "external best-case demotion, uncited (stub/absent research ledger)"
         fired.append({
             "finding_id": fid,
             "depth_verdict": depth_verdict or "(inv-absent)",
-            "verifier_sev": normalize_severity(
-                _field_from_markdown(vtxt, ("Severity", "Final Severity")) or claimed
-            ),
+            "verifier_sev": verifier_severity,
             "restored_floor": restored,
-            "basis": "external best-case demotion, uncited (stub/absent research ledger)",
+            "basis": basis,
         })
-        _stamp_unproven_external(vf, vtxt)          # idempotent
+        source_digest = hashlib.sha256(verify_bytes).hexdigest()
+        typed_rows.append({
+            "basis": basis,
+            "depth_state": {"verdict": depth_verdict or "(inv-absent)"},
+            "evidence_class": "UNPROVEN_EXTERNAL_PREMISE",
+            "finding_id": fid,
+            "restored_floor": restored,
+            "source_verify": {
+                "byte_length": len(verify_bytes),
+                "relative_path": vf.relative_to(scratchpad).as_posix(),
+                "sha256": source_digest,
+            },
+            "successor_binding": {
+                "source_verify_sha256": source_digest,
+                "state": _R10_PRE_MECHANICAL_STATE,
+                "successor_receipt_relative_path": (
+                    f"verify_{fid}.mechanical_successor.receipt.json"
+                ),
+                "successor_verify_sha256": None,
+            },
+            "verifier_state": {
+                "poc_attempted": _poc_attempted_value(vtxt) or "UNKNOWN",
+                "severity": verifier_severity,
+                "verdict": status,
+            },
+        })
 
-    if fired:
+    if _materialize:
+        compute_receipt = _r10_compute_payload(
+            scratchpad, mode, fired, typed_rows
+        )
+        _atomic_validator_bytes(
+            scratchpad / _R10_COMPUTE_JSON,
+            _canonical_validator_json_bytes(compute_receipt),
+        )
+
+    if fired and _materialize:
+        receipt = _r10_receipt_payload(typed_rows)
+        _atomic_validator_bytes(
+            scratchpad / _R10_UNDEMOTION_JSON,
+            _canonical_validator_json_bytes(receipt),
+        )
         lines = [
             "# External-Assumption Un-Demotions (R10 demotion-side gate)\n\n",
+            "**Compatibility view only.** The authoritative artifact is "
+            "`external_assumption_undemotions.json`; verifier Markdown remains "
+            "byte-for-byte unchanged.\n\n",
             "Findings CONFIRMED/PARTIAL in-scope at depth but DEMOTED by the "
             "verifier purely on an UNCITED best-case external assumption. Report "
             "severity is FLOORED to the depth-claimed (queue) severity, the "
-            "finding is kept IN BODY, stamped [EXTERNAL-ASSUMPTION] + "
-            "[UNPROVEN-EXTERNAL], and flagged for human review of the unproven "
+            "finding is kept IN BODY and flagged for human review of the unproven "
             "external leg. Mirror of the assert-side EXTERNAL-ASSUMPTION-CAP "
             "brake.\n\n",
             "| Finding ID | Depth Verdict | Verifier Sev | Restored Floor | Basis |\n",
@@ -21952,19 +33818,35 @@ def _apply_external_assumption_undemotions(scratchpad: Path, mode: str) -> list[
                 f"| {c['finding_id']} | {c['depth_verdict']} | {c['verifier_sev']} "
                 f"| {c['restored_floor']} | {c['basis']} |\n"
             )
-        (scratchpad / "external_assumption_undemotions.md").write_text(
-            "".join(lines), encoding="utf-8"
+        _atomic_validator_text(
+            scratchpad / _R10_UNDEMOTION_MARKDOWN,
+            "".join(lines),
         )
-        # NOTE: the in-body keep + human-review obligation is carried by the
-        # [UNPROVEN-EXTERNAL] verify-file stamp (read by the existing
-        # `_unproven_external_stamped` consume block, which floors the finding
-        # in-body at proven severity) plus this ledger. report_index runs AFTER
+        try:
+            (scratchpad / _R10_UNDEMOTION_DEBT).unlink(missing_ok=True)
+        except OSError:
+            pass
+        # The typed receipt carries the in-body floor and human-review
+        # obligation. report_index runs AFTER
         # verify, so an explicit verification_queue re-emit here could not
         # re-verify same-run anyway; on a rerun the gate simply re-fires and
         # re-flags. A canonical `_write_queue_subset_manifest` re-emit (never
         # `route_promotion_orphans`, whose schema/dispositions are for
         # promotion→report routing, not queue re-emit) is a possible future
         # enhancement, tracked separately with its own fixture.
+    elif _materialize:
+        # CLEAN_ZERO is an explicit attested outcome, not absence. Remove only
+        # stale R10 projections from an earlier run; source evidence is never
+        # mutated.
+        for stale_name in (
+            _R10_UNDEMOTION_JSON,
+            _R10_UNDEMOTION_MARKDOWN,
+            _R10_UNDEMOTION_DEBT,
+        ):
+            try:
+                (scratchpad / stale_name).unlink(missing_ok=True)
+            except OSError:
+                pass
     return fired
 
 

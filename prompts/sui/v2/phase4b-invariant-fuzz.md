@@ -5,6 +5,19 @@ invariants from the audit artifacts, express them as Sui Move random-input
 tests, run them, and report violations.
 Execute the instructions below directly and stop. Do not spawn subagents.
 
+## P2-A execution boundary (launch prompt is authoritative)
+
+Use only the isolated driver-owned copied Move package and generated test lane
+supplied by the launch prompt. Existing test modules are quarantined read-only
+legacy context with distinct provenance; never execute or clone them. Use the
+model-callable runner only for probes/builds. Campaign execution requires an
+exact driver-prepared secure-launcher contract binding argv, selected harness
+bytes, assertion IDs, and a positive random-iteration budget; otherwise record
+visible `UNSCORED` debt. Never promote a probe receipt; use bound raw-log receipts
+instead of shell pipes. Never install globally or write/execute in the original
+project root. Invalid workspace authority is visible `TOOL_UNAVAILABLE`, never
+a fallback permission.
+
 > **Primary tool**: Sui Move `#[random_test]` run with
 > `sui move test --rand-num-iters {N}`.
 > **Fallback**: boundary-value parameterized `#[test]` functions (3–5 concrete
@@ -22,7 +35,7 @@ Execute the instructions below directly and stop. Do not spawn subagents.
 - `{SCRATCHPAD}/state_variables.md`, `{SCRATCHPAD}/function_list.md`
 - `{SCRATCHPAD}/contract_inventory.md`, `{SCRATCHPAD}/constraint_variables.md`
 - Sui Move source files (`.move`) cited by the relevant invariants
-- Existing `#[test_only]` modules / `test_scenario` harnesses when present
+- Fresh generated `#[test_only]` / `test_scenario` harness only (existing tests are quarantined)
 
 ## STEP 1: Derive Invariants (NO CAP — test everything meaningful)
 
@@ -55,8 +68,9 @@ Not tautological; sensitive to real bugs; testable from object/global state only
 
 ## STEP 2: Generate Random-Input Tests
 
-Write a `#[test_only]` test module. For each invariant prefer a random-input
-test:
+Write a fresh `#[test_only]` test module only at
+`tests/plamen_invariant_tests.move` in the copied root. For each invariant
+prefer a random-input test:
 
 ```move
 #[random_test]
@@ -82,13 +96,13 @@ least one full lifecycle and one partial lifecycle sequence.
 ## STEP 3: Run Campaign
 
 ```bash
-# cd to the build root (dir owning Move.toml — granted via --add-dir)
-pushd <BUILD_ROOT> && sui move build 2>&1 | tail -30
-pushd <BUILD_ROOT> && sui move test --rand-num-iters 100 test_invariant_ 2>&1 | tail -200
+# Conceptual argv; pass through the recorded runner from the copied root.
+sui move build
+sui move test --rand-num-iters 100 test_invariant_
 ```
 
 If the random-input harness cannot compile, fall back to the boundary-value
-tests: `sui move test test_inv_ 2>&1 | tail -200`.
+tests: pass `sui move test test_inv_` through the recorded runner.
 
 If compilation fails: read error, apply a targeted fix, retry ONCE. If still
 failing: write `## Result Status: COMPILATION_FAILED` and stop. If the Sui
@@ -119,7 +133,7 @@ Reason: <one line>
 For each violation, use standard finding format with `[FUZZ-N]` IDs:
 - failing input / case + the exact invariant violated + abort/assert output
 - Severity: standard matrix
-- Evidence tag: [FUZZ-PASS] (mechanical proof, same weight as [POC-PASS])
+- Evidence tag: [FUZZ-PASS] (authenticated counterexample to the encoded oracle; proof scope is recorded separately)
 ```
 
 A non-RAN status with NO findings is a valid, complete artifact. RAN with no

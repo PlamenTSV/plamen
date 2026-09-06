@@ -1,6 +1,16 @@
 # MCP Tools Reference
 
-> **MCP tools (`mcp__slither-analyzer__*`, `mcp__unified-vuln-db__*`) are available directly.** The servers are configured globally in `~/.claude.json` and load automatically at session start. Call them directly - no ToolSearch or loading step needed.
+> **V2 authority override:** this is a manual interoperability reference. The
+> deterministic audit runtime does not inherit ambient MCP configuration and
+> invokes locked local static analyzers directly. Only Claude headless
+> `rag_sweep` may receive the receipt-bound singleton `unified-vuln-db`;
+> Claude PTY and Codex use governed Web precedent research. The legacy
+> availability/priority language below applies only when a typed launch receipt
+> explicitly grants the named MCP tool and never overrides V2 phase policy.
+
+> In an explicitly MCP-authorized manual transport, call only the server names
+> present in that transport's tool list. V2 audit subprocesses must not probe
+> ambient configuration.
 >
 > **If a tool call fails with "No such tool available"**, it means the MCP server failed to start. Check with `claude mcp list` and restart the session.
 

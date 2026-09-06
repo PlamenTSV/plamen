@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_activation_decision.v1.schema.json",
+  "title": "Program Facts EVM activation decision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision",
+    "run_id",
+    "run_generation",
+    "authority_scope",
+    "pipeline_scope",
+    "ecosystem_scope",
+    "backend_scope",
+    "audit_mode_scope",
+    "program_facts_mode_scope",
+    "host_os",
+    "host_architecture",
+    "consumer_activation",
+    "terminal_negative_authority",
+    "scope_review",
+    "requested_execution_authority_digest",
+    "requested_composition_authority_digest",
+    "activation_permit_state",
+    "denial_reasons",
+    "decision_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_activation_decision.v1"
+    },
+    "decision": {
+      "enum": [
+        "PERMITTED",
+        "DENIED"
+      ]
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "authority_scope": {
+      "const": "LOCAL_WINDOWS_CLAUDE_EVM_AUDIT_TESTING_CANDIDATE"
+    },
+    "pipeline_scope": {
+      "const": "SMART_CONTRACT"
+    },
+    "ecosystem_scope": {
+      "const": "EVM"
+    },
+    "backend_scope": {
+      "const": "CLAUDE"
+    },
+    "audit_mode_scope": {
+      "const": "THOROUGH"
+    },
+    "program_facts_mode_scope": {
+      "const": "ACTIVE_EMIT_ONLY"
+    },
+    "host_os": {
+      "const": "WINDOWS"
+    },
+    "host_architecture": {
+      "const": "AMD64"
+    },
+    "consumer_activation": {
+      "const": false
+    },
+    "terminal_negative_authority": {
+      "const": false
+    },
+    "scope_review": {
+      "$ref": "#/$defs/scopeReview"
+    },
+    "requested_execution_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "requested_composition_authority_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "activation_permit_state": {
+      "enum": [
+        "PRESENT_VALIDATED",
+        "ABSENT_DENIED"
+      ]
+    },
+    "denial_reasons": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reasonCode"
+      },
+      "maxItems": 1000,
+      "uniqueItems": true
+    },
+    "decision_digest": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "reasonCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "scopeReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "const": "review_fixtures/program_facts_local_windows_graph_active_scope_amendment_independent_review_r2_20260730.md"
+        },
+        "size_bytes": {
+          "const": 5814
+        },
+        "sha256": {
+          "const": "1bf333e19e5b088401f080e625a052a1db0163c2146f421a034ee11a2f5d8dc0"
+        }
+      }
+    }
+  }
+}

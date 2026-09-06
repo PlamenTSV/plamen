@@ -127,15 +127,15 @@ Detects and repairs depth agent attention failures — agents that were assigned
 
 **Why it follows depth**: By definition — it audits the depth agents' output for completeness. Can't repair what hasn't been produced yet.
 
-### `rag_sweep` — RAG Validation Sweep *(Core/Thorough)*
-**Model**: haiku | **Timeout**: 20min | **Critical**: no | **Needs MCP**: yes
+### `rag_sweep` — External Precedent Sweep *(Core/Thorough)*
+**Model**: sonnet | **Timeout**: 40min | **Critical**: no | **Needs MCP**: Claude headless only
 **Execution**: LLM phase session
 
-Validates every finding against historical vulnerability databases via MCP (Model Context Protocol) tool calls to the unified-vuln-db server. For each finding in the inventory, calls `validate_hypothesis()` (does this bug pattern match known vulnerabilities?) and `search_solodit_live()` (are there similar audit findings on Solodit?). Records match scores that become the RAG axis in 4-axis confidence scoring — a finding with strong historical precedent gets a confidence boost, a finding with zero matches might be novel or might be a false positive. Falls back to WebSearch (`site:solodit.xyz`) if MCP tools fail; writes floor scores (0.3) if everything fails. This is the only phase that enables MCP server access.
+Researches bounded historical precedent for every finding. Claude headless receives a receipt-bound singleton `unified-vuln-db` server plus Web fallback. Claude PTY and Codex receive no MCP server and use governed Web research. The phase records typed source, relation, mechanism, and precondition context; it does not turn precedent absence into a numeric penalty or invent a fallback score.
 
 **Produces**: `rag_validation.md`
 
-**Why it follows depth (not earlier)**: Needs the complete finding set (breadth + depth) to validate. Running before depth would miss depth-discovered findings. Also, confidence scoring (which consumes RAG scores) happens after the depth loop exits — so RAG scores need to be ready by then.
+**Why it follows depth (not earlier)**: It needs the complete finding set (breadth + depth). Running earlier would omit depth-discovered findings. Precedent remains separate context for later reconciliation rather than a validity oracle.
 
 ---
 
@@ -237,7 +237,7 @@ Detects contradictions between verification shards that individually passed thei
 **Model**: sonnet | **Timeout**: 25min | **Critical**: yes
 **Execution**: LLM phase session
 
-The translation layer between the pipeline's internal world and the client-facing report. Creates the master mapping from internal hypothesis IDs (H-1, H-2, CH-3) to clean sequential report IDs (C-01, H-01, M-01, L-01, I-01). Applies the full severity adjustment stack: trust assumption downgrades (`TRUSTED-ACTOR` tag → -1 tier), proven-only demotion (`[CODE-TRACE]`-only findings → cap at Low), UNRESOLVED demotion (skeptic disagreement → -1 tier), PoC-fail demotion (harm assertion failed → cap per poc_class). Performs root-cause consolidation — merging multiple hypotheses that share the same fix into single report entries (e.g., "3 admin setters all lack zero-value validation" → one consolidated finding with a location table). Assigns each finding to exactly one tier writer. Runs a promotion coverage audit comparing raw depth/scanner outputs against the final index to ensure no Medium+ finding was silently dropped during the grouping-to-index pipeline.
+The translation layer between the pipeline's internal world and the client-facing report. Creates the master mapping from internal hypothesis IDs (H-1, H-2, CH-3) to clean sequential report IDs (C-01, H-01, M-01, L-01, I-01). Applies only typed, separately authorized severity decisions. A failed/non-established PoC is emitted as `poc_demotion_proposals` review evidence and MUST NOT lower severity or dispose of the candidate. Root-cause consolidation is likewise proposal-only until an exact typed decision applies it. The phase assigns each still-live identity to a tier writer and runs a promotion coverage audit so no finding silently disappears during grouping-to-index projection.
 
 **Produces**: `report_index.md`, `report_coverage.md`
 
@@ -301,7 +301,14 @@ The final phase. Fully deterministic Python assembler since v2.3.11 (no LLM call
 
 A post-assembly pass that reads the fully assembled `AUDIT_REPORT.md` and PROPOSES consolidations the mechanical signals cannot make on their own: cross-tier and no-/mismatched-location duplicate MERGES (the same underlying bug surfaced at two severity tiers, or whose `Location` is missing or written at different granularity), plus Quality-Observation reclassifications of unambiguously cosmetic Low/Info findings. The agent **proposes only** — it never edits, renumbers, or deletes report content. The existing deterministic Python `report_dedup` then executes those proposals through its unchanged zero-data-loss embed + data-loss gate (agent proposes, Python disposes), so a proposal that would lose information is rejected mechanically. Both the pre-dedup snapshot (`AUDIT_REPORT.pre-dedup.md`) and the deduped `AUDIT_REPORT.md` are kept. Because the phase is non-critical, a failed or empty proposal degrades to the assembled report unchanged rather than halting the run.
 
-**Produces**: `report_dedup_agent_decisions.md` (proposals), `AUDIT_REPORT.pre-dedup.md` (snapshot), updated `AUDIT_REPORT.md`
+**Applied-authority correction**: similarity, Markdown, source-subset heuristics,
+and zero-loss embedding are proposal/safety signals, not merge authority. A
+standalone report ID is removed only when both IDs resolve to the exact same
+current source identity and a typed applied-alias receipt is staged inside the
+crash-safe report transaction. Missing, stale, cyclic, dead-survivor, lossy, or
+incomplete authority leaves both findings standalone.
+
+**Produces**: `report_dedup_agent_decisions.md` (proposals), `report_dedup_applied_alias_receipt.json` (typed authority), `AUDIT_REPORT.pre-dedup.md` (snapshot), updated `AUDIT_REPORT.md`
 
 ---
 
@@ -339,7 +346,7 @@ Each layer REDUCES uncertainty for the next. Breadth produces noisy candidates. 
 ## Under the Hood: Driver Mechanics
 
 ### Subprocess Isolation
-Each phase runs as `claude -p --model {model}` with file-based stdin (not pipes — prevents deadlocks on Windows). A `_subprocess_isolation.json` settings overlay disables all plugins, hooks, and MCP servers to prevent startup hangs from network-dependent plugin sync. Only `rag_sweep` gets MCP access restored. The subprocess receives ONLY its phase-specific prompt section — no forward references to future phases, no routing tables for other phases.
+Claude phases run through either the isolated headless transport or the PTY transport; Codex phases run through isolated `codex exec`. Plugins, hooks, and ambient MCP servers are disabled. Only Claude headless `rag_sweep` can receive the receipt-bound singleton RAG server. Claude PTY and Codex `rag_sweep` use Web fallback. Every subprocess receives only its phase-specific contract.
 
 ### Checkpoint & Resume
 After every successful phase, `_v2_checkpoint.json` is atomically updated (write to `.tmp` then `os.replace()` — atomic on POSIX, same-volume on Windows). On crash or rate-limit exhaustion, `python plamen_driver.py config.json` auto-resumes from the last completed phase. The checkpoint tracks: `completed` (phases done), `degraded` (phases that failed and were skipped), `rate_limited_at` (timestamp if paused for rate limit).

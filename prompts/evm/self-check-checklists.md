@@ -65,8 +65,8 @@
 
 ### Confidence Scoring (after iteration 1)
 - [ ] Consensus pre-computation completed (consensus_map.md)? (orchestrator inline)
-- [ ] Scoring agents spawned in domain batches (â‰¤15 per batch)? (batched scoring)
-- [ ] confidence_scores.md written to scratchpad?
+- [ ] Transient routing tables returned in domain batches (â‰¤15 per batch), or recall-safe fallback recorded?
+- [ ] Driver-published confidence_scores.md present after the depth wave?
 - [ ] confidence_distribution.md written to scratchpad?
 - [ ] All findings have composite confidence scores?
 - [ ] Severity-weighted spawn priorities computed for uncertain findings?
@@ -136,15 +136,16 @@
 - [ ] Anti-absorption rule applied? (same fix required, no severity obscuring, both paths readable)
 - [ ] If chain upgrades on previously-CONFIDENT findings: post-chain iterative depth ran?
 
-## After Skeptic-Judge (Thorough mode only, after standard verification)
+## After Independent Skeptic Challenge (Thorough mode, after standard verification)
 
-- [ ] All HIGH/CRIT findings received skeptic agent? (Thorough mode only)
-- [ ] Skeptic agents used INVERSION MANDATE (opposite conclusion from standard)?
-- [ ] Skeptic agents made their OWN tool calls (not reusing standard verifier output)?
-- [ ] If skeptic DISAGREED: judge agent spawned with both verification files?
-- [ ] Judge used strictly mechanical evidence hierarchy (POC-PASS > CODE-TRACE)?
-- [ ] Final verdicts applied per ruling table (STANDARD_WINS/SKEPTIC_WINS/CONTESTED)?
-- [ ] skeptic_*.md and judge_*.md files exist in scratchpad for all processed findings?
+- [ ] Driver-owned semantic trigger manifest considered eligible findings across all severity tiers, without a severity-tier filter?
+- [ ] Ecosystem verifier stopped at standard verification and did not spawn skeptic or judge workers or apply a challenge?
+- [ ] Hash-bound typed receipt contains exactly one row for every exact manifest finding ID, with no missing, duplicate, unknown, stale, or constituent-substituted IDs?
+- [ ] Skeptic artifacts remained proposal-only and were not treated as final verdict, severity, or disposition authority?
+- [ ] Every challenge requiring disposition went to a separate typed adjudicator with a different worker/session identity?
+- [ ] Only a validated, report-authoritative typed severity/disposition ledger affected downstream severity or disposition?
+- [ ] `UNRESOLVED` and `PARTIAL` findings preserved their highest supported upstream tier and remained visible in the report body?
+- [ ] Any incomplete or invalid receipt retried or degraded to explicit human review rather than silently skipping an ID?
 
 ## After Verification (Before Report)
 
@@ -176,4 +177,3 @@
 - [ ] Quality: Finding counts match summary table?
 - [ ] Quality: Cross-references use report IDs only and all resolve?
 - [ ] Quality: Severity reflects FINAL verdict (post-verification), not original hypothesis?
-

@@ -125,7 +125,7 @@ Write to `{SCRATCHPAD}/meta_buffer.md`:
 ## RAG: DEFERRED to Phase 4b.5
 
 Recon does not perform RAG queries in the V2 driver. Phase 4b.5 RAG
-Validation Sweep will populate this file with per-finding RAG scores
+External precedent research will later populate typed context proposals; it never supplies finding scores
 after depth analysis completes.
 ```
 
@@ -204,7 +204,6 @@ Write to {SCRATCHPAD}/build_status.md:
 - **trident_available**: true/false (Anchor + trident-cli. v0.11+ requires no honggfuzz/AFL)
 - **proptest_available**: true/false (check Cargo.toml dev-dependencies)
 - **FENDER_AVAILABLE**: {true/false} (set in TASK 2)
-- **SCOUT_AUDIT_AVAILABLE**: {true/false} (probe `cargo-scout-audit --version`; same crate as Soroban. Supports Anchor + native Solana programs. If true, TASK 2 runs `cargo scout-audit` and appends results to static_analysis.md.)
 ```
 
 **MANDATORY — Chosen build root**: the audit scope dir is often source-only;
@@ -228,18 +227,6 @@ PRIMARY method.
 
 Set `FENDER_AVAILABLE = false` unless a working Fender CLI is
 confirmed; grep fallback is always sufficient to continue.
-
-**Scout-audit static analyzer** (recommended when available): if
-`SCOUT_AUDIT_AVAILABLE = true` (probed in TASK 1), run
-`cargo scout-audit` in each program crate and append the report to
-`{SCRATCHPAD}/static_analysis.md` under a `## Scout Audit` section.
-Scout is a Rust-native static analyzer (`cargo-scout-audit` crate by
-CoinFabrik) covering Anchor- and native-Solana detector rules
-including signer-check bypass, missing account validation, arithmetic
-overflow, integer cast issues, and divide-before-multiply. If the
-command exits non-zero or takes >120s, record `scout_audit_status:
-failed/timeout` in build_status.md and continue with grep — this is
-best-effort, not a hard gate.
 
 **Regardless of Fender status**, extract program structure using grep (PRIMARY method):
 

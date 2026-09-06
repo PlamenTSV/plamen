@@ -19,7 +19,6 @@ setup(
         "beautifulsoup4>=4.12.0",
         "lxml>=4.9.0",
         "tenacity>=8.2.0",
-        "ratelimit>=2.2.0",
         "click>=8.1.0",
         "rich>=13.0.0",
         "pydantic>=2.0.0",

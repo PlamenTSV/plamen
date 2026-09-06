@@ -230,7 +230,12 @@ def test_AP_HF_1_inventory_degrade_branch_precedes_critical_funnel():
     # from completed artifacts before any halt) instead of the bare
     # `_inventory_has_usable_findings` precondition. The structural invariant
     # (degrade branch precedes the critical-halt funnel) is unchanged.
-    degrade_idx = src.find('phase.name == "inventory" and _inventory_degrade_floor_ok')
+    degrade_match = re.search(
+        r'phase\.name\s*==\s*"inventory"\s*and\s*'
+        r'_inventory_degrade_floor_ok\s*\(',
+        src,
+    )
+    degrade_idx = degrade_match.start() if degrade_match else -1
     critical_idx = src.find("elif phase.critical:")
     assert degrade_idx != -1, "inventory degrade branch missing from run loop"
     assert critical_idx != -1, "critical-halt funnel missing from run loop"
@@ -496,8 +501,8 @@ def test_P52_loss_partial_crossbatch_coverage_halts():
 # Phase 6 — Report
 # =============================================================================
 
-def test_P6_loss_refuted_in_excluded_not_body():
-    """P6 loss: REFUTED finding is in Excluded section, not Master Index."""
+def test_P6_loss_refuted_is_retained_with_non_authoritative_proposal():
+    """P6 loss: verifier prose cannot remove a candidate from the body."""
     inv = "### Finding [INV-001]: claim\n**Severity**: High\n**Location**: src/a.rs:L1\n"
     queue = (
         "| Queue # | Finding ID | Severity | Title | Bug Class | Preferred Tag | Location | Primary Artifact |\n"
@@ -511,12 +516,13 @@ def test_P6_loss_refuted_in_excluded_not_body():
     })
     D._write_mechanical_report_index(sp)
     idx = (sp / "report_index.md").read_text(encoding="utf-8")
-    excluded = idx[idx.find("Excluded Findings"):]
-    master = idx[:idx.find("Excluded Findings")]
+    proposal_at = idx.find("Proposed Negative Dispositions")
+    master = idx[:proposal_at]
+    proposals = idx[proposal_at:]
     check(
-        "P6.loss.refuted in Excluded, not Master",
-        "INV-001" in excluded and "| INV-001 |" not in master,
-        f"in_excluded={('INV-001' in excluded)} in_master={('| INV-001 |' in master)}",
+        "P6.loss.refuted retained in Master with proposal-only negative",
+        "| INV-001 |" in master and "INV-001" in proposals,
+        f"in_proposals={('INV-001' in proposals)} in_master={('| INV-001 |' in master)}",
     )
 
 
@@ -712,14 +718,15 @@ def test_X_inventory_to_queue_to_report_round_trip():
         )
     D._write_mechanical_report_index(sp)
     idx = (sp / "report_index.md").read_text(encoding="utf-8")
-    master = idx[:idx.find("Excluded Findings")]
-    excluded = idx[idx.find("Excluded Findings"):]
+    proposal_at = idx.find("Proposed Negative Dispositions")
+    master = idx[:proposal_at]
+    proposals = idx[proposal_at:]
     in_master = sum(1 for fid in queue_ids if f"| {fid} |" in master)
-    in_excluded = sum(1 for fid in queue_ids if f"| {fid} |" in excluded)
+    in_proposals = sum(1 for fid in queue_ids if fid in proposals)
     check(
-        "X.round-trip: 5 inv -> 5 queue -> 3 active + 2 excluded",
-        n == 5 and in_master == 3 and in_excluded == 2,
-        f"queue={n} master={in_master} excluded={in_excluded}",
+        "X.round-trip: 5 inv -> 5 queue -> 5 active + 2 negative proposals",
+        n == 5 and in_master == 5 and in_proposals == 2,
+        f"queue={n} master={in_master} proposals={in_proposals}",
     )
 
 
@@ -829,17 +836,17 @@ def test_P4a5_loss_state_var_coverage_artifact():
 
 def test_P4b5_loss_rag_validation_row_per_finding():
     """P4b.5 loss: every inventory finding has a row in rag_validation.md OR
-    floor score is documented."""
+    an explicit decision-neutral unavailable proposal is documented."""
     sp = _mkscratch({
         "findings_inventory.md": (
             "### Finding [INV-001]: a\n**Location**: x.sol:L1\n\n"
             "### Finding [INV-002]: b\n**Location**: y.sol:L1\n"
         ),
         "rag_validation.md": (
-            "| Finding ID | validate_hypothesis Score | solodit_live Matches | Final RAG Score | Notes |\n"
-            "|---|---|---|---|---|\n"
-            "| INV-001 | 7 | 3 | 0.7 | found similar |\n"
-            "| INV-002 | 0 | 0 | 0.3 | floor (no match) |\n"
+            "| Finding ID | Source Kind | Availability | Relation | Match Proposal | Notes |\n"
+            "|---|---|---|---|---|---|\n"
+            "| INV-001 | PRIMARY_PRECEDENT | AVAILABLE | SUPPORTING | EXACT_PROPOSED | context only |\n"
+            "| INV-002 | UNAVAILABLE | TIMEOUT | UNKNOWN | UNSCORED | no decision authority |\n"
         ),
     })
     rag_text = (sp / "rag_validation.md").read_text(encoding="utf-8")
@@ -1059,7 +1066,7 @@ def test_BS_queue_empty_table_zero_rows():
 
 
 def test_INV_receipt_accounted_chunk_dedup_not_truncation():
-    """Mechanical chunk merge receipt is the source of truth for dedup collapse."""
+    """Legacy dedup is safe when Source IDs preserve the exact input union."""
     chunk = "\n".join([
         "| Finding ID | Title | Severity | Location |",
         "|------------|-------|----------|----------|",
@@ -1068,12 +1075,18 @@ def test_INV_receipt_accounted_chunk_dedup_not_truncation():
             for i in range(1, 11)
         ),
     ])
+    source_groups = (
+        "AC-1, AC-5, AC-9",
+        "AC-2, AC-6, AC-10",
+        "AC-3, AC-7",
+        "AC-4, AC-8",
+    )
     inv = "\n".join(
         f"### Finding [INV-{i:03d}]: duplicate root\n"
         f"**Severity**: High\n"
         f"**Location**: src/A.sol:L1\n"
-        f"**Source IDs**: AC-{i}, AC-{i + 4 if i + 4 <= 10 else i}\n"
-        for i in range(1, 5)
+        f"**Source IDs**: {source_ids}\n"
+        for i, source_ids in enumerate(source_groups, start=1)
     )
     receipt = (
         "# Mechanical Inventory Merge Receipt\n\n"
@@ -1102,11 +1115,12 @@ def test_INV_receipt_allows_mechanically_promoted_inventory_supplement():
     ])
     inv_lines = ["# Finding Inventory", ""]
     for i in range(1, 58):
+        absorbed = f", AC-{i + 57}" if i <= 12 else ""
         inv_lines.extend([
             f"### Finding [INV-{i:03d}]: base bug {i}",
             "**Severity**: High",
             f"**Location**: src/A.sol:L{i}",
-            f"**Source IDs**: AC-{i}",
+            f"**Source IDs**: AC-{i}{absorbed}",
             "",
         ])
     inv_lines.extend([
@@ -1162,7 +1176,11 @@ def test_INV_receipt_uses_parser_entries_not_loose_signal_blocks():
     parsed, merged = D._write_mechanical_inventory_from_chunks(sp)
     issues = D._validate_inventory_parity(sp)
     inv = (sp / "findings_inventory.md").read_text(encoding="utf-8")
-    ok = parsed == 2 and merged == 2 and issues == [] and "AC-1" in inv and "AC-2" in inv
+    ok = (
+        parsed == 2 and merged == 2
+        and len(issues) == 1 and "NEEDS_INVENTORY_REVIEW" in issues[0]
+        and "AC-1" in inv and "AC-2" in inv
+    )
     check(
         "INV.receipt-parser-entries-not-loose-signal-blocks",
         ok,
@@ -1195,7 +1213,8 @@ def test_INV_chunk_parser_combines_tables_and_heading_findings():
     ok = (
         parsed == 3
         and merged == 3
-        and issues == []
+        and len(issues) == 1
+        and "NEEDS_INVENTORY_REVIEW" in issues[0]
         and all(tok in inv for tok in ("AC-1", "TF-1", "EC-1"))
     )
     check(
@@ -1236,7 +1255,7 @@ def test_INV_receipt_mismatch_still_fails():
     assert any("receipt mismatch" in issue for issue in issues)
 
 
-def test_INV_refuted_na_severity_not_promoted_to_medium_queue():
+def test_INV_refuted_na_severity_uses_provisional_recall_floor_and_routes_to_review():
     chunk = (
         "| Finding ID | Title | Severity | Location |\n"
         "|------------|-------|----------|----------|\n"
@@ -1251,15 +1270,17 @@ def test_INV_refuted_na_severity_not_promoted_to_medium_queue():
     parity_issues = D._validate_verification_queue_inventory_parity(sp)
 
     assert parsed == 1 and merged == 1
-    assert "**Severity**: Informational" in inv
-    assert "**Verdict**: REFUTED" in inv
-    assert queue_count == 0
-    assert rows == []
-    assert "INV-001" in excluded and "Inventory verdict REFUTED" in excluded
+    assert "**Severity**: Medium" in inv
+    assert "**Verdict**: REFUTED" not in inv
+    assert queue_count == 1
+    assert [row["finding id"] for row in rows] == ["INV-001"]
+    assert rows[0]["severity"] == "Medium"
+    assert rows[0]["origin assessment"] == "NEEDS_VERIFICATION"
+    assert "INV-001" not in excluded
     assert parity_issues == []
 
 
-def test_VQ_refuted_inventory_verdict_routes_to_evidence_excluded():
+def test_VQ_refuted_inventory_verdict_is_advisory_and_routes_to_review():
     inv = (
         "### Finding [INV-054]: uint8 CycleId Parameter in claim() - Within Safe Range\n"
         "**Severity**: Informational\n"
@@ -1275,14 +1296,14 @@ def test_VQ_refuted_inventory_verdict_routes_to_evidence_excluded():
     excluded = (sp / "verification_queue_evidence_excluded.md").read_text(encoding="utf-8")
     issues = D._validate_verification_queue_inventory_parity(sp)
 
-    assert queue_count == 0
-    assert queue_rows == []
-    assert "| INV-054 | Informational |" in excluded
-    assert "Inventory verdict REFUTED" in excluded
+    assert queue_count == 1
+    assert [row["finding id"] for row in queue_rows] == ["INV-054"]
+    assert queue_rows[0]["origin assessment"] == "REFUTED"
+    assert "INV-054" not in excluded
     assert issues == []
 
 
-def test_VQ_evidence_filter_preserves_existing_refuted_exclusions():
+def test_VQ_evidence_filter_keeps_refuted_origin_and_bad_evidence_active():
     inv = (
         "### Finding [INV-001]: refuted candidate\n"
         "**Severity**: Informational\n"
@@ -1307,13 +1328,19 @@ def test_VQ_evidence_filter_preserves_existing_refuted_exclusions():
     excluded = (sp / "verification_queue_evidence_excluded.md").read_text(encoding="utf-8")
     issues = D._validate_verification_queue_inventory_parity(sp)
 
-    assert removed == ["INV-002"]
-    assert "INV-001" in excluded and "Inventory verdict REFUTED" in excluded
-    assert "INV-002" in excluded and "Evidence invalid" in excluded
+    assert removed == []
+    remaining = D.parse_verification_queue_rows(sp)
+    assert [row["finding id"] for row in remaining] == ["INV-001", "INV-002"]
+    assert remaining[0]["origin assessment"] == "REFUTED"
+    assert "LOCATION_INVALID" in remaining[1]["evidence debt"]
+    assert "INV-001" not in excluded
+    assert "INV-002" not in excluded
+    debt = (sp / "verification_queue_evidence_debt.md").read_text(encoding="utf-8")
+    assert "INV-002" in debt and "RETAINED_ACTIVE" in debt
     assert issues == []
 
 
-def test_INV_plain_na_severity_stays_unresolved_not_refuted():
+def test_INV_plain_na_severity_uses_provisional_floor_not_refuted():
     chunk = (
         "| Finding ID | Title | Severity | Location |\n"
         "|------------|-------|----------|----------|\n"
@@ -1325,10 +1352,11 @@ def test_INV_plain_na_severity_stays_unresolved_not_refuted():
     inv = (sp / "findings_inventory.md").read_text(encoding="utf-8")
     rows = D.parse_verification_queue_rows(sp)
 
-    assert "**Severity**: Informational" in inv
-    assert "**Verdict**: UNRESOLVED" in inv
+    assert "**Severity**: Medium" in inv
+    assert "**Verdict**: NEEDS_VERIFICATION" in inv
     assert queue_count == 1
-    assert len(rows) == 1 and rows[0]["severity"] == "Informational"
+    assert len(rows) == 1 and rows[0]["severity"] == "Medium"
+    assert rows[0]["origin assessment"] == "NEEDS_VERIFICATION"
 
 
 def test_INV_refuted_na_depth_feeder_not_promoted():
@@ -1479,7 +1507,8 @@ def test_INV_chunk_heading_ids_are_preserved_when_source_ids_missing():
     ok = (
         parsed == 7
         and merged == 7
-        and issues == []
+        and len(issues) == 1
+        and "NEEDS_INVENTORY_REVIEW" in issues[0]
         and all(f"AC-{i}" in inv for i in range(1, 8))
     )
     check(
@@ -1490,8 +1519,8 @@ def test_INV_chunk_heading_ids_are_preserved_when_source_ids_missing():
     assert ok
 
 
-def test_INV_shard_exact_duplicate_consolidation_passes_with_full_source_coverage():
-    """INV: exact duplicate chunk consolidation is valid when source IDs survive."""
+def test_INV_shard_exact_mech_similarity_is_tag_only_without_shared_source():
+    """INV: 147 disjoint producers survive MECH similarity to semantic dedup."""
     chunk = "\n\n".join(
         f"### Finding [AC-{i}]: same access-control root cause\n"
         "**Severity**: High\n"
@@ -1506,12 +1535,13 @@ def test_INV_shard_exact_duplicate_consolidation_passes_with_full_source_coverag
     inv = (sp / "findings_inventory.md").read_text(encoding="utf-8")
     ok = (
         parsed == 147
-        and merged == 1
-        and issues == []
+            and merged == 147
+            and len(issues) == 1
+            and "NEEDS_INVENTORY_REVIEW" in issues[0]
         and all(f"AC-{i}" in inv for i in range(1, 148))
     )
     check(
-        "INV.shard-exact-duplicate-consolidation-covered",
+        "INV.shard-exact-MECH-tag-only",
         ok,
         f"parsed={parsed} merged={merged} issues={issues} inv_len={len(inv)}",
     )
@@ -1539,10 +1569,11 @@ def test_INV_source_ids_bold_colon_format_counts_for_parity():
     issues = D._validate_inventory_parity(sp)
     check(
         "INV.source-ids-bold-colon-format-counts-for-parity",
-        issues == [],
+        len(issues) == 1 and "NEEDS_INVENTORY_REVIEW" in issues[0],
         repr(issues),
     )
-    assert issues == []
+    assert len(issues) == 1
+    assert "NEEDS_INVENTORY_REVIEW" in issues[0]
 
 
 # =============================================================================
@@ -2059,9 +2090,9 @@ def test_E2E_inventory_to_audit_report_round_trip():
     # Stage 4: report index
     n_active = D._write_mechanical_report_index(sp)
     idx = (sp / "report_index.md").read_text(encoding="utf-8")
-    excluded_at = idx.find("Excluded Findings")
-    master = idx[:excluded_at] if excluded_at > -1 else idx
-    excluded = idx[excluded_at:] if excluded_at > -1 else ""
+    proposal_at = idx.find("Proposed Negative Dispositions")
+    master = idx[:proposal_at] if proposal_at > -1 else idx
+    proposals = idx[proposal_at:] if proposal_at > -1 else ""
 
     # Stage 5: report tier write
     D._write_mechanical_report_tier(sp, "report_critical_high")
@@ -2069,21 +2100,24 @@ def test_E2E_inventory_to_audit_report_round_trip():
 
     # Assertions
     confirmed_in_master = sum(1 for fid in ["INV-001", "INV-002", "INV-003"] if f"| {fid} |" in master)
-    refuted_in_excluded = "INV-004" in excluded
+    refuted_in_master = "INV-004" in master
+    refuted_proposal_visible = "INV-004" in proposals
     unresolved_in_master = "INV-005" in master  # demoted, kept in body
     rich_content = "Detailed description" in crithigh_text or "Apply mitigation" in crithigh_text
     no_id_leak_in_body = "INV-001" not in crithigh_text or "BLIND-1" not in crithigh_text
 
     check(
-        "E2E.full-round-trip: 5 inv -> 5 queue -> 4 reportable + 1 excluded with rich content",
+        "E2E.full-round-trip: 5 inv -> 5 queue -> 5 reportable with visible negative proposal",
         n_routed == 5
         and not parity
         and confirmed_in_master == 3
-        and refuted_in_excluded
+        and refuted_in_master
+        and refuted_proposal_visible
         and unresolved_in_master
         and rich_content,
         f"routed={n_routed} parity={parity} master={confirmed_in_master} "
-        f"excluded={refuted_in_excluded} unres={unresolved_in_master} rich={rich_content}",
+        f"refuted_active={refuted_in_master} proposal={refuted_proposal_visible} "
+        f"unres={unresolved_in_master} rich={rich_content}",
     )
 
 
@@ -2101,8 +2135,7 @@ def test_E2E_zero_findings_pipeline():
 
 
 def test_E2E_all_refuted_pipeline():
-    """E2E: every verifier returns FALSE_POSITIVE -> Master Index empty,
-    Excluded section populated."""
+    """E2E: verifier negatives remain active and visible as proposals."""
     inv_lines = ["# Inventory", ""]
     for i in range(1, 4):
         inv_lines.extend([
@@ -2120,14 +2153,15 @@ def test_E2E_all_refuted_pipeline():
         )
     D._write_mechanical_report_index(sp)
     idx = (sp / "report_index.md").read_text(encoding="utf-8")
-    excluded = idx[idx.find("Excluded Findings"):]
-    master = idx[:idx.find("Excluded Findings")]
+    proposal_at = idx.find("Proposed Negative Dispositions")
+    master = idx[:proposal_at]
+    proposals = idx[proposal_at:]
     in_master = sum(1 for i in range(1, 4) if f"| INV-{i:03d} |" in master)
-    in_excluded = sum(1 for i in range(1, 4) if f"INV-{i:03d}" in excluded)
+    in_proposals = sum(1 for i in range(1, 4) if f"INV-{i:03d}" in proposals)
     check(
-        "E2E.all-refuted: 0 in master, 3 in excluded",
-        in_master == 0 and in_excluded == 3,
-        f"master={in_master} excluded={in_excluded}",
+        "E2E.all-refuted: 3 in master, 3 non-authoritative proposals",
+        in_master == 3 and in_proposals == 3,
+        f"master={in_master} proposals={in_proposals}",
     )
 
 
@@ -2373,8 +2407,8 @@ def test_COMP_filter_evidence_does_not_drop_lone_lenient_anchor():
     )
 
 
-def test_COMP_filter_evidence_drops_double_invalid():
-    """COMP: a row with BOTH location bad AND source bad -> dropped."""
+def test_COMP_filter_evidence_retains_double_invalid_as_repair_debt():
+    """COMP: both-bad evidence remains active but explicitly repair-bound."""
     repo = _mkrepo(["src/x.rs"])
     inv = (
         "### Finding [INV-001]: bug\n"
@@ -2393,10 +2427,13 @@ def test_COMP_filter_evidence_drops_double_invalid():
     })
     D._validate_inventory_evidence(sp, str(repo))
     excluded = D._filter_verification_queue_by_evidence(sp)
+    active = D.parse_verification_queue_rows(sp)
     check(
-        "COMP.strict-filter: bad-loc + bad-source dropped",
-        "INV-001" in excluded,
-        f"excluded={excluded}",
+        "COMP.repair-filter: bad-loc + bad-source retained with debt",
+        excluded == []
+        and [row["finding id"] for row in active] == ["INV-001"]
+        and "LOCATION_INVALID" in active[0].get("evidence debt", ""),
+        f"excluded={excluded}, active={active}",
     )
 
 
@@ -2484,7 +2521,7 @@ TESTS = [
     # Phase 5.2 — Cross-batch
     test_P52_loss_partial_crossbatch_coverage_halts,
     # Phase 6 — Report
-    test_P6_loss_refuted_in_excluded_not_body,
+    test_P6_loss_refuted_is_retained_with_non_authoritative_proposal,
     test_P6_quality_renderer_pulls_rich_content_from_verify,
     test_P6_quality_empty_verify_yields_stub_recovered_marker,
     test_P6_quality_internal_id_sanitized_from_title,
@@ -2523,7 +2560,7 @@ TESTS = [
     test_BS_synth_section_no_internal_id_leak_in_body,
     test_BS_report_index_empty_inventory_does_not_crash,
     test_INV_chunk_heading_ids_are_preserved_when_source_ids_missing,
-    test_INV_shard_exact_duplicate_consolidation_passes_with_full_source_coverage,
+    test_INV_shard_exact_mech_similarity_is_tag_only_without_shared_source,
     test_INV_source_ids_bold_colon_format_counts_for_parity,
     # Property-based-style
     test_PROP_inventory_order_invariant,
@@ -2567,7 +2604,7 @@ TESTS = [
     test_COMP_inventory_chunk_merge_writes_receipt,
     test_COMP_severity_demote_handles_unicode_input,
     test_COMP_filter_evidence_does_not_drop_lone_lenient_anchor,
-    test_COMP_filter_evidence_drops_double_invalid,
+    test_COMP_filter_evidence_retains_double_invalid_as_repair_debt,
     test_COMP_recon_placeholder_detector_ignores_negated_cleanup_status,
 ]
 

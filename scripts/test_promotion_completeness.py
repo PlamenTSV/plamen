@@ -90,7 +90,7 @@ def test_checklist_cell_harm_routes_to_body(tmp_path: Path):
 # Hiding spot 2: summary-table row, pure quality -> Appendix C
 # --------------------------------------------------------------------------
 
-def test_summary_table_row_quality_routes_to_appendix_c(tmp_path: Path):
+def test_summary_table_row_quality_proposal_routes_to_verification(tmp_path: Path):
     m = _mech()
     sp = _setup(tmp_path)
     (sp / "validation_sweep_findings.md").write_text(
@@ -104,15 +104,14 @@ def test_summary_table_row_quality_routes_to_appendix_c(tmp_path: Path):
     orphans = m.compute_promotion_orphans(sp)
     assert orphans, "summary-table row with location+mechanism must be harvested"
     cand = next(c for c in orphans if c["shape"] == "table_row")
-    assert cand["disposition"] == "APPENDIX_C"
+    assert cand["disposition"] == "BODY"
+    assert cand["zero_harm_proposal"] is True
 
     result = m.route_promotion_orphans(sp, orphans)
-    assert result["appendix_c"] >= 1
-    appc = (sp / "promotion_orphans_appendix_c.md").read_text(encoding="utf-8")
-    assert cand["candidate_id"] in appc
-    # Never emitted as a security candidate into the inventory.
+    assert result["emitted_to_inventory"] >= 1
     inv = (sp / "findings_inventory.md").read_text(encoding="utf-8")
-    assert "PROMOGAP" not in inv
+    assert "PROMOGAP" in inv
+    assert "Zero-Harm Proposal" in inv
 
 
 # --------------------------------------------------------------------------
@@ -141,7 +140,7 @@ def test_referent_less_excluded_stub_content_bearing_routes_to_body(tmp_path: Pa
     assert "Encoder.sol:L412" in inv
 
 
-def test_referent_less_excluded_stub_content_less_routes_to_appendix_a(tmp_path: Path):
+def test_referent_less_excluded_stub_content_less_routes_to_visible_debt(tmp_path: Path):
     m = _mech()
     sp = _setup(tmp_path)
     (sp / "analysis_percontract_3.md").write_text(
@@ -153,19 +152,18 @@ def test_referent_less_excluded_stub_content_less_routes_to_appendix_a(tmp_path:
     assert orphans, "even a content-less referent-less stub must be harvested (never dropped)"
     cand = next(c for c in orphans if c["shape"] == "excluded_stub")
     assert cand["content_bearing"] is False
-    assert cand["disposition"] == "APPENDIX_A"
+    assert cand["disposition"] == "BODY"
+    assert cand["shape_debt"] is True
 
     result = m.route_promotion_orphans(sp, orphans)
-    assert result["appendix_a"] >= 1
-    appa = (sp / "promotion_orphans_appendix_a.md").read_text(encoding="utf-8")
-    assert cand["candidate_id"] in appa
+    assert result["emitted_to_inventory"] >= 1
     inv = (sp / "findings_inventory.md").read_text(encoding="utf-8")
-    assert "PROMOGAP" not in inv
+    assert "PROMOGAP" in inv
+    assert "Promotion Shape Debt" in inv
 
 
-def test_excluded_stub_with_real_referent_is_not_orphan(tmp_path: Path):
-    """A stub citing a real 'dup of X-NN' referent is a legitimate dedup, not
-    pipeline-loss, and must never be harvested as an orphan."""
+def test_excluded_stub_with_textual_referent_is_alias_proposal(tmp_path: Path):
+    """Textual duplication nominates equivalence but cannot apply it."""
     m = _mech()
     sp = _setup(tmp_path)
     (sp / "analysis_percontract_4.md").write_text(
@@ -174,14 +172,17 @@ def test_excluded_stub_with_real_referent_is_not_orphan(tmp_path: Path):
         encoding="utf-8",
     )
     orphans = m.compute_promotion_orphans(sp)
-    assert not any(c["shape"] == "excluded_stub" for c in orphans)
+    candidate = next(c for c in orphans if c["shape"] == "excluded_stub")
+    assert candidate["alias_proposal"] is True
+    assert candidate["alias_target"] == "B1-2"
+    assert candidate["disposition"] == "BODY"
 
 
 # --------------------------------------------------------------------------
 # Hiding spot 4: unpromoted depth_* finding block, verifier-refuted -> Appendix A
 # --------------------------------------------------------------------------
 
-def test_unpromoted_depth_block_refuted_routes_to_appendix_a(tmp_path: Path):
+def test_unpromoted_depth_block_refuted_reopens_for_verification(tmp_path: Path):
     m = _mech()
     sp = _setup(tmp_path)
     (sp / "depth_state_trace_findings.md").write_text(
@@ -200,22 +201,22 @@ def test_unpromoted_depth_block_refuted_routes_to_appendix_a(tmp_path: Path):
     assert orphans, "unpromoted depth_* finding block must be harvested"
     cand = next(c for c in orphans if c["shape"] == "finding_block")
     assert cand["orig_id"] == "DE-11"
-    assert cand["disposition"] == "APPENDIX_A"
-    assert "refut" in cand["reason"].lower()
+    assert cand["disposition"] == "BODY"
+    assert cand["negative_proposal"] is True
+    assert "authority" in cand["reason"].lower()
 
     result = m.route_promotion_orphans(sp, orphans)
-    assert result["appendix_a"] >= 1
-    appa = (sp / "promotion_orphans_appendix_a.md").read_text(encoding="utf-8")
-    assert cand["candidate_id"] in appa
+    assert result["emitted_to_inventory"] >= 1
     inv = (sp / "findings_inventory.md").read_text(encoding="utf-8")
-    assert "PROMOGAP" not in inv, "a verifier-refuted orphan must never reach the inventory"
+    assert "PROMOGAP" in inv
+    assert "Negative Proposal" in inv
 
 
 # --------------------------------------------------------------------------
-# A block already carrying a report ID is NOT re-promoted
+# A producer-local ID is never sufficient suppression authority
 # --------------------------------------------------------------------------
 
-def test_already_tracked_id_is_not_reharvested(tmp_path: Path):
+def test_already_tracked_id_does_not_suppress_distinct_subject(tmp_path: Path):
     m = _mech()
     sp = _setup(
         tmp_path,
@@ -234,11 +235,11 @@ def test_already_tracked_id_is_not_reharvested(tmp_path: Path):
         encoding="utf-8",
     )
     orphans = m.compute_promotion_orphans(sp)
-    assert not any(c.get("orig_id") == "DE-3" for c in orphans), (
-        "a finding whose own ID is already in the coverage seed must not be re-promoted"
+    assert any(c.get("orig_id") == "DE-3" for c in orphans), (
+        "a producer-local ID cannot prove byte-level identity or equivalence"
     )
     ledger = (sp / "promotion_orphans.md").read_text(encoding="utf-8")
-    assert "Already-tracked" in ledger and "1" in ledger.split("Already-tracked")[1].split("|")[0]
+    assert "Exact delivered/repeated subjects excluded: 0" in ledger
 
 
 # --------------------------------------------------------------------------
@@ -377,7 +378,7 @@ def test_per_file_cap_bounds_harvest(tmp_path: Path):
 # as findings. Both are now closed; these tests lock them.
 # --------------------------------------------------------------------------
 
-def test_location_covered_by_inventory_is_not_orphan(tmp_path: Path):
+def test_location_covered_by_inventory_is_only_duplicate_nomination(tmp_path: Path):
     m = _mech()
     sp = _setup(tmp_path)  # inventory has a promoted finding at core/Vault.sol:L1
     # Same location, a raw depth-agent ID the coverage seed never carries.
@@ -393,9 +394,8 @@ def test_location_covered_by_inventory_is_not_orphan(tmp_path: Path):
         encoding="utf-8",
     )
     orphans = m.compute_promotion_orphans(sp)
-    assert not any(c.get("orig_id") == "DE-9" for c in orphans), (
-        "a block whose location is already covered by a promoted inventory finding "
-        "(consolidated under a different ID) must not be re-flagged as an orphan"
+    assert any(c.get("orig_id") == "DE-9" for c in orphans), (
+        "location proximity must not apply semantic dedup without equivalence authority"
     )
 
 
@@ -437,7 +437,7 @@ def test_meta_heading_block_is_not_harvested(tmp_path: Path):
     )
 
 
-def test_negative_disposition_block_is_not_harvested(tmp_path: Path):
+def test_negative_disposition_block_is_harvested_as_proposal(tmp_path: Path):
     m = _mech()
     sp = _setup(tmp_path)
     (sp / "blind_spot_a_findings.md").write_text(
@@ -448,9 +448,10 @@ def test_negative_disposition_block_is_not_harvested(tmp_path: Path):
         "approve flow is correct usage and permits no drain.\n\n",
         encoding="utf-8",
     )
-    assert not m.compute_promotion_orphans(sp), (
-        "a 'No Additional Findings' rationale block must never be harvested"
-    )
+    rows = m.compute_promotion_orphans(sp)
+    assert len(rows) == 1
+    assert rows[0]["disposition"] == "BODY"
+    assert rows[0]["negative_proposal"] is True
 
 
 if __name__ == "__main__":

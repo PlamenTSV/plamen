@@ -266,7 +266,7 @@ When a finding is classified as a "design flaw" rather than an exploit, apply th
 
 ---
 
-> **Advanced Protocol Reference**: See [`advanced.md`](references/advanced.md) for RAG queries, RAG confidence override, chain hypothesis protection, Sui-specific testing considerations, dual-perspective verification, realistic parameter validation, anti-downgrade guard, new observations, error trace output, and bidirectional role analysis.
+> **Advanced Protocol Reference**: See [`advanced.md`](references/advanced.md) for precedent-informed test ideas under the shared no-decision-authority policy, chain hypothesis protection, Sui-specific testing considerations, dual-perspective verification, realistic parameter validation, anti-downgrade guard, new observations, error trace output, and bidirectional role analysis.
 
 ## Output Format
 
@@ -296,10 +296,8 @@ When a finding is classified as a "design flaw" rather than an exploit, apply th
 | Claim | Evidence Source | Tag | Valid for REFUTED? |
 |-------|-----------------|-----|-------------------|
 
-### RAG Evidence
-- **Attack Vectors Consulted**: [list]
-- **Similar Exploits Found**: [count]
-- **Historical Precedent**: [description]
+### External Precedent Boundary
+- Not consulted by this verifier and not valid as verdict/severity/proof evidence.
 
 ### Severity: {LEVEL}
 {Justification in 1-2 sentences}

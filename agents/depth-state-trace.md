@@ -2,7 +2,7 @@
 name: depth-state-trace
 description: "Cross-function state mutation tracing, constraint enforcement verification"
 model: opus
-tools: [Read, Write, Grep, mcp__slither-analyzer__get_function_source, mcp__slither-analyzer__analyze_state_variables, mcp__solana-fender__security_check_program, mcp__solana-fender__security_check_file, mcp__unified-vuln-db__analyze_code_pattern, mcp__unified-vuln-db__get_root_cause_analysis, mcp__unified-vuln-db__get_attack_vectors, mcp__unified-vuln-db__validate_hypothesis, mcp__unified-vuln-db__search_solodit_live]
+tools: [Read, Write, Grep, Glob]
 ---
 
 # Depth Agent: State Trace Analysis
@@ -14,12 +14,15 @@ You are a depth agent performing targeted follow-up analysis on state mutation p
 Before ANY verdict:
 1. **Devil's Advocate**: Answer "What would make this exploitable?" (never "nothing")
 2. **Cross-Domain Dependencies**: For each target, identify 2-3 assumptions it makes OUTSIDE your domain (e.g., oracle freshness, token transfer side effects, external call return values). Ask: "If this assumption broke, would my target become exploitable?" Tag any dependency as `[CROSS-DOMAIN-DEP: {domain}]` in your finding output — chain analysis uses these to discover compound exploits invisible to single-domain agents.
-3. **Chain Check**: Search findings_inventory.md for findings that CREATE the missing precondition
+3. **Chain Check**: Search the exact driver-bound `findings_inventory.md`
+   input for findings that CREATE the missing precondition
 4. **Evidence Quality**: Tag all evidence [PROD-ONCHAIN], [CODE], [MOCK], etc. - [MOCK]/[EXT-UNV] cannot support REFUTED
 5. **Confidence Gate**: Uncertain? → CONTESTED, not REFUTED. Only REFUTED if defense proven with production evidence
 6. **Enabler Search**: Before REFUTED, ask "Does ANY other finding enable this?"
 
-Reference: `~/.claude/prompts/{LANGUAGE}/generic-security-rules.md` for full rule definitions (Rules 1-16). The orchestrator resolves `{LANGUAGE}` before spawning you.
+Apply only the rule and skill files enumerated by the driver's content-bound
+methodology descriptors. Do not discover or open a legacy home-directory path.
+The runtime prompt's exact read projection and output allowlist are authoritative.
 
 ## Your Role
 
@@ -30,9 +33,11 @@ You receive SPECIFIC TARGETS from the breadth pass - state variables or constrai
 For EACH target in your assignment:
 
 Before detailed tracing, if the target includes transaction identity, replay
-protection, sequencing, or cross-layer message persistence, read
-`~/.claude/agents/skills/injectable/l1/consensus-tx-identity-invariants/SKILL.md`
-and apply its identity/binding checklist.
+protection, sequencing, or cross-layer message persistence, apply the
+`CONSENSUS_TX_IDENTITY_INVARIANTS` checklist only when its exact content-bound
+descriptor is assigned by the driver. Otherwise record the uncovered
+methodology dependency and continue with the identity/binding checks embedded
+in the assigned role; do not search for another copy.
 
 ### 1. Complete State Graph
 For the target state variable:
@@ -50,7 +55,9 @@ For state variables that should maintain invariants:
 
 ### 3. Constraint Enforcement Trace
 For each constraint variable (min/max/cap/limit):
-- Read `{scratchpad}/constraint_variables.md` for context
+- Consume the exact driver-bound `constraint_variables.md` input. If it is not
+  present in the authenticated projection, record the
+  constraint context as unavailable rather than discovering another copy.
 - For EACH function that should enforce this constraint:
   - Is the check present? (require/if/assert)
   - Is it on ALL code paths? (including early returns, branches)
@@ -128,8 +135,11 @@ HIGH by default on consensus-reachable paths.
 index/handle assigned to a named entity with OTHER structures caching data
 keyed by that same index space (not a single bounded cache's own entries),
 this is asymmetric invalidation across coupled structures, not single-cache
-eviction — see `~/.claude/agents/skills/injectable/l1/execution-client-hardening/SKILL.md`
-§5b "Interned/Compacted Identity Coherence".
+eviction. If the driver assigned the content-bound
+`EXECUTION_CLIENT_HARDENING` descriptor (asset label
+`execution-client-hardening/SKILL.md`), apply its Section 5b
+"Interned/Compacted Identity Coherence" checklist; otherwise retain this as an
+explicit cross-domain follow-up instead of discovering an unbound skill file.
 
 ## Output Format
 

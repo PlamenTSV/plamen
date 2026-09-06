@@ -18,6 +18,17 @@ from typing import Any, Optional
 from plamen_types import *  # noqa: F403,F401
 from plamen_parsers import *  # noqa: F403,F401
 from plamen_validators import *  # noqa: F403,F401
+from phase_contract_compiler import (
+    PromptContractError,
+    compile_phase_io_prompt,
+)
+from phase_io_contracts import resolve_phase_io_contract
+from severity_decision_ledger import compile_severity_prompt_contract
+from work_unit_capabilities import (
+    CapabilityResolutionError as WorkCapabilityResolutionError,
+    compile_work_unit_capability_contract,
+    resolve_capability as resolve_work_unit_capability,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -751,18 +762,25 @@ def _render_id_ledger_directive(phase_name: str, scratchpad: Path) -> str:
 
 
 def _derive_claude_exec_mode(config: dict) -> str:
-    """Ship 8.8: derive the claude exec mode the same way run_phase does
-    (config -> PLAMEN_CLAUDE_EXEC_MODE env -> default "pty"). Returns "pty"
-    or "headless". The run_phase binary-name fallback (non-standard claude
-    binary -> headless) is intentionally NOT replicated here: it is a
-    runtime concern, and the prompt builder defaults to the common case
-    (pty). An explicit config / env value always wins.
+    """Resolve prompt transport with the driver's strict precedence.
+
+    Field presence (including an empty/invalid value) outranks the
+    compatibility environment.  Legacy absence remains PTY; malformed
+    explicit authority is rejected instead of changing prompt semantics.
     """
-    explicit = config.get("claude_exec_mode") or os.environ.get(
-        "PLAMEN_CLAUDE_EXEC_MODE"
-    )
-    mode = (explicit or "pty").strip().lower()
-    return mode if mode in ("pty", "headless") else "pty"
+
+    if "claude_exec_mode" in config:
+        explicit = config.get("claude_exec_mode")
+    elif "PLAMEN_CLAUDE_EXEC_MODE" in os.environ:
+        explicit = os.environ.get("PLAMEN_CLAUDE_EXEC_MODE")
+    else:
+        explicit = "pty"
+    mode = str(explicit).strip().lower() if explicit is not None else ""
+    if mode not in ("pty", "headless"):
+        raise ValueError(
+            f"invalid claude_exec_mode={explicit!r}; expected 'pty' or 'headless'"
+        )
+    return mode
 
 
 def _render_execution_contract(phase_name: str, pipeline: str, *,
@@ -914,6 +932,10 @@ _STANDALONE_PROMPT_MAP: dict[str, str] = {
     "rag_sweep": "phase4b5-rag-sweep.md",
     "exploration_skeptic": "phase4b6-exploration-skeptic.md",
     "enumgap_exploration": "phase4b7-enumgap-exploration.md",
+    # Driver-planned conditional discriminator. The live driver renders exact
+    # per-shard JSON prompts, but a standalone mapping keeps SC/L1 reachability
+    # audits and failure diagnostics honest instead of leaving a dead phase.
+    "application_skeptic": "phase4b7-application-skeptic.md",
     # Phase 4b.8 Multi-Axis Coverage Meta-Pass (M2). Deriver-worker prompt handed
     # ONLY the GAP rows the driver mechanically computed; strictly additive.
     "axis_coverage": "phase4b8-axis-coverage.md",
@@ -935,6 +957,11 @@ _STANDALONE_PROMPT_MAP: dict[str, str] = {
     "post_verify_extract": "phase5_5-post-verify-extract.md",
     "skeptic": "phase5-skeptic.md",
     "crossbatch": "phase5-crossbatch.md",
+    # Direction-neutral severity adjudication is driver-planned and launched
+    # through provider-bound per-shard stdin.  This standalone is a structural
+    # placeholder only: the generic phase dispatcher never owns the live
+    # worker prompt or completion decision.
+    "severity_adjudication_shadow": "phase5-severity-adjudication-shadow.md",
     "report_index": "phase6a-report-index.md",
     "report_assemble": "phase6c-assembler.md",
     # Phase 6d LLM consolidation proposer — reads the assembled report and
@@ -1124,6 +1151,13 @@ def _render_runtime_placeholders(text: str, config: dict) -> str:
     network = str(config.get("network", "") or "(none)")
     scope_notes = str(config.get("scope_notes", "") or "(none)")
 
+    canonical_home = plamen_home().as_posix().rstrip("/")
+    # Legacy methodology text still spells the Claude installation alias.
+    # Resolve that alias before launch so Claude, Codex, staging canaries, and
+    # script-relative checkouts all read the exact same PLAMEN_HOME bytes.
+    # This is path resolution only; it does not alter the methodology content.
+    text = text.replace("$HOME/.claude/", canonical_home + "/")
+    text = text.replace("~/.claude/", canonical_home + "/")
     replacements = {
         # Uppercase (V1 convention â€” used by most prompts)
         "{SCRATCHPAD}": scratchpad,
@@ -1140,8 +1174,8 @@ def _render_runtime_placeholders(text: str, config: dict) -> str:
         "{network_if_provided}": network,
         "{scope_notes_if_provided}": scope_notes,
         # Installation root (Codex portability)
-        "{PLAMEN_BASE}": plamen_home().as_posix(),
-        "{plamen_base}": plamen_home().as_posix(),
+        "{PLAMEN_BASE}": canonical_home,
+        "{plamen_base}": canonical_home,
     }
     for placeholder, value in replacements.items():
         text = text.replace(placeholder, value)
@@ -1712,30 +1746,73 @@ def _render_expected_output_block(
 
 
 def _render_verify_shard_checklist(config: dict, phase_name: str) -> str:
-    """Render exact verify shard IDs/output files into the phase prompt."""
+    """Render the exact persisted verifier work-plan shard into the prompt."""
     scratchpad = Path(config.get("scratchpad", ""))
     if not scratchpad:
         return "- Manifest unavailable at prompt-build time; read the shard manifest before verifying."
     try:
-        if phase_name in SC_VERIFY_PHASE_NAMES:
-            rows = compute_sc_verify_shards(scratchpad).get(phase_name, [])
+        plan = read_queue_work_plan(scratchpad)
+        dynamic_ids = config.get("_dynamic_verifier_work_item_ids")
+        if dynamic_ids is None:
+            assigned_ids = tuple(plan.shard(phase_name).ordered_work_item_ids)
         else:
-            rows = compute_verify_shards(scratchpad).get(phase_name, [])
-    except Exception:
-        rows = []
-    if not rows:
+            assigned_ids = tuple(dynamic_ids)
+            if len(set(assigned_ids)) != len(assigned_ids):
+                raise ValueError("dynamic verifier assignment contains duplicates")
+            unknown = [
+                work_id
+                for work_id in assigned_ids
+                if work_id not in set(plan.ordered_work_item_ids)
+            ]
+            if unknown:
+                raise ValueError(
+                    "dynamic verifier assignment contains unknown IDs: "
+                    + ", ".join(unknown)
+                )
+            canonical = tuple(
+                work_id
+                for work_id in plan.ordered_work_item_ids
+                if work_id in set(assigned_ids)
+            )
+            if assigned_ids != canonical:
+                raise ValueError(
+                    "dynamic verifier assignment order differs from QueueWorkPlan"
+                )
+        items = {
+            item.work_item_id: item
+            for item in _read_typed_queue_work_items(
+                scratchpad / "verification_queue.md"
+            )
+        }
+        assigned = [items[work_id] for work_id in assigned_ids]
+    except Exception as exc:
+        return (
+            "- Persisted verification work plan is unavailable or invalid "
+            f"({type(exc).__name__}). Treat this as a manifest error; do not "
+            "repartition or guess assigned findings."
+        )
+    if not assigned:
         return (
             "- No rows assigned to this shard. If the manifest also has zero rows, "
             "return N/A without creating verifier files."
         )
     lines = []
-    for row in rows:
-        fid = (row.get("finding id") or "").strip()
+    for item in assigned:
+        fid = item.work_item_id
         if not fid:
             continue
-        title = re.sub(r"\s+", " ", row.get("title", "")).strip()
-        sev = normalize_severity(row.get("severity", ""))
-        lines.append(f"- {fid} -> verify_{fid}.md | {sev} | {title[:120]}")
+        title = re.sub(r"\s+", " ", item.title).strip()
+        sev = normalize_severity(item.severity_proposal.level)
+        constituents = json.dumps(
+            [item.work_item_id, *item.constituents],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        lines.append(
+            f"- {fid} -> verify_{fid}.md + "
+            f"verify_{fid}.severity_proposal.json | constituents={constituents} "
+            f"| {sev} | {title[:120]}"
+        )
     return "\n".join(lines) if lines else "- No parseable assigned finding IDs; treat this as a manifest error."
 
 
@@ -1781,6 +1858,10 @@ _LEGITIMATE_SUBPRODUCER_PATTERNS = {
     "skill_execution_checklist.md",
     "sibling_propagation_findings.md",
     "resweep_findings.md",
+    "verify_*.severity_proposal.json",
+    "verify_*.operator_application.json",
+    "verify_*.operator_receipt.json",
+    "verification_context_packets.json",
 
     # --- v2.2.0 artifacts (A.1 step-trace + A.4 NOTREAD gate) ---
     # A.1: per-Thorough-depth-agent step execution trace + driver aggregate.
@@ -1811,7 +1892,20 @@ _LEGITIMATE_SUBPRODUCER_PATTERNS = {
     #     expected_artifact and is allowlisted per-phase, but the matrix support
     #     files are referenced in the prompt and must not warn. ---
     "hot_function_axes.md",
+    "axis_disposition_worklist.json",
+    "axis_execution_evidence_authority.json",
     "axis_coverage_findings.md",
+    "axis_coverage_dispositions.json",
+    "axis_repair_plan.json",
+    "axis_coverage_repair_findings.md",
+    "axis_coverage_repair_dispositions.json",
+    "axis_repair_execution_receipt.json",
+    "axis_disposition_initial_receipt.json",
+    "axis_disposition_receipt.json",
+    "axis_repair_work.json",
+    "axis_assurance_debt.json",
+    "axis_assurance_limitations.md",
+    "axis_coverage_promotion_receipt.json",
 
     # --- Scratchpad: orchestrator-produced coordination artifacts ---
     "rag_validation.md",
@@ -1821,6 +1915,11 @@ _LEGITIMATE_SUBPRODUCER_PATTERNS = {
     "finding_mapping.md",
     "synthesis_full.md",
     "chain_candidate_pairs.md",
+    "chain_candidate_pairs_full.md",
+    "chain_candidate_pairs_iter2.md",
+    "chain_candidate_pairs_iter2.json",
+    "chain_composition_coverage_gaps.md",
+    "chain_tail_coverage_receipt.json",
     "variable_finding_map.md",
     "iter1_coverage_gap.md",
     "confidence_scores.md",
@@ -1842,7 +1941,13 @@ _LEGITIMATE_SUBPRODUCER_PATTERNS = {
     "file_coverage.md",
     "test_infrastructure.md",
     "dedup_candidate_pairs.md",
-    "poc_demotions.md",
+    "poc_demotion_proposals.md",
+    "poc_demotion_proposals.json",
+    "poc_demotion_scope_receipt.json",
+    "poc_demotion_scope_repair.json",
+    "poc_demotion_scope_debt.md",
+    "poc_demotion_scope_recovery_plan.json",
+    "poc_demotion_scope_recovery_status.json",
 
     # --- Scratchpad: EVM Thorough-only fuzz artifacts ---
     "invariant_fuzz_results.md",
@@ -1889,10 +1994,14 @@ _LEGITIMATE_SUBPRODUCER_PATTERNS = {
     "opengrep_findings.md",    # driver-sharded opengrep source ([OBLIG:...])
     "severity_binding.md",     # v2.8.3 driver-written severity provenance
     "status_binding.md",       # Fix 1 driver-written canonical verification-status
-    "security_obligations.md", # generic feature-derived audit obligations
+    "security_feature_facts.json",
+    "security_obligation_authority.json",
+    "security_obligations.md", # exact view of typed audit obligations
     "candidate_semantic_facets.md",
     "candidate_semantic_facets.json",
     "report_semantic_retention_risks.md",
+    "depth_finalization_receipt.json",
+    "depth_finalization_human_review.md",
 
     # --- Scratchpad: L1 bake / SCIP artifacts (under .scratchpad/scip/) ---
     "bake_validation.md",
@@ -2467,13 +2576,60 @@ def build_phase_prompt(v1_prompt: Path, phase: Phase, config: dict) -> str:
                     f"Phase '{phase.name}' V1 extraction failed ({e}) "
                     f"and no standalone prompt file exists."
                 ) from e
+    verification_dispatch = config.get("_verification_method_dispatch")
+    if (
+        isinstance(verification_dispatch, dict)
+        and (
+            phase.name in SC_VERIFY_PHASE_NAMES
+            or phase.name in L1_VERIFY_PHASE_NAMES
+        )
+    ):
+        compiled = verification_dispatch.get("prompt_markdown")
+        if not isinstance(compiled, str) or not compiled.strip():
+            raise PhasePromptError(
+                "typed verification method dispatch has no compiled prompt"
+            )
+        full = compiled
+        using_standalone_body = True
+        standalone_source_name = "verification_method_registry.v1"
     full = _render_runtime_placeholders(full, config)
-    if config.get("pipeline") == "l1" and phase.name in L1_VERIFY_PHASE_NAMES:
+    has_typed_verification_dispatch = isinstance(verification_dispatch, dict)
+    if (
+        not has_typed_verification_dispatch
+        and config.get("pipeline") == "l1"
+        and phase.name in L1_VERIFY_PHASE_NAMES
+    ):
         full = _prune_l1_verify_shard_prompt(full)
-    if _is_sc_verify_phase(config, phase.name):
+    if (
+        not has_typed_verification_dispatch
+        and _is_sc_verify_phase(config, phase.name)
+    ):
         full = _select_sc_verify_contract(full, phase.name)
-    if config.get("pipeline") != "l1" and phase.name in SC_VERIFY_PHASE_NAMES:
+    if (
+        not has_typed_verification_dispatch
+        and config.get("pipeline") != "l1"
+        and phase.name in SC_VERIFY_PHASE_NAMES
+    ):
         full = _prune_sc_verify_shard_prompt(full)
+    if (
+        phase.name in SC_VERIFY_PHASE_NAMES
+        or phase.name in L1_VERIFY_PHASE_NAMES
+    ):
+        severity_contract = compile_severity_prompt_contract()["markdown"]
+        full = (
+            full.rstrip()
+            + "\n\n## SEVERITY PROPOSAL SIDECAR (MANDATORY)\n\n"
+            + "For every assigned finding, write the exact typed proposal to "
+            + f"`{config['scratchpad']}/verify_<finding_id>.severity_proposal.json` in "
+            + "addition to the immutable `verify_<finding_id>.md`. The JSON "
+            + "contains proposal content only: never add driver-owned authority "
+            + "fields. The driver validates and binds identity, source, run, "
+            + "evidence, and launcher receipts after the verifier returns. If "
+            + "the proposal is incomplete, still write the best schema-valid "
+            + "proposal supported by current evidence; never lower or discard "
+            + "the finding to compensate.\n\n"
+            + severity_contract
+        )
     if phase.name == "rescan":
         full = _inline_stripped_rescan_prompt(full)
     if phase.name == "breadth":
@@ -2610,12 +2766,22 @@ Mandatory scope rules:
         _unsuffixed = _sp / "body_manifests" / f"{shard_key}.json"
         if _unsuffixed.exists():
             manifest_rel = f"body_manifests/{shard_key}.json"
+            evidence_manifest_rel = (
+                f"report_evidence_manifests/{shard_key}.json"
+            )
         else:
             _shard_files = sorted((_sp / "body_manifests").glob(f"{shard_key}_*.json"))
             if _shard_files:
                 manifest_rel = " + ".join(f"body_manifests/{f.name}" for f in _shard_files)
+                evidence_manifest_rel = " + ".join(
+                    f"report_evidence_manifests/{f.name}"
+                    for f in _shard_files
+                )
             else:
                 manifest_rel = f"body_manifests/{shard_key}.json"
+                evidence_manifest_rel = (
+                    f"report_evidence_manifests/{shard_key}.json"
+                )
         report_scope_directive = f"""
 ## BODY-WRITER PHASE OVERRIDE
 
@@ -2634,16 +2800,22 @@ which findings to write.
    `poc_result`, and `recommendation` fields contain the verifier's own
    narrative -- use them as substance and rephrase for clarity, do not invent
    new claims.
-2. The `verify_files` referenced for each manifest entry -- only when the
+2. `{evidence_manifest_rel}` -- the matching typed evidence authority. Its
+   embedded `report_evidence` record is authoritative for verdict, evidence
+   authenticity/result, proof scope, capabilities, limitations, and the
+   semantic fields the driver could ground. A Markdown PoC/Fuzz/CONFIRMED label
+   cannot widen this typed authority. Preserve every client-visible limitation.
+3. The `verify_files` referenced for each manifest entry -- only when the
    manifest's `description`/`recommendation` need additional context. For
    consolidated findings, read every file in `verify_files` and preserve each
    distinct proven location/impact in the body without exposing internal IDs.
-3. Cited source files, line-bounded -- only when you need to inline a
+4. Cited source files, line-bounded -- only when you need to inline a
    short code excerpt the verifier already proved.
 
-Read only the manifest and the evidence files explicitly referenced inside
-that manifest. Ignore every other scratchpad artifact for this phase. The
-manifest already contains every field you need.
+Read only the legacy manifest, its matching typed evidence manifest, and the
+evidence files explicitly referenced inside them. Ignore every other
+scratchpad artifact for this phase. The two manifests together contain every
+field and authority boundary you need.
 
 ## Output rules
 
@@ -2943,7 +3115,13 @@ ledgers, not a re-read of raw finding prose):
      field, and entrypoint facets)
   8. `dedup_decisions.md` / `dedup_absorbed_map.md` / `dedup_candidate_pairs.md`
      (consolidation hints — STEP 1.5)
-  9. `rag_validation.md`
+  9. `precedent_report_context.md` (when present; deterministic,
+     receipt-bound, report-eligible projection only). Never read or cite raw
+     `rag_validation.md`, `precedent_context.md`, or
+     `precedent_evidence_authority.json` in report generation.
+  10. `poc_demotion_scope_receipt.json` /
+      `poc_demotion_scope_recovery_status.json` (when present; exact grouped-PoC
+      proof scope and driver-validated recovery state)
 - Open an individual `verify_<ID>.md` or a SINGLE finding's body ONLY when one
   of the bounded ledgers above leaves THAT finding ambiguous, contested, or
   cross-referenced — never as a bulk scan, never the whole inventory.
@@ -2971,6 +3149,13 @@ ledgers, not a re-read of raw finding prose):
   1. `skeptic_judge_decisions.md`
   2. `verify_core.md`
   3. `severity_binding.md` / `verification_queue.md`
+- Grouped PoC monotonicity: `poc_demotion_proposals.json` and the grouped scope
+  receipt are non-authoritative review evidence. A failed/non-established PoC,
+  including an exhaustive scoped run, MUST NOT lower severity, exclude, refute,
+  or merge a finding. Preserve every constituent at the pre-proposal severity
+  shown in the coverage seed. `P0-O REVERIFIED SUPPLEMENT` is additive verifier
+  evidence, not permission for the index agent to invent a lower severity or
+  broaden a negative disposition.
 
 ## CONTESTED vs UNRESOLVED (MANDATORY DISTINCTION)
 
@@ -3118,7 +3303,9 @@ Cost discipline:
 ## SKEPTIC PHASE OVERRIDE
 
 The driver has written `{SCRATCHPAD}/skeptic_manifest.json`. That manifest is
-the authoritative list of Critical/High findings this phase MUST review.
+the authoritative list of trigger-selected findings (any tier) this phase MUST
+challenge. This phase is challenge-only proposal work: it grants no final
+severity, disposition, exclusion, dismissal, certification, or judge authority.
 
 Mandatory rules:
 1. Read `skeptic_manifest.json` first.
@@ -3140,7 +3327,7 @@ Output contract for `skeptic_findings.md`:
 
 Output contract for `skeptic_judge_decisions.md`:
 - One row per manifest ID:
-  `| Finding ID | Original Severity | Final Severity | Decision | Rationale |`
+  `| Finding ID | Original Severity | Proposed Severity | Decision | Rationale |`
 
 The post-phase gate fails if any manifest ID is absent. A retry hint will name
 the exact missing IDs.
@@ -3185,14 +3372,28 @@ Required behavior:
 ## INVENTORY SHARD COST OVERRIDE
 
 This shard exists to avoid inventory truncation on large breadth outputs.
+It is a lossless normalization boundary, not a semantic-dedup authority. This
+override supersedes any generic inventory-methodology instruction to merge or
+deduplicate findings inside a chunk. Semantic merging happens only in the
+later, independently authorized dedup phase.
 
 Mandatory rules:
 1. Read only the analysis files assigned in your shard manifest.
-2. Write every shard finding as `### Finding [<SHARD-ID>]: <title>`.
-3. Preserve explicit `**Source IDs**:` in every merged row so the final
-   inventory merge and parity gate can trace coverage.
-4. Do not deduplicate against files outside your shard.
-5. Write only your shard output and stop.
+2. Emit exactly ONE `### Finding [<SHARD-ID>]: <title>` detail block for every
+   upstream finding identity. Never combine two upstream identities into one
+   chunk block, even when they appear semantically identical.
+3. Preserve the exact upstream ID in `**Source IDs**:`. When the same bare ID
+   occurs in more than one assigned artifact, qualify it as
+   `<artifact-name>.md:<ID>` so the binding is unambiguous.
+4. Copy each upstream finding's complete Root Cause (or Description when Root
+   Cause is absent) and Impact text verbatim into the corresponding labeled
+   fields. You may add clarification after the verbatim text, but may not
+   replace or paraphrase those source facets. This is required for lossless
+   exact reconciliation.
+5. Do not semantically merge, deduplicate, refute, or discard a source finding
+   in this phase. Preserve doubtful and apparently duplicate findings as
+   separate chunk records for later independent adjudication.
+6. Write only your shard output and stop.
 """
     elif phase.name == "inventory":
         phase_cost_directive = """
@@ -3288,10 +3489,11 @@ unions both forms. The new group-lines above are PREFERRED.
 
 Your output:
 1. `{scratchpad}/dedup_decisions.md` (MERGE/KEEP decision lines, IDs only — the
-   driver mechanically rebuilds `verification_queue_deduped.md` from your
+   driver mechanically rebuilds `findings_inventory_deduped.md` from your
    decisions via the survivor-superset gate and zero-loss coupling)
 
-You do NOT write `verification_queue_deduped.md`. Stop after writing
+You do NOT write `findings_inventory_deduped.md` or any verification queue.
+Stop after writing
 `dedup_decisions.md`. Do not proceed outside this phase.
 """.format(scratchpad=config['scratchpad'])
     elif config.get("pipeline") == "sc" and phase.name == "sc_semantic_dedup":
@@ -3385,7 +3587,17 @@ Mandatory rules:
    this phase.
 """
     elif config.get("pipeline") != "l1" and phase.name in SC_VERIFY_PHASE_NAMES:
-        shard_manifest = SC_VERIFY_SHARD_MANIFESTS[phase.name]
+        shard_manifest = config.get("_dynamic_verifier_manifest") or (
+            SC_VERIFY_SHARD_MANIFESTS[phase.name]
+        )
+        runtime_budget = (
+            "This runtime assignment is mechanically bounded to at most 4 "
+            "findings. If the manifest exceeds 4 rows, stop without verifying "
+            "any row and report a manifest-authority error; never absorb "
+            "overflow into this worker. "
+            if config.get("_dynamic_verifier_work_item_ids") is not None
+            else ""
+        )
         shard_checklist = _render_verify_shard_checklist(config, phase.name)
         phase_cost_directive = """
 ## VERIFY COST OVERRIDE (SC SHARD)
@@ -3399,16 +3611,19 @@ Mandatory rules:
 {shard_checklist}
 
 1. Do NOT spawn subagents. Process the assigned rows directly and write one
-   `verify_<ID>.md` file per row.
+   `verify_<ID>.md` file per row plus one matching
+   `verify_<ID>.severity_proposal.json` per row.
 2. Treat EACH row in `{manifest}` as the canonical finding card.
-3. Process rows sequentially in manifest order. Write the verifier file before
-   moving to the next row.
+3. Process rows sequentially in manifest order. {runtime_budget}Write the
+   verifier pair before moving to the next row.
    If the manifest has an `Expected Output File` column, write exactly that
    filename. Otherwise derive it as `verify_<Finding ID>.md`.
-   On resume/retry, first check whether that exact verifier file already
-   exists and contains `Severity:`, `Evidence Tag:`, and `Verdict:`. If it is
-   complete, count it as done and skip to the next row. Do not rewrite
-   completed verifier files just because an earlier run was interrupted.
+   On resume/retry, first check whether that exact verifier pair already
+   exists, the Markdown contains `Severity:`, `Evidence Tag:`, and `Verdict:`,
+   and the JSON matches the typed severity schema. If both are complete, count
+   the row as done and skip to the next row. Do not rewrite completed verifier files
+   or their matching severity proposal sidecars just because an earlier run was
+   interrupted.
 4. For each row, read ONLY:
    - its own row in `{manifest}`
    - the exact source file(s) at the cited `Location`
@@ -3423,16 +3638,35 @@ Mandatory rules:
    - `Verdict:`
    Missing any of these fields is a hard gate failure.
 8. Verify ONLY the finding IDs present in `{manifest}`. Do not create
-   verifier files for findings outside your assigned shard.
+   verifier pairs for findings outside your assigned shard.
 9. Before returning, run a final manifest checklist: every row in `{manifest}`
-   must have its expected verifier file present and non-empty. If any file is
+   must have both expected verifier files present and non-empty. If either is
    missing, write it before returning. Never return partial completion such as
-   1/2, 7/12, or 9/12 verifier files.
+   1/2, 7/12, or 9/12 verifier pairs.
 10. Follow the PoC Execution Protocol and Assertion Retry Protocol from
    `~/.claude/rules/phase5-poc-execution.md`.
-""".format(manifest=shard_manifest, shard_checklist=shard_checklist)
+""".format(
+            manifest=shard_manifest,
+            shard_checklist=shard_checklist,
+            runtime_budget=runtime_budget,
+        )
     elif config.get("pipeline") == "l1" and phase.name in L1_VERIFY_PHASE_NAMES:
-        shard_manifest = L1_VERIFY_SHARD_MANIFESTS[phase.name]
+        shard_manifest = config.get("_dynamic_verifier_manifest") or (
+            L1_VERIFY_SHARD_MANIFESTS[phase.name]
+        )
+        runtime_budget = (
+            "This runtime assignment is mechanically bounded to at most 4 "
+            "findings. If the manifest exceeds 4 rows, stop without verifying "
+            "any row and report a manifest-authority error; never absorb "
+            "overflow into this worker. "
+            if config.get("_dynamic_verifier_work_item_ids") is not None
+            else (
+                "The driver uses severity-aware shard targets: Critical/High "
+                "~8 rows, Medium ~12 rows, Low/Info ~18 rows. If a manifest "
+                "exceeds 18 rows, verify all assigned rows but write a "
+                "`violations.md` note. "
+            )
+        )
         shard_checklist = _render_verify_shard_checklist(config, phase.name)
         phase_cost_directive = """
 ## VERIFY COST OVERRIDE
@@ -3447,25 +3681,25 @@ Mandatory rules:
 {shard_checklist}
 
 1. Do NOT spawn subagents from this verify shard. The current phase agent
-   processes the assigned rows directly and writes one `verify_<ID>.md` file
-   per row. Nested verifier swarms are forbidden because they multiplied prior
+   processes the assigned rows directly and writes one
+   `verify_<ID>.md` file per row plus one matching
+   `verify_<ID>.severity_proposal.json` sidecar. Nested verifier
+   swarms are forbidden because they multiplied prior
    L1 verification cost by O(number of findings).
 2. Treat EACH row in `{manifest}` as the canonical
    finding card. Do NOT reread the full `findings_inventory.md` for every
    verifier.
-3. Process rows sequentially in manifest order. The driver uses severity-aware
-   shard targets: Critical/High ~8 rows, Medium ~12 rows, Low/Info ~18 rows.
-   If a manifest exceeds 18 rows, verify all assigned rows but write a
-   `violations.md` note so the driver shard budget can be increased before the
-   next run. Keep a
-   compact per-row scratch summary in memory and write the verifier file before
+3. Process rows sequentially in manifest order. {runtime_budget}Keep a
+   compact per-row scratch summary in memory and write the verifier pair before
    moving to the next row.
    If the manifest has an `Expected Output File` column, write exactly that
    filename. Otherwise derive it as `verify_<Finding ID>.md`.
-   On resume/retry, first check whether that exact verifier file already
-   exists and contains `Severity:`, `Evidence Tag:`, and `Verdict:`. If it is
-   complete, count it as done and skip to the next row. Do not rewrite
-   completed verifier files just because an earlier run was interrupted.
+   On resume/retry, first check whether that exact verifier pair already
+   exists, the Markdown contains `Severity:`, `Evidence Tag:`, and `Verdict:`,
+   and the JSON matches the typed severity schema. If both are complete, count
+   the row as done and skip to the next row. Do not rewrite completed verifier files
+   or their matching severity proposal sidecars just because an earlier run was
+   interrupted.
 4. For each row, read ONLY:
    - its own row in `{manifest}`
    - the exact source file(s) at the cited `Location`
@@ -3483,17 +3717,21 @@ Mandatory rules:
    - `Verdict:`
    Missing any of these fields is a hard gate failure.
 8. Verify ONLY the finding IDs present in `{manifest}`. Do not create
-   verifier files for findings outside your assigned shard.
+   verifier pairs for findings outside your assigned shard.
 9. Before returning, run a final manifest checklist: every row in `{manifest}`
-   must have its expected verifier file present and non-empty. If any file is
+   must have both expected verifier files present and non-empty. If either is
    missing, write it before returning. Never return partial completion such as
-   1/2, 7/12, or 9/12 verifier files.
+   1/2, 7/12, or 9/12 verifier pairs.
 10. If the queued Location does not resolve, do NOT mark the finding
    FALSE_POSITIVE solely for that reason. First run a narrow location-recovery
    search using the finding title, source IDs, symbol names, and `scip/repo_map.md`.
    If a matching real location is found, update `Location:` and verify there.
    Only mark FALSE_POSITIVE after both the original and recovered locations fail.
-""".format(manifest=shard_manifest, shard_checklist=shard_checklist)
+""".format(
+            manifest=shard_manifest,
+            shard_checklist=shard_checklist,
+            runtime_budget=runtime_budget,
+        )
     elif config.get("pipeline") == "l1" and phase.name == "verify_aggregate":
         phase_cost_directive = """
 ## VERIFY AGGREGATE OVERRIDE
@@ -3523,6 +3761,35 @@ Mandatory rules:
 2. Prefer per-ID reads over whole-glob reads.
 3. Never reopen source files in `report_assemble` unless a mechanical gate
    explicitly says a citation is missing.
+"""
+
+    if (
+        isinstance(config.get("_verification_method_dispatch"), dict)
+        and (
+            phase.name in SC_VERIFY_PHASE_NAMES
+            or phase.name in L1_VERIFY_PHASE_NAMES
+        )
+    ):
+        shard_manifest = str(
+            config.get("_dynamic_verifier_manifest")
+            or "verification_queue.md"
+        )
+        shard_checklist = _render_verify_shard_checklist(config, phase.name)
+        phase_cost_directive = f"""
+## TYPED VERIFIER ASSIGNMENT
+
+The compiled method contract above is the complete verifier methodology.
+Read the exact assigned manifest {shard_manifest}, the driver-owned
+verification_context_packets.json, and
+~/.claude/rules/phase5-poc-execution.md.
+
+Assigned output checklist:
+
+{shard_checklist}
+
+For every row, write the verifier Markdown, typed severity proposal, and typed
+operator-application proposal named by the compiled contract. Do not spawn
+subagents or execute skeptic, cross-batch, aggregation, or report work.
 """
 
     # SCIP-sliced context directive for L1 depth agents.
@@ -3910,6 +4177,59 @@ these rules strictly:
         resumption_action = "spawning ANY Task subagents"
         resumption_missing_action = "spawn subagents for"
 
+    if no_subagent_phase:
+        # Direct model work is published through an attempt-owned transaction
+        # stage. The driver, not the model, owns prior-attempt discovery,
+        # quarantine, and reuse decisions. Telling a restricted worker to
+        # probe the canonical expected output here contradicts PhaseIO (the
+        # canonical output is not a readable input) and turns a harmless
+        # missing-file probe into a provider permission denial.
+        resumption_protocol = f"""## DRIVER-OWNED RESUMPTION PROTOCOL (HARD)
+
+The driver has already adjudicated prior attempts before launching this direct
+transactional worker. Do not inspect the canonical scratchpad for prior-attempt
+expected outputs and do not decide whether an expected output can be reused.
+
+In particular, do not use Read, Glob, Grep, directory listing, shell commands,
+or any other existence check on canonical expected-output paths. Canonical
+expected outputs are not PhaseIO inputs. Treat the attempt-owned output stage as
+initially absent, consume only the assigned PhaseIO inputs, and produce the
+current attempt from those inputs.
+
+Write exactly these expected artifacts: `{expected_artifacts_list}`. Write them
+only to the exact attempt-owned destinations in the final Runtime output routing
+block. The supervisor verifies and publishes those staged bytes after the worker
+returns.
+"""
+    else:
+        resumption_protocol = f"""## RESUMPTION PROTOCOL (MANDATORY SECOND ACTION -- after reading config)
+
+Before {resumption_action}, check the scratchpad for prior-attempt
+work. A previous subprocess may have been interrupted and left partial
+output -- do not repeat it.
+
+1. List your expected outputs (the V1 prompt section for your assigned
+   phase specifies them; check against `{{SCRATCHPAD}}` glob):
+   Expected artifacts for phase `{phase_name}`: {expected_artifacts_list}
+2. Any matching file >= 200 bytes is presumed COMPLETE work from a
+   prior attempt. Do NOT re-spawn the subagent that would have
+   produced it.
+   EXCEPTION: a file whose first ~30 lines contain the marker
+   `**Status**: MECHANICAL_BASELINE` is a driver-written scaffold/handoff
+   stub, NOT prior agent work, regardless of size. You MUST treat it as
+   MISSING for resumption purposes and produce the real artifact
+   (re-group, re-map, re-enumerate). Never skip a phase because a
+   MECHANICAL_BASELINE-stamped file exists.
+3. Only {resumption_missing_action} MISSING outputs or stubs < 200 bytes.
+4. If ALL expected outputs already exist: skip straight to your
+   phase's merge/analysis step (or exit if there is no merge step).
+   Do NOT re-run agents whose work is on disk.
+
+This protocol preserves 60-80% of prior work on interrupted phases and
+prevents re-burning tokens. On a typical breadth retry: if 5 of 8
+agents completed previously, you spawn only the missing 3.
+"""
+
     header = f"""You are running the **{phase.name}** phase of the Plamen {pipeline_name} audit pipeline.
 
 $ARGUMENTS: {arguments_str}
@@ -3928,6 +4248,7 @@ Both naming conventions provided to match V1 prompt placeholders:
 - SCOPE_NOTES: {notes_val or '(none)'}
 - NETWORK: {network_val or '(none)'}
 - SUBSYSTEM_SCOPE: {subsystem_scope or '(none)'}
+- PLAMEN_HOME (READ-ONLY methodology root): {plamen_home().as_posix()}
 - PROVEN_ONLY: {proven}
 - LAUNCHED_FROM_WRAPPER: true
 
@@ -3966,32 +4287,7 @@ Mandatory rules:
 {context_policy}
 {depth_quality_directive}
 
-## RESUMPTION PROTOCOL (MANDATORY SECOND ACTION -- after reading config)
-
-Before {resumption_action}, check the scratchpad for prior-attempt
-work. A previous subprocess may have been interrupted and left partial
-output -- do not repeat it.
-
-1. List your expected outputs (the V1 prompt section for your assigned
-   phase specifies them; check against `{{SCRATCHPAD}}` glob):
-   Expected artifacts for phase `{phase_name}`: {expected_artifacts_list}
-2. Any matching file >= 200 bytes is presumed COMPLETE work from a
-   prior attempt. Do NOT re-spawn the subagent that would have
-   produced it.
-   EXCEPTION: a file whose first ~30 lines contain the marker
-   `**Status**: MECHANICAL_BASELINE` is a driver-written scaffold/handoff
-   stub, NOT prior agent work, regardless of size. You MUST treat it as
-   MISSING for resumption purposes and produce the real artifact
-   (re-group, re-map, re-enumerate). Never skip a phase because a
-   MECHANICAL_BASELINE-stamped file exists.
-3. Only {resumption_missing_action} MISSING outputs or stubs < 200 bytes.
-4. If ALL expected outputs already exist: skip straight to your
-   phase's merge/analysis step (or exit if there is no merge step).
-   Do NOT re-run agents whose work is on disk.
-
-This protocol preserves 60-80% of prior work on interrupted phases and
-prevents re-burning tokens. On a typical breadth retry: if 5 of 8
-agents completed previously, you spawn only the missing 3.
+{resumption_protocol}
 {retry_exception_clause}
 {scip_directive}
 {l1_skill_injection}
@@ -4014,18 +4310,23 @@ the same MCP call. Claude Code's MCP timeout is 300s.
 ## READ-PATH DISCIPLINE (MANDATORY -- applies to coordinator AND every Task subagent)
 
 Every filesystem-reading tool call (Bash directory listing, Glob, Grep,
-Read, LS) MUST resolve to a path under either `PROJECT_ROOT` or
-`SCRATCHPAD` as resolved in the CONFIGURATION block above. The audit
-operates on exactly those two roots and nothing else.
+Read, LS) MUST resolve to a path under `PROJECT_ROOT` or `SCRATCHPAD` as
+resolved above. The sole exception is an exact methodology file explicitly
+named by this prompt under the read-only `PLAMEN_HOME`. That methodology tree
+admits exact named files only. The audit operates on project/scratchpad evidence
+and the content-bound methodology files, nothing else.
 
 Rules:
 
-1. Always prefix paths and globs with `PROJECT_ROOT` or `SCRATCHPAD`.
+1. Always prefix evidence paths and globs with `PROJECT_ROOT` or `SCRATCHPAD`.
    Bare patterns like `**/*.sol` or `*.md` resolve against the
    subprocess's working directory, which is NOT guaranteed to be the
    project root. Use `{{PROJECT_ROOT}}/**/*.sol` instead.
 
-2. Never read from paths outside these two roots. Examples of
+2. Never read from paths outside these evidence roots, except an exact
+   prompt-assigned `PLAMEN_HOME` methodology file. `PLAMEN_HOME` is READ-ONLY:
+   do not write there, list it recursively, or treat examples in methodology
+   prose as project evidence. Examples of otherwise
    out-of-scope locations regardless of OS: system temp directories,
    the user home directory, OS package/cache directories, the global
    Claude config dir, anything reachable via `..` traversal from
@@ -4041,8 +4342,9 @@ Rules:
 
 4. Subagent inheritance. When spawning a Task subagent, the coordinator
    MUST include in the subagent prompt: "Read-path discipline applies:
-   every Read/Bash/Glob/Grep MUST resolve under {{PROJECT_ROOT}} or
-   {{SCRATCHPAD}}." Subagents inherit this rule.
+   evidence reads stay under {{PROJECT_ROOT}} or {{SCRATCHPAD}}; only exact
+   prompt-assigned methodology files under read-only PLAMEN_HOME are also
+   allowed." Subagents inherit this rule.
 
 Violation symptom: a single tool result containing thousands of
 unrelated filenames (e.g., OS temp scratch files, system binaries,
@@ -4115,6 +4417,54 @@ narrower scope.
         scratchpad = Path(config["scratchpad"])
         hint = _read_retry_hint(scratchpad, phase.name)
         if hint:
+            retry_plan: dict = {}
+            retry_plan_path = scratchpad / f"{phase.name}_retry_plan.json"
+            try:
+                loaded_plan = json.loads(
+                    retry_plan_path.read_text(encoding="utf-8")
+                )
+                if (
+                    isinstance(loaded_plan, dict)
+                    and loaded_plan.get("schema") == "plamen.retry-plan/v1"
+                    and loaded_plan.get("phase_name") == phase.name
+                ):
+                    retry_plan = loaded_plan
+            except Exception:
+                retry_plan = {}
+            semantic_retry = bool(retry_plan.get("semantic_retry"))
+            semantic_contract_block = ""
+            if semantic_retry:
+                semantic_contract_block = (
+                    "## Authoritative semantic retry contract (HARD)\n\n"
+                    "The JSON below is the driver-owned denominator and failed-"
+                    "predicate contract. A non-empty file or minimum byte count "
+                    "does not satisfy it. Clear every listed predicate against "
+                    "the same denominator and schema.\n\n"
+                    "```json\n"
+                    + json.dumps(retry_plan, indent=2, sort_keys=True)
+                    + "\n```\n\n"
+                )
+            original_methodology_block = ""
+            if semantic_retry:
+                # For a semantic retry the original methodology is required
+                # context, not a pointer the model may elect not to follow.
+                # `header` is the exact already-rendered attempt-1 contract.
+                original_methodology_block = (
+                    "## Authoritative original phase methodology (HARD)\n\n"
+                    "Apply the full original methodology below while repairing "
+                    "the exact failed predicates. The delta does not replace "
+                    "the denominator, decision schema, or phase method.\n\n"
+                    + header
+                    + "\n\n## End authoritative original phase methodology\n\n"
+                )
+            direct_retry_resumption_block = ""
+            if no_subagent_phase and not semantic_retry:
+                # Semantic retries embed the authoritative attempt-1 header,
+                # which already contains this block. Compact non-semantic
+                # retries must carry the same no-probe transaction rule
+                # explicitly instead of falling back to the old scratchpad
+                # resumption behavior.
+                direct_retry_resumption_block = resumption_protocol + "\n"
             is_accumulate = phase.name in _ACCUMULATE_ON_RETRY_PHASES
             prior_snapshot = (
                 scratchpad / f"_prompt_{phase.name}.attempt1.md"
@@ -4203,18 +4553,20 @@ narrower scope.
                 f"- LAUNCHED_FROM_WRAPPER: true\n\n"
                 f"## What the previous attempt got wrong\n\n"
                 f"{hint}\n\n"
+                f"{semantic_contract_block}"
                 f"## Your task on this retry\n\n"
                 f"{retry_scope} {artifact_policy}\n\n"
                 f"{verify_checklist}"
                 f"{original_prompt_hint}"
                 f"{expected_block}\n\n"
+                f"{original_methodology_block}"
+                f"{direct_retry_resumption_block}"
                 f"## Critical phase scope (HARD)\n\n"
                 f"You are running INSIDE a single phase subprocess dispatched by "
                 f"`plamen_driver.py`. \n\n"
                 f"1. Do NOT execute work belonging to other phases.\n"
                 f"2. Do NOT initialize any V1 watchdog / phase_gate / stop-hook.\n"
-                f"3. Use the Task tool only for subagent work this phase's "
-                f"original prompt explicitly directs.\n"
+                f"3. Do NOT use the Task tool or spawn child agents.\n"
                 f"4. When the affected file(s) listed above are re-emitted to "
                 f"disk with correct content addressing every error in the "
                 f"'What the previous attempt got wrong' section, end the "
@@ -4238,4 +4590,43 @@ narrower scope.
             f"future-phase artifact/control-flow references after retry-hint "
             f"injection:\n  - {sample}"
         )
+    typed_unit = {
+        "chain_agent2": "model",
+        "chain_iter2": "model",
+        "report_index": "model",
+    }.get(phase.name)
+    if typed_unit:
+        try:
+            contract = resolve_phase_io_contract(
+                pipeline=str(config.get("pipeline") or "sc"),
+                mode=str(config.get("mode") or "core"),
+                ecosystem=str(config.get("language") or "unknown"),
+                backend=str(config.get("cli_backend") or "claude"),
+                phase=phase.name,
+                work_unit_id=typed_unit,
+                exact_inputs=tuple(
+                    (config.get("_phase_io_exact_inputs") or {}).get(
+                        phase.name, ()
+                    )
+                ),
+            )
+            header = compile_phase_io_prompt(header, contract, actor="MODEL")
+        except (ValueError, PromptContractError) as exc:
+            raise PhasePromptError(
+                f"Phase '{phase.name}' typed I/O prompt compilation failed: {exc}"
+            ) from exc
+    capability_category = str(config.get("_work_unit_category") or "*")
+    if phase.name == "depth" and capability_category == "*":
+        capability_category = "standard"
+    try:
+        capability = resolve_work_unit_capability(
+            pipeline=str(config.get("pipeline") or "sc"),
+            mode=str(config.get("mode") or "core"),
+            phase=phase.name,
+            category=capability_category,
+        )
+    except WorkCapabilityResolutionError:
+        capability = None
+    if capability is not None:
+        header = compile_work_unit_capability_contract(header, capability)
     return header

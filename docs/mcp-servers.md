@@ -1,78 +1,87 @@
 # MCP Servers
 
-Plamen uses 9 MCP servers configured in `mcp.json` (Claude Code) or `[mcp_servers.*]` TOML sections in `~/.codex/config.toml` (Codex). All keys are optional — the pipeline degrades gracefully.
+MCP is a narrow audit transport in Plamen, not a general installation or
+backend abstraction. The deterministic analyzers and chain toolchains run
+locally. Model backends are launched from the authenticated immutable runtime,
+not through MCP.
 
-MCP runs natively under both backends. On Claude Code the servers are loaded from `~/.claude/mcp.json`; on Codex the servers are loaded from `[mcp_servers.*]` blocks in `~/.codex/config.toml`, which `scripts/codex_adapter.py:generate_config_toml` generates from `mcp.json.example` at install time and `plamen install --codex` copies into place. The "tool translation" sometimes referenced elsewhere is prompt-text rewriting in `plamen_driver.py` (paths, `Task()` → `spawn_agent`, bash → PowerShell) — it is NOT an MCP transport shim.
+## Audit transport policy
 
-Two Codex-specific caveats:
-1. `evm-chain-data` is currently disabled on Codex due to an MCP protocol version mismatch (`scripts/codex_adapter.py:276`).
-2. Four Python MCP servers (`slither-analyzer`, `unified-vuln-db`, `farofino`, `solana-fender`) are wrapped through `mcp-packages/schema-sanitizer.js` to strip `oneOf`/`allOf` JSON-schema constructs Codex rejects (`scripts/codex_adapter.py:270-275`).
+| Audit route | MCP availability | Research behavior |
+|---|---|---|
+| Claude headless `rag_sweep` | Receipt-bound `unified-vuln-db`, only when host containment is admitted | Contained local RAG; governed Web/local fallback when unavailable |
+| Claude headless, other roles | None | Governed Web/local sources as allowed by the phase |
+| Claude PTY workers | None | Governed Web/local sources |
+| Codex (`codex exec --ignore-user-config`) | None | Governed Web/local sources |
 
-Tool permissions on Codex cannot be pre-configured: select "Always allow" on the first prompt per MCP server (`plamen.py:_install_codex_adapter`).
+Consequently, user-level `mcp.json`, Codex MCP tables, and ambient MCP
+processes do not become audit authority. Plamen does not promise that a server
+available in an interactive Claude or Codex session is available to an audit
+subprocess.
 
-## Bundled (custom-mcp/)
+## Immutable selection and launch
 
-| Server | Purpose | Required? |
-|--------|---------|-----------|
-| **unified-vuln-db** | RAG vulnerability database (Solodit, DeFiHackLabs, Immunefi, Immunefi Competitions) | **Required** |
-| **solana-fender** | Solana program static security analysis | Optional (Solana only) |
+`plamen install` materializes MCP payloads with managed Node.js 24.20.0 and
+npm 11.19.0. It never uses ambient `node`, `npm`, `npx`, npm wrappers, or a
+global package directory. The install also materializes exact Claude Code
+2.1.252 and Codex 0.152.0 backends; backend stdio is never routed through the
+MCP sanitizer.
 
-## Submodules (custom-mcp/)
+The committed signed current selection binds the generation and its receipt,
+census, request, policy, executable resource closures, and exact server launch
+descriptors. A public MCP launch must match that selection byte-for-byte. The
+installed front revalidates package and generation authority, keeps the
+generation locked for the process lifetime, and applies the schema sanitizer
+before any server protocol traffic. Stale selection, path substitution,
+unexpected arguments, extra environment, updater debris, or closure drift is
+denied before spawn.
 
-| Server | Purpose | Required? |
-|--------|---------|-----------|
-| **[slither-mcp](https://github.com/trailofbits/slither-mcp)** | Slither static analyzer | Optional (EVM, falls back to grep) |
-| **[farofino-mcp](https://github.com/italoag/farofino-mcp)** | Aderyn + pattern analysis | Optional (EVM fallback) |
+Do not edit generated MCP configuration, invoke files below the generation
+store directly, or copy paths from the selection into a manual command. A new
+MCP or backend version becomes current only through `plamen install` from a
+complete governed source release.
 
-## npm Packages (installed on demand via npx)
+## Containment by operating system
 
-| Server | Purpose | API Key? |
-|--------|---------|----------|
-| **foundry-suite** | Anvil fork testing, Forge scripts, Heimdall bytecode | No |
-| **evm-chain-data** | On-chain ABI/state queries via Etherscan | Optional (free) |
-| **tavily-search** | Web search for fork ancestry + docs | Optional (free) |
-| **helius** | Solana on-chain data | Optional (free) |
-| **memory** | Persistent memory across sessions | No |
+- Windows admits the contained route with a non-breakaway Job object and
+  verifies descendant-process teardown.
+- Linux admits it only through the delegated cgroup v2 plus Landlock policy
+  when the required kernel and delegation capabilities are present.
+- Unsupported Linux configurations and macOS fail closed before MCP spawn.
 
-## API Keys
+Failing closed affects only contained MCP RAG. The audit itself remains
+supported on Windows, Linux, and macOS and continues with the governed Web or
+local research fallback. Claude PTY and Codex do not attempt MCP containment.
 
-| Key | Where to Get | Cost | Used For |
-|-----|-------------|------|----------|
-| Solodit | [solodit.cyfrin.io](https://solodit.cyfrin.io) | Free | RAG indexing (3400+ findings from Solodit alone, 4k+ total across all sources) + live search |
-| Etherscan | [etherscan.io/apis](https://etherscan.io/apis) | Free | Contract ABI verification |
-| Tavily | [tavily.com](https://tavily.com) | Free tier | Fork ancestry, RAG fallback |
-| Helius | [helius.dev](https://helius.dev) | Free tier | Solana on-chain data |
-| RPC URL | Alchemy, Infura, or public | Free/Paid | Fork testing |
+## Servers and API keys
 
-> **Recommended**: Get the free Solodit API key (4k+ findings with all sources vs ~1.5k without Solodit) and Tavily key (WebSearch fallback when RAG is slow).
+The only server admitted to the current audit path is the bundled
+`unified-vuln-db` service for Claude-headless `rag_sweep`. Its index can be
+built with:
 
-## Configuration Example
-
-**Claude Code**: See `mcp.json.example` for the full 9-server configuration. After `plamen install`, `mcp.json` is placed in `~/.claude/`.
-
-**Codex**: MCP servers are loaded from `[mcp_servers.*]` TOML blocks in `~/.codex/config.toml`, generated at install time by `scripts/codex_adapter.py` from `mcp.json.example`. After `plamen install --codex` the config is at `~/.codex/config.toml`. Tool permissions are interactive on first use per server. See the two Codex caveats above (disabled `evm-chain-data`, schema-sanitized Python servers).
-
-Key `mcp.json` entries:
-
-```json
-{
-  "mcpServers": {
-    "unified-vuln-db": {
-      "command": "python",
-      "args": ["-m", "unified_vuln.server"],
-      "cwd": "./custom-mcp/unified-vuln-db"
-    },
-    "foundry-suite": {
-      "command": "npx",
-      "args": ["-y", "@pranesh.asp/foundry-mcp-server"],
-      "env": { "RPC_URL": "YOUR_RPC_URL" }
-    }
-  }
-}
+```bash
+plamen rag
 ```
 
-Path notes: `cwd` fields use relative paths resolved from `~/.plamen/`. On Codex, paths inside generated `config.toml` resolve via `~/.codex/plamen/`, which is a symlink to `~/.plamen/` created by `plamen install --codex` — same source tree, different runtime root.
+Some data sources require an API key such as `SOLODIT_API_KEY`. Store secrets
+through the documented Plamen/provider environment configuration, never in
+generated selection files or command arguments. The signed server descriptor
+contains only the exact allowed environment-variable names; it does not store
+secret values.
 
----
+The source tree also contains analyzer integrations and historical MCP
+components. Their presence does not make them audit-executable. Production
+availability is determined solely by the current signed selection and route
+policy described above.
 
-**See also**: [getting-started.md](getting-started.md) · [dependencies.md](dependencies.md) · [codex-backend.md](codex-backend.md) · [architecture.md](architecture.md) · [docs index](README.md)
+## Diagnostics
+
+Run:
+
+```bash
+plamen doctor
+```
+
+Doctor authenticates the installed receipt, managed runtime, current
+selection, and containment prerequisites without starting a model or MCP
+server. It does not consult global Node/npm/npx, Claude, or Codex installs.

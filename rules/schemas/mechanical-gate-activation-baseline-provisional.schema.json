@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plamen.mechanical_gate_activation_inventory_candidate.provisional.v1",
+  "title": "Non-authoritative mechanical-gate activation inventory candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "runtime_authority_granted",
+    "authoritative_registry",
+    "source_snapshot",
+    "independent_review_receipt_sha256",
+    "gate_count",
+    "activation_count",
+    "activations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.mechanical_gate_activation_inventory_candidate.provisional.v1"
+    },
+    "status": {
+      "const": "PROVISIONAL_UNWRAPPED_UNREVIEWED"
+    },
+    "runtime_authority_granted": {
+      "const": false
+    },
+    "authoritative_registry": {
+      "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/authoritative_registry"
+    },
+    "source_snapshot": {
+      "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/source_snapshot"
+    },
+    "independent_review_receipt_sha256": {
+      "type": "null"
+    },
+    "gate_count": {
+      "const": 33
+    },
+    "activation_count": {
+      "const": 33
+    },
+    "activations": {
+      "type": "array",
+      "minItems": 33,
+      "maxItems": 33,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "forensic_id",
+          "gate_id",
+          "activation_id",
+          "owning_seam",
+          "applicability",
+          "definitions",
+          "observed_callsites",
+          "wrapper_target",
+          "literal_runtime_registration_present"
+        ],
+        "properties": {
+          "forensic_id": {
+            "pattern": "^MG-[0-9]{3}$"
+          },
+          "gate_id": {
+            "pattern": "^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$"
+          },
+          "activation_id": {
+            "pattern": "^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$"
+          },
+          "owning_seam": {
+            "type": "string",
+            "minLength": 1
+          },
+          "applicability": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pipelines",
+              "modes",
+              "ecosystems",
+              "backends",
+              "phase_contexts",
+              "status"
+            ],
+            "properties": {
+              "pipelines": {
+                "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/nonempty_unique_strings"
+              },
+              "modes": {
+                "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/nonempty_unique_strings"
+              },
+              "ecosystems": {
+                "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/nonempty_unique_strings"
+              },
+              "backends": {
+                "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/nonempty_unique_strings"
+              },
+              "phase_contexts": {
+                "$ref": "mechanical-gate-registry-provisional.schema.json#/$defs/nonempty_unique_strings"
+              },
+              "status": {
+                "enum": [
+                  "FORENSIC_EXACT",
+                  "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+                ]
+              }
+            }
+          },
+          "definitions": {
+            "$ref": "#/$defs/definitions"
+          },
+          "observed_callsites": {
+            "$ref": "#/$defs/callsites"
+          },
+          "wrapper_target": {
+            "$ref": "#/$defs/wrapper_target"
+          },
+          "literal_runtime_registration_present": {
+            "const": false
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "definitions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "module",
+          "symbol",
+          "source_line"
+        ],
+        "properties": {
+          "module": {
+            "type": "string",
+            "pattern": "^scripts/[A-Za-z0-9_./-]+\\.py$"
+          },
+          "symbol": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_line": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "callsites": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "module",
+          "enclosing_symbol",
+          "call_symbol",
+          "source_line"
+        ],
+        "properties": {
+          "module": {
+            "type": "string",
+            "pattern": "^scripts/[A-Za-z0-9_./-]+\\.py$"
+          },
+          "enclosing_symbol": {
+            "type": "string",
+            "minLength": 1
+          },
+          "call_symbol": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_line": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "wrapper_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module",
+        "symbol",
+        "strategy"
+      ],
+      "properties": {
+        "module": {
+          "type": "string",
+          "pattern": "^scripts/[A-Za-z0-9_./-]+\\.py$"
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy": {
+          "enum": [
+            "INLINE_AT_EXISTING_CALLSITE",
+            "WRAP_EXISTING_SYMBOL_ENTRY",
+            "SPLIT_SHARED_VALIDATOR_DECISIONS",
+            "WRAP_EXISTING_DRIVER_TRANSACTION"
+          ]
+        }
+      }
+    }
+  }
+}

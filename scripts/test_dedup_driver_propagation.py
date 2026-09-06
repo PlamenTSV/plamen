@@ -17,37 +17,69 @@ ZERO-DATA-LOSS posture: propagation is purely additive; carry-forward prevents
 re-deciding (oscillation) but never blind-merges. No merge is applied here.
 """
 
-import re
+import shutil
 from pathlib import Path
 
 import plamen_driver as d
+from plamen_mechanical import apply_llm_dedup_decisions
+
+
+def _install_receipted_aliases(
+    scratchpad: Path, pairs: list[tuple[str, str]],
+) -> None:
+    """Apply real SC merges and swap the receipted result to canonical."""
+    all_ids = sorted({fid for pair in pairs for fid in pair})
+    absorbed = {item for item, _survivor in pairs}
+    blocks: list[str] = []
+    for index, fid in enumerate(all_ids, 1):
+        source_ids = f"S-{index}"
+        for absorbed_id, survivor_id in pairs:
+            if fid == survivor_id:
+                absorbed_index = all_ids.index(absorbed_id) + 1
+                source_ids += f", S-{absorbed_index}"
+        line = index * 20
+        if fid not in absorbed:
+            location = f"src/module.rs:{line}-{line + 19}"
+        else:
+            survivor = next(s for a, s in pairs if a == fid)
+            survivor_index = all_ids.index(survivor) + 1
+            survivor_line = survivor_index * 20
+            location = f"src/module.rs:{survivor_line + 2}-{survivor_line + 4}"
+        blocks.append(
+            f"### Finding [{fid}]: finding {fid}\n"
+            "**Severity**: Medium\n"
+            f"**Location**: {location}\n"
+            f"**Source IDs**: {source_ids}\n"
+            "**Root Cause**: shared root cause\n"
+            "**Description**: shared mechanism\n"
+            "**Impact**: material impact\n"
+            "**Recommendation**: apply the shared fix\n\n"
+        )
+    decisions = "# Semantic Dedup Decisions\n\n" + "\n".join(
+        f"MERGE: {survivor}, {absorbed_id}"
+        for absorbed_id, survivor in pairs
+    ) + "\n"
+    (scratchpad / "findings_inventory.md").write_text("".join(blocks), encoding="utf-8")
+    (scratchpad / "dedup_decisions.md").write_text(decisions, encoding="utf-8")
+    assert apply_llm_dedup_decisions(scratchpad, "sc_semantic_dedup") == len(pairs)
+    shutil.copy2(
+        scratchpad / "findings_inventory_deduped.md",
+        scratchpad / "findings_inventory.md",
+    )
 
 
 # ---------------------------------------------------------------------------
 # _dedup_absorbed_survivor_mapping
 # ---------------------------------------------------------------------------
 
-def test_absorbed_mapping_parses_both_formats(tmp_path: Path):
-    (tmp_path / "dedup_decisions.md").write_text(
-        "# Semantic Dedup Decisions\n\n"
-        "## Status Table\n\n"
-        "| Finding ID | Status | Coupled-content | Notes |\n"
-        "|------------|--------|-----------------|-------|\n"
-        "| INV-001 | PASS |  | unchanged |\n"
-        "| INV-013 | MERGED into INV-014 | inbound config-hash check coupled "
-        "into INV-014 | survivor superset; INV-014 keeps [POC-PASS] |\n"
-        "\n---\n\n## Supplemental Mechanical Dedup\n\n"
-        "| Action | Absorbed | Into | Signal |\n"
-        "|--------|----------|------|--------|\n"
-        "| MECHANICAL_SUPPLEMENT | INV-061 | INV-062 | location overlap |\n",
-        encoding="utf-8",
+def test_absorbed_mapping_consumes_applied_receipt_only(tmp_path: Path):
+    _install_receipted_aliases(
+        tmp_path, [("INV-013", "INV-014"), ("INV-061", "INV-062")]
     )
     m = d._dedup_absorbed_survivor_mapping(tmp_path)
     assert m["INV-013"]["survivor"] == "INV-014"
-    assert "inbound config-hash" in m["INV-013"]["coupled"]
+    assert m["INV-013"]["coupled"] == "field-complete-preserved"
     assert m["INV-061"]["survivor"] == "INV-062"
-    # PASS row is NOT a merge -> not in mapping.
-    assert "INV-001" not in m
 
 
 def test_absorbed_mapping_empty_when_no_decisions(tmp_path: Path):
@@ -63,25 +95,18 @@ def test_absorbed_mapping_empty_when_no_decisions(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 def test_propagate_writes_sidecar_when_no_finding_mapping(tmp_path: Path):
-    (tmp_path / "dedup_decisions.md").write_text(
-        "| INV-010 | MERGED into INV-011 | distinct route coupled | ok |\n",
-        encoding="utf-8",
-    )
+    _install_receipted_aliases(tmp_path, [("INV-010", "INV-011")])
     n = d._propagate_dedup_absorbed_to_finding_mapping(tmp_path)
     assert n == 1
     sidecar = tmp_path / "dedup_absorbed_map.md"
     assert sidecar.exists()
     body = sidecar.read_text(encoding="utf-8")
     assert "INV-010" in body and "INV-011" in body
-    assert "distinct route coupled" in body
+    assert "field-complete-preserved" in body
 
 
 def test_propagate_records_constituent_in_existing_finding_mapping(tmp_path: Path):
-    # dedup_decisions: INV-010 absorbed into INV-011
-    (tmp_path / "dedup_decisions.md").write_text(
-        "| INV-010 | MERGED into INV-011 | coupled second path | ok |\n",
-        encoding="utf-8",
-    )
+    _install_receipted_aliases(tmp_path, [("INV-010", "INV-011")])
     # finding_mapping already has INV-011 -> H-5 (chain ran)
     (tmp_path / "finding_mapping.md").write_text(
         "# Finding Mapping\n\n"
@@ -102,9 +127,7 @@ def test_propagate_records_constituent_in_existing_finding_mapping(tmp_path: Pat
 
 
 def test_propagate_does_not_duplicate_already_mapped_absorbed(tmp_path: Path):
-    (tmp_path / "dedup_decisions.md").write_text(
-        "| INV-010 | MERGED into INV-011 | x | y |\n", encoding="utf-8"
-    )
+    _install_receipted_aliases(tmp_path, [("INV-010", "INV-011")])
     # finding_mapping ALREADY contains INV-010 (chain re-added it).
     (tmp_path / "finding_mapping.md").write_text(
         "# Finding Mapping\n\n"
@@ -124,9 +147,7 @@ def test_propagate_does_not_duplicate_already_mapped_absorbed(tmp_path: Path):
 
 def test_propagate_survivor_missing_falls_back_not_dropped(tmp_path: Path):
     # Survivor INV-099 is NOT in finding_mapping (chain dropped/renamed it).
-    (tmp_path / "dedup_decisions.md").write_text(
-        "| INV-098 | MERGED into INV-099 | coupled | n |\n", encoding="utf-8"
-    )
+    _install_receipted_aliases(tmp_path, [("INV-098", "INV-099")])
     (tmp_path / "finding_mapping.md").write_text(
         "# Finding Mapping\n\n"
         "| Finding ID | Hypothesis ID | Mapping Status | Notes |\n"

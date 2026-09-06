@@ -20,7 +20,7 @@
 | `design_stress_findings.md` | Design Stress Testing | 4b iter 1 |
 | `perturbation_findings.md` | Finding Perturbation Agent | 4b post |
 | `skill_execution_gaps.md` | Skill Execution Checklist | 4b post |
-| `confidence_scores.md` | Scoring agent | 4b scoring |
+| `confidence_scores.md` | Deterministic driver confidence transaction | 4b post-wave |
 | `adaptive_loop_log.md` | Orchestrator | 4b exit |
 
 ## EVM-Specific Artifacts (Thorough Mode)

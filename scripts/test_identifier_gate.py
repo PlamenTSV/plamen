@@ -203,7 +203,7 @@ def test_neg4_no_concrete_identifier_untouched(tmp_path: Path):
 
 # --------------------------------------------- downstream filter behavior ---
 
-def test_filter_appendix_routes_identifier_unverified_never_hard_drops_medium(tmp_path: Path):
+def test_filter_retains_identifier_unverified_as_repair_debt_for_all_severities(tmp_path: Path):
     v = _val()
     scratch = tmp_path / ".scratchpad"
     scratch.mkdir()
@@ -225,9 +225,13 @@ def test_filter_appendix_routes_identifier_unverified_never_hard_drops_medium(tm
     (scratch / "verification_queue.md").write_text(queue, encoding="utf-8")
 
     removed = v._filter_verification_queue_by_evidence(scratch)
-    assert "L-01" in removed, "Low IDENTIFIER_UNVERIFIED is appendix-routed out of active verification"
-    assert "M-01" not in removed, "Medium stays in active verification (flag-only, never appendix-routed)"
-    assert (scratch / "verification_queue_evidence_excluded.md").exists(), "appendix ledger, not a silent drop"
+    assert removed == []
+    active = v.parse_verification_queue_rows(scratch)
+    assert {row["finding id"] for row in active} == {"L-01", "M-01"}
+    low = next(row for row in active if row["finding id"] == "L-01")
+    assert "IDENTIFIER_UNVERIFIED" in low["evidence debt"]
+    debt = (scratch / "verification_queue_evidence_debt.md").read_text(encoding="utf-8")
+    assert "L-01" in debt and "RETAINED_ACTIVE" in debt
 
 
 if __name__ == "__main__":

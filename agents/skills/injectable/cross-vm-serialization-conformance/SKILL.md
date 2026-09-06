@@ -2,6 +2,7 @@
 
 > **Trigger**: `NON_EVM_TARGET` flag (recon detects a non-EVM destination — Solana/Bitcoin/Move/Cosmos — via 32-byte pubkey constants, base58/bech32 handling, custom account/byte encoders (account-meta packers, Borsh-style packing), or a foreign chain-id/program-id).
 > **Inject Into**: breadth agent owning the cross-chain/encoding focus, and depth-external.
+> **Language**: EVM
 > **Protocol Types**: any contract that SERIALIZES data on the EVM side for consumption by a DIFFERENT VM (cross-chain bridges, general cross-chain messaging protocols, Solana/Bitcoin gateways).
 > **Added in**: recall-recovery (post a ground-truth audit comparison — closes the outbound-encoding gap CROSS_CHAIN_MESSAGE_INTEGRITY does not cover; that skill covers INBOUND decode/auth only).
 

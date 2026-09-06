@@ -5,8 +5,21 @@ invariants from the audit artifacts, build a fuzz harness, run it, and report
 violations.
 Execute the instructions below directly and stop. Do not spawn subagents.
 
-> **Primary tool**: cargo-fuzz (`cargo_fuzz_available: true` in build_status.md;
-> requires nightly Rust).
+## P2-A execution boundary (launch prompt is authoritative)
+
+Use only the isolated driver-owned copied build root and generated fuzz/test
+lanes supplied by the launch prompt. Existing tests and fuzz harnesses are
+quarantined read-only legacy context with distinct provenance; never execute or
+clone them. Use the model-callable runner only for probes/builds. A campaign
+requires an exact driver-prepared secure-launcher contract binding argv,
+selected harness bytes, assertion IDs, and a positive case/time budget;
+otherwise record visible `UNSCORED` debt. Never promote a probe receipt; use
+bound raw logs instead of shell pipes. Never install globally or
+write/execute in the original project root. Invalid workspace authority is
+visible `TOOL_UNAVAILABLE`, never a fallback permission.
+
+> **Primary tool**: cargo-fuzz (requires nightly Rust), detected only through
+> recorded Cargo probes inside the copied workspace.
 > **Fallback**: proptest with bounded inputs (stable Rust, all platforms) →
 > boundary-value parameterized tests (0, 1, typical, i128::MAX), when cargo-fuzz
 > is unavailable.
@@ -22,14 +35,16 @@ Execute the instructions below directly and stop. Do not spawn subagents.
 - `{SCRATCHPAD}/state_variables.md`, `{SCRATCHPAD}/function_list.md`
 - `{SCRATCHPAD}/contract_inventory.md`, `{SCRATCHPAD}/constraint_variables.md`
 - Soroban contract source files cited by the relevant invariants
-- Existing `soroban-sdk` test harnesses when present
+- Fresh generated `soroban-sdk` test harness only (pre-existing tests are quarantined)
 
 ## STEP 0: Tool Selection
 
-Read `cargo_fuzz_available` from `{SCRATCHPAD}/build_status.md`.
-- `true` → use cargo-fuzz (primary path).
-- `false` / absent → FALLBACK: proptest with bounded inputs, or boundary-value
-  parameterized tests when proptest is unavailable. State which path you took.
+Pass `cargo --version` and then `cargo fuzz --help` through the recorded runner.
+- Successful cargo-fuzz probe → use cargo-fuzz (primary path).
+- Unavailable/failed cargo-fuzz probe → FALLBACK: generate a fresh proptest
+  harness with bounded inputs, or boundary-value parameterized tests when
+  proptest is unavailable. State which path you took. Do not infer availability
+  from a stale build-status flag and never install a missing Cargo subcommand.
 
 ## STEP 1: Derive Invariants (NO CAP — test everything meaningful)
 
@@ -73,14 +88,14 @@ Not tautological; sensitive to real bugs; testable from contract state only.
 ## STEP 3: Run Campaign
 
 ```bash
-# cd to the build root (dir owning Cargo.toml — granted via --add-dir)
-pushd <BUILD_ROOT> && cargo fuzz init 2>&1 | tail -10   # if fuzz/ does not exist
-pushd <BUILD_ROOT> && cargo +nightly fuzz run fuzz_target_1 -- -max_total_time=300 2>&1 | tail -50
+# Conceptual argv; pass through the recorded runner from the copied root.
+cargo fuzz init
+cargo +nightly fuzz run fuzz_target_1 -- -max_total_time=300 -runs=10000
 ```
 
 Fallback (no nightly / cargo-fuzz unavailable):
 ```bash
-pushd <BUILD_ROOT> && cargo test --features testutils fuzz_ 2>&1 | tail -50   # proptest
+cargo test --features testutils fuzz_   # proptest argv via recorded runner
 ```
 
 If compilation fails: read error, apply a targeted fix, retry ONCE. If still
@@ -112,7 +127,7 @@ Reason: <one line>
 For each violation, use standard finding format with `[FUZZ-N]` IDs:
 - failing seed / case + command output + the exact invariant violated
 - Severity: standard matrix
-- Evidence tag: [FUZZ-PASS] (mechanical proof, same weight as [POC-PASS])
+- Evidence tag: [FUZZ-PASS] (authenticated counterexample to the encoded oracle; proof scope is recorded separately)
 ```
 
 A non-RAN status with NO findings is a valid, complete artifact. RAN with no

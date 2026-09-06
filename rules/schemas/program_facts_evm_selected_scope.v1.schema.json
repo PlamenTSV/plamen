@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_selected_scope.v1.schema.json",
+  "title": "Program Facts EVM selected scope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "candidate_universe_digest",
+    "selection_policy_id",
+    "detected_candidate_ids",
+    "selected_candidate_ids",
+    "excluded_candidate_ids",
+    "unresolved_candidate_ids",
+    "unresolved_debt_ids",
+    "claim",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_selected_scope.v1"
+    },
+    "status": {
+      "enum": [
+        "SELECTED",
+        "DEGRADED",
+        "UNAVAILABLE",
+        "FAILED",
+        "STALE"
+      ]
+    },
+    "candidate_universe_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "selection_policy_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "detected_candidate_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "selected_candidate_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "excluded_candidate_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "unresolved_candidate_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "unresolved_debt_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "claim": {
+      "const": "EXACT_SELECTED_SCOPE_NOT_PROJECT_COMPLETE"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    }
+  }
+}

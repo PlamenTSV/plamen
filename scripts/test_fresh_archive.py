@@ -1,11 +1,8 @@
-"""--fresh must evict prior-run answer-key artifacts from project_root.
+"""Explicit archival moves report answer keys but preserves fuzz workspaces.
 
-`--fresh` historically wiped only the scratchpad, leaving prior AUDIT_REPORTs,
-RCA notes, and Plamen-generated fuzz harnesses (`.medusa-tests/`) in the tree —
-which recon then ingested (whole-project compile + Slither pull harness
-contracts into the inventory), priming a supposedly-fresh discovery run.
-`_archive_prior_audit_artifacts` moves those to a dot-prefixed sibling archive
-(never deletes; dot-prefixed so no build/Slither/recon walk can re-ingest it).
+Report/RCA files can be explicit answer keys. Preserved `.medusa-tests` data is
+not moved: production-source and Slither boundaries exclude it, while fuzz
+authority copies it only into quarantine.
 """
 from __future__ import annotations
 
@@ -26,7 +23,7 @@ def _proj(tmp_path: Path) -> Path:
     return proj
 
 
-def test_archives_reports_rca_and_fuzz_harness(tmp_path):
+def test_archives_reports_and_rca_but_preserves_fuzz_harness(tmp_path):
     proj = _proj(tmp_path)
     # answer-key artifacts
     _mk(proj / "AUDIT_REPORT-20260701-2140.md", "# prior report\nC-01 ...")
@@ -54,19 +51,19 @@ def test_archives_reports_rca_and_fuzz_harness(tmp_path):
         "RC_AGENT_FIXTURE_RCA.md", "CONSOLIDATION-FIX-NOTES.md",
     ):
         assert not (proj / name).exists(), f"{name} should have been moved"
-    assert not (proj / ".medusa-tests").exists()
+    assert (proj / ".medusa-tests" / "MedusaCampaignV6.sol").is_file()
 
     # ...and present in the archive (moved, not deleted)
     assert (archive / "AUDIT_REPORT-20260701-2140.md").is_file()
     assert (archive / "PARTIAL_RCA.md").is_file()
-    assert (archive / ".medusa-tests" / "MedusaCampaignV6.sol").is_file()
+    assert not (archive / ".medusa-tests").exists()
 
     # legitimate source is UNTOUCHED
     assert (proj / "CrossChainRouter.sol").is_file()
     assert (proj / "interfaces" / "IBridgeRouter.sol").is_file()
 
 
-def test_dot_prefixed_archive_is_invisible_to_source_walks(tmp_path):
+def test_dot_prefixed_report_archive_is_invisible_to_source_walks(tmp_path):
     # A dot-prefixed archive at the Foundry root must be skipped by the same
     # walks recon/compile use, so it can never be re-ingested.
     import recon_prepass as RP
@@ -77,7 +74,7 @@ def test_dot_prefixed_archive_is_invisible_to_source_walks(tmp_path):
 
     archive = PD._archive_prior_audit_artifacts(proj)
     assert archive is not None
-    # The moved harness now lives under a dot-dir at the Foundry root (parent).
+    # The report archive lives under a dot-dir at the Foundry root (parent).
     foundry_root = proj.parent
     comp = RP._compile_unit_files(foundry_root, (".sol",))
     rels = {p.relative_to(foundry_root).as_posix() for p in comp}

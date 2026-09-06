@@ -3,17 +3,33 @@
 You are the Invariant Fuzz Generator. You derive protocol-specific invariants from the audit artifacts and translate them into Foundry invariant tests.
 Execute the instructions below directly and stop. Do not spawn subagents.
 
+## P2-A execution boundary (launch prompt is authoritative)
+
+The launch prompt supplies an isolated, driver-owned runnable build root, an
+immutable workspace authority, a generated-harness lane, a quarantine, and a
+recorded command-runner invocation. Treat `{PROJECT_ROOT}` below as that copied
+runnable root, never as the user's original tree. Pre-existing quarantined legacy tests are
+read-only context with distinct provenance: never execute them, clone their
+bytes, or count them as generated coverage. Generate a fresh harness only in
+the allowed lane. The model-callable recorded runner is for probes/builds. A
+campaign may run only from an exact driver-prepared secure-launcher contract
+binding argv, selected harness bytes, assertion IDs, and a positive case budget;
+otherwise record visible `UNSCORED` execution debt. Never rewrite a probe receipt
+into campaign evidence. Use no shell pipes/redirections or timeout wrapper. Never install a tool or
+write to the original project/build root. An absent/invalid workspace authority
+is visible `TOOL_UNAVAILABLE`, not permission to fall back.
+
 > **Purpose**: LLM-generated Foundry invariant tests targeting
 > protocol-specific economic invariants, lifecycle correctness, and
 > structural consistency — derived from the audited codebase's actual
 > design, not generic templates.
 > **Budget**: 0 depth slots (runs between semantic invariants and depth
 > agents; cost = 1 agent + forge execution).
-> **Trigger**: Always runs when `semantic_invariants.md` exists AND
-> `foundry.toml` exists in project root.
-> **Skip**: If project uses Hardhat only (no `foundry.toml`) → the driver
-> skips this phase entirely. Hardhat has no native invariant test support.
-> **Execution cost**: Forge test execution is a Bash tool call — zero
+> **Trigger**: Scheduled for every EVM Thorough depth run. The worker probes
+> `forge --version` through the recorded runner and records visible
+> `TOOL_UNAVAILABLE`/`NOT_APPLICABLE` status when no Foundry-compatible copied
+> build root exists; the driver does not silently pre-skip the row.
+> **Execution cost**: Recorded Forge execution is zero
 > token cost regardless of invariant count, handler count, or run count.
 > There is NO reason to cap the number of invariants or handlers.
 
@@ -196,22 +212,16 @@ The `setUp()` deploy block above assumes the in-scope accounting/escrow/state-ma
 
 ## STEP 3: Compile and Run Campaign
 
-First compile:
-```bash
-cd {PROJECT_ROOT} && forge build 2>&1 | tail -30
-```
+First compile by passing `forge build` to the recorded runner. Read its bound
+stdout/stderr sidecars; do not pipe or truncate the command.
 
 If compilation fails: read error, fix imports/types/remappings, retry (max 3 attempts). If still fails: report compilation error, skip execution, and return early.
 
-Then run — 256 runs × depth 25 (typically 3–10 minutes, zero token cost for more runs):
-```bash
-cd {PROJECT_ROOT} && timeout 600 forge test --match-contract InvariantFuzz --invariant-runs 256 --invariant-depth 25 --fail-on-revert false -vv 2>&1 | head -300
-```
-
-On Windows (no `timeout` command — forge's internal run cap handles it):
-```bash
-cd {PROJECT_ROOT} && forge test --match-contract InvariantFuzz --invariant-runs 256 --invariant-depth 25 --fail-on-revert false -vv 2>&1 | head -300
-```
+Then request this exact argv in the driver-prepared campaign contract with its 600-second bound (256 runs
+× depth 25): `forge test --match-contract InvariantFuzz --invariant-runs 256
+--invariant-depth 25 --fail-on-revert false -vv`. Execute it only through the
+secure-launcher contract supplied by the launch prompt. The runner is the same on
+Windows and POSIX and records full raw output.
 
 If execution takes >10 minutes, the 256-run cap will terminate it. More runs = better coverage at zero token cost.
 
@@ -249,7 +259,7 @@ For each violation, use standard finding format with [FUZZ-N] IDs:
 - Include the counterexample call sequence from forge output
 - Map to existing findings where applicable
 - Severity: use standard matrix (invariant violations on core accounting = High likelihood)
-- Evidence tag: [POC-PASS] (mechanical proof via executed test)
+- Evidence tag: [POC-PASS] (authenticated execution of the encoded assertion; proof scope is recorded separately)
 ```
 
 If NO violations found: write summary with `No violations detected in {runs} runs across {N} invariants` and return.

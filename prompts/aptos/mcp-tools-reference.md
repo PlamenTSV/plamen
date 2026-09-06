@@ -2,7 +2,10 @@
 
 > **No Move-specific MCP servers are available.** Unlike EVM (which has Slither MCP and Farofino), the Aptos/Move ecosystem does not have dedicated MCP static analysis servers. Use CLI tools via Bash for compilation, testing, and formal verification.
 >
-> **MCP tools (`mcp__unified-vuln-db__*`, `mcp__tavily-search__*`) are available directly.** The servers are configured globally in `~/.claude.json` and load automatically at session start. Call them directly -- no ToolSearch or loading step needed.
+> **Do not assume ambient MCP.** V2 Claude PTY and Codex audit subprocesses
+> load no MCP servers. Only Claude headless `rag_sweep` may receive the
+> receipt-bound singleton `unified-vuln-db`; otherwise precedent uses governed
+> Web research.
 >
 > **If a tool call fails with "No such tool available"**, it means the MCP server failed to start. Check with `claude mcp list` and restart the session.
 
@@ -207,7 +210,7 @@ Object, Resource, Type Safety, Module Upgrade, Capability
 | Move Prover fails (no specs, prover error) | Set `PROVER_AVAILABLE = false`, all analysis via Read + Grep |
 | `aptos move compile` fails | Set `COMPILE_AVAILABLE = false`, analyze source directly via Read |
 | `aptos move test` fails | Set `TEST_AVAILABLE = false`, verifiers write PoC tests but note compilation failure |
-| unified-vuln-db MCP fails | Document failure, proceed without RAG (RAG_Match axis = 0.3 floor) |
+| unified-vuln-db MCP fails | Document failure; precedent remains UNSCORED context and contributes no confidence value |
 | tavily-search MCP fails | Document failure, proceed without web research |
 | All MCP tools fail | Full audit proceeds via Read + Grep tools only -- document in build_status.md |
 

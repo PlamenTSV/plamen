@@ -7,6 +7,7 @@ description: "Type Thought-template (instantiate before use) - Research basis Ca
 
 > **Type**: Thought-template (instantiate before use)
 > **Research basis**: Cached parameters in multi-step operations become stale when governance changes them mid-operation
+> **Inject Into**: Breadth agents, depth-state-trace
 
 ## Trigger Patterns
 ```

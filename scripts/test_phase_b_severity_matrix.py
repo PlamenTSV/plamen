@@ -20,6 +20,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import plamen_driver as D  # noqa: E402
+from typed_test_authority import bind_verifier_outputs  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -327,7 +328,7 @@ Verdict: CONFIRMED
 
 
 def test_ENFORCE_matrix_plus_modifiers():
-    """Matrix says High, fully_trusted demotes to Medium."""
+    """A raw fully_trusted claim cannot demote the High matrix result."""
     verify_text = """
 **Verdict**: CONFIRMED
 **Severity**: Critical
@@ -338,8 +339,8 @@ def test_ENFORCE_matrix_plus_modifiers():
     queue_row = {"severity": "Critical"}
     got = D._enforce_severity_matrix(verify_text, queue_row)
     check(
-        "ENFORCE.matrix_then_trusted",
-        got == "Medium",
+        "ENFORCE.raw_trust_proposal_has_zero_authority",
+        got == "High",
         f"got={got}",
     )
 
@@ -457,6 +458,7 @@ def test_INTEG_report_index_applies_matrix(tmp_path: Path):
 **Location**: src/Foo.sol:L1
 """, encoding="utf-8")
 
+    bind_verifier_outputs(sp)
     n = D._write_mechanical_report_index(sp)
     check("INTEG.row_count_1", n == 1, f"n={n}")
 
@@ -485,6 +487,7 @@ def test_INTEG_report_index_preserves_when_no_matrix_data(tmp_path: Path):
 **Location**: src/Foo.sol:L1
 """, encoding="utf-8")
 
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     idx_text = (sp / "report_index.md").read_text(encoding="utf-8")
     check(

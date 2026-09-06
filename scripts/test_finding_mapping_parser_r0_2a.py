@@ -102,7 +102,7 @@ H-22 is compared with H-24 while report labels H-02 and L-27 remain separate.
         encoding="utf-8",
     )
 
-    joined = M._dedup_source_ids_by_report_id(tmp_path)
+    joined = P._dedup_source_ids_by_report_id(tmp_path)
 
     assert joined["H-02"] == {"INV-041"}
     assert joined["L-27"] == {"INV-116"}
@@ -128,7 +128,7 @@ def test_hypothesis_lookup_aliases_are_not_shared_source_values(tmp_path):
         encoding="utf-8",
     )
 
-    joined = M._dedup_source_ids_by_report_id(tmp_path)
+    joined = P._dedup_source_ids_by_report_id(tmp_path)
 
     assert joined["H-01"] == {"INV-001", "INV-002"}
     assert "H-1" not in joined["H-01"]

@@ -149,16 +149,23 @@ Downgrade modifiers: on-chain-only exploit (-1), view-function-only (cap Medium)
 
 ## Driver
 
-One-liner: **Python driver → worker pool → one backend PTY session (Claude Code or Codex) per artifact → disk artifact gate → retry only missing/bad rows. The worker saying "done" is not trusted; disk markers are.**
+One-liner: **Python driver → worker pool → one isolated backend invocation
+(Claude PTY or headless `codex exec`) per artifact → disk artifact gate → retry
+only missing/bad rows. The worker saying "done" is not trusted; disk markers
+are.**
 
-The pipeline driver (`plamen_driver.py`) executes phases as isolated subprocesses. This is the only execution model — all invocations (`/plamen-wizard`, `plamen` terminal, `plamen core`, etc.) launch this driver. It runs on Windows, macOS, and Linux against either the Claude Code or Codex (BETA) backend.
+The pipeline driver (`plamen_driver.py`) executes model-owned phases as isolated
+backend subprocesses and mechanical phases as deterministic Python. All public
+invocations (`/plamen-wizard`, terminal `plamen`, `plamen core`, and their L1
+forms) converge on this driver. It runs on Windows, macOS, and Linux against
+either managed Claude Code or Codex (BETA).
 
 ### Driver layout
 
 | Component | Purpose |
 |-----------|---------|
 | `plamen_driver.py` | Phase scheduling, checkpointing, retry, gate checking, worker-pool orchestration |
-| `plamen_types.py` | Canonical definitions (evidence tags, severities, finding ID regex); `plamen_home()` resolves `~/.plamen/` (canonical install root) — `~/.claude/` and `~/.codex/plamen/` are install-created symlinks pointing at it, see `glossary.md` / `repository-structure.md` |
+| `plamen_types.py` | Canonical definitions (evidence tags, severities, finding ID regex); installed `plamen_home()` resolves the signed `~/.plamen/` package, while backend integration state is separately projected/copied under `~/.claude/` and `~/.codex/` |
 | `plamen_parsers.py` | LLM output parsing (report index, verification results) |
 | `plamen_validators.py` | Artifact quality gates (mechanical, not LLM-dependent); per-row marker statuses (`_BREADTH_STATUS_*`, `scripts/plamen_validators.py:931-935`) |
 | `plamen_prompt.py` | Phase prompt building with forward-ref sanitization |
@@ -169,26 +176,32 @@ The pipeline driver (`plamen_driver.py`) executes phases as isolated subprocesse
 | `mechanical_verify.py` | Phase 5 mechanical verification helpers (severity caps, PoC demotions, integrity gates) |
 | `chain_prep.py` | Chain-analysis pre-pass: extracts candidate finding pairs with shared state / type before the chain LLM phase |
 | `report_index_machinery.py` | Report-index ID assignment and `report_coverage.md` ledger reconciliation |
-| `pty_exec.py` | Claude PTY session: POSIX `pty.openpty()` + `Popen` with `preexec_fn` setup, Windows `winpty.PtyProcess.spawn`; `ClaudePtySession`, transcript polling, compaction detection (`scripts/pty_exec.py:858-1245`) |
+| `pty_exec.py` | Claude PTY session: POSIX `pty.openpty()` + governed process ownership, Windows `winpty.PtyProcess.spawn`; Codex uses its separate headless `codex exec` transport |
 | `preflight_pty_transports.py` | Per-host PTY transport probe; cache schema v3 (`scripts/preflight_pty_transports.py:62`) |
 | `codex_adapter.py` | Codex CLI backend: tool translation, path rewriting (`~/.claude/` ↔ `~/.codex/plamen/`) |
 | `recon_prepass.py` | Pre-recon static analysis (Slither, Opengrep, SCIP) |
 
-The driver auto-detects the active backend via `plamen_home()` (`scripts/plamen_types.py:87-101`). Resolution order: `PLAMEN_HOME` env → script-relative install root → `~/.claude/` fallback. The canonical install lives under `~/.plamen/`; the backend-named directories (`~/.claude/`, `~/.codex/plamen/`) are symlinks created at install time so each CLI can find the same prompts/rules/skills tree. Config files differ per backend: `CLAUDE.md` + `settings.json` + `mcp.json` for Claude Code; `AGENTS.md` + `config.toml` for Codex.
+Installed public entry points authenticate the COMMITTED receipt and execute the
+runtime under `~/.plamen/`; the mutable source checkout is not a runtime
+dependency. The installer creates a signed, receipt-bound Claude projection
+under `~/.claude/` using governed link/copy representations and transactionally
+copies/merges Codex roles, skills, commands, `AGENTS.md`, and `config.toml` under
+`~/.codex/`. Managed backend launchers are bound to exact Claude Code 2.1.252 and
+Codex 0.152.0 selections running on managed Node.js 24.20.0/npm 11.19.0.
 
 ### Execution model
 
 Three execution shapes coexist behind the same `plamen_home()` and disk-gate primitives:
 
-1. **Direct PTY worker pool** — used for `breadth`, `rescan`, `per_contract`, and `depth`. The driver builds a manifest of expected output artifacts (one per spawned worker), launches a bounded `ThreadPoolExecutor` (`_run_breadth_worker_pool_pty`, `scripts/plamen_driver.py:7696-7866`), and spawns one Claude PTY session per row via `ClaudePtySession`. Each worker's success is a disk artifact passing the row gate — the worker's prose `DONE` is **advisory only**.
-2. **LLM phase session** — used for sequential analytical phases (recon, inventory, chain, report_index, skeptic, judge, crossbatch, tier writers, etc.). The driver spawns one Claude PTY session per phase, supervises it with `wait_for_turn_complete`, and runs `gate_passes` against the scratchpad after the turn ends.
+1. **Direct worker pool** — used for `breadth`, `rescan`, `per_contract`, and `depth`. The driver builds a manifest of expected output artifacts, launches a bounded worker pool, and invokes one Claude PTY or headless Codex process per row. Each worker's success is a disk artifact passing the row gate — the worker's prose `DONE` is **advisory only**.
+2. **LLM phase session** — used for sequential analytical phases (recon, inventory, chain, report index, skeptic, judge, tier writers, etc.). The driver uses the selected backend's isolated transport and runs `gate_passes` against the scratchpad after the turn ends.
 3. **Python mechanical** — used for `inventory_prepare`, `report_assemble`, `chain_prep`, `verify_aggregate`, semantic-dedup fallback, severity binding, and similar plumbing phases. No LLM is spawned; deterministic Python in `plamen_mechanical.py` / `mechanical_verify.py` / `chain_prep.py` / `report_index_machinery.py` reads and writes scratchpad artifacts in-process.
 
 All three shapes share the same checkpoint (`_v2_checkpoint.json`), the same `gate_passes` validator, the same `plamen_home()`-derived paths, and the same artifact ownership rules. Phase ordering and retry policy live in `plamen_driver.py`; shape-specific behavior is dispatched by phase name.
 
 ### Model routing
 
-Opus phases run on **Opus 4.8** (`claude-opus-4-8`) by default across all modes — its stronger multi-step instruction-following reduces attempt-1 misses on recon coverage, breadth/rescan fan-out, and verification rigor (`PLAMEN_OPUS_MODEL`, `scripts/plamen_types.py:105-125`). **Core** (like all modes) defaults its opus tier to Opus 4.8; the **Thorough** promotion only additionally raises to Opus 4.8 the reasoning-critical roles (discovery = breadth + depth, verification shards, skeptic-judge) that would otherwise run on Sonnet, while **Light** stays on Sonnet to bound plan usage (`PLAMEN_THOROUGH_OPUS_MODEL`, `scripts/plamen_types.py:111-118`). Both defaults are env-overridable for benchmarking or cost-capping.
+Claude tiers resolve to fixed model IDs: **Opus 5** (`claude-opus-5`), **Sonnet 5** (`claude-sonnet-5`), and the dated Haiku 4.5 snapshot. **Core** uses the phase's pinned tier; **Thorough** promotes reasoning-critical roles (discovery, verification shards, skeptic-judge) to Opus 5; **Light** stays on Sonnet 5 to bound plan usage. `PLAMEN_OPUS_MODEL`, `PLAMEN_THOROUGH_OPUS_MODEL`, `PLAMEN_SONNET_MODEL`, and `PLAMEN_HAIKU_MODEL` are explicit overrides for benchmarking, gateways, or cost controls.
 
 ### Backends (Claude Code + Codex BETA)
 
@@ -232,7 +245,7 @@ The recall-generator functions below stamp a literal token into a candidate's `*
 | `VARGAP-B` | Receipt-key prefix only for Gate V axis 2 (boundary-input coverage) — the text actually stamped into `Source IDs` is the plain `VARGAP` row below | `compute_boundary_input_candidates` (`enumeration_gate.py:994`) | No |
 | `VARGAP-S` | Receipt-key prefix only for Gate V axis 3 (symmetric-operation coverage) — same `VARGAP` caveat | `compute_symmetric_operation_candidates` (`enumeration_gate.py:1100`) | No |
 | `VARGAP` | The literal tag both Gate V axis derivers above actually stamp into a finding's `Source IDs` line | `compute_variant_gaps` (`enumeration_gate.py:1177`) | No — referenced only in a driver log line, not regex-matched |
-| `PROMOGAP` | Gate P promotion-completeness candidate: harvested finding-shaped content routed to body/Appendix C/Appendix A as a fresh `NEEDS_VERIFICATION` block | `route_promotion_orphans` (`plamen_mechanical.py:5052`) | **Yes** |
+| `PROMOGAP` | Gate P promotion-completeness candidate: harvested finding-shaped content reopened in the inventory as a fresh `NEEDS_VERIFICATION` block; current active dispositions are all `BODY` | `route_promotion_orphans` (`plamen_mechanical.py:5052`) | **Yes** |
 | `INVARIANT:CI-n` | Mechanism 1 committed-invariant assertion candidate — always suffixed with the specific `CI-n` id, never bare `INVARIANT` | `compute_invariant_assertion_candidates` (`enumeration_gate.py:1266`) | **Yes** |
 | `AXISGAP:<worker-finding-id>` | Mechanism 2 axis-coverage-gap candidate — always suffixed with the axis worker's own finding id | `compute_axis_coverage_gaps` / `promote_axis_findings_to_inventory` (`enumeration_gate.py:1772` / `:1907`) | **Yes** |
 | `NEXP-n` | Raw finding-ID prefix from the Phase 4b.7 depth-exploration worker, promoted verbatim as the `Source IDs` value; matched by the same chain-enabler regex as `ENUMGAP` | `promote_enumgap_exploration_to_inventory` (`enumeration_gate.py:2068`) | **Yes** |
@@ -254,11 +267,11 @@ Read the mechanical reference graph (bake output, below) plus the finding invent
 | `compute_unbounded_input_candidates` | `scripts/enumeration_gate.py:835` | production source tree | candidates via `_emit_candidates` (`UNBOUND`) | Detects a caller-controlled string/bytes value stored on-chain with no length bound (storage-bloat / gas-bomb DoS) |
 | `compute_boundary_input_candidates` | `scripts/enumeration_gate.py:994` | `_mechanical_graph.json`, `findings_inventory.md`, production source tree | candidates via `_emit_candidates` (`VARGAP-B`) | Gate V axis 2: for each CONFIRMED/PARTIAL finding, checks whether its own prose addressed the required boundary set `{0,1,min,MAX,empty,self}` for the enclosing function's parameters |
 | `compute_symmetric_operation_candidates` | `scripts/enumeration_gate.py:1100` | `chain_candidate_pairs.md`, `findings_inventory.md` | candidates via `_emit_candidates` (`VARGAP-S`) | Gate V axis 3: reads structurally-paired operation legs (shared state/type signal) and flags when one leg is CONFIRMED/PARTIAL but its sibling leg's own finding is not |
-| `compute_variant_gaps` / `validate_variant_coverage` | `scripts/enumeration_gate.py:1177` | outputs of the 3 axis derivers above | aggregate emitted-count dict | Gate V (Fix A) driver: runs the co-reference, boundary-input, and symmetric-operation axes together, unconditional and not confidence-gated |
+| `compute_variant_gaps` / `validate_variant_coverage` | `scripts/enumeration_gate.py:1177` | boundary-input and symmetric-operation candidate outputs | aggregate emitted-count dict | Gate V (Fix A) driver: runs boundary-input and symmetric-operation coverage only, unconditional and not confidence-gated. G1/G2 own co-reference expansion separately. Its two 15-candidate pools are additional to `run_enumeration_gate`'s 100-candidate bound, making the accepted-depth maximum 130 before axis work. |
 | `compute_invariant_assertion_candidates` | `scripts/enumeration_gate.py:1266` | `exploration_skeptic_findings.md`, `skeptic_findings.md`, `depth_*_findings.md`, `verify_*.md`, `_mechanical_graph.json` | candidates via `_emit_candidates` (`INVARIANT`) | Mechanism 1: harvests committed-invariant blocks that skeptic/depth/verify phases stamp behind a SAFE/REFUTED verdict, turning each tacit local guard into a falsifiable low-confidence candidate |
 | `compute_hot_function_set` | `scripts/enumeration_gate.py:1550` | `_mechanical_graph.json`, `function_summary.md`, `attack_surface.md`, production source tree | ranked, capped in-memory hot-function list (feeds `compute_axis_coverage_gaps`) | Mechanism 2: deterministically ranks the mechanically-hot production functions (log-dampened fan-in + state-write + elevate + value-effect + entry-point signals) so the LLM cannot clobber the target set |
 | `compute_axis_coverage_gaps` | `scripts/enumeration_gate.py:1772` | `compute_hot_function_set()` output, `findings_inventory.md`, `depth_*_findings.md`, `*_findings.md` | `hot_function_axes.md`, `_hot_function_axes.json`, gap list | Thorough-only Mechanism 2 prepass: builds a function x risk-axis (theft/liveness/accounting/provenance/boundary/identity) matrix over the hot set. Closed structured evidence tags are primary; bounded Description/Impact cues are secondary for tag-light findings; ambiguous defaults to GAP. A Sonnet worker is spawned only when GAP rows exist. |
-| `run_enumeration_gate` | `scripts/enumeration_gate.py:2181` | all deriver inputs above | aggregate obligations/gaps/emitted counts | Driver entry point: runs G1+G2 then every additional obligation-deriver, each with its own independent per-run emission budget so one deriver cannot starve another |
+| `run_enumeration_gate` | `scripts/enumeration_gate.py:2181` | all deriver inputs above except Gate V | aggregate obligations/gaps/emitted counts | Driver entry point: runs G1+G2's 40-candidate pool plus four additional 15-candidate pools, each independent so one deriver cannot starve another; its maximum is 100 before the separately invoked Gate V pools |
 
 ### Gates
 
@@ -267,10 +280,10 @@ Adjudicate mechanical claims against ground truth (the coverage seed, or actual 
 | Function | Location | Consumes | Produces | Purpose |
 |----------|----------|----------|----------|---------|
 | `compute_promotion_orphans` | `scripts/plamen_mechanical.py:4834` | `report_index_coverage_seed.md`, feeder globs (`depth_*.md`, `blind_spot_*.md`, `analysis_*.md`, checklists) | `promotion_orphans.md` | Gate P harvest: scans feeder artifacts for content-shaped finding blocks (real file:line location + mechanism cue + descriptive text) and reconciles each against the coverage seed; anything not already tracked is an orphan |
-| `_promo_disposition` | `scripts/plamen_mechanical.py:4763` | one harvested candidate dict | `(disposition, reason)` tuple | Routes one harvested promotion-orphan candidate to BODY/APPENDIX_C/APPENDIX_A via the same material-harm classifier the disposition ledger uses |
-| `route_promotion_orphans` | `scripts/plamen_mechanical.py:5052` | `compute_promotion_orphans()` output, `promotion_gate_receipt.md` | `findings_inventory.md` (appended `PROMOGAP` blocks), `promotion_routing.md`, `promotion_orphans_appendix_c.md`, `promotion_orphans_appendix_a.md`, `promotion_gate_receipt.md` | Gate P router: dispositions each harvested orphan to BODY (appended as a `NEEDS_VERIFICATION` candidate), Appendix C (quality/hardening), or Appendix A (refuted/content-less), idempotent via a content-hash receipt |
+| `_promo_disposition` | `scripts/plamen_mechanical.py:4763` | one harvested candidate dict | `("BODY", reason)` tuple | Reopens every active harvested promotion-orphan case for independent verification. Classifier and producer-negative results remain non-authoritative proposals and cannot route a candidate out of the inventory. |
+| `route_promotion_orphans` | `scripts/plamen_mechanical.py:5052` | `compute_promotion_orphans()` output, `promotion_gate_receipt.md` | `findings_inventory.md` (appended `PROMOGAP` blocks), `promotion_routing.md`, compatibility staging snapshots, `promotion_gate_receipt.md` | Gate P router: appends every currently active harvested orphan as a `NEEDS_VERIFICATION` candidate, idempotent via a content-hash receipt. Historic Appendix A/C routing is tombstoned; its staging snapshots are compatibility artifacts, not live negative-disposition authority. |
 | `_classify_integrity` | `scripts/mechanical_verify.py:1546` | verifier prose evidence-tag claim, mechanical execution status, `verify_<ID>.md` text | `(integrity_state, effective_tag)` tuple | Integrity gate: compares a verifier's prose evidence-tag claim against the actual mechanical test-execution status; classifies CONSISTENT / INFLATED_PROSE / POC_UNVERIFIED_HARNESS / MECHANICAL_UNAVAILABLE and computes an effective tag |
-| `flip_verdict_on_integrity_downgrade` | `scripts/mechanical_verify.py:1628` | `verify_<ID>.md` text | rewritten `verify_<ID>.md` Verdict field | Rewrites a verifier's Verdict field from CONFIRMED to CONTESTED `[INTEGRITY-DOWNGRADE]` when the integrity gate found inflated prose, so a mechanically-disproven exploit can never ship as verified-Critical |
+| `flip_verdict_on_integrity_downgrade` | `scripts/mechanical_verify.py:1628` | legacy test callers only | legacy rewritten verifier markdown | Tombstoned compatibility helper (`verdict.integrity_markdown_flip`): it has no production caller and is not live verdict authority. Current integrity handling is carried by the typed verdict manifest. |
 | `_write_verdict_manifest` | `scripts/mechanical_verify.py:1648` | `ExecResult` list, `verify_<ID>.md` files | `verdict_manifest.json` | Writes the canonical per-finding effective evidence tag (post integrity-gate) that skeptic-judge and report-index phases read instead of the verifier's raw prose claim |
 | `run_phase5b_mechanical_verify` | `scripts/mechanical_verify.py:1844` | `verify_<ID>.md` files, project build tree, language registry | `mechanical_verify_manifest.md`, `verdict_manifest.json`, annotated `verify_<ID>.md` files | Top-level driver entry: locates the build root, prewarms the build, runs each finding's PoC test mechanically, classifies pass/fail/harness-status, and writes the verdict manifest |
 
@@ -318,7 +331,7 @@ Consolidate duplicate findings and preserve provenance across the pipeline's dis
 | `build_dedup_cluster_map` | `scripts/plamen_mechanical.py:3408` | `findings_inventory.md` | `dedup_cluster_map.md` | Writes the transitive-closure consolidation-hint map over post-pairwise-dedup survivors (same file+function+fix-pattern, same tier) that report-index STEP-1.5 reads to emit one finding per cluster |
 | `_detect_dedup_report_clusters` | `scripts/plamen_mechanical.py:3208` | inventory finding records | in-memory cluster list (feeds `build_dedup_cluster_map`) | Pure clustering primitive: groups inventory records into consolidation clusters and computes each cluster's survivor, unioned locations, and rendered location table |
 | `_apply_mechanical_dedup_from_pairs` | `scripts/plamen_mechanical.py:8474` | `dedup_candidate_pairs.md` or `dedup_candidate_pairs_full.md`, `verification_queue.md` or `findings_inventory.md` | `*_deduped.md` (fallback) or in-place merged artifact + `dedup_decisions.md` (supplemental) | Mechanical dedup fallback/supplement when LLM dedup fails or leaves deferred pairs: merges only source-ID-subset/PERT-lineage or location-overlap+title-match pairs of the same severity, gated by an aggregate guard and a survivor-superset check so no distinct attack path is dropped |
-| `_dedup_report_python` | `scripts/plamen_mechanical.py:5391` | `AUDIT_REPORT.md`, report_dedup agent proposal artifacts, `dedup_candidate_pairs*.md` | rewritten `AUDIT_REPORT.md`, `report_dedup_mapping.md`, `AUDIT_REPORT.pre-dedup.md` snapshot | Cross-tier, never-lose-content report dedup: applies mechanical + LLM-proposed cross-tier merges and cosmetic Quality-Observations retabulation to the assembled report, gated by a whole-report data-loss check |
+| `_dedup_report_python` | `scripts/plamen_mechanical.py:6504` | `AUDIT_REPORT.md`, report-dedup proposals, typed candidate denominator, current semantic applied-alias receipts | rewritten `AUDIT_REPORT.md`, `report_dedup_mapping.md`, `report_dedup_applied_alias_receipt.json`, preimage/candidate sidecars | Cross-tier report dedup: LLM/heuristic rows remain proposals; only exact current source identity may receive a transaction-bound applied alias, with complete candidate disposition, live-survivor/cycle checks, exact absorbed-section coupling, and the whole-report data-loss gate |
 | `write_mechanism_attribution_ledger` | `scripts/plamen_mechanical.py:8233` | `findings_inventory.md` | `mechanism_attribution.md` | Post-dedup provenance bookkeeping: maps each surviving inventory finding to its upstream Source ID tokens, including the generator-class tokens (`AXISGAP:`/`INVARIANT:`) stamped by the recall-generators, so meta-pass contribution is a mechanical grep instead of an LLM guess |
 
 ### Identity
@@ -336,9 +349,9 @@ Compute final severity, body-vs-appendix disposition, and the assembled report d
 
 | Function | Location | Consumes | Produces | Purpose |
 |----------|----------|----------|----------|---------|
-| `_write_mechanical_report_index` | `scripts/plamen_mechanical.py:9292` | `verification_queue.md`, `verify_<ID>.md` files, `poc_demotions.md`, judge decisions, `finding_records.json` | `report_index.md` | Deterministically builds report_index.md from verifier artifacts without an LLM: verifier/mechanical status decides body vs Appendix A, PoC-demotion and independent-severity caps and judge downgrades are applied, and Python assigns clean sequential report IDs |
+| `_write_mechanical_report_index` | `scripts/plamen_mechanical.py:9292` | `verification_queue.md`, `verify_<ID>.md` files, typed lifecycle decisions, `finding_records.json` | `report_index.md` | Deterministically builds report_index.md without granting negative authority to verifier prose, failed PoCs, or consolidation hints. `poc_demotion_proposals` remains review context and cannot alter the tier. |
 | `_cap_severity_at` | `scripts/plamen_mechanical.py:9282` | a severity string, a cap severity string | the capped severity string | Pure helper applying a maximum-severity ceiling to a finding's severity without ever upgrading a lower one |
-| `_load_poc_demotion_caps` | `scripts/plamen_mechanical.py:7863` | `poc_demotions.md` | per-finding-ID cap dict (feeds `_write_mechanical_report_index`) | Reads the mechanically-computed PoC-fail severity-cap ledger (produced upstream by `scripts/plamen_validators.py:_apply_poc_fail_demotions`) for use by the report-index builder |
+| `_load_poc_demotion_caps` | `scripts/plamen_mechanical.py:7863` | legacy scratchpad state | empty cap dict | Explicit cutover interlock: legacy `poc_demotions.md` is inert. No live PoC-negative severity issuer exists; `_apply_poc_fail_demotions` now writes non-authoritative `poc_demotion_proposals` instead. |
 | `_write_mechanical_report_tier` | `scripts/plamen_mechanical.py:10618` | `report_records.json`, tier assignments, `verification_queue.md` | `report_critical_high.md`, `report_medium.md`, or `report_low_info.md` | Writes a severity-tier report markdown file directly from verified finding records, with per-severity H2 headers so the assembler can route each finding to the correct section |
 | `_assemble_report_python` | `scripts/plamen_mechanical.py:2160` | `report_index.md`, `report_critical_high.md`, `report_medium.md`, `report_low_info.md` | `AUDIT_REPORT.md`, `report_quality.md` | Mechanical AUDIT_REPORT.md assembly with no LLM call: merges the tier files, generates the Executive Summary and Priority Remediation Order from report_index.md's counts and Master Finding Index rows |
 | `write_disposition_md` | `scripts/plamen_mechanical.py:3892` | `report_index.md` assignments, `verify_<ID>.md` files | `disposition.md` | Always-run BODY/APPENDIX classification per report ID, sourced from the same bounded ledgers report-index uses plus each finding's mapped verifier harm/verdict text, applying the material-harm classifier |
@@ -419,9 +432,12 @@ At every spawn site, the child env is built via `_filtered_child_subprocess_envi
 
 A driver-generated artifact steers depth workers toward unbound or under-justified value flows without prescribing findings:
 
-- **`security_obligations.md`** — feature-derived obligation ledger. When present, depth workers read it as input 5 (`prompts/shared/v2/phase4b-depth.md:230`) and emit per-obligation receipts in their output (`[OBLIG:security_obligations.md:<SO-ID>] STATUS:R|D|C ...`).
+- **`security_feature_facts.json`** — run/source/hash-bound feature-fact authority derived from the mechanical graph, typed recon facts, and a source-locus-scoped compatibility fallback. V2 relation rows bind subject, object, and normalized symbol; legacy subject-only declarations cannot suppress exact classification debt.
+- **Asset-representation provenance** — the [asset-representation foundation](asset-representation-foundation.md) records a closed provider capability matrix and occurrence-edge migration state. Model/v1/v2 declarations are proposal-only, and current graph providers cannot claim a universal wrapped-asset classification.
+- **`security_obligation_authority.json`** — rule-owned obligation and receipt-reconciliation authority. Repeated trigger paths are aliases; accounted obligations are excluded from repair queueing.
+- **`security_obligations.md`** — exact human/worker projection of the typed authority. Its alias table exposes every structural target and relation. When present, depth workers read it as input 5 (`prompts/shared/v2/phase4b-depth.md`) and emit one exact alias receipt per evaluated row (`[OBLIG:security_obligations.md:<SO-ID>] ALIAS:<SOT-ID> STATUS:R|D|C ...`).
 
-It is consumed by depth workers; not a gate input.
+Markdown is never parsed back into methodology authority. Current, run-bound receipts are reconciled from the depth work denominator; unresolved or malformed authority remains additive attention-repair debt.
 
 ---
 

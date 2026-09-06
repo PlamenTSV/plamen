@@ -26,6 +26,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import plamen_driver as D  # noqa: E402
+from typed_test_authority import bind_verifier_outputs  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -64,6 +65,7 @@ def _write_verify(sp: Path, fid: str, sev: str, body: str = ""):
 """,
         encoding="utf-8",
     )
+    bind_verifier_outputs(sp)
 
 
 # =============================================================================
@@ -164,6 +166,7 @@ def test_E2_report_index_passes_when_all_verified(tmp_path: Path):
     _seed_queue(sp, [("INV-001", "High"), ("INV-002", "Medium")])
     _write_verify(sp, "INV-001", "High")
     _write_verify(sp, "INV-002", "Medium")
+    D._write_mechanical_report_index(sp)
     issues = D._validate_report_index_inputs(sp)
     check("E2.all_verified_passes", not issues, repr(issues))
 
@@ -293,6 +296,7 @@ def test_E7_critical_verifier_stated_preserved(tmp_path: Path):
 **Recommendation**: y
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     records = json.loads((sp / "report_records.json").read_text(encoding="utf-8"))
     sev = records["active"][0]["severity"]
@@ -315,6 +319,7 @@ def test_E7_critical_queue_only_downgrades_to_medium(tmp_path: Path):
 **Recommendation**: y
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     records = json.loads((sp / "report_records.json").read_text(encoding="utf-8"))
     sev = records["active"][0]["severity"]
@@ -338,6 +343,7 @@ def test_E7_high_with_impact_likelihood_keeps_severity(tmp_path: Path):
 **Recommendation**: y
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     records = json.loads((sp / "report_records.json").read_text(encoding="utf-8"))
     sev = records["active"][0]["severity"]
@@ -396,6 +402,7 @@ def test_E8_sibling_bugs_at_same_location_kept_separate(tmp_path: Path):
 **Recommendation**: Add onlyOwner.
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     records = json.loads((sp / "report_records.json").read_text(encoding="utf-8"))
     n = len(records["active"])
@@ -441,6 +448,7 @@ def test_E5_report_index_emits_body_manifests(tmp_path: Path):
 """,
             encoding="utf-8",
         )
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     manifests_dir = sp / "body_manifests"
     check(
@@ -471,6 +479,7 @@ def test_E5_tier_validator_catches_hallucinated_body(tmp_path: Path):
 **Recommendation**: fix it
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     # Write a body file that contains a hallucinated H-99 ID.
     (sp / "report_critical_high.md").write_text(
@@ -510,6 +519,7 @@ def test_E5_tier_validator_clean_passes(tmp_path: Path):
 **Recommendation**: fix it
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     (sp / "report_critical_high.md").write_text(
         """# Critical and High Findings

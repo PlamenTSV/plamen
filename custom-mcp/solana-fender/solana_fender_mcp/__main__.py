@@ -55,7 +55,10 @@ async def security_check_program(program_path: str) -> str:
             timeout=300,
         )
         output = result.stdout.strip()
-        if result.returncode != 0:
+        # Fender deliberately exits 1 when it found vulnerabilities.  Treat
+        # that as a successful scan result; only operational failures (>1)
+        # should be converted into an MCP error.
+        if result.returncode not in (0, 1):
             error = result.stderr.strip() or output or f"Exit code {result.returncode}"
             return f"Fender analysis failed:\n{error}"
         return output if output else "No findings detected."
@@ -86,7 +89,8 @@ async def security_check_file(file_path: str) -> str:
             timeout=300,
         )
         output = result.stdout.strip()
-        if result.returncode != 0:
+        # Exit 1 means "findings present", not scanner failure.
+        if result.returncode not in (0, 1):
             error = result.stderr.strip() or output or f"Exit code {result.returncode}"
             return f"Fender analysis failed:\n{error}"
         return output if output else "No findings detected."

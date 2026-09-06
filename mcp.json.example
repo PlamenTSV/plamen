@@ -1,63 +1,60 @@
 {
   "mcpServers": {
     "slither-analyzer": {
-      "command": "slither-mcp",
-      "args": [],
-      "_comment": "EVM static analysis. Installed from custom-mcp/slither-mcp via plamen install. If not in PATH, replace with full path from: which slither-mcp (macOS/Linux) or where slither-mcp (Windows)"
+      "command": "PLAMEN_AUTHENTICATED_FRONT",
+      "args": ["MATERIALIZED_DURING_INSTALL", "slither-analyzer"],
+      "_comment": "EVM static analysis. Runs reviewed local source with Plamen's locked Python runtime."
     },
     "solana-fender": {
-      "command": "python",
-      "args": ["-m", "solana_fender_mcp"],
-      "cwd": "./custom-mcp/solana-fender",
+      "command": "PLAMEN_AUTHENTICATED_FRONT",
+      "args": ["MATERIALIZED_DURING_INSTALL", "solana-fender"],
       "_comment": "Optional: Solana program security analysis"
     },
     "unified-vuln-db": {
-      "command": "python",
-      "args": ["-m", "unified_vuln.server"],
-      "cwd": "./custom-mcp/unified-vuln-db",
+      "command": "PLAMEN_AUTHENTICATED_FRONT",
+      "args": ["MATERIALIZED_DURING_INSTALL", "unified-vuln-db"],
       "_comment": "MCP server for vulnerability research. RAG database is optional — run 'plamen rag' to populate (pipeline works without it)"
     },
     "farofino": {
-      "command": "python",
-      "args": ["-m", "farofino_mcp"],
-      "cwd": "./custom-mcp/farofino-mcp",
+      "command": "PLAMEN_AUTHENTICATED_FRONT",
+      "args": ["MATERIALIZED_DURING_INSTALL", "farofino"],
       "_comment": "Optional: Solidity static analysis fallback"
     },
     "foundry-suite": {
-      "command": "npx",
-      "args": ["-y", "@pranesh.asp/foundry-mcp-server@0.1.5"],
+      "command": "PLAMEN_AUTHENTICATED_FRONT",
+      "args": ["MATERIALIZED_DURING_INSTALL", "foundry-suite"],
       "env": {
         "RPC_URL": "YOUR_RPC_URL"
       },
       "_comment": "Optional: EVM fork testing. Get RPC from Alchemy/Infura/public endpoints"
     },
     "evm-chain-data": {
-      "command": "npx",
-      "args": ["-y", "@mcpdotdirect/evm-mcp-server@2.0.4"],
+      "command": "PLAMEN_AUTHENTICATED_FRONT",
+      "args": ["MATERIALIZED_DURING_INSTALL", "evm-chain-data"],
       "env": {
         "ETHERSCAN_API_KEY": "YOUR_ETHERSCAN_API_KEY"
       },
       "_comment": "Optional: On-chain contract verification. Free key: https://etherscan.io/apis"
     },
     "tavily-search": {
-      "command": "npx",
-      "args": ["-y", "tavily-mcp@0.2.18"],
+      "command": "PLAMEN_AUTHENTICATED_FRONT",
+      "args": ["MATERIALIZED_DURING_INSTALL", "tavily-search"],
       "env": {
         "TAVILY_API_KEY": "YOUR_TAVILY_API_KEY"
       },
       "_comment": "Optional: Web search for fork ancestry + doc lookup. Key: https://tavily.com"
     },
     "helius": {
-      "command": "npx",
-      "args": ["-y", "helius-mcp@1.3.0"],
+      "command": "PLAMEN_AUTHENTICATED_FRONT",
+      "args": ["MATERIALIZED_DURING_INSTALL", "helius"],
       "env": {
         "HELIUS_API_KEY": "YOUR_HELIUS_API_KEY"
       },
       "_comment": "Optional: Solana on-chain data. Free key: https://helius.dev"
     },
     "memory": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory@2026.1.26"],
+      "command": "PLAMEN_AUTHENTICATED_FRONT",
+      "args": ["MATERIALIZED_DURING_INSTALL", "memory"],
       "_comment": "Persistent memory across sessions"
     }
   }

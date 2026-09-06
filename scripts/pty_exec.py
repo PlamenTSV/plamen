@@ -78,7 +78,7 @@ _CONTEXT_OVERFLOW_TEXT_RE = re.compile(
     r"|prompt\s+is\s+too\s+long"
     r"|input\s+is\s+too\s+long"
     r"|exceeds?\s+(?:the\s+)?(?:maximum\s+)?context\s+window"
-    r"|context\s+(?:window\s+)?(?:is\s+)?(?:too\s+)?(?:low|full|exceeded)"
+    r"|context\s+(?:window\s+)?(?:is\s+)?(?:too\s+)?(?:full|exceeded)"
     r")",
     re.IGNORECASE,
 )
@@ -91,7 +91,14 @@ _CONTEXT_OVERFLOW_TEXT_RE = re.compile(
 # this long -- i.e. the turn is emitting compaction churn while producing zero
 # forward progress. The `first_thrash_seen_at` latch is reset on every genuine
 # productive event, so a compact-then-resume turn is recall-safe.
-_CONTEXT_THRASH_LOOP_S = float(os.environ.get("PLAMEN_CONTEXT_THRASH_LOOP_S", "180") or 180)
+# A three-minute window proved too aggressive for large, but healthy, Claude
+# compactions.  Ten minutes still bounds the observed multi-hour zero-progress
+# failure while giving an ordinary compact-and-resume turn substantially more
+# room than the prior detector.  Tests may replace the constant directly; an
+# operator override remains available for unusually small/large contexts.
+_CONTEXT_THRASH_LOOP_S = float(
+    os.environ.get("PLAMEN_CONTEXT_THRASH_LOOP_S", "600") or 600
+)
 
 # Ship 8.10: the subprocess-isolation overlay payload. SINGLE source of
 # truth shared by plamen_driver (production) and preflight_pty_transports
@@ -529,6 +536,15 @@ def event_is_productive(event: dict[str, Any]) -> bool:
     return True
 
 
+def event_is_compaction_summary(event: dict[str, Any]) -> bool:
+    """Return True only for an assistant event that is compaction telemetry."""
+
+    if event.get("type") != "assistant":
+        return False
+    text = _event_text(event).strip().lower()
+    return bool(text) and any(marker in text for marker in _COMPACTION_MARKERS)
+
+
 def event_is_turn_end(event: dict[str, Any]) -> bool:
     if event.get("type") != "assistant":
         return False
@@ -558,6 +574,12 @@ def event_is_rate_limited(event: dict[str, Any]) -> bool:
     event_type = str(event.get("type") or "").lower()
     if event_type == "user":
         return False
+    if event_type == "rate_limit_event":
+        # Claude Code emits this telemetry on successful subscription turns
+        # too.  ``allowed`` and ``allowed_warning`` describe utilization; they
+        # are not a rejected request and must never trigger a phase replay.
+        info = event.get("rate_limit_info")
+        return isinstance(info, dict) and info.get("status") == "rejected"
     for source in (event, _event_message(event), event.get("error")):
         if isinstance(source, str):
             if source.lower() in ("rate_limit", "rate_limited", "overloaded"):
@@ -615,6 +637,13 @@ class TurnCompleteState:
     # from one that is only emitting compaction churn (count frozen). Pure
     # compaction-summary / re-read events do not advance this counter.
     productive_event_count: int = 0
+    # Any parsed transcript event other than pure compaction telemetry is
+    # meaningful activity.  This deliberately includes user/tool-result and
+    # transport events: a long-running tool or reasoning turn must reset the
+    # zero-progress window even when it has not emitted another assistant
+    # message yet.
+    meaningful_event_count: int = 0
+    compaction_event_count: int = 0
     last_event_time: float | None = None
     last_assistant: dict[str, Any] | None = None
 
@@ -634,6 +663,10 @@ def inspect_transcript(path: Path) -> TurnCompleteState:
                 except Exception:
                     continue
                 state.line_count += 1
+                if event_is_compaction_summary(event):
+                    state.compaction_event_count += 1
+                else:
+                    state.meaningful_event_count += 1
                 if event_is_rate_limited(event):
                     state.rate_limited = True
                 if event_is_overloaded(event):
@@ -949,21 +982,14 @@ class ClaudePtySession:
             except Exception:
                 pass
 
-            def _child_setup() -> None:
-                try:
-                    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
-                except Exception:
-                    pass
-                try:
-                    os.setsid()
-                except Exception:
-                    pass
-                try:
-                    fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-                except Exception:
-                    pass
-
             try:
+                # ``start_new_session`` asks the subprocess implementation to
+                # perform setsid using its native spawn path.  No Python runs
+                # between fork and exec, so this remains safe when PTY workers
+                # are launched concurrently from the threaded orchestrator.
+                # The PTY slave is still the child's exact stdin/out/err and
+                # the session leader is also its process-group leader, which
+                # preserves group-scoped supervision and termination.
                 self.proc = subprocess.Popen(
                     self.argv,
                     stdin=slave_fd,
@@ -972,7 +998,8 @@ class ClaudePtySession:
                     cwd=self.cwd,
                     env=self.env,
                     close_fds=True,
-                    preexec_fn=_child_setup,
+                    start_new_session=True,
+                    restore_signals=True,
                 )
             except Exception:
                 try:
@@ -1132,22 +1159,33 @@ class ClaudePtySession:
         transcript_poll_s: float = 0.5,
         on_poll: Any = None,
     ) -> TurnCompleteState:
-        deadline = time.time() + timeout_s
-        state = TurnCompleteState(complete=False)
-        last_transcript_poll = 0.0
+        started_mono = time.monotonic()
+        deadline = started_mono + timeout_s
+        state = inspect_transcript(self.transcript_path)
+        last_transcript_poll = started_mono - max(0.0, transcript_poll_s)
         # Sticky timestamp of the FIRST output-cap sighting in the current
         # cap episode. Reset whenever the cap text is no longer present (a
         # productive turn scrolled past it). Used by the cap-LOOP gate below.
         first_output_cap_seen_at: Optional[float] = None
-        # Context-thrash latches (Ship 8.17). `first_thrash_seen_at` is the
-        # start of the current thrash episode; reset whenever a new productive
-        # event arrives OR the overflow/compaction signature clears.
-        # `last_productive_count` tracks forward progress: a rising count means
-        # the turn is still doing real work and must not be cut off.
+        # Context-thrash latches (Ship 8.17).  Authority is DELTA-based: a
+        # compaction marker already present when this wait begins is historical
+        # and cannot arm the breaker.  Any non-compaction transcript event or
+        # ordinary PTY stream delta resets the episode and establishes a new
+        # baseline.  Quiet compaction requires at least two post-baseline
+        # summary events; a single compact-then-slow-tool interval is healthy.
         first_thrash_seen_at: Optional[float] = None
-        last_productive_count = -1
+        episode_has_explicit_overflow = False
+        episode_compaction_start: Optional[int] = None
+        last_meaningful_count = int(state.meaningful_event_count)
+        compaction_baseline = int(state.compaction_event_count)
+        with self._recent_output_lock:
+            last_recent_norm = _normalized_pty_text(self._recent_output)
+        overflow_baseline_active = bool(
+            _CONTEXT_OVERFLOW_TEXT_RE.search(last_recent_norm)
+        )
         while True:
-            now = time.time()
+            now = time.monotonic()
+            wall_now = time.time()
             if now - last_transcript_poll >= transcript_poll_s:
                 state = inspect_transcript(self.transcript_path)
                 last_transcript_poll = now
@@ -1174,7 +1212,7 @@ class ClaudePtySession:
                             first_output_cap_seen_at = now
                         if (
                             state.last_event_time is not None
-                            and now - state.last_event_time >= quiescence_s
+                            and wall_now - state.last_event_time >= quiescence_s
                         ):
                             state.output_truncated = True
                         elif now - first_output_cap_seen_at >= _OUTPUT_CAP_LOOP_S:
@@ -1182,26 +1220,74 @@ class ClaudePtySession:
                     else:
                         first_output_cap_seen_at = None
 
-                    # REMOVED (2026-06-10): the context-overflow / autocompact-
-                    # thrash fast-fail. It abandoned a worker turn after
-                    # _CONTEXT_THRASH_LOOP_S of "no productive event," but normal
-                    # context COMPACTION emits no tool_use/text for long stretches
-                    # while it recovers -- so it killed slow-but-completing
-                    # rescan/inventory/depth workers mid-compaction (workers that
-                    # ran fine for 8 weeks). The rare 3h report_index hang it was
-                    # meant to catch is far less costly than degrading every phase
-                    # that reads a large finding set. Workers now run to their
-                    # normal deadline again (pre-Ship-8.17 behavior). The
-                    # detection vars (_CONTEXT_*_RE, productive_event_count,
-                    # first_thrash_seen_at) are retained but inert.
+                    # Context-overflow / autocompact zero-progress breaker.
+                    # Only evidence NEWER than the current activity baseline
+                    # can arm it.  Whole-transcript historical markers are not
+                    # authority.  A normal stream delta (tool output/thinking)
+                    # is activity unless that delta itself is only a new
+                    # overflow/compaction signal.
+                    meaningful_count = int(state.meaningful_event_count)
+                    meaningful_advanced = meaningful_count > last_meaningful_count
+                    recent_changed = _recent_norm != last_recent_norm
+                    if recent_changed:
+                        if _recent_norm.startswith(last_recent_norm):
+                            recent_delta = _recent_norm[len(last_recent_norm):]
+                        else:
+                            recent_delta = _recent_norm
+                        delta_is_signature = bool(
+                            _CONTEXT_OVERFLOW_TEXT_RE.search(recent_delta)
+                        ) or any(
+                            marker in recent_delta.lower()
+                            for marker in _COMPACTION_MARKERS
+                        )
+                        stream_activity = bool(recent_delta.strip()) and not delta_is_signature
+                    else:
+                        stream_activity = False
+
+                    overflow_now = bool(
+                        _CONTEXT_OVERFLOW_TEXT_RE.search(_recent_norm)
+                    )
+                    if meaningful_advanced or stream_activity:
+                        last_meaningful_count = meaningful_count
+                        compaction_baseline = int(state.compaction_event_count)
+                        overflow_baseline_active = overflow_now
+                        first_thrash_seen_at = None
+                        episode_has_explicit_overflow = False
+                        episode_compaction_start = None
+                    else:
+                        new_explicit_overflow = (
+                            overflow_now and not overflow_baseline_active
+                        )
+                        compaction_count = int(state.compaction_event_count)
+                        new_compaction = compaction_count > compaction_baseline
+                        if new_explicit_overflow:
+                            episode_has_explicit_overflow = True
+                            overflow_baseline_active = True
+                        if new_compaction and episode_compaction_start is None:
+                            episode_compaction_start = compaction_count
+                        repeated_compaction = (
+                            episode_compaction_start is not None
+                            and compaction_count > episode_compaction_start
+                        )
+                        if episode_has_explicit_overflow or repeated_compaction:
+                            if first_thrash_seen_at is None:
+                                first_thrash_seen_at = now
+                            elif (
+                                now - first_thrash_seen_at
+                                >= _CONTEXT_THRASH_LOOP_S
+                            ):
+                                state.context_thrash = True
+                    last_recent_norm = _recent_norm
             if on_poll:
-                on_poll(now, state)
+                on_poll(wall_now, state)
             if state.rate_limited:
                 return state
             if state.output_truncated:
                 return state
+            if state.context_thrash:
+                return state
             if state.complete and state.last_event_time is not None:
-                if now - state.last_event_time >= quiescence_s:
+                if wall_now - state.last_event_time >= quiescence_s:
                     return state
             if not self.is_alive():
                 return state

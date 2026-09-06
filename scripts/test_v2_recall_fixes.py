@@ -7,8 +7,8 @@ Covers:
   Jaccard violations are flagged; explicit override clears them.
 - Fix 4: _per_constituent_claim_match — single_winner / shared_claim /
   ambiguous classification on the PayloadCodec-style super-group case.
-- Fix 4: _apply_poc_fail_demotions writes poc_demotion_carveouts.md when
-  the verifier tested only one constituent's claim.
+- P0-O: lexical constituent matching is telemetry only; ambiguous grouped
+  failures create scope-repair debt instead of widening a demotion.
 - Fix 5: CROSS_VM_ENCODING_NO_RUNTIME — keyword guard rejects abuse,
   accepts legitimate cross-VM skips.
 
@@ -18,6 +18,7 @@ of phase4c-chain-prompt.md and verified live in next audit run).
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import tempfile
@@ -107,7 +108,13 @@ class TestNichePromotion:
             encoding="utf-8",
         )
         parsed, appended = mech.promote_niche_to_inventory(scratch)
-        assert parsed == 1 and appended == 1  # methodology section filtered
+        # The shared parser grammar sees ``Finding A``; the niche denominator
+        # must retain it as malformed identity debt rather than silently drop
+        # it. Only the registered substantive action is promotable.
+        assert parsed == 2 and appended == 1
+        debt = mech.read_niche_identity_debt_sidecar(scratch)
+        assert debt is not None
+        assert any(row["raw_id"] == "A" for row in debt["candidates"])
 
     def test_returns_zero_when_no_niche_files(self, scratch: Path):
         _seed_inventory(scratch, [("INV-001", "Medium", "src/A.sol:L1", "x")])
@@ -150,7 +157,8 @@ class TestAntiAbsorption:
             ("INV-002", "Medium", "GatewayB.sol:L20 handleRefund()", "shared refund handler missing state reset"),
         ], "GRP-M-001")
         issues = validators._validate_chain_anti_absorption(scratch, "thorough")
-        assert issues == []
+        assert len(issues) == 1
+        assert "typed equivalence decision" in issues[0]
 
     def test_distinct_functions_soft_note_on_hard_violation(self, scratch: Path):
         # When a REAL violation (here: zero-overlap root causes -> Jaccard) fires,
@@ -162,9 +170,7 @@ class TestAntiAbsorption:
         ], "GRP-M-001")
         issues = validators._validate_chain_anti_absorption(scratch, "thorough")
         assert len(issues) == 1
-        assert "Jaccard" in issues[0]
-        assert "soft note" in issues[0]
-        assert "distinct functions" in issues[0]
+        assert "typed equivalence decision" in issues[0]
 
     def test_severity_span_flagged(self, scratch: Path):
         self._seed(scratch, [
@@ -174,7 +180,7 @@ class TestAntiAbsorption:
         issues = validators._validate_chain_anti_absorption(scratch, "thorough")
         # Same function + same words → only severity span flags
         assert len(issues) == 1
-        assert "severity span" in issues[0]
+        assert "typed equivalence decision" in issues[0]
 
     def test_jaccard_below_threshold_flagged(self, scratch: Path):
         self._seed(scratch, [
@@ -183,7 +189,7 @@ class TestAntiAbsorption:
         ], "GRP-M-001")
         issues = validators._validate_chain_anti_absorption(scratch, "thorough")
         assert len(issues) == 1
-        assert "Jaccard" in issues[0]
+        assert "typed equivalence decision" in issues[0]
 
     def test_override_clears_violations(self, scratch: Path):
         self._seed(scratch, [
@@ -191,7 +197,8 @@ class TestAntiAbsorption:
             ("INV-002", "Medium", "GatewayTransfer.sol:L20 withdraw()", "access control bug"),
         ], "GRP-M-001", override_text="agents detect same single defect")
         issues = validators._validate_chain_anti_absorption(scratch, "thorough")
-        assert issues == []
+        assert len(issues) == 1
+        assert "typed equivalence decision" in issues[0]
 
     def test_single_constituent_groups_ignored(self, scratch: Path):
         self._seed(scratch, [
@@ -212,7 +219,8 @@ class TestAntiAbsorption:
             "GRP-M-001 absorbs 3 constituents (INV-1, INV-2, INV-3) with anti-absorption violations: distinct functions (foo.sol:f, bar.sol:b)",
         ])
         assert "ATTEMPT 2 RETRY" in hint
-        assert "Anti-absorption override:" in hint
+        assert "independently applied equivalence authority" in hint
+        assert "only a proposal" in hint
         assert "GRP-M-001" in hint
 
 
@@ -295,9 +303,9 @@ class TestAntiAbsorptionSubcluster:
         n = validators._repair_chain_anti_absorption_splits(scratch)
         # single locus -> one bug -> NO split; the original grouping (all four
         # constituents in one hypothesis) is preserved untouched.
-        assert n == 0
-        fm = (scratch / "finding_mapping.md").read_text(encoding="utf-8")
-        assert len(set(re.findall(r"GRP-\S+|H[HCLMI]?-\d+", fm))) == 1  # still one hypothesis
+        assert n == 4
+        from plamen_parsers import _parse_hypothesis_constituents
+        assert "H-001" not in _parse_hypothesis_constituents(scratch)
 
     def test_same_locus_paraphrase_dups_do_not_split(self, scratch: Path):
         # Fresh-generation failure mode: the SAME bug written by two agents with
@@ -310,7 +318,7 @@ class TestAntiAbsorptionSubcluster:
              "any account may invoke the unrestricted withdraw and redirect held tokens to itself"),
         ], "GRP-H-002", "High")
         n = validators._repair_chain_anti_absorption_splits(scratch)
-        assert n == 0  # same-locus paraphrases stay ONE finding (no explosion)
+        assert n == 2  # independent until typed five-dimension equivalence
 
     def test_distinct_bugs_at_distinct_loci_still_split(self, scratch: Path):
         # Guardrail: two GENUINELY different bugs (different loci, unrelated
@@ -332,7 +340,7 @@ class TestAntiAbsorptionSubcluster:
             ("INV-202", "Medium", "GatewayB.sol:L20 onAbort()", "unguarded pendingClaims overwrite same shared handler"),
         ], "GRP-M-001", "Medium")
         n = validators._repair_chain_anti_absorption_splits(scratch)
-        assert n == 0  # nothing split; LLM grouping preserved
+        assert n == 2  # raw card preserved; active identities stay separate
 
     def test_jaccard_same_locus_merges_not_singletons(self, scratch: Path):
         # Two disjoint-root-cause findings at the EXACT same file+function+tier
@@ -343,12 +351,11 @@ class TestAntiAbsorptionSubcluster:
             ("INV-302", "Medium", "Vault.sol:L100 settle()", "wrong return value type interface violation"),
         ], "GRP-M-001", "Medium")
         n = validators._repair_chain_anti_absorption_splits(scratch)
-        assert n == 0  # single exact-locus sub-cluster -> no reassignment
+        assert n == 2  # same locus is not equivalence authority
         from plamen_parsers import _parse_hypothesis_constituents
         mapping = _parse_hypothesis_constituents(scratch)
-        merged = [srcs for srcs in mapping.values()
-                  if "INV-301" in srcs or "INV-302" in srcs]
-        assert merged and set(merged[0]) == {"INV-301", "INV-302"}
+        assert not [srcs for srcs in mapping.values()
+                    if "INV-301" in srcs or "INV-302" in srcs]
 
 
 # --- Fix 4: per-constituent demotion ---------------------------------------
@@ -379,7 +386,7 @@ class TestPerConstituentDemotion:
         kind, _ = validators._per_constituent_claim_match(content, constituents)
         assert kind == "ambiguous"
 
-    def test_apply_poc_fail_demotions_writes_carveout(self, scratch: Path):
+    def test_lexical_winner_routes_repair_but_cannot_authorize_demotion(self, scratch: Path):
         # Seed inventory with 3 distinct PayloadCodec findings
         _seed_inventory(scratch, [
             ("INV-001", "Medium", "PayloadCodec.sol:L10 decompressAccounts()",
@@ -413,7 +420,9 @@ class TestPerConstituentDemotion:
             "| GRP-M-001 | Medium | unit |\n",
             encoding="utf-8",
         )
-        # Verify file: only tests INV-003's claim
+        # Verify prose appears to test INV-003's claim, but has no typed
+        # constituent/premise/assertion scope ledger. Under P0-O, lexical
+        # similarity is routing telemetry only and cannot cap the group.
         # Filename uses canonical M-001 (matches parser output)
         (scratch / "verify_M-001.md").write_text(
             "# Verification: GRP-M-001\n\n"
@@ -422,25 +431,28 @@ class TestPerConstituentDemotion:
             "Solana ABI account arrays.\n\n"
             "### PoC Attempt\n"
             "- Attempted: YES\n"
-            "- Result: PASS (assertion did not trigger)\n\n"
+            "- Test File: tests/poc_group.rs\n"
+            "- Command: cargo test poc_group\n\n"
+            "### Execution Result\n"
+            "- Compiled: YES\n"
+            "- Result: FAIL\n"
+            "- Mechanical Status: [FAIL]\n"
+            "- Evidence Tag: [POC-FAIL]\n\n"
             "Evidence Tag: [POC-FAIL]\n",
             encoding="utf-8",
         )
         demotions = validators._apply_poc_fail_demotions(scratch, "thorough")
-        # Demotion should fire; carveout file should exist
-        assert len(demotions) == 1
-        carveout = scratch / "poc_demotion_carveouts.md"
-        assert carveout.exists()
-        text = carveout.read_text(encoding="utf-8")
-        # Queue parser canonicalizes "GRP-M-001" -> "M-001"; the carveout
-        # records that canonical form (matches downstream consumers).
-        assert "M-001" in text
-        assert "INV-003" in text  # tested constituent
-        # INV-001 and INV-002 should be in the spared column
-        assert "INV-001" in text
-        assert "INV-002" in text
-        # And the demotion reason should mention the carveout
-        assert "spared" in demotions[0]["reason"].lower()
+        assert demotions == []
+        assert not (scratch / "poc_demotions.md").exists()
+        receipt = json.loads(
+            (scratch / "poc_demotion_scope_receipt.json").read_text(encoding="utf-8")
+        )
+        row = receipt["groups"][0]
+        assert row["demotion_authority"] == "NONE"
+        assert row["lexical_routing_telemetry"]["match_kind"] == "single_winner"
+        assert set(row["preserved_constituent_ids"]) == {
+            "INV-001", "INV-002", "INV-003"
+        }
 
 
 # --- Fix 5: CROSS_VM_ENCODING_NO_RUNTIME keyword guard ---------------------

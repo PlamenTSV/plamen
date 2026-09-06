@@ -384,6 +384,18 @@ def test_m1_ci_block_present_in_skeptic_prompts():
         )
 
 
+def test_late_verifier_ci_is_explicitly_next_run_not_current_run_verified():
+    for rel in (
+        "prompts/evm/phase5-verification-prompt.md",
+        "prompts/shared/v2/phase5-verification-sc.md",
+    ):
+        text = _read(rel)
+        assert "HUMAN_REVIEW_NEXT_RUN" in text
+        assert "MUST NOT be claimed as current-run verified" in text
+    evm = _read("prompts/evm/phase5-verification-prompt.md")
+    assert "mechanically harvested downstream into falsifiable candidates" not in evm
+
+
 def test_finding_format_evidence_label_consistency():
     """Both `**Evidence**:` (code snippets) and `**Depth Evidence**`
     (tag list) are documented — make sure neither was accidentally

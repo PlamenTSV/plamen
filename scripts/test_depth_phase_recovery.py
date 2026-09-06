@@ -180,7 +180,7 @@ def test_s13_confidence_is_differentiated(tmp_path):
     assert "DRIVER-COMPUTED" in text
     # Two findings with different evidence/quality -> different composites.
     composites = [
-        line.split("|")[6].strip()
+        line.split("|")[5].strip()
         for line in text.splitlines()
         if line.startswith("| DT-")
     ]
@@ -290,7 +290,7 @@ def test_s15_repair_hint_handles_empty_missing():
     assert "depth targeted repair" in hint and "perturbation_findings.md" in hint
 
 
-def test_s13_synthesize_keeps_real_llm_confidence(tmp_path):
+def test_s13_synthesize_replaces_llm_confidence_with_driver_authority(tmp_path):
     (tmp_path / "depth_token_flow_findings.md").write_text(
         "# F\n\n" + _FINDINGS, encoding="utf-8"
     )
@@ -304,8 +304,15 @@ def test_s13_synthesize_keeps_real_llm_confidence(tmp_path):
     )
     (tmp_path / "confidence_scores.md").write_text(real, encoding="utf-8")
     _synthesize_depth_lifecycle_artifacts(tmp_path, "sc", mode="thorough")
-    # A substantive, non-stub LLM confidence file is left untouched.
-    assert (tmp_path / "confidence_scores.md").read_text(encoding="utf-8") == real
+    # An LLM-written score table is a proposal, not agreement authority.  The
+    # deterministic finalizer replaces it even when it is substantive.
+    rebuilt = (tmp_path / "confidence_scores.md").read_text(encoding="utf-8")
+    assert rebuilt != real
+    assert "DRIVER-COMPUTED" in rebuilt
+    assert "Mode: THOROUGH_3_AXIS" in rebuilt
+    assert "| DT-1 |" in rebuilt and "| DT-2 |" in rebuilt
+    rows = [line for line in rebuilt.splitlines() if line.startswith("| DT-")]
+    assert rows and all(line.split("|")[3].strip() == "0.00" for line in rows)
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ description: "Trigger Protocol has migration patterns (reinitialize, V2/V3, depr
 > **Trigger**: Protocol has migration patterns (reinitialize, V2/V3, deprecated, upgrade, legacy, Coin-to-FA)
 > **Covers**: Token type mismatches, stranded assets, interface incompatibilities, module upgrade safety
 > **Required**: YES when MIGRATION flag detected
+> **Inject Into**: Breadth agents, depth-state-trace
 
 ## Aptos Migration Context
 

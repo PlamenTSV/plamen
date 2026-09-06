@@ -1,0 +1,347 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/mechanical_program_facts_receipt.v1.schema.json",
+  "title": "Plamen mechanical Program Facts receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "status",
+    "audit_snapshot",
+    "source_authority_digest",
+    "source_manifest",
+    "build_attempts",
+    "provider_runs",
+    "worker_transaction_refs",
+    "phase_io",
+    "artifacts",
+    "reuse_key",
+    "receipt_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "plamen.mechanical_program_facts_receipt.v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["WRITTEN", "REUSED", "DEGRADED", "UNAVAILABLE", "FAILED", "STALE"]},
+    "audit_snapshot": {"$ref": "#/$defs/audit_snapshot"},
+    "source_authority_digest": {"$ref": "#/$defs/hex64"},
+    "source_manifest": {"$ref": "#/$defs/source_manifest"},
+    "build_attempts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/build_attempt"}
+    },
+    "provider_runs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/provider_run"}
+    },
+    "worker_transaction_refs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/worker_transaction_ref"}
+    },
+    "phase_io": {"$ref": "#/$defs/phase_io"},
+    "artifacts": {"$ref": "#/$defs/artifacts"},
+    "reuse_key": {"$ref": "#/$defs/hex64"},
+    "receipt_sha256": {"$ref": "#/$defs/hex64"}
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sha256_ref": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "pfs_id": {"type": "string", "pattern": "^PFS-[0-9a-f]{24}$"},
+    "pfb_id": {"type": "string", "pattern": "^PFB-[0-9a-f]{24}$"},
+    "capability_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+    },
+    "portable_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)(?!.*\\\\)(?!.*:)[^\\u0000]+$"
+    },
+    "string_set": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "pfs_set": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/pfs_id"},
+      "uniqueItems": true
+    },
+    "audit_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_digest",
+        "source_scope_digest",
+        "audit_config_digest",
+        "methodology_digest",
+        "toolchain_digest"
+      ],
+      "properties": {
+        "snapshot_digest": {"$ref": "#/$defs/hex64"},
+        "source_scope_digest": {"$ref": "#/$defs/hex64"},
+        "audit_config_digest": {"$ref": "#/$defs/hex64"},
+        "methodology_digest": {"$ref": "#/$defs/hex64"},
+        "toolchain_digest": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "source_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_file_id", "path", "path_casefold_key", "source_sha256",
+        "size_bytes", "language", "scope_class", "physical_identity_digest"
+      ],
+      "properties": {
+        "source_file_id": {"$ref": "#/$defs/pfs_id"},
+        "path": {"$ref": "#/$defs/portable_path"},
+        "path_casefold_key": {"type": "string", "minLength": 1},
+        "source_sha256": {"$ref": "#/$defs/hex64"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "language": {"type": "string", "minLength": 1},
+        "scope_class": {"enum": ["PRODUCTION", "EXPLICIT_SCOPE", "BOUND_DEPENDENCY", "GENERATED_BOUND"]},
+        "physical_identity_digest": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]}
+      }
+    },
+    "excluded_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "reason", "source_sha256"],
+      "properties": {
+        "identity": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "source_sha256": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]}
+      }
+    },
+    "source_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_version", "eligible_files", "excluded_files",
+        "file_count", "byte_count", "manifest_digest"
+      ],
+      "properties": {
+        "policy_version": {"const": "plamen.program_facts_source_scope.v1"},
+        "eligible_files": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/source_file"}
+        },
+        "excluded_files": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/excluded_file"}
+        },
+        "file_count": {"type": "integer", "minimum": 0},
+        "byte_count": {"type": "integer", "minimum": 0},
+        "manifest_digest": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "path_digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/portable_path"},
+        "sha256": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "tool_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "identity_digest"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string"},
+        "identity_digest": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "build_attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build_variant_id", "variant_digest", "build_root_id", "build_root_path",
+        "manifest_digests", "lockfile_digests", "dependency_closure_digest",
+        "toolchain_identities", "target_triples", "profile", "features", "tags",
+        "remappings", "defines", "package_selection", "generated_source_policy",
+        "eligible_source_file_ids", "compiled_source_file_ids",
+        "excluded_source_file_ids", "failed_source_file_ids", "stdout_cas_ref",
+        "stderr_cas_ref", "stdout_truncated", "stderr_truncated", "outcome",
+        "debt_ids"
+      ],
+      "properties": {
+        "build_variant_id": {"$ref": "#/$defs/pfb_id"},
+        "variant_digest": {"$ref": "#/$defs/hex64"},
+        "build_root_id": {"type": "string", "minLength": 1},
+        "build_root_path": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/portable_path"}]},
+        "manifest_digests": {"type": "array", "items": {"$ref": "#/$defs/path_digest"}},
+        "lockfile_digests": {"type": "array", "items": {"$ref": "#/$defs/path_digest"}},
+        "dependency_closure_digest": {"$ref": "#/$defs/hex64"},
+        "toolchain_identities": {"type": "array", "items": {"$ref": "#/$defs/tool_identity"}},
+        "target_triples": {"$ref": "#/$defs/string_set"},
+        "profile": {"type": "string"},
+        "features": {"$ref": "#/$defs/string_set"},
+        "tags": {"$ref": "#/$defs/string_set"},
+        "remappings": {"$ref": "#/$defs/string_set"},
+        "defines": {"$ref": "#/$defs/string_set"},
+        "package_selection": {"$ref": "#/$defs/string_set"},
+        "generated_source_policy": {"enum": ["BOUND_INCLUDED", "BOUND_EXCLUDED"]},
+        "eligible_source_file_ids": {"$ref": "#/$defs/pfs_set"},
+        "compiled_source_file_ids": {"$ref": "#/$defs/pfs_set"},
+        "excluded_source_file_ids": {"$ref": "#/$defs/pfs_set"},
+        "failed_source_file_ids": {"$ref": "#/$defs/pfs_set"},
+        "stdout_cas_ref": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/sha256_ref"}]},
+        "stderr_cas_ref": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/sha256_ref"}]},
+        "stdout_truncated": {"type": "boolean"},
+        "stderr_truncated": {"type": "boolean"},
+        "outcome": {"enum": ["SUCCEEDED", "FAILED", "PARTIAL", "UNAVAILABLE", "TIMEOUT"]},
+        "debt_ids": {"$ref": "#/$defs/string_set"}
+      }
+    },
+    "environment_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value_digest", "redacted"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "value_digest": {"$ref": "#/$defs/hex64"},
+        "redacted": {"type": "boolean"}
+      }
+    },
+    "platform_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "architecture", "runtime_versions", "locale", "filesystem_case_sensitive"],
+      "properties": {
+        "os": {"type": "string", "minLength": 1},
+        "architecture": {"type": "string", "minLength": 1},
+        "runtime_versions": {"type": "array", "items": {"$ref": "#/$defs/tool_identity"}},
+        "locale": {"type": "string"},
+        "filesystem_case_sensitive": {"type": "boolean"}
+      }
+    },
+    "provider_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_run_id", "provider_id", "provider_schema_version",
+        "provider_registry_digest", "implementation_digest", "executable_or_module_digest",
+        "version_output", "version_output_digest", "parser_callable", "parser_source_digest",
+        "raw_schema_digest", "argv", "allowed_environment", "working_directory_root_id",
+        "platform", "build_variant_ids", "capabilities_requested", "capabilities_emitted",
+        "capabilities_unavailable", "capabilities_partial", "input_ceiling_bytes",
+        "output_ceiling_bytes", "timeout_seconds", "output_truncated", "cancelled",
+        "worker_transaction_ref_ids", "debt_ids"
+      ],
+      "properties": {
+        "provider_run_id": {"type": "string", "minLength": 1},
+        "provider_id": {"$ref": "#/$defs/capability_id"},
+        "provider_schema_version": {"type": "string", "minLength": 1},
+        "provider_registry_digest": {"$ref": "#/$defs/hex64"},
+        "implementation_digest": {"$ref": "#/$defs/hex64"},
+        "executable_or_module_digest": {"$ref": "#/$defs/hex64"},
+        "version_output": {"type": "string", "minLength": 1},
+        "version_output_digest": {"$ref": "#/$defs/hex64"},
+        "parser_callable": {"type": "string", "minLength": 1},
+        "parser_source_digest": {"$ref": "#/$defs/hex64"},
+        "raw_schema_digest": {"$ref": "#/$defs/hex64"},
+        "argv": {"type": "array", "items": {"type": "string"}},
+        "allowed_environment": {"type": "array", "items": {"$ref": "#/$defs/environment_binding"}},
+        "working_directory_root_id": {"type": "string", "minLength": 1},
+        "platform": {"$ref": "#/$defs/platform_binding"},
+        "build_variant_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pfb_id"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "capabilities_requested": {"$ref": "#/$defs/capability_set"},
+        "capabilities_emitted": {"$ref": "#/$defs/capability_set"},
+        "capabilities_unavailable": {"$ref": "#/$defs/capability_set"},
+        "capabilities_partial": {"$ref": "#/$defs/capability_set"},
+        "input_ceiling_bytes": {"type": "integer", "minimum": 0},
+        "output_ceiling_bytes": {"type": "integer", "minimum": 0},
+        "timeout_seconds": {"type": "integer", "minimum": 0},
+        "output_truncated": {"type": "boolean"},
+        "cancelled": {"type": "boolean"},
+        "worker_transaction_ref_ids": {"$ref": "#/$defs/string_set"},
+        "debt_ids": {"$ref": "#/$defs/string_set"}
+      }
+    },
+    "capability_set": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/capability_id"},
+      "uniqueItems": true
+    },
+    "worker_transaction_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref_id", "provider_run_id", "work_plan_digest", "arm_digest",
+        "completion_digest", "debt_digest", "cas_manifest_digest",
+        "incorporation_digest", "status", "process_scope_active_zero"
+      ],
+      "properties": {
+        "ref_id": {"type": "string", "minLength": 1},
+        "provider_run_id": {"type": "string", "minLength": 1},
+        "work_plan_digest": {"$ref": "#/$defs/hex64"},
+        "arm_digest": {"$ref": "#/$defs/hex64"},
+        "completion_digest": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]},
+        "debt_digest": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]},
+        "cas_manifest_digest": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]},
+        "incorporation_digest": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]},
+        "status": {"enum": ["COMPLETED", "DEBT", "CANCELLED", "TIMEOUT", "FAILED"]},
+        "process_scope_active_zero": {"type": "boolean"}
+      }
+    },
+    "phase_io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_digest", "launch_digest", "input_set_digest",
+        "work_unit_key", "ledger_binding_state", "ledger_record_digest"
+      ],
+      "properties": {
+        "contract_digest": {"$ref": "#/$defs/hex64"},
+        "launch_digest": {"$ref": "#/$defs/hex64"},
+        "input_set_digest": {"$ref": "#/$defs/hex64"},
+        "work_unit_key": {"type": "string", "minLength": 1},
+        "ledger_binding_state": {"const": "PRECOMMIT"},
+        "ledger_record_digest": {"const": ""}
+      }
+    },
+    "artifact_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "document_sha256", "file_sha256", "size"],
+      "properties": {
+        "path": {
+          "enum": [
+            "mechanical_program_facts.v1.json",
+            "mechanical_program_facts_debt.v1.json"
+          ]
+        },
+        "document_sha256": {"$ref": "#/$defs/hex64"},
+        "file_sha256": {"$ref": "#/$defs/hex64"},
+        "size": {"type": "integer", "minimum": 0}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["facts", "debt"],
+      "properties": {
+        "facts": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact_binding"},
+            {"properties": {"path": {"const": "mechanical_program_facts.v1.json"}}}
+          ]
+        },
+        "debt": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact_binding"},
+            {"properties": {"path": {"const": "mechanical_program_facts_debt.v1.json"}}}
+          ]
+        }
+      }
+    }
+  }
+}

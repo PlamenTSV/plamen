@@ -936,10 +936,13 @@ def test_supervision_loop_repairs_generic_phase_from_gate_missing(
         assert phase.name == "instantiate"
         assert row_statuses == []
         assert gate_missing
-        assert any("spawn_manifest.md" in str(item) for item in gate_missing)
+        assert any(
+            "spawn_manifest_proposal.md" in str(item)
+            for item in gate_missing
+        )
         assert not old_session.is_alive()
         invocations.append({"gate_missing": list(gate_missing)})
-        (scratchpad / "spawn_manifest.md").write_text(
+        (scratchpad / "spawn_manifest_proposal.md").write_text(
             "# Spawn Manifest\n\n"
             "| Agent | Output |\n"
             "| --- | --- |\n"
@@ -986,19 +989,21 @@ def test_missing_only_generic_phase_uses_artifact_repair_prompt(tmp_path: Path):
         expected_artifacts=["spawn_manifest.md"],
         base_timeout_s=60,
     )
+    phase = D._model_owned_supervision_phase(phase)
 
     snap = D._build_missing_only_prompt(
         phase,
         sp,
         [],
         prompt_path,
-        gate_missing=["spawn_manifest.md (stub only)"],
+        gate_missing=["spawn_manifest_proposal.md (stub only)"],
         now_ts=1_700_000_000,
     )
     txt = snap.read_text(encoding="utf-8")
     assert "Gate failure detail" in txt
-    assert "spawn_manifest.md (stub only)" in txt
-    assert "`spawn_manifest.md`" in txt
+    assert "spawn_manifest_proposal.md (stub only)" in txt
+    assert "`spawn_manifest_proposal.md`" in txt
+    assert "`spawn_manifest.md`" not in txt
     assert "Read the original phase prompt snapshot" in txt
     assert "Do not create any artifact outside the listed expected outputs" in txt
 
@@ -1087,6 +1092,44 @@ def test_depth_worker_normalizes_phase_4b_to_depth(tmp_path: Path):
     assert "<!-- PLAMEN_PHASE: 4b -->" not in text
     assert "<!-- PLAMEN_PHASE: depth -->" in text
     assert "<!-- EXPECTED_OUTPUT: depth_external_findings.md -->" in text
+
+
+def test_depth_worker_preserves_valid_transactional_envelope_bytes(tmp_path: Path):
+    sp = tmp_path / ".scratchpad"
+    sp.mkdir()
+    _touch_sentinel(sp)
+    _write_depth_contract(sp)
+    phase = _make_depth_phase(min_bytes=100)
+    job = {
+        "agent_id": "depth-token-flow",
+        "role": "token_flow",
+        "output": "depth_token_flow_findings.md",
+        "category": "standard",
+    }
+    raw = (
+        "<!-- PLAMEN_DISPATCH_PHASE: depth -->\n"
+        "<!-- PLAMEN_DISPATCH_WORKER: depth-token-flow -->\n"
+        "<!-- PLAMEN_ARTIFACT: depth_token_flow_findings.md -->\n"
+        "<!-- PLAMEN_OWNER: depth-token-flow -->\n"
+        "<!-- PLAMEN_STATUS: IN_PROGRESS -->\n"
+        "<!-- PLAMEN_PHASE: depth -->\n"
+        "<!-- PLAMEN_VERSION: 1 -->\n"
+        "<!-- AGENT_ROW: depth-token-flow -->\n"
+        "<!-- EXPECTED_OUTPUT: depth_token_flow_findings.md -->\n\n"
+        "# Depth Token-Flow Findings\n\n"
+        "## Finding [DT-1]: Refund authorization bypass\n\n"
+        + ("substantive trace evidence " * 20)
+        + "\n<!-- PLAMEN_STATUS: COMPLETE -->\n"
+    ).encode()
+    path = sp / job["output"]
+    path.write_bytes(raw)
+    before_stat = path.stat()
+
+    assert D._depth_worker_output_complete(sp, phase, job) is True
+    after_stat = path.stat()
+    assert path.read_bytes() == raw
+    assert after_stat.st_ino == before_stat.st_ino
+
 
 
 def test_depth_worker_wraps_substantive_markerless_file_only_after_final_turn(tmp_path: Path):

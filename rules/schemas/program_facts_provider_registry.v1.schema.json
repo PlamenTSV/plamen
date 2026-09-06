@@ -1,0 +1,371 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_provider_registry.v1.schema.json",
+  "title": "Plamen Program Facts provider registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_state", "providers"],
+  "properties": {
+    "schema_version": {"const": "plamen.program_facts_provider_registry.v1"},
+    "release_state": {
+      "enum": ["NO_PROVIDER_AUTHORITY", "REVIEWED_PROVIDER_AUTHORITY"]
+    },
+    "providers": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/provider"}
+    }
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+    },
+    "ecosystem": {
+      "enum": ["evm", "go", "rust", "solana", "soroban", "aptos", "sui", "daml", "mixed"]
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_authority", "terminal_negative_authority", "can_suppress",
+        "can_demote", "can_refute", "can_mark_examined", "can_certify_clean"
+      ],
+      "properties": {
+        "semantic_authority": {"const": "ADDITIVE_PROPOSAL_ONLY"},
+        "terminal_negative_authority": {"const": false},
+        "can_suppress": {"const": false},
+        "can_demote": {"const": false},
+        "can_refute": {"const": false},
+        "can_mark_examined": {"const": false},
+        "can_certify_clean": {"const": false}
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "symbol"],
+      "properties": {
+        "module": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"},
+        "symbol": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}
+      }
+    },
+    "toolchain_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolchain", "version_range"],
+      "properties": {
+        "toolchain": {"type": "string", "minLength": 1},
+        "version_range": {"type": "string", "minLength": 1},
+        "identity_digest": {"$ref": "#/$defs/hex64"},
+        "identity_policy": {"const": "RECEIPT_EXACT_PER_RUN"}
+      },
+      "oneOf": [
+        {
+          "required": ["identity_digest"],
+          "not": {"required": ["identity_policy"]}
+        },
+        {
+          "required": ["identity_policy"],
+          "not": {"required": ["identity_digest"]}
+        }
+      ]
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_id", "maximum_precision", "allowed_provenance_origins",
+        "allowed_relation_kinds", "host_semantic_authority"
+      ],
+      "properties": {
+        "capability_id": {"$ref": "#/$defs/id"},
+        "maximum_precision": {"enum": ["EXACT", "MAY", "HEURISTIC", "SYNTACTIC"]},
+        "allowed_provenance_origins": {
+          "type": "array",
+          "items": {
+            "enum": ["COMPILER_IR", "SSA", "AST", "BYTECODE", "SOURCE_PARSE", "INDEX_REFERENCE"]
+          },
+          "uniqueItems": true
+        },
+        "allowed_relation_kinds": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "CONTAINS", "DECLARES", "INHERITS_OR_IMPLEMENTS", "EXACT_CFG_EDGE",
+              "EXACT_CFG_DOMINATES", "EXACT_CFG_POST_DOMINATES",
+              "MAY_DEPENDENCY_FUNCTION", "MAY_DEPENDENCY_CONTRACT",
+              "RESOLVED_STATIC_CALL", "MAY_REACH_CHA", "MAY_REACH_RTA",
+              "MAY_REACH_VTA", "UNRESOLVED_DYNAMIC_CALL", "READS_STATE",
+              "WRITES_STATE", "READS_ACCOUNT_FIELD", "WRITES_ACCOUNT_FIELD",
+              "SYNTACTIC_SINK", "HOST_SEMANTIC_SINK", "AUTH_CHECK_OCCURRENCE",
+              "VALUE_TRANSFER_OCCURRENCE", "CREATE_OCCURRENCE",
+              "RESOURCE_FLOW_OCCURRENCE", "OBJECT_FLOW_OCCURRENCE",
+              "HOST_CONSTRAINT_OCCURRENCE"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "host_semantic_authority": {"const": false}
+      }
+    },
+    "tool_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind", "name", "command", "module", "executable_sha256",
+        "module_sha256"
+      ],
+      "properties": {
+        "kind": {"enum": ["EXECUTABLE", "PYTHON_MODULE", "CHECKED_IN_HELPER"]},
+        "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"},
+        "command": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"},
+        "module": {
+          "oneOf": [
+            {"const": ""},
+            {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"}
+          ]
+        },
+        "executable_sha256": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]},
+        "module_sha256": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]}
+      }
+    },
+    "raw_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_schema_digest", "parser_callable", "parser_source_digest"],
+      "properties": {
+        "raw_schema_digest": {"$ref": "#/$defs/hex64"},
+        "parser_callable": {"type": "string", "minLength": 1},
+        "parser_source_digest": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "typed_substitution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["placeholder", "source"],
+      "properties": {
+        "placeholder": {
+          "type": "string",
+          "pattern": "^\\{[A-Z][A-Z0-9_]*\\}$"
+        },
+        "source": {
+          "enum": [
+            "AUDIT_RUN_ID", "PROVIDER_RUN_ID", "SNAPSHOT_DIGEST",
+            "SOURCE_SCOPE_DIGEST", "SOURCE_MANIFEST_DIGEST",
+            "WORKING_DIRECTORY_ROOT_ID", "SINGLE_BUILD_VARIANT_ID"
+          ]
+        }
+      }
+    },
+    "configuration_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "sha256"],
+      "properties": {
+        "identity": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "invocation_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "argv_template", "typed_substitutions", "configuration_inputs"
+      ],
+      "properties": {
+        "argv_template": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "typed_substitutions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/typed_substitution"}
+        },
+        "configuration_inputs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/configuration_input"}
+        }
+      }
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "version", "checksum", "module_source_digest"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string"},
+        "checksum": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]},
+        "module_source_digest": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time_seconds", "memory_bytes", "input_bytes", "output_bytes"],
+      "properties": {
+        "time_seconds": {"type": "integer", "minimum": 0},
+        "memory_bytes": {"type": "integer", "minimum": 0},
+        "input_bytes": {"type": "integer", "minimum": 0},
+        "output_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "architectures"],
+      "properties": {
+        "os": {"type": "string", "minLength": 1},
+        "architectures": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "fallback": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "maxProperties": 0},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider_id", "maximum_precision"],
+          "properties": {
+            "provider_id": {"$ref": "#/$defs/id"},
+            "maximum_precision": {"enum": ["EXACT", "MAY", "HEURISTIC", "SYNTACTIC"]}
+          }
+        }
+      ]
+    },
+    "installation_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source", "digest"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "source": {"type": "string"},
+        "digest": {"oneOf": [{"const": ""}, {"$ref": "#/$defs/hex64"}]}
+      }
+    },
+    "environment_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inheritance", "allowed_names", "required_names",
+        "forbidden_secret_names", "allow_secret_values",
+        "value_digest_required"
+      ],
+      "properties": {
+        "inheritance": {"const": "DENY_BY_DEFAULT"},
+        "allowed_names": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+          "uniqueItems": true
+        },
+        "required_names": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+          "uniqueItems": true
+        },
+        "forbidden_secret_names": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+          "uniqueItems": true
+        },
+        "allow_secret_values": {"const": false},
+        "value_digest_required": {"const": true}
+      }
+    },
+    "install_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode", "network_allowed", "mutable_reference_allowed",
+        "installer", "lock_identity", "lock_digest"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "PREINSTALLED_VERIFIED", "OFFLINE_PINNED_PACKAGE",
+            "CHECKED_IN_SOURCE_BUILD"
+          ]
+        },
+        "network_allowed": {"const": false},
+        "mutable_reference_allowed": {"const": false},
+        "installer": {"type": "string", "minLength": 1},
+        "lock_identity": {"type": "string", "minLength": 1},
+        "lock_digest": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "supply_chain_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network_during_bake", "pinned", "checksum_required"],
+      "properties": {
+        "network_during_bake": {"const": false},
+        "pinned": {"type": "boolean"},
+        "checksum_required": {"type": "boolean"}
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_id", "provider_schema_version", "adapter",
+        "supported_ecosystems", "supported_languages",
+        "toolchain_ranges", "capabilities", "raw_binding", "resolution_policy",
+        "tool_identity", "invocation_policy",
+        "expected_version_syntax", "distribution", "license_classification",
+        "limits", "supported_platforms", "fallback", "authority",
+        "installation_provenance", "environment_policy", "install_policy",
+        "supply_chain_policy"
+      ],
+      "properties": {
+        "provider_id": {"$ref": "#/$defs/id"},
+        "provider_schema_version": {
+          "type": "string",
+          "pattern": "^plamen\\.program_facts_provider\\.[a-z0-9_.-]+\\.v[0-9]+$"
+        },
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "supported_ecosystems": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ecosystem"},
+          "uniqueItems": true
+        },
+        "supported_languages": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "toolchain_ranges": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/toolchain_range"}
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/capability"}
+        },
+        "raw_binding": {"$ref": "#/$defs/raw_binding"},
+        "tool_identity": {"$ref": "#/$defs/tool_identity"},
+        "invocation_policy": {"$ref": "#/$defs/invocation_policy"},
+        "resolution_policy": {"type": "string", "minLength": 1},
+        "expected_version_syntax": {"type": "string"},
+        "distribution": {"$ref": "#/$defs/distribution"},
+        "license_classification": {"type": "string", "minLength": 1},
+        "limits": {"$ref": "#/$defs/limits"},
+        "supported_platforms": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/platform"}
+        },
+        "fallback": {"$ref": "#/$defs/fallback"},
+        "authority": {"$ref": "#/$defs/authority"},
+        "installation_provenance": {"$ref": "#/$defs/installation_provenance"},
+        "environment_policy": {"$ref": "#/$defs/environment_policy"},
+        "install_policy": {"$ref": "#/$defs/install_policy"},
+        "supply_chain_policy": {"$ref": "#/$defs/supply_chain_policy"}
+      }
+    }
+  }
+}

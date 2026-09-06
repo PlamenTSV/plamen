@@ -17,7 +17,10 @@ would otherwise leak them).
 """
 import os
 import json
+import hashlib
 import importlib.util
+import shutil
+import subprocess
 import tempfile
 
 import pytest
@@ -36,6 +39,108 @@ def _load():
     finally:
         sys.argv = saved
     return m
+
+
+def _stage_runtime_denominator(module, root):
+    """Build a synthetic install tree from the production denominator."""
+    production_root = os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+    for relative in module._toolchain_runtime_required_files():
+        path = os.path.join(root, *relative.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.copy2(
+            os.path.join(production_root, *relative.split("/")),
+            path,
+        )
+    # The installer and doctor now validate the public front controller as an
+    # explicit runtime prerequisite. Keep that fixture invariant independent
+    # of any already-imported denominator-provider cache in the shared pytest
+    # process.
+    entrypoint = os.path.join(root, "plamen.py")
+    if not os.path.isfile(entrypoint):
+        shutil.copy2(
+            os.path.join(production_root, "plamen.py"),
+            entrypoint,
+        )
+
+
+def _committed_projection_fixture(monkeypatch, module, source, codex):
+    os.makedirs(codex, exist_ok=True)
+    rows = []
+    for current, directories, files in os.walk(source):
+        directories.sort(); files.sort()
+        for name in files:
+            path = os.path.join(current, name)
+            relative = os.path.relpath(path, source).replace(os.sep, "/")
+            authority, raw = module._codex_install_committed_descriptor(
+                source, tuple(relative.split("/")), return_raw=True,
+            )
+            rows.append({
+                "destination_root": "plamen",
+                "destination_path": relative,
+                "destination": path,
+                "size": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "terminal_authority": authority,
+            })
+    monkeypatch.setattr(module, "_CODEX_INSTALL_RUNTIME_COUNT", len(rows))
+    generation = {
+        "schema": "plamen.codex_install.v2",
+        "state": "COMMITTED",
+        "transaction_id": "1" * 32,
+        "source_count": len(rows),
+        "runtime_count": len(rows),
+        "adapter_count": 0,
+        "source_manifest_sha256": "2" * 64,
+        "runtime_manifest_sha256": "3" * 64,
+        "adapter_manifest_sha256": "4" * 64,
+        "source_root": os.path.abspath(source),
+        "plamen_root": os.path.abspath(source),
+        "codex_root": os.path.abspath(codex),
+        "rows": rows,
+        "terminal_verification": {
+            "verified_count": len(rows),
+            "verified_manifest_sha256": "2" * 64,
+            "completed_ns": 1,
+        },
+    }
+    monkeypatch.setattr(
+        module, "_validated_committed_install_receipt", lambda: generation,
+    )
+    monkeypatch.setattr(
+        module, "_open_install_admission_anchor",
+        lambda *_a, **_k: (None, object(), lambda: None),
+    )
+    monkeypatch.setattr(
+        module, "_claude_projection_key_path",
+        lambda *_a: os.path.join(codex, ".projection-key.json"),
+    )
+    _private, public = module._claude_projection_private_key(create=True)
+    generation["projection_public_key"] = public
+    generation["terminal_verification"]["projection_public_key"] = public
+    with open(
+        os.path.join(codex, module._CODEX_INSTALL_RECEIPT), "w", encoding="utf-8",
+    ) as stream:
+        json.dump(generation, stream, sort_keys=True)
+    return generation
+
+
+def _patch_runtime_rows(monkeypatch, module, source):
+    def rows(_closure_root=None):
+        result = []
+        for relative in module._toolchain_runtime_required_files(_closure_root):
+            path = os.path.join(source, *relative.split("/"))
+            with open(path, "rb") as stream:
+                raw = stream.read()
+            result.append({
+                "path": relative,
+                "digest_mode": "raw-v1",
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            })
+        return tuple(result)
+
+    monkeypatch.setattr(module, "_toolchain_runtime_asset_rows", rows)
 
 
 def _force_no_symlink_privilege(monkeypatch, m):
@@ -91,7 +196,244 @@ def test_safe_link_copies_dir_when_junction_fails(monkeypatch):
             assert f.read() == "rule a\n"
 
 
-def test_copied_dir_reinstall_is_idempotent(monkeypatch):
+def test_safe_link_migrates_only_authenticated_prior_target(tmp_path):
+    m = _load()
+    prior = tmp_path / "prior" / "rules" / "a.md"
+    desired = tmp_path / "installed" / "rules" / "a.md"
+    destination = tmp_path / ".claude" / "rules" / "a.md"
+    prior.parent.mkdir(parents=True)
+    desired.parent.mkdir(parents=True)
+    destination.parent.mkdir(parents=True)
+    prior.write_text("prior\n", encoding="utf-8")
+    desired.write_text("installed\n", encoding="utf-8")
+    destination.symlink_to(prior)
+
+    assert m._safe_link(
+        str(desired),
+        str(destination),
+        lambda *_args: None,
+        authenticated_prior_targets=(str(prior),),
+    ) == "linked"
+    assert destination.resolve() == desired.resolve()
+
+
+def test_safe_link_still_refuses_unauthenticated_foreign_target(tmp_path):
+    m = _load()
+    foreign = tmp_path / "foreign.md"
+    desired = tmp_path / "desired.md"
+    destination = tmp_path / "destination.md"
+    foreign.write_text("foreign\n", encoding="utf-8")
+    desired.write_text("desired\n", encoding="utf-8")
+    destination.symlink_to(foreign)
+
+    assert m._safe_link(
+        str(desired),
+        str(destination),
+        lambda *_args: None,
+        authenticated_prior_targets=(str(tmp_path / "different.md"),),
+    ) is False
+    assert destination.resolve() == foreign.resolve()
+
+
+def test_authenticated_prior_install_roots_include_committed_runtime(
+    monkeypatch, tmp_path,
+):
+    m = _load()
+    codex_home = tmp_path / ".codex"
+    plamen_root = tmp_path / ".plamen"
+    prior_source = tmp_path / "prior-source"
+    receipt_raw = b"authenticated predecessor"
+    receipt_descriptor = {"kind": "file"}
+    anchor_descriptor = {"device": 17, "inode": 23}
+    calls = []
+
+    real_expanduser = m.os.path.expanduser
+    monkeypatch.setattr(
+        m.os.path,
+        "expanduser",
+        lambda value: (
+            str(codex_home) if value == "~/.codex" else
+            str(plamen_root) if value == "~/.plamen" else
+            real_expanduser(value)
+        ),
+    )
+
+    def committed_read(root, components, **_kwargs):
+        calls.append((root, components))
+        if components == (m._CODEX_INSTALL_RECEIPT,):
+            return receipt_descriptor, receipt_raw
+        assert components == (m._CODEX_INSTALL_ANCHOR,)
+        return anchor_descriptor, b"lock"
+
+    def validate(raw, **kwargs):
+        assert raw == receipt_raw
+        assert kwargs["receipt_descriptor"] is receipt_descriptor
+        assert kwargs["lock_identity"] == [17, 23]
+        assert kwargs["plamen_root"] == plamen_root.absolute()
+        return {"source_root": str(prior_source.absolute())}, receipt_descriptor
+
+    monkeypatch.setattr(m, "_codex_install_committed_read", committed_read)
+    monkeypatch.setattr(m, "_validated_prior_committed_receipt", validate)
+
+    assert m._authenticated_prior_install_roots() == (
+        os.path.normpath(str(plamen_root.absolute())),
+    )
+    assert len(calls) == 2
+
+    desired = tmp_path / "desired.md"
+    destination = tmp_path / "destination.md"
+    desired.write_text("desired\n", encoding="utf-8")
+    prior_source.mkdir()
+    historical = prior_source / "historical.md"
+    historical.write_text("old\n", encoding="utf-8")
+    destination.symlink_to(historical)
+    assert m._safe_link(
+        str(desired), str(destination), lambda *_args: None,
+        authenticated_prior_targets=m._authenticated_prior_install_roots(),
+    ) is False
+    assert destination.resolve() == historical.resolve()
+
+
+@pytest.mark.parametrize(
+    ("source_count", "runtime_count"),
+    ((756, 725), (758, 727), (760, 729), (762, 731), (764, 733)),
+)
+def test_exact_predecessor_receipt_is_admitted(
+    monkeypatch, tmp_path, source_count, runtime_count,
+):
+    m = _load()
+    receipt = {field: None for field in m._CODEX_COMMITTED_RECEIPT_FIELDS}
+    receipt.update({
+        "schema": m._CODEX_INSTALL_SCHEMA,
+        "state": "COMMITTED",
+        "source_count": source_count,
+        "runtime_count": runtime_count,
+        "adapter_count": m._CODEX_INSTALL_ADAPTER_COUNT,
+        "plamen_root": str(tmp_path / ".plamen"),
+        "codex_root": str(tmp_path / ".codex"),
+        "lock_identity": [17, 23],
+        "rows": [{} for _ in range(source_count)],
+        "journal": [{} for _ in range(source_count)],
+    })
+    raw = json.dumps(receipt, sort_keys=True).encode("utf-8")
+    descriptor = {
+        "kind": "file",
+        "attributes": 0,
+        "reparse_tag": 0,
+        "links": 1,
+        "size": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    observed = []
+    monkeypatch.setattr(
+        m,
+        "_validate_committed_install_rows",
+        lambda *args, **kwargs: observed.append((args, kwargs)),
+    )
+
+    validated, authority = m._validated_prior_committed_receipt(
+        raw,
+        receipt_path=tmp_path / ".codex" / m._CODEX_INSTALL_RECEIPT,
+        plamen_root=tmp_path / ".plamen",
+        codex_home=tmp_path / ".codex",
+        anchor=tmp_path / ".codex" / m._CODEX_INSTALL_ANCHOR,
+        receipt_descriptor=descriptor,
+        lock_identity=[17, 23],
+    )
+
+    assert validated["source_count"] == source_count
+    assert authority is descriptor
+    assert observed[0][1]["expected_count"] == source_count
+
+
+def test_tampered_predecessor_cannot_authorize_link_migration(
+    monkeypatch, tmp_path,
+):
+    m = _load()
+    codex_home = tmp_path / ".codex"
+    plamen_root = tmp_path / ".plamen"
+    real_expanduser = m.os.path.expanduser
+    monkeypatch.setattr(
+        m.os.path,
+        "expanduser",
+        lambda value: (
+            str(codex_home) if value == "~/.codex" else
+            str(plamen_root) if value == "~/.plamen" else
+            real_expanduser(value)
+        ),
+    )
+    monkeypatch.setattr(
+        m,
+        "_codex_install_committed_read",
+        lambda *_args, **_kwargs: (
+            {"kind": "file", "device": 17, "inode": 23}, b"tampered"
+        ),
+    )
+    monkeypatch.setattr(
+        m,
+        "_validated_prior_committed_receipt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("installed row digest differs")
+        ),
+    )
+
+    assert m._authenticated_prior_install_roots() == ()
+
+
+@pytest.mark.parametrize(
+    ("source_count", "runtime_count", "adapter_count", "row_count"),
+    (
+        (755, 725, 31, 755),
+        (756, 724, 31, 756),
+        (761, 729, 31, 761),
+        (999, 968, 31, 999),
+        (760.0, 729, 31, 760),
+        (True, 729, 31, 1),
+        (760, 729.0, 31, 760),
+        (760, True, 31, 760),
+        (760, 729, 31.0, 760),
+        (760, 729, True, 760),
+    ),
+)
+def test_nonexact_immediate_predecessor_receipt_is_rejected(
+    monkeypatch, tmp_path, source_count, runtime_count, adapter_count, row_count,
+):
+    m = _load()
+    receipt = {field: None for field in m._CODEX_COMMITTED_RECEIPT_FIELDS}
+    receipt.update({
+        "schema": m._CODEX_INSTALL_SCHEMA,
+        "state": "COMMITTED",
+        "source_count": source_count,
+        "runtime_count": runtime_count,
+        "adapter_count": adapter_count,
+        "plamen_root": str(tmp_path / ".plamen"),
+        "codex_root": str(tmp_path / ".codex"),
+        "lock_identity": [17, 23],
+        "rows": [{} for _ in range(row_count)],
+        "journal": [{} for _ in range(row_count)],
+    })
+    raw = json.dumps(receipt, sort_keys=True).encode("utf-8")
+    descriptor = {
+        "kind": "file", "attributes": 0, "reparse_tag": 0, "links": 1,
+        "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    monkeypatch.setattr(
+        m, "_validate_committed_install_rows", lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(RuntimeError, match="not exact COMMITTED authority"):
+        m._validated_prior_committed_receipt(
+            raw,
+            receipt_path=tmp_path / ".codex" / m._CODEX_INSTALL_RECEIPT,
+            plamen_root=tmp_path / ".plamen",
+            codex_home=tmp_path / ".codex",
+            anchor=tmp_path / ".codex" / m._CODEX_INSTALL_ANCHOR,
+            receipt_descriptor=descriptor,
+            lock_identity=[17, 23],
+        )
+
+
+def test_modified_copied_dir_reinstall_fails_closed(monkeypatch):
     """Re-running the copytree fallback over a prior copied tree (with a sibling
     .pre-plamen backup) must refresh the tree, not hit 'backup already exists'."""
     m = _load()
@@ -111,9 +453,9 @@ def test_copied_dir_reinstall_is_idempotent(monkeypatch):
             f.write("user original\n")
 
         status = m._safe_link(src, dst, lambda *_: None)
-        assert status == "copied_dir"
+        assert status is False
         with open(os.path.join(dst, "VERSION")) as f:
-            assert f.read() == "NEW\n"
+            assert f.read() == "OLD\n"
         # User's backup untouched (recoverable on uninstall).
         with open(dst + ".pre-plamen") as f:
             assert f.read() == "user original\n"
@@ -151,7 +493,7 @@ def test_version_only_manifest_preserves_copied_dirs(monkeypatch):
         assert data["version"] == m.VERSION
 
 
-def test_uninstall_removes_copied_dir_tree(monkeypatch):
+def test_uninstall_preserves_legacy_copied_dir_without_tree_digest(monkeypatch):
     """A copied directory tree (cross-volume fallback) must be rmtree'd by
     run_uninstall and any backed-up user original restored — the link-only
     path skips real directories and would otherwise leak the tree."""
@@ -187,9 +529,377 @@ def test_uninstall_removes_copied_dir_tree(monkeypatch):
         monkeypatch.setenv("PLAMEN_UNINSTALL_YES", "1")
         m.run_uninstall()
 
-        # The whole copied tree is gone.
-        assert not os.path.exists(copied_dir)
+        assert os.path.isdir(copied_dir)
         assert not os.path.isfile(os.path.join(claude_home, m._PLAMEN_MANIFEST))
+
+
+def test_claude_copy_install_includes_verification_policy_and_uninstalls(
+    monkeypatch,
+):
+    """The Claude cross-volume copy layout must include the policy package.
+
+    ``scripts/plamen_driver.py`` and ``scripts/plamen_validators.py`` import
+    ``verification_policy`` from their parent.  Installing only ``scripts/``
+    therefore produces a layout that works through source-tree symlinks but
+    fails when Windows has to copy directories.
+    """
+    m = _load()
+    monkeypatch.setattr(
+        m, "_toolchain_runtime_required_integrity_issues",
+        lambda *_a, **_k: {"missing": [], "mismatched": []},
+    )
+    monkeypatch.setattr(m, "_render_claude_config_updates", lambda *_a, **_k: [])
+    with tempfile.TemporaryDirectory() as root:
+        plamen_home = os.path.join(root, ".plamen")
+        claude_home = os.path.join(root, ".claude")
+        codex_home = os.path.join(root, ".codex-not-installed")
+        policy_src = os.path.join(plamen_home, "verification_policy")
+        os.makedirs(os.path.join(plamen_home, "scripts"))
+        os.makedirs(policy_src)
+        for name in m._VERIFICATION_POLICY_INSTALL_FILES:
+            with open(os.path.join(policy_src, name), "w", encoding="utf-8") as f:
+                f.write("{}\n" if name.endswith(".json") else "# package\n")
+        _stage_runtime_denominator(m, plamen_home)
+
+        monkeypatch.setattr(m, "PLAMEN_HOME", plamen_home, raising=False)
+        monkeypatch.setattr(m, "CLAUDE_HOME", claude_home, raising=False)
+        real_expand = m.os.path.expanduser
+        monkeypatch.setattr(
+            m.os.path,
+            "expanduser",
+            lambda path: codex_home if path == "~/.codex" else real_expand(path),
+        )
+
+        def _copy_only(src, dst, _write, **_kwargs):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst)
+                return "copied_dir"
+            shutil.copy2(src, dst)
+            return "copied"
+
+        monkeypatch.setattr(m, "_safe_link", _copy_only)
+        _patch_runtime_rows(monkeypatch, m, plamen_home)
+        generation = _committed_projection_fixture(
+            monkeypatch, m, plamen_home, codex_home,
+        )
+        m._run_symlink_install(
+            lambda *_: None,
+            source_root=plamen_home,
+            committed_generation=generation,
+            authenticated_prior_roots=(),
+        )
+
+        nested_rule_destinations = [
+            os.path.join(claude_home, *relative.split("/"))
+            for relative in m._toolchain_runtime_required_files()
+            if relative.startswith("rules/")
+            and os.path.dirname(relative) != "rules"
+        ]
+        assert nested_rule_destinations
+        assert all(os.path.isfile(path) for path in nested_rule_destinations)
+
+        policy_dst = os.path.join(claude_home, "verification_policy")
+        assert m._missing_claude_verification_policy_files() == []
+        manifest_path = os.path.join(claude_home, m._PLAMEN_MANIFEST)
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+        assert policy_dst in manifest["installed"]
+        assert policy_dst in manifest["copied_dirs"]
+
+        os.remove(
+            os.path.join(
+                policy_dst,
+                "verification_method_registry.v1.json",
+            )
+        )
+        assert m._missing_claude_verification_policy_files() == [
+            "verification_method_registry.v1.json"
+        ]
+
+        monkeypatch.setenv("HOME", root)
+        monkeypatch.setenv("USERPROFILE", root)
+        monkeypatch.setenv("PLAMEN_UNINSTALL_YES", "1")
+        with pytest.raises(RuntimeError, match="survived uninstall"):
+            m.run_uninstall()
+        # A partially modified copied tree cannot be proven receipt-identical,
+        # so uninstall preserves it and retains the receipt for repair.
+        assert os.path.isdir(policy_dst)
+        assert os.path.isfile(manifest_path)
+
+
+def test_claude_install_uses_runtime_denominator_for_generic_nested_rule(
+    monkeypatch,
+) -> None:
+    """A future nested rule is installed and uninstalled without allowlisting."""
+
+    m = _load()
+    monkeypatch.setattr(
+        m, "_toolchain_runtime_required_integrity_issues",
+        lambda *_a, **_k: {"missing": [], "mismatched": []},
+    )
+    monkeypatch.setattr(m, "_render_claude_config_updates", lambda *_a, **_k: [])
+    with tempfile.TemporaryDirectory() as root:
+        plamen_home = os.path.join(root, ".plamen")
+        claude_home = os.path.join(root, ".claude")
+        codex_home = os.path.join(root, ".codex-not-installed")
+        _stage_runtime_denominator(m, plamen_home)
+        generic = "rules/future/generic-runtime-policy.json"
+        generic_source = os.path.join(plamen_home, *generic.split("/"))
+        os.makedirs(os.path.dirname(generic_source), exist_ok=True)
+        with open(generic_source, "w", encoding="utf-8") as stream:
+            stream.write("{}\n")
+        base_required = m._toolchain_runtime_required_files()
+
+        monkeypatch.setattr(m, "PLAMEN_HOME", plamen_home, raising=False)
+        monkeypatch.setattr(m, "CLAUDE_HOME", claude_home, raising=False)
+        monkeypatch.setattr(
+            m,
+            "_toolchain_runtime_required_files",
+            lambda *_a: tuple(sorted({*base_required, generic})),
+        )
+        real_expand = m.os.path.expanduser
+        monkeypatch.setattr(
+            m.os.path,
+            "expanduser",
+            lambda path: (
+                codex_home if path == "~/.codex" else real_expand(path)
+            ),
+        )
+
+        def _copy_only(src, dst, _write, **_kwargs):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst)
+                return "copied_dir"
+            shutil.copy2(src, dst)
+            return "copied"
+
+        monkeypatch.setattr(m, "_safe_link", _copy_only)
+        _patch_runtime_rows(monkeypatch, m, plamen_home)
+        generation = _committed_projection_fixture(
+            monkeypatch, m, plamen_home, codex_home,
+        )
+        m._run_symlink_install(
+            lambda *_: None,
+            source_root=plamen_home,
+            committed_generation=generation,
+            authenticated_prior_roots=(),
+        )
+
+        destination = os.path.join(claude_home, *generic.split("/"))
+        assert os.path.isfile(destination)
+        manifest_path = os.path.join(claude_home, m._PLAMEN_MANIFEST)
+        with open(manifest_path, encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        assert destination in manifest["installed"]
+        assert destination in manifest["copied"]
+        runtime_row = next(
+            row
+            for row in manifest["runtime_assets"]
+            if row["relative_path"] == generic
+        )
+        assert runtime_row == {
+            "backup_disposition": "none",
+            "destination": destination,
+            "digest_mode": "raw-v1",
+            "install_mode": "copied",
+            "owned": True,
+            "relative_path": generic,
+            "source_sha256": hashlib.sha256(
+                open(generic_source, "rb").read()
+            ).hexdigest(),
+        }
+        created_parent = os.path.dirname(destination)
+        assert created_parent in manifest["created_dirs"]
+        unrelated = os.path.join(created_parent, "user-owned.txt")
+        with open(unrelated, "w", encoding="utf-8") as stream:
+            stream.write("preserve me\n")
+
+        # The source projection may advance before uninstall. Receipt ownership,
+        # not the new denominator, must still remove the stale managed asset.
+        monkeypatch.setattr(
+            m,
+            "_toolchain_runtime_required_files",
+            lambda: base_required,
+        )
+        os.remove(generic_source)
+
+        monkeypatch.setenv("HOME", root)
+        monkeypatch.setenv("USERPROFILE", root)
+        monkeypatch.setenv("PLAMEN_UNINSTALL_YES", "1")
+        m.run_uninstall()
+        assert not os.path.exists(destination)
+        assert os.path.isfile(unrelated)
+        assert not os.path.isfile(manifest_path)
+
+
+def test_uninstall_survivor_retains_receipt_and_fails_loud(
+    monkeypatch,
+) -> None:
+    m = _load()
+    with tempfile.TemporaryDirectory() as root:
+        claude_home = os.path.join(root, ".claude")
+        plamen_home = os.path.join(root, ".plamen")
+        os.makedirs(claude_home)
+        os.makedirs(plamen_home)
+        destination = os.path.join(
+            claude_home, "rules", "future", "owned.json"
+        )
+        os.makedirs(os.path.dirname(destination))
+        with open(destination, "w", encoding="utf-8") as stream:
+            stream.write("{}\n")
+        manifest_path = os.path.join(
+            claude_home, m._PLAMEN_MANIFEST
+        )
+        manifest = {
+            "plamen_home": plamen_home,
+            "version": m.VERSION,
+            "installed": [destination],
+            "copied": [destination],
+            "copied_dirs": [],
+            "created_dirs": [os.path.dirname(destination)],
+            "runtime_assets": [
+                {
+                    "backup_disposition": "none",
+                    "destination": destination,
+                    "install_mode": "copied",
+                    "owned": True,
+                    "relative_path": "rules/future/owned.json",
+                    "source_sha256": "0" * 64,
+                }
+            ],
+            "shims": [],
+        }
+        with open(manifest_path, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream)
+        monkeypatch.setattr(m, "CLAUDE_HOME", claude_home, raising=False)
+        monkeypatch.setattr(m, "PLAMEN_HOME", plamen_home, raising=False)
+        monkeypatch.setenv("HOME", root)
+        monkeypatch.setenv("USERPROFILE", root)
+        monkeypatch.setenv("PLAMEN_UNINSTALL_YES", "1")
+        real_remove = m.os.remove
+
+        def refuse_owned(path):
+            if os.path.normcase(path) == os.path.normcase(destination):
+                raise PermissionError("fixture holds the managed file")
+            return real_remove(path)
+
+        monkeypatch.setattr(m.os, "remove", refuse_owned)
+        with pytest.raises(
+            RuntimeError,
+            match="receipt-owned runtime assets survived uninstall",
+        ):
+            m.run_uninstall()
+        assert os.path.isfile(destination)
+        assert os.path.isfile(manifest_path)
+
+
+def test_doctor_hard_fails_incomplete_claude_verification_policy(
+    monkeypatch,
+) -> None:
+    m = _load()
+    with tempfile.TemporaryDirectory() as root:
+        plamen_home = os.path.join(root, ".plamen")
+        claude_home = os.path.join(root, ".claude")
+        policy_dir = os.path.join(claude_home, "verification_policy")
+        os.makedirs(policy_dir)
+        os.makedirs(plamen_home)
+        _stage_runtime_denominator(m, plamen_home)
+        _stage_runtime_denominator(m, claude_home)
+        for submodule in (
+            "custom-mcp/slither-mcp",
+            "custom-mcp/farofino-mcp",
+        ):
+            path = os.path.join(plamen_home, submodule)
+            os.makedirs(path)
+            with open(os.path.join(path, "README"), "w", encoding="utf-8") as f:
+                f.write("fixture\n")
+
+        production_root = os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))
+        )
+        for name in m._VERIFICATION_POLICY_INSTALL_FILES:
+            shutil.copy2(
+                os.path.join(production_root, "verification_policy", name),
+                os.path.join(policy_dir, name),
+            )
+        missing = m._VERIFICATION_POLICY_INSTALL_FILES[-1]
+        os.remove(os.path.join(policy_dir, missing))
+
+        manifest_path = os.path.join(claude_home, m._PLAMEN_MANIFEST)
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "plamen_home": plamen_home,
+                    "version": m.VERSION,
+                    "installed": [],
+                    "copied": [],
+                    "copied_dirs": [],
+                    "shims": [],
+                },
+                f,
+            )
+        with open(
+            os.path.join(claude_home, "CLAUDE.md"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write(f"{m._CLAUDE_MD_START}\n{m._CLAUDE_MD_END}\n")
+
+        monkeypatch.setenv("HOME", root)
+        monkeypatch.setenv("USERPROFILE", root)
+        monkeypatch.setattr(m, "PLAMEN_HOME", plamen_home, raising=False)
+        monkeypatch.setattr(m, "CLAUDE_HOME", claude_home, raising=False)
+        monkeypatch.setattr(
+            m,
+            "_toolchain_runtime_required_integrity_issues",
+            lambda _root, **_kwargs: {"missing": [], "mismatched": []},
+        )
+        monkeypatch.setattr(m, "show_banner", lambda: None)
+        monkeypatch.setattr(m.console, "print", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            m,
+            "_find_bin",
+            lambda name: (
+                "" if name in {"node", "npm", "npx"}
+                else os.path.join(root, f"{name}.fixture")
+            ),
+        )
+        monkeypatch.setattr(
+            m,
+            "_locked_toolchain_identity_report",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            m,
+            "_python_dependency_authority",
+            lambda *_a, **_kw: "a" * 64,
+        )
+        monkeypatch.setattr(
+            m,
+            "_python_dependency_stamp_status",
+            lambda *_a, **_kw: "VALID",
+        )
+        monkeypatch.setattr(m, "_find_codex_bin", lambda: "")
+        monkeypatch.setattr(
+            m.subprocess,
+            "run",
+            lambda *_a, **_kw: subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="ok",
+                stderr="",
+            ),
+        )
+
+        assert m.run_doctor() == 1
+
+        shutil.copy2(
+            os.path.join(production_root, "verification_policy", missing),
+            os.path.join(policy_dir, missing),
+        )
+        assert m.run_doctor() == 0
 
 
 def test_safe_link_copies_file_when_no_privilege(monkeypatch):
@@ -210,7 +920,7 @@ def test_safe_link_copies_file_when_no_privilege(monkeypatch):
             assert f.read() == "2.1.0\n"
 
 
-def test_copy_fallback_is_idempotent_on_reinstall(monkeypatch):
+def test_modified_copy_fallback_reinstall_fails_closed(monkeypatch):
     """Re-running the copy fallback must overwrite the prior copy rather than
     hitting the 'backup already exists' skip and returning False."""
     m = _load()
@@ -228,9 +938,9 @@ def test_copy_fallback_is_idempotent_on_reinstall(monkeypatch):
             f.write("NEW plamen copy\n")
 
         status = m._safe_link(src, dst, lambda *_: None)
-        assert status == "copied"
+        assert status is False
         with open(dst) as f:
-            assert f.read() == "NEW plamen copy\n"
+            assert f.read() == "OLD plamen copy\n"
         # The user's backup is untouched (still recoverable on uninstall).
         with open(dst + ".pre-plamen") as f:
             assert f.read() == "user original\n"
@@ -260,7 +970,7 @@ def test_manifest_records_copied_subset(monkeypatch):
         assert data["copied"] == copied
 
 
-def test_uninstall_removes_copied_plain_files(monkeypatch):
+def test_uninstall_preserves_legacy_copies_without_digest_authority(monkeypatch):
     """The copied plain files must be removed by run_uninstall and any
     backed-up user originals restored — mirroring the symlink removal path."""
     m = _load()
@@ -300,17 +1010,17 @@ def test_uninstall_removes_copied_plain_files(monkeypatch):
         m.run_uninstall()
 
         # Copied plain file with no backup is gone.
-        assert not os.path.exists(copied_plain)
+        assert os.path.exists(copied_plain)
         # Copied-over-user file is restored to the user's original content.
         assert os.path.isfile(copied_over_user)
         with open(copied_over_user) as f:
-            assert f.read() == "user original\n"
-        assert not os.path.exists(copied_over_user + ".pre-plamen")
+            assert f.read() == "plamen content\n"
+        assert os.path.exists(copied_over_user + ".pre-plamen")
         # Manifest removed.
         assert not os.path.isfile(os.path.join(claude_home, m._PLAMEN_MANIFEST))
 
 
-def test_uninstall_codex_only_removes_owned_trees_keeps_shared_config(monkeypatch):
+def test_uninstall_codex_only_preserves_nonempty_shared_trees_and_config(monkeypatch):
     """Codex-only install (manifest under ~/.codex, none under ~/.claude) must
     NOT be a no-op: adapter-owned trees (agents/skills/commands) are removed,
     while shared config.toml / AGENTS.md (may hold user API keys/edits) are KEPT."""
@@ -349,7 +1059,7 @@ def test_uninstall_codex_only_removes_owned_trees_keeps_shared_config(monkeypatc
         m.run_uninstall()
 
         for tree in ("agents", "skills", "commands"):
-            assert not os.path.exists(os.path.join(codex_home, tree)), tree
+            assert os.path.isdir(os.path.join(codex_home, tree)), tree
         # Shared config PRESERVED — deleting it would be user-data loss.
         assert os.path.isfile(config_toml)
         with open(config_toml) as f:
@@ -358,7 +1068,7 @@ def test_uninstall_codex_only_removes_owned_trees_keeps_shared_config(monkeypatc
         assert not os.path.isfile(os.path.join(codex_home, m._PLAMEN_MANIFEST))
 
 
-def test_uninstall_removes_recorded_shims(monkeypatch):
+def test_uninstall_refuses_legacy_shim_outside_managed_launcher_dir(monkeypatch):
     """python3 shims recorded in the manifest must be removed by uninstall."""
     m = _load()
     with tempfile.TemporaryDirectory() as root:
@@ -380,8 +1090,9 @@ def test_uninstall_removes_recorded_shims(monkeypatch):
             json.dump(manifest, f)
 
         monkeypatch.setenv("PLAMEN_UNINSTALL_YES", "1")
-        m.run_uninstall()
-        assert not os.path.exists(shim)
+        with pytest.raises(RuntimeError, match="outside managed namespaces"):
+            m.run_uninstall()
+        assert os.path.exists(shim)
 
 
 if __name__ == "__main__":

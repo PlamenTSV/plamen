@@ -1,0 +1,2218 @@
+{
+  "schema_version": "plamen.mechanical_gate_activation_inventory_candidate.provisional.v1",
+  "status": "PROVISIONAL_UNWRAPPED_UNREVIEWED",
+  "runtime_authority_granted": false,
+  "authoritative_registry": {
+    "path": "rules/mechanical-gate-registry.json",
+    "sha256": "5acf9a848bae74ab256872600324098e1472bff73fdcb0233923f6c5dac5157e",
+    "schema_version": "plamen.mechanical_gate_registry.v1"
+  },
+  "source_snapshot": {
+    "source_tree_digest_algorithm": "sha256:plamen-source-tree-v1",
+    "source_tree_digest": "605041aff4c9dc4cddf848af9fe71d7e7d5399487f9a89a7e2d624294489c9c6",
+    "digest_stability": "REGENERATE_AT_TREE_FREEZE",
+    "git_head": "67a0f85adc7a8169d79a286908b00bef7adb764a",
+    "files": [
+      {
+        "path": "scripts/audit_snapshot.py",
+        "sha256": "ea80ce08577f68eaad1d1b3c4d06c237d87e3a4d6db5fcda1435bb582561fe53"
+      },
+      {
+        "path": "scripts/enumeration_gate.py",
+        "sha256": "084b5604c8d48a1a321549bd987d66578a6cc86ce088402cd8162c92df14ec7c"
+      },
+      {
+        "path": "scripts/mandatory_reverification.py",
+        "sha256": "a786942c9efbd1e959969091f5ed5bb8def2246adcc042a7085f84de68690bad"
+      },
+      {
+        "path": "scripts/mechanical_verify.py",
+        "sha256": "c083898e011c7cb9a1f224edd3dda4b9fb40ec8f07465d355a64df7524418d2c"
+      },
+      {
+        "path": "scripts/phase_io_contracts.py",
+        "sha256": "ec4d4872f4f217a333fc0a5006b127a715b275bf69a402d9386f4a1ff662b9fd"
+      },
+      {
+        "path": "scripts/plamen_driver.py",
+        "sha256": "45aa2ebe92f85688e52f8886d6e75db17157d7d44bcbfa919cc4381ef51d3c69"
+      },
+      {
+        "path": "scripts/plamen_mechanical.py",
+        "sha256": "d24409338ef4d1a4c2a0b9e026b5f59f4521ec6ca8c2c56027e543e7c8abdf72"
+      },
+      {
+        "path": "scripts/plamen_validators.py",
+        "sha256": "20e4c437670d4e3c7575bcd5c360a59b96070870b7cc95e791901208c0fa7313"
+      },
+      {
+        "path": "scripts/post_verify_lifecycle.py",
+        "sha256": "fbc67412f5ca9a54c5d775bf2d4d2fb2db75985e5e1248e34e27827b7996142f"
+      },
+      {
+        "path": "scripts/recon_prepass.py",
+        "sha256": "86d1adca34a61c22fef34876b21573b854892ef1a7b98076890a3fa9037653c8"
+      },
+      {
+        "path": "scripts/report_disposition_authority.py",
+        "sha256": "46624f1f5f131d0e293c4421c4e3cebc14ccd486a671716ee4997f5052e6fbc2"
+      },
+      {
+        "path": "scripts/supply_chain_gate.py",
+        "sha256": "929c6aa88978907050a2b5e16e8d2c8a6037f15adf58a9d12ffd519b42bb420c"
+      }
+    ]
+  },
+  "independent_review_receipt_sha256": null,
+  "gate_count": 33,
+  "activation_count": 33,
+  "activations": [
+    {
+      "forensic_id": "MG-001",
+      "gate_id": "supply_chain.pre_input_execution",
+      "activation_id": "supply_chain.pre_input_execution.recon_prepass",
+      "owning_seam": "STARTUP_RESUME",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "RECON"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/supply_chain_gate.py",
+          "symbol": "gate_supply_chain",
+          "source_line": 520
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/recon_prepass.py",
+          "enclosing_symbol": "_prepare_evm_build",
+          "call_symbol": "gate_supply_chain",
+          "source_line": 2134
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/recon_prepass.py",
+        "symbol": "_prepare_evm_build",
+        "strategy": "INLINE_AT_EXISTING_CALLSITE"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-002",
+      "gate_id": "supply_chain.pre_poc_execution",
+      "activation_id": "supply_chain.pre_poc_execution.mechanical_verify",
+      "owning_seam": "POST_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "VERIFY"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/supply_chain_gate.py",
+          "symbol": "gate_supply_chain",
+          "source_line": 520
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/mechanical_verify.py",
+          "enclosing_symbol": "run_phase5b_mechanical_verify",
+          "call_symbol": "gate_supply_chain",
+          "source_line": 2216
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/mechanical_verify.py",
+        "symbol": "run_phase5b_mechanical_verify",
+        "strategy": "INLINE_AT_EXISTING_CALLSITE"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-003",
+      "gate_id": "snapshot.startup_binding",
+      "activation_id": "snapshot.startup_binding.driver",
+      "owning_seam": "STARTUP_RESUME",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "STARTUP"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/audit_snapshot.py",
+          "symbol": "snapshot_startup_guard",
+          "source_line": 2969
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "snapshot_startup_guard",
+          "source_line": 66850
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "main",
+        "strategy": "INLINE_AT_EXISTING_CALLSITE"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-004",
+      "gate_id": "snapshot.interphase_drift",
+      "activation_id": "snapshot.interphase_drift.driver",
+      "owning_seam": "STARTUP_RESUME",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "INTERPHASE",
+          "STARTUP"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_assert_audit_snapshot_still_bound",
+          "source_line": 65256
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_phase_validators",
+          "call_symbol": "_assert_audit_snapshot_still_bound",
+          "source_line": 61939
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_assert_audit_snapshot_still_bound",
+          "source_line": 67325
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_assert_audit_snapshot_still_bound",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-005",
+      "gate_id": "enumeration.graph_health",
+      "activation_id": "enumeration.graph_health.accepted_depth",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "_graph_health_shortfalls",
+          "source_line": 530
+        },
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "_record_graph_health",
+          "source_line": 666
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "compute_enumeration_obligations",
+          "call_symbol": "_record_graph_health",
+          "source_line": 769
+        },
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "compute_enumeration_obligations",
+          "call_symbol": "_record_graph_health",
+          "source_line": 792
+        },
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "compute_enumeration_obligations",
+          "call_symbol": "_record_graph_health",
+          "source_line": 808
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/enumeration_gate.py",
+        "symbol": "compute_enumeration_obligations",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-006",
+      "gate_id": "enumeration.coreference_obligation",
+      "activation_id": "enumeration.coreference_obligation.accepted_depth",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_enumeration_obligations",
+          "source_line": 760
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "run_enumeration_gate",
+          "call_symbol": "compute_enumeration_obligations",
+          "source_line": 5701
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/enumeration_gate.py",
+        "symbol": "run_enumeration_gate",
+        "strategy": "INLINE_AT_EXISTING_CALLSITE"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-007",
+      "gate_id": "enumeration.coreference_gap",
+      "activation_id": "enumeration.coreference_gap.accepted_depth",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_coverage_gaps",
+          "source_line": 1057
+        },
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "validate_enumeration_coverage",
+          "source_line": 1348
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "run_enumeration_gate",
+          "call_symbol": "validate_enumeration_coverage",
+          "source_line": 5706
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/enumeration_gate.py",
+        "symbol": "validate_enumeration_coverage",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-008",
+      "gate_id": "enumeration.critical_asset_mover",
+      "activation_id": "enumeration.critical_asset_mover.accepted_depth",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "EVM",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_critical_asset_mover_candidates",
+          "source_line": 1885
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "run_enumeration_gate",
+          "call_symbol": "fn",
+          "source_line": 5721
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/enumeration_gate.py",
+        "symbol": "compute_critical_asset_mover_candidates",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-009",
+      "gate_id": "enumeration.array_uniqueness",
+      "activation_id": "enumeration.array_uniqueness.accepted_depth",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_array_uniqueness_candidates",
+          "source_line": 2010
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "run_enumeration_gate",
+          "call_symbol": "fn",
+          "source_line": 5721
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/enumeration_gate.py",
+        "symbol": "compute_array_uniqueness_candidates",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-010",
+      "gate_id": "enumeration.unbounded_stored_input",
+      "activation_id": "enumeration.unbounded_stored_input.accepted_depth",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_unbounded_input_candidates",
+          "source_line": 2098
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "run_enumeration_gate",
+          "call_symbol": "fn",
+          "source_line": 5721
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/enumeration_gate.py",
+        "symbol": "compute_unbounded_input_candidates",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-011",
+      "gate_id": "enumeration.variant_boundary",
+      "activation_id": "enumeration.variant_boundary.accepted_depth",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_boundary_input_candidates",
+          "source_line": 2316
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "compute_variant_gaps",
+          "call_symbol": "compute_boundary_input_candidates",
+          "source_line": 2783
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/enumeration_gate.py",
+        "symbol": "compute_variant_gaps",
+        "strategy": "INLINE_AT_EXISTING_CALLSITE"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-012",
+      "gate_id": "enumeration.variant_symmetric",
+      "activation_id": "enumeration.variant_symmetric.accepted_depth",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_symmetric_operation_candidates",
+          "source_line": 2649
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "compute_variant_gaps",
+          "call_symbol": "compute_symmetric_operation_candidates",
+          "source_line": 2799
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/enumeration_gate.py",
+        "symbol": "compute_variant_gaps",
+        "strategy": "INLINE_AT_EXISTING_CALLSITE"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-013",
+      "gate_id": "enumeration.committed_invariant",
+      "activation_id": "enumeration.committed_invariant.accepted_depth",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_invariant_assertion_candidates",
+          "source_line": 2872
+        },
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "recover_invariant_assertion_candidates",
+          "source_line": 2973
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "enclosing_symbol": "run_enumeration_gate",
+          "call_symbol": "recover_invariant_assertion_candidates",
+          "source_line": 5735
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/enumeration_gate.py",
+        "symbol": "recover_invariant_assertion_candidates",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-014",
+      "gate_id": "axis.hot_function_gap_matrix",
+      "activation_id": "axis.hot_function_gap_matrix.thorough",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "SC"
+        ],
+        "modes": [
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "compute_axis_population",
+          "source_line": 4307
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_prepare_axis_disposition_worklist",
+          "source_line": 54446
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_prepare_axis_disposition_worklist",
+          "call_symbol": "compute_axis_population",
+          "source_line": 54463
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_prepare_axis_disposition_worklist",
+          "source_line": 69257
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_prepare_axis_disposition_worklist",
+        "strategy": "WRAP_EXISTING_DRIVER_TRANSACTION"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-015",
+      "gate_id": "enumgap.exploration_delivery",
+      "activation_id": "enumgap.exploration_delivery.inventory_append",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/enumeration_gate.py",
+          "symbol": "promote_enumgap_exploration_to_inventory",
+          "source_line": 5412
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_promote_enumgap_exploration_transaction",
+          "source_line": 42974
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_promote_enumgap_exploration_transaction",
+          "call_symbol": "promote_enumgap_exploration_to_inventory",
+          "source_line": 43046
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_phase_validators",
+          "call_symbol": "_promote_enumgap_exploration_transaction",
+          "source_line": 62881
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_promote_enumgap_exploration_transaction",
+        "strategy": "WRAP_EXISTING_DRIVER_TRANSACTION"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-016",
+      "gate_id": "axis.finding_delivery",
+      "activation_id": "axis.finding_delivery.inventory_append",
+      "owning_seam": "POST_DISCOVERY",
+      "applicability": {
+        "pipelines": [
+          "SC"
+        ],
+        "modes": [
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "DEPTH"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_promote_axis_disposition_actions",
+          "source_line": 56461
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_finalize_axis_coverage_boundary",
+          "call_symbol": "_promote_axis_disposition_actions",
+          "source_line": 56899
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_finalize_axis_coverage_boundary",
+          "call_symbol": "_promote_axis_disposition_actions",
+          "source_line": 57034
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_promote_axis_disposition_actions",
+        "strategy": "WRAP_EXISTING_DRIVER_TRANSACTION"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-017",
+      "gate_id": "promotion.orphan_reopen",
+      "activation_id": "promotion.orphan_reopen.preverify_report",
+      "owning_seam": "PRE_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT",
+          "VERIFY"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "symbol": "compute_promotion_orphans",
+          "source_line": 6183
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "symbol": "route_promotion_orphans",
+          "source_line": 6602
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_gate_p_before_verify_queue",
+          "call_symbol": "compute_promotion_orphans",
+          "source_line": 27368
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_gate_p_before_verify_queue",
+          "call_symbol": "route_promotion_orphans",
+          "source_line": 27369
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_gate_p_for_report_index",
+          "call_symbol": "compute_promotion_orphans",
+          "source_line": 30192
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_gate_p_for_report_index",
+          "call_symbol": "route_promotion_orphans",
+          "source_line": 30193
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_run_gate_p_with_semantic_invalidation",
+        "strategy": "WRAP_EXISTING_DRIVER_TRANSACTION"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-018",
+      "gate_id": "inventory.location_exists",
+      "activation_id": "inventory.location_exists.multi_phase",
+      "owning_seam": "PRE_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "INVENTORY",
+          "REPORT",
+          "VERIFY"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_validate_inventory_evidence",
+          "source_line": 22363
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_l1_location_recovery_worklist_transaction",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 37681
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_phase_validators",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 63717
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_live_verify_queue_phase_boundary",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 66380
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 67514
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "enclosing_symbol": "_location_recovery_needed",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 13460
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "enclosing_symbol": "_apply_location_recovery",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 13502
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_validators.py",
+        "symbol": "_validate_inventory_evidence",
+        "strategy": "SPLIT_SHARED_VALIDATOR_DECISIONS"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-019",
+      "gate_id": "inventory.production_scope",
+      "activation_id": "inventory.production_scope.multi_phase",
+      "owning_seam": "PRE_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "INVENTORY",
+          "REPORT",
+          "VERIFY"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_validate_inventory_evidence",
+          "source_line": 22363
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_l1_location_recovery_worklist_transaction",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 37681
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_phase_validators",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 63717
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_live_verify_queue_phase_boundary",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 66380
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 67514
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "enclosing_symbol": "_location_recovery_needed",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 13460
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "enclosing_symbol": "_apply_location_recovery",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 13502
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_validators.py",
+        "symbol": "_validate_inventory_evidence",
+        "strategy": "SPLIT_SHARED_VALIDATOR_DECISIONS"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-020",
+      "gate_id": "inventory.identifier_exists",
+      "activation_id": "inventory.identifier_exists.multi_phase",
+      "owning_seam": "PRE_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "INVENTORY",
+          "REPORT",
+          "VERIFY"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_validate_inventory_evidence",
+          "source_line": 22363
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_l1_location_recovery_worklist_transaction",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 37681
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_phase_validators",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 63717
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_live_verify_queue_phase_boundary",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 66380
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 67514
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "enclosing_symbol": "_location_recovery_needed",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 13460
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "enclosing_symbol": "_apply_location_recovery",
+          "call_symbol": "_validate_inventory_evidence",
+          "source_line": 13502
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_validators.py",
+        "symbol": "_validate_inventory_evidence",
+        "strategy": "SPLIT_SHARED_VALIDATOR_DECISIONS"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-021",
+      "gate_id": "poc.force_by_default",
+      "activation_id": "poc.force_by_default.verify_completion",
+      "owning_seam": "PRE_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "VERIFY"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_validate_poc_contract_for_rows",
+          "source_line": 29434
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "enclosing_symbol": "_validate_verify_completion",
+          "call_symbol": "_validate_poc_contract_for_rows",
+          "source_line": 5318
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_validators.py",
+        "symbol": "_validate_poc_contract_for_rows",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-022",
+      "gate_id": "mechanical_poc.execute",
+      "activation_id": "mechanical_poc.execute.phase5b",
+      "owning_seam": "POST_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "VERIFY"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/mechanical_verify.py",
+          "symbol": "run_phase5b_mechanical_verify",
+          "source_line": 2101
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_route_post_verify_late_candidates",
+          "call_symbol": "run_phase5b_mechanical_verify",
+          "source_line": 34911
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "run_phase5b_mechanical_verify",
+          "source_line": 69749
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/mechanical_verify.py",
+        "symbol": "run_phase5b_mechanical_verify",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-023",
+      "gate_id": "verdict.evidence_integrity",
+      "activation_id": "verdict.evidence_integrity.manifest",
+      "owning_seam": "POST_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "VERIFY"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/mechanical_verify.py",
+          "symbol": "_classify_integrity",
+          "source_line": 1797
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/mechanical_verify.py",
+          "enclosing_symbol": "_write_verdict_manifest",
+          "call_symbol": "_classify_integrity",
+          "source_line": 1912
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/mechanical_verify.py",
+        "symbol": "_write_verdict_manifest",
+        "strategy": "INLINE_AT_EXISTING_CALLSITE"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-024",
+      "gate_id": "external_assumption.assert_cap",
+      "activation_id": "external_assumption.assert_cap.report_index",
+      "owning_seam": "POST_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_external_assumption_cap_applies",
+          "source_line": 24458
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "enclosing_symbol": "_expected_report_index_severities",
+          "call_symbol": "_external_assumption_cap_applies",
+          "source_line": 24943
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_validators.py",
+        "symbol": "_expected_report_index_severities",
+        "strategy": "INLINE_AT_EXISTING_CALLSITE"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-025",
+      "gate_id": "external_assumption.demotion_veto",
+      "activation_id": "external_assumption.demotion_veto.phase_validator",
+      "owning_seam": "POST_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT",
+          "VERIFY"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_apply_external_assumption_undemotions",
+          "source_line": 30822
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_phase_validators",
+          "call_symbol": "_apply_external_assumption_undemotions",
+          "source_line": 62589
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_validators.py",
+        "symbol": "_apply_external_assumption_undemotions",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-026",
+      "gate_id": "severity.independent_challenge",
+      "activation_id": "severity.independent_challenge.phase_validator",
+      "owning_seam": "POST_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT",
+          "VERIFY"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_validators.py",
+          "symbol": "_apply_independent_severity_caps",
+          "source_line": 30484
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_write_and_record_independent_severity_phase_io",
+          "call_symbol": "_apply_independent_severity_caps",
+          "source_line": 61298
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_write_and_record_independent_severity_phase_io",
+          "call_symbol": "_apply_independent_severity_caps",
+          "source_line": 61316
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_phase_validators",
+          "call_symbol": "_apply_independent_severity_caps",
+          "source_line": 62567
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_write_and_record_independent_severity_phase_io",
+        "strategy": "WRAP_EXISTING_DRIVER_TRANSACTION"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-027",
+      "gate_id": "external_research.citation_gap",
+      "activation_id": "external_research.citation_gap.report_index_prework",
+      "owning_seam": "POST_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_check_external_research_citation_gaps",
+          "source_line": 30284
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_check_external_research_citation_gaps",
+          "source_line": 68747
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_check_external_research_citation_gaps",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-028",
+      "gate_id": "postverify.late_candidate_reopen",
+      "activation_id": "postverify.late_candidate_reopen.routing",
+      "owning_seam": "POST_VERIFY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "VERIFY"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/post_verify_lifecycle.py",
+          "symbol": "parse_post_verify_candidate_proposals",
+          "source_line": 82
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_route_post_verify_late_candidates",
+          "call_symbol": "parse_post_verify_candidate_proposals",
+          "source_line": 34750
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_route_post_verify_late_candidates",
+        "strategy": "WRAP_EXISTING_DRIVER_TRANSACTION"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-029",
+      "gate_id": "report.index_retention_reconcile",
+      "activation_id": "report.index_retention_reconcile.mechanical",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "symbol": "_write_mechanical_report_index",
+          "source_line": 11536
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_write_mechanical_report_index",
+          "source_line": 68914
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "main",
+        "strategy": "INLINE_AT_EXISTING_CALLSITE"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-030",
+      "gate_id": "report.dedup_lossless_consolidation",
+      "activation_id": "report.dedup_lossless_consolidation.assembly",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "symbol": "_dedup_data_loss_gate",
+          "source_line": 4572
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "symbol": "_dedup_report_python",
+          "source_line": 7038
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_dedup_report_python",
+          "source_line": 70054
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "enclosing_symbol": "_dedup_report_python",
+          "call_symbol": "_dedup_data_loss_gate",
+          "source_line": 7273
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "enclosing_symbol": "_dedup_report_python",
+          "call_symbol": "_dedup_data_loss_gate",
+          "source_line": 7546
+        },
+        {
+          "module": "scripts/plamen_mechanical.py",
+          "enclosing_symbol": "_dedup_report_python",
+          "call_symbol": "_dedup_data_loss_gate",
+          "source_line": 7640
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_mechanical.py",
+        "symbol": "_dedup_report_python",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-031",
+      "gate_id": "report.typed_disposition",
+      "activation_id": "report.typed_disposition.report_floor",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/report_disposition_authority.py",
+          "symbol": "build_report_disposition_authority",
+          "source_line": 652
+        },
+        {
+          "module": "scripts/report_disposition_authority.py",
+          "symbol": "reconcile_report_dispositions",
+          "source_line": 1505
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_report_disposition_phase_io",
+          "call_symbol": "reconcile_report_dispositions",
+          "source_line": 61537
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_run_report_disposition_phase_io",
+          "source_line": 70165
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_run_report_disposition_phase_io",
+        "strategy": "WRAP_EXISTING_DRIVER_TRANSACTION"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-032",
+      "gate_id": "report.mandatory_reverification",
+      "activation_id": "report.mandatory_reverification.report_floor",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT",
+          "VERIFY"
+        ],
+        "status": "RUNTIME_SELECTOR_REQUIRES_CUTOVER_BINDING"
+      },
+      "definitions": [
+        {
+          "module": "scripts/mandatory_reverification.py",
+          "symbol": "build_mandatory_reverification_denominator",
+          "source_line": 214
+        },
+        {
+          "module": "scripts/mandatory_reverification.py",
+          "symbol": "reconcile_mandatory_reverification_completion",
+          "source_line": 730
+        },
+        {
+          "module": "scripts/mandatory_reverification.py",
+          "symbol": "reconcile_mandatory_reverification_delivery",
+          "source_line": 1063
+        },
+        {
+          "module": "scripts/mandatory_reverification.py",
+          "symbol": "apply_primary_reopens_to_queue",
+          "source_line": 2508
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_prepare_mandatory_primary_reverification",
+          "call_symbol": "apply_primary_reopens_to_queue",
+          "source_line": 20457
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_mandatory_report_reverification",
+          "call_symbol": "reconcile_mandatory_reverification_delivery",
+          "source_line": 20775
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "_run_mandatory_report_reverification",
+          "call_symbol": "reconcile_mandatory_reverification_delivery",
+          "source_line": 20812
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_run_mandatory_report_reverification",
+          "source_line": 70197
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_run_mandatory_report_reverification",
+        "strategy": "WRAP_EXISTING_DRIVER_TRANSACTION"
+      },
+      "literal_runtime_registration_present": false
+    },
+    {
+      "forensic_id": "MG-033",
+      "gate_id": "report.integrity_no_ship",
+      "activation_id": "report.integrity_no_ship.finalize",
+      "owning_seam": "REPORT_ASSEMBLY",
+      "applicability": {
+        "pipelines": [
+          "L1",
+          "SC"
+        ],
+        "modes": [
+          "CORE",
+          "LIGHT",
+          "THOROUGH"
+        ],
+        "ecosystems": [
+          "APTOS",
+          "DAML",
+          "EVM",
+          "L1_GO",
+          "L1_RUST",
+          "SOLANA",
+          "SOROBAN",
+          "SUI"
+        ],
+        "backends": [
+          "CLAUDE",
+          "CODEX"
+        ],
+        "phase_contexts": [
+          "REPORT"
+        ],
+        "status": "FORENSIC_EXACT"
+      },
+      "definitions": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "symbol": "_commit_report_integrity_no_ship",
+          "source_line": 31542
+        }
+      ],
+      "observed_callsites": [
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_commit_report_integrity_no_ship",
+          "source_line": 70009
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_commit_report_integrity_no_ship",
+          "source_line": 70268
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_commit_report_integrity_no_ship",
+          "source_line": 70314
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_commit_report_integrity_no_ship",
+          "source_line": 70330
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_commit_report_integrity_no_ship",
+          "source_line": 70355
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_commit_report_integrity_no_ship",
+          "source_line": 73380
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_commit_report_integrity_no_ship",
+          "source_line": 73404
+        },
+        {
+          "module": "scripts/plamen_driver.py",
+          "enclosing_symbol": "main",
+          "call_symbol": "_commit_report_integrity_no_ship",
+          "source_line": 73438
+        }
+      ],
+      "wrapper_target": {
+        "module": "scripts/plamen_driver.py",
+        "symbol": "_commit_report_integrity_no_ship",
+        "strategy": "WRAP_EXISTING_SYMBOL_ENTRY"
+      },
+      "literal_runtime_registration_present": false
+    }
+  ]
+}

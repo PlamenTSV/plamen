@@ -1,173 +1,183 @@
 # Multi-Axis Coverage Meta-Pass (Phase 4b.8)
 
-> **Purpose**: Interrogate each mechanically-hot function on the ONE orthogonal risk axis its owning domain lens never examined. The driver has already built a `function × axis` completeness matrix and handed you ONLY the GAP cells. Your job is to TRACE each GAP to a definite conclusion — a real finding with evidence, or a reasoned clear. This is a targeted depth EXPLORATION pass, NOT a validate-or-dismiss filter.
-> **Output artifact**: `axis_coverage_findings.md`
-> **Finding format**: follow `~/.claude/rules/finding-output-format.md`
+> **Purpose**: Interrogate every driver-assigned hot-function/risk-axis work
+> item exactly once. This is targeted depth exploration, not a
+> validate-or-dismiss filter.
+>
+> **Authoritative input**: `axis_disposition_worklist.json`
+>
+> **Required outputs**: `axis_coverage_findings.md` and
+> `axis_coverage_dispositions.json`
+>
+> **Finding format**: follow
+> `~/.claude/rules/finding-output-format.md`
 
 ---
 
-## Why you exist
+## Authority boundary
 
-Every function is analyzed by whichever domain lens happened to own it — a
-token-flow lens checks value movement, a state-trace lens checks storage, an
-external lens checks freshness. A single lens interrogates a function on ITS
-axis and moves on. The other orthogonal risk axes on that same function go
-unexamined, and a real bug on an unexamined axis of a core function is invisible
-to single-lens analysis.
+The driver has already constructed and validated the exact worklist. Read
+`axis_disposition_worklist.json` first and process its `items` in their given
+order. Each item provides an immutable `work_item_id` (`AXW-...`), function
+identity, assigned axis, source-relative path and locus, source and matrix-cell
+hashes, and a `required_action_id`.
 
-A mechanical gate has already:
+The Markdown matrix and prior analysis artifacts are context, not authority.
+Do not reconstruct the denominator from `hot_function_axes.md`,
+`_hot_function_axes.json`, findings Markdown, the inventory, directory
+contents, or your memory. Do not add, remove, merge, rename, or silently skip
+AXW rows. If an authoritative row cannot be analyzed, dispose it as
+`UNRESOLVED`; never convert an input or evidence problem into `CLEAR`.
 
-1. Ranked the **hot functions** (core functions by callers / state writes /
-   value-effect / elevated surface) — deterministically, so the target set
-   cannot be steered.
-2. Built a `function × axis` matrix and, using ONLY the closed depth-evidence
-   tag vocabulary, marked each cell `EXAMINED` (a prior pass left a proving tag),
-   `N/A` (a mechanically-provable exclusion), or `GAP` (nobody examined this
-   axis here — including the recall-safe default when the signal was ambiguous).
-
-You are handed the `GAP` cells. Each is a "this hot function was never
-interrogated on THIS axis" spot. Your job is the missing interrogation.
+Read the source at the exact path/locus named by each AXW row. You may follow
+the immediate state, callees, and registered evidence referenced by
+`axis_execution_evidence_authority.json`, but must not use unregistered
+post-phase files to self-certify the result.
 
 ---
 
-## The six axes (interrogate on the ASSIGNED axis only)
+## Assigned risk axes
 
-For a GAP cell `(function f, axis A)`, ask ONLY axis `A`'s question of `f`:
+Interrogate only the axis assigned in each AXW row:
 
-- **theft** — Can value (funds/shares/assets/privilege) leave `f` to a party
-  that should not receive it, or in an amount larger than owed? Trace every
-  value-effect path to who ends up holding what.
-- **liveness** — Can a reachable input/state permanently revert, lock, or brick
-  a core user action through `f`? Trace the boundary/empty/first/last actor
-  path to its terminal revert or stuck state.
-- **accounting** — Does an arithmetic / conservation / share / total invariant
-  `f` participates in break at a boundary or under a variation? Substitute
-  boundary values and vary parameters; check Σin == Σout ± fee.
-- **provenance** — Does `f` consume an external/price/timestamp read without
-  interrogating its freshness or source? Trace where the value comes from and
-  whether staleness or a wrong source is reachable.
-- **boundary** — At 0 / 1 / MAX / empty / duplicate / type-edge inputs to `f`,
-  does behavior diverge from the non-edge case in a harmful way?
-- **identity** — For a function that acts on (mutates the balance / allowance /
-  role / state of) a subject or actor DISTINCT from its authorizing caller, was
-  that divergence explicitly authorized — or can a caller act on another
-  party's behalf without their consent, or a delegate exceed its bound?
+- **theft** — Trace every value or privilege effect to the ultimate recipient
+  and amount. Determine whether value can reach an unauthorized party or
+  exceed what is owed.
+- **liveness** — Trace reachable edge states through the terminal outcome.
+  Determine whether a core action can permanently revert, lock, or become
+  unusable.
+- **accounting** — Check the relevant conservation, share, total, or arithmetic
+  relation under boundary values and meaningful parameter variations.
+- **provenance** — Trace external values to their source and test the explicit
+  freshness, identity, and trust assumptions on which the function relies.
+- **boundary** — Execute the reasoning at zero, one, maximum, empty,
+  duplicate, first/last, and type-edge inputs that are meaningful for the
+  assigned locus.
+- **identity** — Compare the authorizing actor with every subject whose funds,
+  permissions, allowance, or state are changed, including delegation limits.
 
-The driver tells you, per row, exactly which `(f, A)` pairs to interrogate. Do
-NOT re-examine axes not handed to you — those are already covered.
-
----
-
-## Inputs
-
-Read from the scratchpad (treat by ROLE, do not assume a single filename is the
-only source):
-
-- `hot_function_axes.md` — the human-readable `function × axis` matrix. Your
-  worklist is every `GAP` cell.
-- `_hot_function_axes.json` — the same matrix + the exact `gaps` list in
-  structured form, if present. Each gap row names `function`, `loc`, `axis`.
-- The aggregated inventory of candidate findings and the per-agent depth
-  outputs already on disk, so you can see what WAS analyzed on the OTHER axes
-  (and therefore avoid re-doing them).
-- The actual source files at each GAP cell's `loc`. You MUST open the source —
-  the matrix only names locations; the analysis on the assigned axis is yours.
-
-If `hot_function_axes.md` has no GAP cells (or the matrix is empty), there is
-nothing to interrogate: write a short note to your output artifact saying so and
-stop. (The driver normally skips this phase entirely in that case — never an
-error.)
+Use the closed evidence vocabulary from the finding format, including concrete
+`[BOUNDARY:...]`, `[VARIATION:...]`, `[TRACE:...]`, and, where applicable,
+`[EXTERNAL-ASSUMPTION:...]` or `[CROSS-DOMAIN-DEP: external]` tags. A summary
+without a concrete source locus and trace is not a valid clear.
 
 ---
 
-## What to do for EACH GAP cell
+## One disposition per AXW row
 
-Process every GAP row independently. For each `(function f, axis A)`:
+For every `work_item_id`, emit exactly one of:
 
-1. **Read the cell.** Identify the function `f`, its location `loc`, and the
-   single axis `A` you must interrogate.
+- `FINDING`: the assigned interrogation supports material harm. Emit the
+  standard finding block under the row's exact `required_action_id`.
+- `UNRESOLVED`: safety was not established, including missing source,
+  conflicting evidence, insufficient context, or an unproved external
+  premise. Emit an unresolved candidate block under the row's exact
+  `required_action_id` so verification retains it.
+- `CLEAR`: the assigned interrogation establishes safety with concrete,
+  source-grounded evidence. `CLEAR` must not reference an action and must not
+  create a finding block.
 
-2. **Open the source for `f` at `loc`.** Read the function and the immediate
-   state / callees it touches on axis `A`. Do not reason from summaries — read
-   the code.
-
-3. **Interrogate on axis `A` ONLY, and record the work with the closed
-   depth-evidence tags** from `~/.claude/rules/finding-output-format.md`:
-   - `[BOUNDARY:X=val]` — substitute concrete boundary values (0, 1, MAX,
-     empty, duplicate, type-edge) and state the outcome.
-   - `[VARIATION:param A→B]` — vary a parameter / ordering / direction and state
-     how behavior changes.
-   - `[TRACE:path→outcome]` — follow execution to a terminal state (revert,
-     state write, transfer, return) and state where it ends.
-   - `[EXTERNAL-ASSUMPTION:…]` / `[CROSS-DOMAIN-DEP: external]` — for the
-     provenance axis, name the external freshness/source assumption you tested.
-   Do NOT invent new tag vocabulary — use only the closed set above.
-
-4. **Conclude with ONE of two outputs — never a dismissal-without-work:**
-   - **A real finding** when axis `A` interrogation shows a genuine issue.
-     Write it in the standard finding format with the depth-evidence tags that
-     prove the work, a concrete **Material Harm** sentence (WHO loses WHAT),
-     the **Rules Applied** line, and the source location. Set the verdict per
-     what you proved.
-   - **A reasoned clear** when interrogation shows `f` is safe on axis `A`.
-     Record it in the Coverage Record (below) with the SPECIFIC `(f, A)` named
-     and a CONCRETE evidence locus (the file:line, the guard, or the prior
-     finding ID that makes it safe). A clear is a VALID and expected output.
-
-   You must NOT fabricate a finding to fill a quota, and you must NOT clear a
-   cell with vague wording ("looks fine", "covered elsewhere") that names no
-   locus. If you cannot reach a definite safe conclusion, the cell is
-   UNRESOLVED — emit it as a finding at the inherited (Low) severity flagged for
-   verification, never as a clear.
+`FINDING` and `UNRESOLVED` must reference exactly the row's
+`required_action_id`; do not mint a different ID. Do not fabricate a finding
+to fill a quota. You have no authority to drop, merge, or downgrade an
+existing finding.
 
 ---
 
-## Recall-Positive Contract
+## Strict JSON authority
 
-This phase is strictly additive. You may ADD findings and you may record
-reasoned clears. You have NO authority to drop, merge, or downgrade any
-pre-existing finding, and you write ONLY your own output artifact. When an
-interrogation is ambiguous, prefer emitting a finding over clearing — an extra
-candidate is recoverable downstream; a falsely-cleared real bug is a missed
-vulnerability.
+Write `axis_coverage_dispositions.json` as strict JSON with no comments,
+trailing commas, prose, or Markdown fences:
+
+```json
+{
+  "schema_version": "plamen.axis_model_dispositions.v1",
+  "run_id": "<copy the exact worklist run_id>",
+  "worklist_hash": "<copy the exact worklist_hash>",
+  "producer": "MODEL",
+  "items": [
+    {
+      "work_item_id": "AXW-...",
+      "disposition": "CLEAR",
+      "action_id": "",
+      "evidence": [
+        {
+          "kind": "SOURCE_LOCUS",
+          "source_relpath": "relative/path.ext",
+          "source_locus": "L123",
+          "source_hash": "<copy the exact AXW source_hash>"
+        }
+      ],
+      "invariant_commitment": {
+        "ci_id": "AXIS-CI-<unique uppercase token>",
+        "ci_block_sha256": "<sha256 of the other eight canonical commitment fields>",
+        "locus": "relative/path.ext:L123",
+        "shape": "NO_REVERT_AT_BOUNDARY",
+        "assertion": "Concrete falsifiable safety property for this AXW row.",
+        "falsify_class": "boundary",
+        "provenance": "AXW:AXW-...",
+        "source_hash": "<copy the exact AXW source_hash>",
+        "evidence_sha256": "<sha256 of canonical JSON for the evidence array>"
+      },
+      "rationale": "Concrete, source-grounded conclusion."
+    }
+  ],
+  "sidecar_digest": "<sha256 of canonical JSON for every other top-level field>"
+}
+```
+
+The `items` array must contain exactly one object for every authoritative
+worklist item and no other object. Preserve each `work_item_id` exactly and
+copy `run_id` and `worklist_hash` exactly. Set `producer` to `MODEL`. Compute
+`sidecar_digest` over the other top-level fields using UTF-8 JSON with sorted
+keys, no insignificant whitespace, and separators `,` and `:`. The only
+permitted dispositions are `FINDING`, `UNRESOLVED`, and `CLEAR`.
+
+For `FINDING` or `UNRESOLVED`, `action_id` must equal that AXW row's
+`required_action_id` and the matching Markdown action block must exist. That
+block must include non-empty `Severity`, `Location`, `Work Item ID`, and
+`Description` fields. For `CLEAR`, `action_id` must be the empty string,
+`evidence` must contain exactly one typed object (`SOURCE_LOCUS`,
+`CANONICAL_PRIOR`, or registered `EXECUTION_RECEIPT`), and the row must not
+reference an action. Every `CLEAR` must also contain exactly one
+`invariant_commitment` object with the nine keys shown above. Its locus must be
+the exact production `source_relpath:source_locus`; shape must be one of
+`CONSERVATION`, `REQUESTED_EQ_DELIVERED`, `APPROVE_EQ_SPEND`,
+`NO_REVERT_AT_BOUNDARY`, `ROUNDTRIP`, or `FRESHNESS`; falsify class must be one
+of `property`, `boundary`, `roundtrip`, or `conservation`; provenance must be
+exactly `AXW:<work_item_id>`; and the source/evidence hashes must bind the exact
+AXW source and typed evidence array. `ci_id` and `ci_block_sha256` must each be
+unique across all rows. For `FINDING` or `UNRESOLVED`, set
+`invariant_commitment` to JSON `null`.
+Never encode missing analysis as an empty or vague clear.
+
+If the driver intentionally supplies an exact zero-item worklist, copy its
+hash, emit an empty `items` array, and record the zero-work explanation in
+Markdown. Do not infer zero work from missing or malformed input.
 
 ---
 
-## Output Requirements
+## Markdown support projection
 
-Write everything to `axis_coverage_findings.md`.
+Write `axis_coverage_findings.md` with:
 
-1. **Findings**: every real finding (or UNRESOLVED cell) in the standard finding
-   format from `~/.claude/rules/finding-output-format.md`. Use finding IDs of
-   the form `AXIS-1`, `AXIS-2`, … Include the closed depth-evidence tags that
-   prove the interrogation, the Material Harm sentence, the Rules Applied line,
-   and a `## Chain Summary` line per finding so downstream composition analysis
-   can consume it.
+1. One standard finding/candidate block for every JSON item disposed
+   `FINDING` or `UNRESOLVED`, keyed by the exact action ID.
+2. A human-readable coverage table containing every AXW ID, assigned function
+   and axis, disposition, action ID where applicable, and concrete evidence.
+3. `<!-- PLAMEN_STATUS: COMPLETE -->` only after both required artifacts cover
+   the exact authoritative worklist.
 
-2. **Coverage Record**: one row per GAP cell processed, so downstream gating can
-   confirm every cell reached a definite disposition:
-
-   ```
-   | Function | Axis | Disposition | Evidence |
-   |----------|------|-------------|----------|
-   ```
-
-   - **Function / Axis**: the GAP cell you interrogated.
-   - **Disposition**: exactly one of `FINDING` (emitted as AXIS-n), `UNRESOLVED`
-     (emitted as AXIS-n for verification), or `CLEAR` (safe on this axis).
-   - **Evidence**: for `FINDING`/`UNRESOLVED`, the emitted AXIS-n ID; for
-     `CLEAR`, the concrete file:line / guard / prior finding ID that proves
-     safety. A `CLEAR` row with a blank or vague Evidence cell is a contract
-     violation and will be re-surfaced downstream as unexamined.
+Markdown is not authority for worklist cardinality or dispositions. The
+strict JSON is authoritative; Markdown supplies reviewable finding prose and
+must agree with it. Any mismatch is a reconciliation failure and must be
+repaired by the bounded repair workflow, not guessed away.
 
 ---
 
-## Method Discipline
+## Method discipline
 
-State all methods abstractly. This methodology encodes HOW to interrogate a
-function on a risk axis — never WHAT to find in any specific codebase. Do not put
-any protocol, project, contract, function, variable, or token name from the audit
-into the methodology sections; concrete references belong only inside the finding
-bodies and the coverage record, where they describe the current target. End your
-output file with `<!-- PLAMEN_STATUS: COMPLETE -->` once every GAP cell has a
-disposition.
+This methodology encodes how to interrogate an assigned risk axis, never a
+protocol-specific answer. Protocol, contract, function, variable, or asset
+names belong only in current-run evidence and finding bodies. Write only the
+two assigned output artifacts and stop.

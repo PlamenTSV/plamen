@@ -473,8 +473,10 @@ class TestRecoveryShard:
             snap = tmp_path / "_prompt_verify_recovery.attempt1.md"
             assert snap.exists()
             content = snap.read_text(encoding="utf-8")
-            assert "RECOVERY VERIFICATION SHARD" in content
+            assert "Independent Verification Recovery Work Unit" in content
             assert "M-01" in content
+            assert "verify_<ID>.severity_proposal.json" in content
+            assert "verify_<ID>.operator_application.json" in content
         finally:
             D.CLAUDE_BIN = old_bin
 
@@ -534,6 +536,6 @@ class TestRecoveryShard:
             snap = tmp_path / "_prompt_verify_recovery.attempt1.md"
             if snap.exists():
                 content = snap.read_text(encoding="utf-8")
-                assert "RECOVERY VERIFICATION SHARD" in content
+                assert "Independent Verification Recovery Work Unit" in content
         finally:
             D.CLAUDE_BIN = old_bin

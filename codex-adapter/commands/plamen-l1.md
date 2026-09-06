@@ -1,6 +1,6 @@
 ---
 description: Launch or resume a Plamen L1 infrastructure audit through the deterministic driver.
-argument-hint: [light|core|thorough|resume|--fresh] [project-or-config]
+argument-hint: [light|core|thorough|resume] [project-or-config]
 ---
 
 # plamen-l1
@@ -13,11 +13,12 @@ Do not manually orchestrate Plamen phases and do not spawn audit agents yourself
 Launch only the shared Python driver:
 
 ```
-python C:\\Users\\plmnt\\.codex\\plamen\\scripts\\plamen_driver.py "{CONFIG_PATH}"
+plamen resume "{CONFIG_PATH}"
 ```
 
-Fresh restart:
+New run (only with a new config pointing at a distinct clean destination;
+never reuse or modify an existing run root):
 
 ```
-python C:\\Users\\plmnt\\.codex\\plamen\\scripts\\plamen_driver.py --fresh "{CONFIG_PATH}"
+plamen start-config "{NEW_CONFIG_PATH}"
 ```

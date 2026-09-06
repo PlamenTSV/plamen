@@ -58,7 +58,10 @@ def test_report_dedup_critical_false():
         assert dp.critical is False, f"{label} report_dedup must be critical=False"
         # gate artifact is the mapping, NOT AUDIT_REPORT.md (must not gate on
         # the delivered report, which is unchanged on no-op/veto).
-        assert dp.expected_artifacts == ["report_dedup_mapping.md"], dp.expected_artifacts
+        assert dp.expected_artifacts == [
+            "report_dedup_mapping.md",
+            "report_dedup_applied_alias_receipt.json",
+        ], dp.expected_artifacts
         assert "AUDIT_REPORT.md" not in dp.expected_artifacts
         # static graph validator requires non-empty markers + artifacts
         assert dp.section_markers, f"{label} report_dedup needs section_markers"
@@ -374,13 +377,17 @@ def test_e2e_idempotent_noop_when_no_pairs():
         assert "report unchanged" in mapping.lower()
 
 
-def test_e2e_missing_report_is_noop():
+def test_e2e_missing_report_is_visible_transaction_debt():
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         scratch = tmp / "scratch"; scratch.mkdir()
         proj = tmp / "proj"; proj.mkdir()
         ok = M._dedup_report_python(scratch, str(proj))
-        assert ok is True
+        assert ok is False
+        mapping = (scratch / "report_dedup_mapping.md").read_text(
+            encoding="utf-8"
+        )
+        assert "transaction unavailable; retained as debt" in mapping
         assert (scratch / "report_dedup_mapping.md").exists()
         assert not (proj / "AUDIT_REPORT.md").exists()
 
@@ -641,26 +648,20 @@ def test_same_fix_gate_accepts_true_dup():
     assert ok, f"true same-fix pair must pass gate, got {reason}"
 
 
-def test_negctrl_a_true_same_fix_merges_losslessly():
-    """NEGATIVE CONTROL (a): a validated TRUE same-fix cross-tier dup pair
-    (different source-IDs, different tiers, same fix) is generated as a
-    candidate AND merges losslessly."""
+def test_negctrl_a_same_fix_different_identity_remains_proposal_only():
+    """Same-fix similarity cannot replace applied identity authority."""
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         scratch, proj = _setup(tmp, _REPORT_SAME_FIX, index=_INDEX_SAME_FIX)
         ok = M._dedup_report_python(scratch, str(proj))
         assert ok is True
         delivered = (proj / "AUDIT_REPORT.md").read_text(encoding="utf-8")
-        # merge happened: absorbed L-08 consolidated into survivor M-02
-        assert "Consolidated from L-08" in delivered, \
-            "true same-fix cross-tier dup must merge"
-        assert "### [L-08]" not in delivered, "absorbed standalone heading must go"
-        # lossless: data-loss gate holds against the original
-        assert M._dedup_data_loss_gate(_REPORT_SAME_FIX, delivered) == []
+        assert "Consolidated from L-08" not in delivered
+        assert "### [M-02]" in delivered
+        assert "### [L-08]" in delivered
         mapping = (scratch / "report_dedup_mapping.md").read_text(encoding="utf-8")
-        assert "MERGE" in mapping
-        assert "same-fix" in mapping.lower()
-        assert "DATA-LOSS GATE: PASS" in mapping
+        assert "KEEP_SEPARATE" in mapping
+        assert "SOURCE_IDENTITY_NOT_EQUIVALENT" in mapping
 
 
 # (b) RELATED-BUT-DISTINCT: SAME variable/topic (totalRewardDistributed), same
@@ -777,7 +778,8 @@ def test_negctrl_c_same_fix_lossy_merge_vetoed(monkeypatch):
     (original kept) — even on the new same-fix path."""
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        scratch, proj = _setup(tmp, _REPORT_SAME_FIX, index=_INDEX_SAME_FIX)
+        exact_index = _INDEX_SAME_FIX.replace("| H-44 |", "| H-31 |")
+        scratch, proj = _setup(tmp, _REPORT_SAME_FIX, index=exact_index)
 
         def lossy_gate(original, deduped):
             return ["location:src/Staking.sol:L120"]
@@ -796,7 +798,8 @@ def test_negctrl_d_same_fix_second_run_is_noop():
     """NEGATIVE CONTROL (d): idempotency on the same-fix merge path."""
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        scratch, proj = _setup(tmp, _REPORT_SAME_FIX, index=_INDEX_SAME_FIX)
+        exact_index = _INDEX_SAME_FIX.replace("| H-44 |", "| H-31 |")
+        scratch, proj = _setup(tmp, _REPORT_SAME_FIX, index=exact_index)
         assert M._dedup_report_python(scratch, str(proj)) is True
         after_first = (proj / "AUDIT_REPORT.md").read_text(encoding="utf-8")
         assert "Consolidated from L-08" in after_first
@@ -915,7 +918,8 @@ def test_real_shape_merges_end_to_end_at_higher_tier():
     """End-to-end: the real-shape pair merges losslessly, survivor = higher tier."""
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        scratch, proj = _setup(tmp, _REPORT_REAL_SHAPE, index=_INDEX_REAL_SHAPE)
+        exact_index = _INDEX_REAL_SHAPE.replace("| H-72 |", "| H-71 |")
+        scratch, proj = _setup(tmp, _REPORT_REAL_SHAPE, index=exact_index)
         assert M._dedup_report_python(scratch, str(proj)) is True
         delivered = (proj / "AUDIT_REPORT.md").read_text(encoding="utf-8")
         # survivor is the Low (higher tier than Info); Info heading is absorbed
@@ -925,7 +929,7 @@ def test_real_shape_merges_end_to_end_at_higher_tier():
         # lossless against the original
         assert M._dedup_data_loss_gate(_REPORT_REAL_SHAPE, delivered) == []
         mapping = (scratch / "report_dedup_mapping.md").read_text(encoding="utf-8")
-        assert "MERGE" in mapping and "same-root-cause" in mapping
+        assert "MERGE" in mapping and "EXACT_CURRENT_SOURCE_IDENTITY" in mapping
 
 
 def test_real_shape_negctrl_same_site_distinct_title_keeps_separate():

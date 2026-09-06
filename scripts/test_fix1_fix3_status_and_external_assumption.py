@@ -99,6 +99,42 @@ def _verdict_manifest(sp: Path, rows: list[dict[str, str]]) -> None:
     )
 
 
+def _unbound_depth_consensus_fixture(
+    sp: Path,
+    *,
+    source_ids: str = "",
+    score: float = 0.20,
+    inventory_text: str = "# Findings Inventory\n\nNo findings yet.\n",
+) -> Path:
+    """Create a current depth observation whose upstream identity is unbound."""
+    import confidence_consensus_authority as C
+    from test_confidence_consensus_authority_p1_g import _materialize
+
+    (sp / "findings_inventory.md").write_text(inventory_text, encoding="utf-8")
+    _materialize(
+        sp,
+        [{
+            "worker": "depth-state",
+            "output": "depth_state_trace_findings.md",
+            "finding_id": "DST-1",
+            "source_ids": source_ids,
+        }],
+    )
+    source = sp / "depth_state_trace_findings.md"
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "**Verdict**: CONFIRMED", "**Verdict**: CONTESTED"
+        ),
+        encoding="utf-8",
+    )
+    (sp / "confidence_scores.md").write_text(
+        f"| Finding ID | Composite |\n|---|---:|\n| DST-1 | {score:.2f} |\n",
+        encoding="utf-8",
+    )
+    C.write_confidence_consensus_artifacts(sp)
+    return source
+
+
 # ===========================================================================
 # Fix 1 — canonical_verification_status pure mapping
 # ===========================================================================
@@ -121,13 +157,13 @@ def test_canonical_status_pure_mapping():
     assert k("VERIFIED") < k("CONFIRMED") < k("CONTESTED") < k("UNVERIFIED")
 
 
-def test_status_map_proof_grade_is_verified(tmp_path):
+def test_status_map_bare_execution_tag_is_not_verified_without_p1e_scope(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     _queue(sp, [("INV-1", "High", "unit")])
     _verify(sp, "INV-1", severity="High", verdict="CONFIRMED",
             tag="[POC-PASS]", attempted="YES", result="PASS")
-    assert V._expected_report_index_statuses(sp).get("INV-1") == "VERIFIED"
+    assert V._expected_report_index_statuses(sp).get("INV-1") == "CONFIRMED"
 
 
 def test_status_map_manifest_mechanical_unavailable_is_confirmed(tmp_path):
@@ -195,7 +231,7 @@ def test_status_map_manifest_effective_tag_overrides_stale_prose(tmp_path):
     assert V._expected_report_index_statuses(sp).get("INV-11") == "CONFIRMED"
 
 
-def test_status_map_manifest_genuine_pass_remains_verified(tmp_path):
+def test_status_map_unbound_manifest_pass_remains_confirmed(tmp_path):
     V = _v()
     sp = _scratch(tmp_path)
     _queue(sp, [("INV-8", "High", "unit")])
@@ -209,7 +245,18 @@ def test_status_map_manifest_genuine_pass_remains_verified(tmp_path):
         "integrity_state": "CONSISTENT",
         "effective_tag": "[POC-PASS]",
     }])
-    assert V._expected_report_index_statuses(sp).get("INV-8") == "VERIFIED"
+    # A verdict-manifest row is only prose-derived compatibility state; without
+    # the immutable mechanical successor transaction it cannot mint proof grade.
+    assert V._expected_report_index_statuses(sp).get("INV-8") == "CONFIRMED"
+
+
+def test_status_map_bound_successor_pass_stays_confirmed_without_harm_scope(tmp_path):
+    from test_mechanical_successor_consumer_p0_ag1 import _bound_fixture
+
+    V = _v()
+    _bound_fixture(tmp_path, mechanical_status="PASS")
+
+    assert V._expected_report_index_statuses(tmp_path).get("H-01") == "CONFIRMED"
 
 
 def test_status_map_manifest_production_evidence_remains_verified(tmp_path):
@@ -481,3 +528,189 @@ def test_ext_assumption_predicate_helpers(tmp_path):
     )
     assert V._poc_attempted_and_passed(passed) is True
     assert V._external_assumption_cap_applies(passed) is False
+
+
+# ===========================================================================
+# R1 consumer closure -- unbound identity cannot become negative authority
+# ===========================================================================
+
+def test_unbound_depth_identity_bypasses_low_score_drop_into_typed_debt(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _unbound_depth_consensus_fixture(sp, source_ids="")
+    inventory = sp / "findings_inventory.md"
+    before = inventory.read_bytes()
+
+    assert V._promote_depth_findings_to_inventory(sp) == []
+    assert inventory.read_bytes() == before  # no invented INV identity
+    debt_path = sp / "depth_identity_preservation_debt.json"
+    payload = json.loads(debt_path.read_text(encoding="utf-8"))
+    assert payload["authority"] == "NONE_HUMAN_REVIEW_ONLY"
+    assert payload["identity_authority"] == "NONE"
+    assert payload["proof_authority"] == "NONE"
+    assert payload["row_count"] == 1
+    row = payload["rows"][0]
+    assert row["candidate_ref"]["source_artifact"] == "depth_state_trace_findings.md"
+    assert row["candidate_ref"]["finding_id"] == "DST-1"
+    assert row["disposition"] == "RETAIN_PENDING_IDENTITY_RECONCILIATION"
+    assert row["negative_or_drop_authority"] is False
+    assert V._validate_depth_promotion_receipt(sp) == []
+    first_debt = debt_path.read_bytes()
+    assert V._promote_depth_findings_to_inventory(sp) == []
+    assert debt_path.read_bytes() == first_debt
+
+
+def test_tampered_identity_preservation_debt_fails_closed(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _unbound_depth_consensus_fixture(sp, source_ids="")
+    V._promote_depth_findings_to_inventory(sp)
+    debt_path = sp / "depth_identity_preservation_debt.json"
+    payload = json.loads(debt_path.read_text(encoding="utf-8"))
+    payload["rows"][0]["proof_authority"] = "FULL"
+    debt_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    issues = V._validate_depth_promotion_receipt(sp)
+    assert issues
+    assert "identity preservation" in " ".join(issues).lower()
+
+
+def test_stale_confidence_identity_authority_fails_closed(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    source = _unbound_depth_consensus_fixture(sp, source_ids="")
+    inventory = sp / "findings_inventory.md"
+    before = inventory.read_bytes()
+    V._promote_depth_findings_to_inventory(sp)
+    source.write_text(source.read_text(encoding="utf-8") + "\nlate mutation\n", encoding="utf-8")
+
+    issues = V._validate_depth_promotion_receipt(sp)
+    assert issues
+    assert inventory.read_bytes() == before
+    assert "identity preservation" in " ".join(issues).lower()
+
+
+def test_exact_bound_low_score_keeps_existing_numeric_threshold_behavior(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _unbound_depth_consensus_fixture(
+        sp,
+        source_ids="INV-001",
+        inventory_text=(
+            "# Findings Inventory\n\n"
+            "### Finding [INV-001] Existing canonical finding\n\n"
+            "**Severity**: Medium\n\n**Verdict**: CONFIRMED\n\n"
+            "**Location**: `src/lib.rs:L1`\n\n"
+        ),
+    )
+    inventory = sp / "findings_inventory.md"
+    before = inventory.read_bytes()
+
+    assert V._promote_depth_findings_to_inventory(sp) == []
+    assert inventory.read_bytes() == before
+    assert V._validate_depth_promotion_receipt(sp) == []
+    debt = sp / "depth_identity_preservation_debt.json"
+    if debt.exists():
+        assert json.loads(debt.read_text(encoding="utf-8"))["row_count"] == 0
+
+
+def test_exact_current_anchor_high_score_keeps_positive_promotion_behavior(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _unbound_depth_consensus_fixture(
+        sp,
+        source_ids="INV-001",
+        score=0.95,
+        inventory_text=(
+            "# Findings Inventory\n\n"
+            "### Finding [INV-001] Existing canonical finding\n\n"
+            "**Severity**: Medium\n\n**Verdict**: CONFIRMED\n\n"
+            "**Location**: `src/lib.rs:L1`\n\n"
+        ),
+    )
+
+    assert V._promote_depth_findings_to_inventory(sp) == ["DST-1"]
+    assert "**Source Action ID**: DST-1" in (
+        sp / "findings_inventory.md"
+    ).read_text("utf-8")
+    debt = sp / "depth_identity_preservation_debt.json"
+    assert json.loads(debt.read_text("utf-8"))["row_count"] == 0
+    assert V._validate_depth_promotion_receipt(sp) == []
+
+
+def test_nonexistent_exact_anchor_is_unbound_even_at_high_score(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    _unbound_depth_consensus_fixture(
+        sp, source_ids="INV-999", score=0.95
+    )
+    inventory = sp / "findings_inventory.md"
+    before = inventory.read_bytes()
+
+    assert V._promote_depth_findings_to_inventory(sp) == []
+    assert inventory.read_bytes() == before
+    debt = json.loads(
+        (sp / "depth_identity_preservation_debt.json").read_text("utf-8")
+    )
+    assert debt["row_count"] == 1
+    row = debt["rows"][0]
+    assert row["identity_status"] == "UNRESOLVED_CANONICAL_ANCHOR"
+    assert row["upstream_anchor_binding"]["anchors"] == ["INV-999"]
+    assert row["identity_authority"] == "NONE"
+    assert row["proof_authority"] == "NONE"
+    assert V._validate_depth_promotion_receipt(sp) == []
+
+
+def test_stale_exact_anchor_becomes_unbound_preservation_debt(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    inventory_text = (
+        "# Findings Inventory\n\n"
+        "### Finding [INV-010] Existing canonical finding\n\n"
+        "**Severity**: Medium\n\n**Verdict**: CONFIRMED\n\n"
+    )
+    _unbound_depth_consensus_fixture(
+        sp,
+        source_ids="INV-010",
+        score=0.95,
+        inventory_text=inventory_text,
+    )
+    # Producer authority was computed while the anchor existed. Its current
+    # consumer-side resolution must fail after inventory drift.
+    (sp / "findings_inventory.md").write_text(
+        "# Findings Inventory\n\nNo findings yet.\n", encoding="utf-8"
+    )
+    before = (sp / "findings_inventory.md").read_bytes()
+
+    assert V._promote_depth_findings_to_inventory(sp) == []
+    assert (sp / "findings_inventory.md").read_bytes() == before
+    debt = json.loads(
+        (sp / "depth_identity_preservation_debt.json").read_text("utf-8")
+    )
+    assert debt["rows"][0]["identity_status"] == "UNRESOLVED_CANONICAL_ANCHOR"
+
+
+def test_duplicate_exact_anchor_is_ambiguous_preservation_debt(tmp_path):
+    V = _v()
+    sp = _scratch(tmp_path)
+    duplicate_inventory = (
+        "# Findings Inventory\n\n"
+        "### Finding [INV-011] First\n\n**Severity**: Medium\n\n"
+        "### Finding [INV-011] Duplicate\n\n**Severity**: Medium\n\n"
+    )
+    _unbound_depth_consensus_fixture(
+        sp,
+        source_ids="INV-011",
+        score=0.95,
+        inventory_text=duplicate_inventory,
+    )
+    before = (sp / "findings_inventory.md").read_bytes()
+
+    assert V._promote_depth_findings_to_inventory(sp) == []
+    assert (sp / "findings_inventory.md").read_bytes() == before
+    debt = json.loads(
+        (sp / "depth_identity_preservation_debt.json").read_text("utf-8")
+    )
+    row = debt["rows"][0]
+    assert row["identity_status"] == "AMBIGUOUS_CANONICAL_ANCHOR"
+    assert row["upstream_anchor_binding"]["match_counts"] == {"INV-011": 2}

@@ -21,6 +21,7 @@ gap, reconciliation returns [] and NONE of the verify phases are rewound.
 """
 
 from pathlib import Path
+import json
 
 import plamen_driver as D
 import plamen_mechanical as M
@@ -240,6 +241,47 @@ def test_resume_does_not_rewind_after_backfill(tmp_path: Path):
     for name in downstream:
         assert name in checkpoint.completed, name
     assert set(checkpoint.completed) == set(phase_names)
+
+
+def test_resume_requires_severity_receipt_once_typed_work_was_armed(tmp_path: Path):
+    """Legacy absence is tolerated; an armed current-run projection is not."""
+    sp = tmp_path
+    _setup(sp)
+    M.backfill_unrouted_inventory_into_queue(sp)
+    _write_verify_files(sp)
+    (sp / "_artifact_state.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "artifacts": {},
+                "artifact_bindings": {},
+                "work_units": {
+                    "l1/thorough/rust/claude/verify_aggregate/independent_severity_reconcile": {}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    aggregate = next(
+        phase for phase in _verify_phases_l1_thorough()
+        if phase.name == "verify_aggregate"
+    )
+
+    issues = D._resume_phase_contract_issues(
+        sp,
+        str(sp),
+        aggregate,
+        "thorough",
+        "rust",
+        "l1",
+        "claude",
+    )
+
+    assert any(
+        "independent severity" in issue.casefold()
+        or "independent_severity" in issue.casefold()
+        for issue in issues
+    ), issues
 
 
 def test_resume_WOULD_rewind_without_backfill(tmp_path: Path):

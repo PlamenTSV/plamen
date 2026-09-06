@@ -1,0 +1,77 @@
+{
+  "schema_version": "plamen.mechanical_gate_provisional_hash_receipt.v1",
+  "status": "PROVISIONAL_ARTIFACT_HASHES_FROZEN_SOURCE_TREE_NOT_FROZEN",
+  "runtime_authority_granted": false,
+  "git_head": "67a0f85adc7a8169d79a286908b00bef7adb764a",
+  "source_tree_digest_algorithm": "sha256:plamen-source-tree-v1",
+  "source_tree_digest_recorded_in_candidates": "605041aff4c9dc4cddf848af9fe71d7e7d5399487f9a89a7e2d624294489c9c6",
+  "subsequent_source_tree_digest_observed": "02c960885e4665d4397202cc3d5c5d595cb909a5dc1487edc62057ab1a0b7e19",
+  "source_tree_freeze_status": "DRIFTED_DURING_CONCURRENT_WORK_REGENERATE_AT_GLOBAL_FREEZE",
+  "independent_review_receipt_sha256": null,
+  "artifacts": [
+    {
+      "path": "rules/mechanical-gate-activation-baseline.provisional.v1.json",
+      "sha256": "860ee7ec581bf30c0e97c26b5fb2d93580a41059598bd1fd6577e836fbda7b38"
+    },
+    {
+      "path": "rules/mechanical-gate-migration-edits.provisional.v1.json",
+      "sha256": "78df0676f95909c22cc368f5c9604775c475ef0fe86ed0ae5d73be0064192c20"
+    },
+    {
+      "path": "rules/mechanical-gate-registry.provisional.v2.json",
+      "sha256": "8ffbd25aba82ca1421eb9b48875bafa78069b56d05b661f0adf2a5822f9a9dd5"
+    },
+    {
+      "path": "rules/schemas/mechanical-gate-activation-baseline-provisional.schema.json",
+      "sha256": "a68c86122ec548e6e37cc292c1d4b1f8852a5a07339514b8ab9bdae53c556ce7"
+    },
+    {
+      "path": "rules/schemas/mechanical-gate-migration-edits-provisional.schema.json",
+      "sha256": "5b2c663d74ce8f082859caba51224d5f928daf55189e33410a55f96f2b8202d3"
+    },
+    {
+      "path": "rules/schemas/mechanical-gate-registry-provisional.schema.json",
+      "sha256": "d90796ebb96b886b370d57571c4858b60a544fbcc930b742f9feb488aaae2e36"
+    },
+    {
+      "path": "scripts/mechanical_gate_execution_receipts.py",
+      "sha256": "12a807ceb216c96553dc13bb9ae014c8dcec5c8ed5174fe3183c833508dcfa06"
+    },
+    {
+      "path": "scripts/mechanical_gate_migration_manifest.py",
+      "sha256": "32378ad4b1398e839a646fab36232c0cda2575440b6093a8e5806fb43a3d6f4c"
+    },
+    {
+      "path": "scripts/mechanical_gate_runtime.py",
+      "sha256": "9f51216987343c89bce078c4dde30dc74e79bb2c61c085700e00d43cace12577"
+    },
+    {
+      "path": "scripts/test_mechanical_gate_execution_receipts.py",
+      "sha256": "fde32286e50a78af5529001b26f7dd37fe1df2b6169e841b2c01bc8dcef64cff"
+    },
+    {
+      "path": "scripts/test_mechanical_gate_migration_manifest.py",
+      "sha256": "d114c7c6c471a4774f1b5c89d958e580b3165d95c3817c34a9ea813d512931a7"
+    },
+    {
+      "path": "scripts/test_mechanical_gate_runtime.py",
+      "sha256": "2dabd030a52eafad8b72a3d35b1ad328eceb8bd4aa667e849e0cd63f0adfd5bb"
+    }
+  ],
+  "validation_evidence": {
+    "focused_migration_fixtures": {
+      "passed": 13,
+      "failed": 0
+    },
+    "mechanical_blast_radius": {
+      "passed": 293,
+      "failed": 0
+    },
+    "draft_2020_12_schemas_checked": {
+      "passed": 3,
+      "failed": 0
+    },
+    "full_ast_and_byte_binding_validation_ms": 35958.52,
+    "performance_bound_ms": 90000
+  }
+}

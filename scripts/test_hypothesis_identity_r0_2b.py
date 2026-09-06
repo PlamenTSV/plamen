@@ -2,16 +2,42 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 import plamen_driver as D
 import plamen_parsers as P
 import plamen_validators as V
+from plamen_mechanical import apply_llm_dedup_decisions
 
 
 MAPPING_HEADER = (
     "| Finding | Hypothesis ID | Mapping Status |\n"
     "|---------|---------------|----------------|\n"
 )
+
+
+def _install_receipted_alias(tmp_path: Path, absorbed: str, survivor: str) -> None:
+    inventory = (
+        f"### Finding [{survivor}]: survivor\n"
+        "**Severity**: Medium\n**Location**: x.rs:1-20\n"
+        "**Source IDs**: A-1, B-1\n**Root Cause**: root\n"
+        "**Description**: full path\n**Impact**: impact\n"
+        "**Recommendation**: fix\n\n"
+        f"### Finding [{absorbed}]: member\n"
+        "**Severity**: Medium\n**Location**: x.rs:2-4\n"
+        "**Source IDs**: B-1\n**Root Cause**: root\n"
+        "**Description**: member path\n**Impact**: impact\n"
+        "**Recommendation**: fix\n"
+    )
+    (tmp_path / "findings_inventory.md").write_text(inventory, encoding="utf-8")
+    (tmp_path / "dedup_decisions.md").write_text(
+        f"MERGE: {survivor}, {absorbed}\n", encoding="utf-8"
+    )
+    assert apply_llm_dedup_decisions(tmp_path, "sc_semantic_dedup") == 1
+    shutil.copy2(
+        tmp_path / "findings_inventory_deduped.md",
+        tmp_path / "findings_inventory.md",
+    )
 
 
 def _split_mapping() -> str:
@@ -342,12 +368,7 @@ def test_driver_dedup_propagation_keeps_exact_split_chain_identity(tmp_path):
     (tmp_path / "finding_mapping.md").write_text(
         _split_mapping(), encoding="utf-8"
     )
-    (tmp_path / "dedup_decisions.md").write_text(
-        "| Absorbed ID | Decision | Coupled Mechanism |\n"
-        "|-------------|----------|-------------------|\n"
-        "| INV-040 | MERGED into INV-041 | same root cause |\n",
-        encoding="utf-8",
-    )
+    _install_receipted_alias(tmp_path, "INV-040", "INV-041")
 
     assert D._propagate_dedup_absorbed_to_finding_mapping(tmp_path) == 1
     assert D._propagate_dedup_absorbed_to_finding_mapping(tmp_path) == 0
@@ -365,12 +386,7 @@ def test_dedup_propagation_preserves_all_survivor_targets(tmp_path):
         "| INV-041 | GRP-022A, GRP-052A, H-190 |\n",
         encoding="utf-8",
     )
-    (tmp_path / "dedup_decisions.md").write_text(
-        "| Absorbed ID | Decision | Coupled Mechanism |\n"
-        "|-------------|----------|-------------------|\n"
-        "| INV-040 | MERGED into INV-041 | same root cause |\n",
-        encoding="utf-8",
-    )
+    _install_receipted_alias(tmp_path, "INV-040", "INV-041")
 
     assert D._propagate_dedup_absorbed_to_finding_mapping(tmp_path) == 1
     rows = P.parse_finding_mapping_rows(
@@ -389,10 +405,7 @@ def test_unmapped_dedup_survivor_uses_idempotent_diagnostic_relation(tmp_path):
         "| INV-001 | H-5 | PRIMARY |\n",
         encoding="utf-8",
     )
-    (tmp_path / "dedup_decisions.md").write_text(
-        "| INV-098 | MERGED into INV-099 | coupled | n |\n",
-        encoding="utf-8",
-    )
+    _install_receipted_alias(tmp_path, "INV-098", "INV-099")
 
     assert D._propagate_dedup_absorbed_to_finding_mapping(tmp_path) == 1
     assert D._propagate_dedup_absorbed_to_finding_mapping(tmp_path) == 0
@@ -408,10 +421,7 @@ def test_unmapped_dedup_diagnostic_upgrades_when_survivor_later_maps(tmp_path):
         "| INV-001 | H-5 | PRIMARY |\n",
         encoding="utf-8",
     )
-    (tmp_path / "dedup_decisions.md").write_text(
-        "| INV-098 | MERGED into INV-099 | coupled | n |\n",
-        encoding="utf-8",
-    )
+    _install_receipted_alias(tmp_path, "INV-098", "INV-099")
     assert D._propagate_dedup_absorbed_to_finding_mapping(tmp_path) == 1
 
     mapping_path.write_text(

@@ -100,7 +100,7 @@ def test_hardened_does_not_deadlock_on_held_handle(tmp_path):
     start = time.time()
     rc, output = RP._run_hardened(
         [sys.executable, str(child_py), str(pidfile)],
-        tmp_path, timeout,
+        tmp_path, timeout, writable_roots=(tmp_path,),
     )
     elapsed = time.time() - start
 

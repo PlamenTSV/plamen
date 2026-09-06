@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_slice.v1.schema.json",
+  "title": "Plamen bounded Program Facts slice v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_ref",
+    "request",
+    "selected",
+    "source_excerpts",
+    "capability_evidence",
+    "debt_banner",
+    "authority_statement"
+  ],
+  "properties": {
+    "schema_version": {"const": "plamen.program_facts_slice.v1"},
+    "bundle_ref": {"$ref": "#/$defs/bundle_ref"},
+    "request": {"$ref": "#/$defs/request"},
+    "selected": {"$ref": "#/$defs/selected"},
+    "source_excerpts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/source_excerpt"}
+    },
+    "capability_evidence": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/capability_evidence"}
+    },
+    "debt_banner": {"$ref": "#/$defs/debt_banner"},
+    "authority_statement": {
+      "const": "Structural evidence only; absence is not safety; do not suppress, demote, refute, or mark examined."
+    }
+  },
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "pfs_id": {"type": "string", "pattern": "^PFS-[0-9a-f]{24}$"},
+    "pfn_id": {"type": "string", "pattern": "^PFN-[0-9a-f]{24}$"},
+    "pfo_id": {"type": "string", "pattern": "^PFO-[0-9a-f]{24}$"},
+    "pff_id": {"type": "string", "pattern": "^PFF-[0-9a-f]{24}$"},
+    "pfc_id": {"type": "string", "pattern": "^PFC-[0-9a-f]{24}$"},
+    "pfdg_id": {"type": "string", "pattern": "^PFDG-[0-9a-f]{24}$"},
+    "pfob_id": {"type": "string", "pattern": "^PFOB-[0-9a-f]{24}$"},
+    "capability_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$"
+    },
+    "relation_kind": {
+      "enum": [
+        "CONTAINS", "DECLARES", "INHERITS_OR_IMPLEMENTS", "EXACT_CFG_EDGE",
+        "EXACT_CFG_DOMINATES", "EXACT_CFG_POST_DOMINATES",
+        "MAY_DEPENDENCY_FUNCTION", "MAY_DEPENDENCY_CONTRACT",
+        "RESOLVED_STATIC_CALL", "MAY_REACH_CHA", "MAY_REACH_RTA",
+        "MAY_REACH_VTA", "UNRESOLVED_DYNAMIC_CALL", "READS_STATE",
+        "WRITES_STATE", "READS_ACCOUNT_FIELD", "WRITES_ACCOUNT_FIELD",
+        "SYNTACTIC_SINK", "HOST_SEMANTIC_SINK", "AUTH_CHECK_OCCURRENCE",
+        "VALUE_TRANSFER_OCCURRENCE", "CREATE_OCCURRENCE",
+        "RESOURCE_FLOW_OCCURRENCE", "OBJECT_FLOW_OCCURRENCE",
+        "HOST_CONSTRAINT_OCCURRENCE"
+      ]
+    },
+    "bundle_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_digest", "payload_sha256", "receipt_sha256", "debt_sha256"],
+      "properties": {
+        "snapshot_digest": {"$ref": "#/$defs/hex64"},
+        "payload_sha256": {"$ref": "#/$defs/hex64"},
+        "receipt_sha256": {"$ref": "#/$defs/hex64"},
+        "debt_sha256": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "selection_predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seed_node_ids", "relation_kinds", "direction", "max_graph_radius"],
+      "properties": {
+        "seed_node_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pfn_id"},
+          "uniqueItems": true
+        },
+        "relation_kinds": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/relation_kind"},
+          "uniqueItems": true
+        },
+        "direction": {"enum": ["IN", "OUT", "BOTH"]},
+        "max_graph_radius": {"type": "integer", "minimum": 0}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "obligation_ids", "selection_predicate",
+        "max_facts", "max_bytes", "max_excerpts"
+      ],
+      "properties": {
+        "obligation_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pfob_id"},
+          "uniqueItems": true
+        },
+        "selection_predicate": {"$ref": "#/$defs/selection_predicate"},
+        "max_facts": {"type": "integer", "minimum": 0},
+        "max_bytes": {"type": "integer", "minimum": 0},
+        "max_excerpts": {"type": "integer", "minimum": 0}
+      }
+    },
+    "selected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fact_ids", "node_ids", "occurrence_ids"],
+      "properties": {
+        "fact_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pff_id"},
+          "uniqueItems": true
+        },
+        "node_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pfn_id"},
+          "uniqueItems": true
+        },
+        "occurrence_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pfo_id"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "source_excerpt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_file_id", "source_sha256",
+        "start_byte", "end_byte", "text"
+      ],
+      "properties": {
+        "source_file_id": {"$ref": "#/$defs/pfs_id"},
+        "source_sha256": {"$ref": "#/$defs/hex64"},
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}
+      }
+    },
+    "capability_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability_id", "precision", "provenance_origin"],
+      "properties": {
+        "capability_id": {"$ref": "#/$defs/capability_id"},
+        "precision": {"enum": ["EXACT", "MAY", "HEURISTIC", "SYNTACTIC"]},
+        "provenance_origin": {"enum": ["COMPILER_IR", "SSA", "AST", "BYTECODE", "SOURCE_PARSE", "INDEX_REFERENCE"]}
+      }
+    },
+    "debt_banner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disagreement_ids", "coverage_ids", "debt_ids",
+        "truncated", "additional_facts_omitted_obligation_id"
+      ],
+      "properties": {
+        "disagreement_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pfdg_id"},
+          "uniqueItems": true
+        },
+        "coverage_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pfc_id"},
+          "uniqueItems": true
+        },
+        "debt_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "truncated": {"type": "boolean"},
+        "additional_facts_omitted_obligation_id": {
+          "oneOf": [{"const": ""}, {"$ref": "#/$defs/pfob_id"}]
+        }
+      }
+    }
+  }
+}

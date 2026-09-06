@@ -1,0 +1,20 @@
+# Complete exact bootstrap authority for deterministic CI lock regeneration.
+# pip is held below 26 because pip-tools 7.5.2 uses a PackageFinder surface
+# removed by pip 26; changing any row requires regenerating and reviewing both
+# this lock and the generated provenance receipt.
+attrs==26.1.0
+build==1.5.0
+click==8.4.2
+colorama==0.4.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+packaging==26.2
+pip-tools==7.5.2
+pip==25.3
+PyYAML==6.0.3
+pyproject-hooks==1.2.0
+referencing==0.37.0
+rpds-py==2026.6.3
+setuptools==83.0.0
+typing-extensions==4.16.0
+wheel==0.47.0

@@ -23,6 +23,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import plamen_driver as D  # noqa: E402
+from typed_test_authority import bind_verifier_outputs  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -62,6 +63,7 @@ def test_EMPTY_skip_writes_empty_tier_note(tmp_path: Path):
 **Recommendation**: fix
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     # The empty-tier handler should produce a substantive note for shards
     # with no findings.
@@ -119,6 +121,7 @@ def test_EMPTY_skip_returns_false_when_manifest_exists(tmp_path: Path):
 **Recommendation**: y
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     # Body-writer manifest for critical_high is non-empty; skip must be False.
     skipped = D._maybe_skip_empty_body_writer(sp, "report_body_writer_critical_high")
@@ -275,6 +278,7 @@ def test_RETRY_hint_lists_specific_violations(tmp_path: Path):
 **Recommendation**: b
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     # Bad body: missing H-02, hallucinates H-99, wrong location for H-01.
     (sp / "report_critical_high.md").write_text("""# Critical and High
@@ -326,6 +330,7 @@ def test_RETRY_hint_empty_when_body_clean(tmp_path: Path):
 **Recommendation**: b
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     (sp / "report_critical_high.md").write_text("""# Critical and High
 
@@ -348,8 +353,7 @@ def test_RETRY_hint_empty_when_body_clean(tmp_path: Path):
 # =============================================================================
 
 def test_E7_then_UNRESOLVED_composition(tmp_path: Path):
-    """Verifier wrote Severity: Critical -> preserved (E7 no longer fires when
-    verifier states severity). UNRESOLVED demotes Critical -> High."""
+    """UNRESOLVED records uncertainty without acquiring downgrade authority."""
     sp = tmp_path
     (sp / "verification_queue.md").write_text("""# Q
 
@@ -364,15 +368,20 @@ def test_E7_then_UNRESOLVED_composition(tmp_path: Path):
 **Recommendation**: y
 **Evidence Tag**: CODE-TRACE
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     D._write_mechanical_report_index(sp)
     rec = json.loads((sp / "report_records.json").read_text(encoding="utf-8"))
     sev = rec["active"][0]["severity"]
     unresolved = rec["active"][0]["unresolved"]
-    # Verifier stated Critical -> preserved. UNRESOLVED: Critical -> High.
+    adjustments = rec["active"][0]["severity_adjustments"]
+    # P0-V: uncertainty is additive evidence state.  It cannot silently lower
+    # the queue/verifier Critical tier without typed adjudication authority.
     check(
-        "COMPOSE.E7_then_UNRESOLVED_lands_at_High",
-        sev == "High" and unresolved is True,
-        f"sev={sev} unresolved={unresolved}",
+        "COMPOSE.E7_then_UNRESOLVED_retains_Critical",
+        sev == "Critical"
+        and unresolved is True
+        and adjustments == ["UNRESOLVED(Critical)"],
+        f"sev={sev} unresolved={unresolved} adjustments={adjustments}",
     )
 
 
@@ -399,6 +408,7 @@ def test_REPORT_INDEX_silent_severity_delta_flagged(tmp_path: Path):
 |-----------|-------|----------|----------|--------------|------------|---------------------|
 | L-01 | bug | Low | src/F.sol:L1 | CONFIRMED | - | H-1 |
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     issues = D._validate_report_index_inputs(sp)
     check(
         "REPORT_INDEX.silent_severity_delta_flagged",
@@ -407,8 +417,8 @@ def test_REPORT_INDEX_silent_severity_delta_flagged(tmp_path: Path):
     )
 
 
-def test_REPORT_INDEX_reasoned_severity_delta_allowed(tmp_path: Path):
-    """A documented severity delta is allowed through the report-index gate."""
+def test_REPORT_INDEX_reason_prose_is_not_severity_authority(tmp_path: Path):
+    """A prose reason cannot lower a tier without typed cutover authority."""
     sp = tmp_path
     (sp / "verification_queue.md").write_text("""# Q
 
@@ -430,10 +440,11 @@ def test_REPORT_INDEX_reasoned_severity_delta_allowed(tmp_path: Path):
 |-----------|-------|----------|----------|--------------|------------|---------------------|
 | L-01 | bug | Low | src/F.sol:L1 | CONFIRMED | TRUSTED-ACTOR downgrade from Medium | H-1 |
 """, encoding="utf-8")
+    bind_verifier_outputs(sp)
     issues = D._validate_report_index_inputs(sp)
     check(
-        "REPORT_INDEX.reasoned_severity_delta_allowed",
-        issues == [],
+        "REPORT_INDEX.reason_prose_is_not_severity_authority",
+        bool(issues) and "severity provenance" in issues[0],
         f"issues={issues}",
     )
 
@@ -457,7 +468,7 @@ TESTS_INTEG = [
     test_RETRY_hint_empty_when_body_clean,
     test_E7_then_UNRESOLVED_composition,
     test_REPORT_INDEX_silent_severity_delta_flagged,
-    test_REPORT_INDEX_reasoned_severity_delta_allowed,
+    test_REPORT_INDEX_reason_prose_is_not_severity_authority,
 ]
 
 

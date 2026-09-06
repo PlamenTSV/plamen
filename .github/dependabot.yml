@@ -1,0 +1,32 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+    groups:
+      reviewed-github-actions:
+        patterns:
+          - "actions/*"
+    commit-message:
+      prefix: "ci(actions)"
+
+  # requirements-dev.txt plus requirements-ci.constraints are resolver inputs;
+  # requirements-ci.lock is the exact accepted graph. The tests workflow
+  # submits that lock through GitHub's supported dependency-submission API so
+  # transitive packages are visible to the dependency graph and Dependabot
+  # alerts. Dependabot PRs remain proposals until the deterministic lock gate,
+  # cross-OS jobs, CODEOWNERS review, and refreshed evidence all pass.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    versioning-strategy: "increase-if-necessary"
+    groups:
+      reviewed-python-dependencies:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps(python)"

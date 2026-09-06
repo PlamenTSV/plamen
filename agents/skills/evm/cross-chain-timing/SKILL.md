@@ -7,6 +7,7 @@ description: "Type Thought-template (instantiate before use) - Research basis Mu
 
 > **Type**: Thought-template (instantiate before use)
 > **Research basis**: Multi-block arbitrage windows, bridge latency exploitation
+> **Inject Into**: depth-external
 
 ## Trigger Patterns
 ```

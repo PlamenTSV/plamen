@@ -36,16 +36,16 @@
 | Skill | Trigger Pattern | Used By |
 |-------|-----------------|---------|
 | ACCOUNT_VALIDATION | Always (Solana) | breadth agents, depth agents |
-| CPI_SECURITY | CPI flag | breadth agents, depth-external |
-| PDA_SECURITY | PDA flag | breadth agents, depth-state-trace |
-| ACCOUNT_LIFECYCLE | ACCOUNT_CLOSING flag | breadth agents, depth-edge-case |
-| TOKEN_2022_EXTENSIONS | TOKEN_2022 flag | breadth agents, depth-token-flow |
-| INSTRUCTION_INTROSPECTION | INSTRUCTION_INTROSPECTION flag | breadth agents, depth-external |
+| CPI_SECURITY | CPI flag | breadth agents, depth agents |
+| PDA_SECURITY | PDA flag | breadth agents, depth agents |
+| ACCOUNT_LIFECYCLE | ACCOUNT_CLOSING flag | breadth agents, depth agents |
+| TOKEN_2022_EXTENSIONS | TOKEN_2022 flag | breadth agents, depth agents |
+| INSTRUCTION_INTROSPECTION | INSTRUCTION_INTROSPECTION flag | breadth agents, depth agents |
 | SEMI_TRUSTED_ROLES | SEMI_TRUSTED_ROLE flag | breadth agents, depth-state-trace |
-| MIGRATION_ANALYSIS | MIGRATION flag | breadth agents |
-| CROSS_CHAIN_TIMING | CROSS_CHAIN flag | depth-external |
+| MIGRATION_ANALYSIS | MIGRATION flag | breadth agents, depth-state-trace |
+| CROSS_CHAIN_TIMING | CROSS_CHAIN flag | breadth agents, depth-external |
 | TEMPORAL_PARAMETER_STALENESS | TEMPORAL flag | breadth agents, depth-state-trace |
-| CENTRALIZATION_RISK | 3+ privileged roles (optional) | breadth agents |
+| CENTRALIZATION_RISK | 3+ privileged roles (optional) | breadth agents, depth-state-trace |
 | SHARE_ALLOCATION_FAIRNESS | SHARE_ALLOCATION flag | breadth agents, depth-edge-case |
 | FORK_ANCESTRY | Always (recon TASK 0) | recon agent |
 | ECONOMIC_DESIGN_AUDIT | MONETARY_PARAMETER flag | breadth agents |
@@ -77,8 +77,8 @@
 | TEMPORAL_PARAMETER_STALENESS | TEMPORAL flag | breadth agents, depth-state-trace |
 | ECONOMIC_DESIGN_AUDIT | MONETARY_PARAMETER flag | breadth agents |
 | EXTERNAL_PRECONDITION_AUDIT | External module interactions | breadth agents |
-| MIGRATION_ANALYSIS | MIGRATION flag | breadth agents |
-| CROSS_CHAIN_TIMING | CROSS_CHAIN flag | depth-external |
+| MIGRATION_ANALYSIS | MIGRATION flag | breadth agents, depth-state-trace |
+| CROSS_CHAIN_TIMING | CROSS_CHAIN flag | breadth agents, depth-external |
 | FUNGIBLE_ASSET_SECURITY | FA_STANDARD flag | breadth agents, depth-token-flow |
 | REENTRANCY_ANALYSIS | REENTRANCY flag | breadth agents, depth-state-trace |
 | DEPENDENCY_AUDIT | EXTERNAL_LIB flag | breadth agents, depth-external |
@@ -106,12 +106,12 @@
 | TEMPORAL_PARAMETER_STALENESS | TEMPORAL flag | breadth agents, depth-state-trace |
 | ECONOMIC_DESIGN_AUDIT | MONETARY_PARAMETER flag | breadth agents |
 | EXTERNAL_PRECONDITION_AUDIT | External package interactions | breadth agents |
-| MIGRATION_ANALYSIS | MIGRATION flag | breadth agents |
-| CROSS_CHAIN_TIMING | CROSS_CHAIN flag | depth-external |
+| MIGRATION_ANALYSIS | MIGRATION flag | breadth agents, depth-state-trace |
+| CROSS_CHAIN_TIMING | CROSS_CHAIN flag | breadth agents, depth-external |
 | PTB_COMPOSABILITY | PTB flag | breadth agents, depth-external, depth-state-trace |
 | PACKAGE_VERSION_SAFETY | PACKAGE_UPGRADE flag | breadth agents, depth-external |
 | DEPENDENCY_AUDIT | EXTERNAL_LIB flag | breadth agents, depth-external |
-| CENTRALIZATION_RISK | 3+ privileged roles (optional) | breadth agents |
+| CENTRALIZATION_RISK | 3+ privileged roles (optional) | breadth agents, depth-state-trace |
 | SHARE_ALLOCATION_FAIRNESS | SHARE_ALLOCATION flag | breadth agents, depth-edge-case |
 
 ## Soroban Skills (`~/.claude/agents/skills/soroban/`)
@@ -124,7 +124,7 @@
 | STORAGE_LIFECYCLE | Always (Soroban) | breadth agents, depth-state-trace, depth-edge-case |
 | OVERFLOW_SAFETY | Always (Soroban) | breadth agents, depth-edge-case |
 | CONTRACT_UPGRADEABILITY | `update_current_contract_wasm` detected | breadth agents, depth-state-trace |
-| SEP41_TOKEN_SAFETY | SEP-41 token patterns detected | breadth agents, depth-token-flow |
+| SEP41_TOKEN_SAFETY | SEP-41 token patterns detected | breadth agents, depth-token-flow, depth-edge-case |
 | CUSTOM_TYPE_SAFETY | `contractimport!` or `contracttype` detected | breadth agents, depth-external |
 | FORK_ANCESTRY | Always (recon TASK 0) | recon agent |
 | VERIFICATION_PROTOCOL | Always (verifiers) | security-verifier |
@@ -135,9 +135,9 @@
 | ECONOMIC_DESIGN_AUDIT | MONETARY_PARAMETER flag | breadth agents |
 | EXTERNAL_PRECONDITION_AUDIT | External contract interactions | breadth agents |
 | FLASH_LOAN_INTERACTION | FLASH_LOAN flag | breadth agents, depth-token-flow, depth-edge-case |
-| MIGRATION_ANALYSIS | MIGRATION flag (update_current_contract_wasm + storage migration) | breadth agents |
-| CROSS_CHAIN_TIMING | CROSS_CHAIN flag | depth-external |
-| CENTRALIZATION_RISK | 3+ privileged roles (optional) | breadth agents |
+| MIGRATION_ANALYSIS | MIGRATION flag (update_current_contract_wasm + storage migration) | breadth agents, depth-state-trace |
+| CROSS_CHAIN_TIMING | CROSS_CHAIN flag | breadth agents, depth-external |
+| CENTRALIZATION_RISK | 3+ privileged roles (optional) | breadth agents, depth-state-trace |
 | SHARE_ALLOCATION_FAIRNESS | SHARE_ALLOCATION flag | breadth agents, depth-edge-case |
 
 ## DAML Skills (`~/.claude/agents/skills/daml/`)

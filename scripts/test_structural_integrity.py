@@ -26,6 +26,7 @@ import tempfile
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPTS_DIR.parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 SUB_MODULES = [
@@ -209,6 +210,18 @@ def test_no_orphan_star_import_consumers():
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             driver_defined.add(node.name)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            arguments = node.args
+            for argument in (
+                list(arguments.posonlyargs)
+                + list(arguments.args)
+                + list(arguments.kwonlyargs)
+            ):
+                driver_defined.add(argument.arg)
+            if arguments.vararg is not None:
+                driver_defined.add(arguments.vararg.arg)
+            if arguments.kwarg is not None:
+                driver_defined.add(arguments.kwarg.arg)
         elif isinstance(node, ast.Assign):
             for tgt in node.targets:
                 if isinstance(tgt, ast.Name):
@@ -223,6 +236,10 @@ def test_no_orphan_star_import_consumers():
             tgt = node.target
             if isinstance(tgt, ast.Name):
                 driver_defined.add(tgt.id)
+            elif isinstance(tgt, (ast.Tuple, ast.List)):
+                for elt in ast.walk(tgt):
+                    if isinstance(elt, ast.Name):
+                        driver_defined.add(elt.id)
 
     # Find all bare function calls in the driver (name calls, not attr calls)
     called_names: set[str] = set()
@@ -279,6 +296,66 @@ def test_no_orphan_star_import_consumers():
         f"plamen_driver.py calls these names that aren't in any "
         f"sub-module __all__ or defined locally:\n"
         + "\n".join(f"  {n}" for n in sorted(missing))
+    )
+
+
+def test_runtime_import_graph_is_not_gitignored():
+    """Repo-local runtime dependencies must exist in a fresh checkout.
+
+    A broad ``scripts/*`` ignore rule previously hid newly created production
+    modules while their tests passed against working-tree copies. Walk the
+    local import graph and ask Git to apply ignore rules even to tracked paths.
+    """
+
+    queue = [SCRIPTS_DIR / "plamen_driver.py", REPO_ROOT / "plamen.py"]
+    visited: set[Path] = set()
+    ignored: list[str] = []
+
+    def _local_module(name: str) -> Path | None:
+        top = name.split(".", 1)[0]
+        candidates = (
+            SCRIPTS_DIR / f"{top}.py",
+            REPO_ROOT / f"{top}.py",
+            REPO_ROOT / top / "__init__.py",
+        )
+        return next((path for path in candidates if path.is_file()), None)
+
+    while queue:
+        path = queue.pop().resolve()
+        if path in visited:
+            continue
+        visited.add(path)
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names.append(node.module)
+            for name in names:
+                local = _local_module(name)
+                if local is not None and local.resolve() not in visited:
+                    queue.append(local)
+
+    for path in sorted(visited):
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "--quiet", "--", relative],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            ignored.append(relative)
+        elif result.returncode != 1:
+            raise AssertionError(
+                f"git check-ignore failed for {relative}: {result.stderr.strip()}"
+            )
+
+    assert not ignored, (
+        "Repo-local runtime modules are ignored and would be absent from a "
+        f"fresh checkout: {ignored}"
     )
 
 
@@ -676,8 +753,42 @@ def test_validator_dispatch_covers_all_critical_phases():
     from plamen_types import SC_PHASES, L1_PHASES
 
     src = inspect.getsource(D._run_phase_validators)
-    # Extract phase names from `phase.name == "X"` and `phase.name in (..., "X", ...)`
-    string_literals = set(re.findall(r'"([\w]+)"', src))
+
+    # Extract only literals that are actually compared with ``phase.name``.
+    # Treating every underscore-bearing string in this large validator as a
+    # phase name misclassifies artifact-schema keys (for example receipt or
+    # reconciliation fields) as ghost phases.  Keep the guard structural by
+    # walking the comparison/call syntax it is intended to police.
+    tree = ast.parse(src)
+    string_literals: set[str] = set()
+
+    def _is_phase_name(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "name"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "phase"
+        )
+
+    def _collect_strings(node: ast.AST) -> None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            string_literals.add(node.value)
+        elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            for element in node.elts:
+                _collect_strings(element)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Compare) and _is_phase_name(node.left):
+            for comparator in node.comparators:
+                _collect_strings(comparator)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "startswith"
+            and _is_phase_name(node.func.value)
+        ):
+            for argument in node.args:
+                _collect_strings(argument)
 
     all_phase_names = {p.name for p in SC_PHASES} | {p.name for p in L1_PHASES}
     # Filter to only strings that look like phase names (contain underscore or known patterns)

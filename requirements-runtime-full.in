@@ -1,0 +1,6 @@
+-r requirements-runtime-core.in
+-r requirements-runtime-rag.in
+-r requirements-runtime-slither.in
+
+# The public installer consumes the corresponding universal, exact, hashed,
+# wheel-only lock so all shipped Python capabilities share one resolver graph.

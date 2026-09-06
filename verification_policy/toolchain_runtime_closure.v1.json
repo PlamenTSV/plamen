@@ -1,0 +1,2098 @@
+{
+  "assets": [
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "plamen.py",
+      "sha256": "e21cd747e6377c2d43bde83475c02bf673947e8d314c74c8a00c00a1513976d6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "plamen_l1/__init__.py",
+      "sha256": "0e7241851055f9be7bd7302dad231922082534288ed56555d10098e6ee68d57b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "plamen_l1/sarif_merge.py",
+      "sha256": "96cac71b9d9991fa2b45ee375f9c8cf79886b710b5ad00c102f3efbec9bdbcff"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "plamen_l1/scip_pb2.py",
+      "sha256": "f06f5320c743720f408693f0efd925db540a886f80c67d97dfff7b9d1054eb31"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "plamen_l1/scip_reader.py",
+      "sha256": "9c6f2f784313ef2b9b63153ef0be62dd59ce4a04a68338aa976a5640e9c0dad1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-ci-resolver.in",
+      "sha256": "55e3173445050d9bf00a0d217abcbec83b6baa161f971d5192f28d664a2d45ef"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-ci-resolver.lock",
+      "sha256": "842074be5fbac7fc368018d85a5b2bbb9cb3daacec5ff6e75d0da79cea89e44d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-ci.constraints",
+      "sha256": "0fe299bbad088c90d85ecfa08a50a92bacdec62044f8b1c2abe59690d02cc42b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-ci.lock",
+      "sha256": "4c2381ce078b1ca2778c27a210f9f98e93ce730198d2e24347fe80f9c941af3a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-dev.txt",
+      "sha256": "b08f1430eeeca71f4934766892f57e278f748fcaaa6d16d0740e9619773ed01a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-runtime-core.in",
+      "sha256": "cdd605314f765a40f9d813d9551363796ee0fad1356e4c87c4141af4778f9d98"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-runtime-core.lock",
+      "sha256": "63c5a8a70f8a9a960d2ecb2a85139e25a53c063ed93e8e3a4b531cad73104528"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-runtime-full.in",
+      "sha256": "535b5abfd6378ec67c9ef4b87e62e83ef3af1a6814879ad55ac5bcd1fb0b79cb"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-runtime-full.lock",
+      "sha256": "6fc1be30eb61fa8c2d86801750a4064a144aaf9056764c2adbfe3737148b6bcf"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-runtime-rag.in",
+      "sha256": "6c4e226b19231ce4223b61c0cbe2338e7d6aa2754bab3172d4b7c25044fb9408"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-runtime-rag.lock",
+      "sha256": "ee28ca5f3019057a5fc52a57731b927d7bf6a20239b6697558d96fc4f81a998a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-runtime-slither.in",
+      "sha256": "2f057b7af8edbe5217bc0d0dd59b2c15fbcefd8132a949dca5e881c0e2dc3169"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements-runtime-slither.lock",
+      "sha256": "7eb455c4052c8336a2fa347a32efc283d1d7fc262b0e4e04c2ed2f65f73b68d6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "requirements.txt",
+      "sha256": "539450e067e10f6e7f58dd4b84dd0f5c0dd303284c6df8b780d343fdf9553a50"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/language-toolchain-registry.json",
+      "sha256": "830308d355168666fe78b594abb3ed14331ffe777904333c0bc2ae660c8222b3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/program-facts-evm-tool-manifest.v1.json",
+      "sha256": "d453181ea029f1b9ae385a55e62780cf5d7332b729c69a6d27c761a182026acc"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/program-facts-provider-registry.v1.json",
+      "sha256": "c1e52834e46e85b36dce7ba11de8f1cfd47f487335724eb05fe65976c18e3318"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/schemas/mechanical_program_facts.v1.schema.json",
+      "sha256": "390f60cbc4ee77b2c895db411914a5683c71740c2b54826f79a91dc156a65251"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/schemas/mechanical_program_facts_debt.v1.schema.json",
+      "sha256": "71e594183f0bc54092ff4a4ae4e0dde7be43565ab00fcf895450f63680762db6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/schemas/mechanical_program_facts_receipt.v1.schema.json",
+      "sha256": "cdbc17722b15848b1afa487bafaff216f43a982b6b1bcbe0c80e770f26de6e6e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/schemas/program_facts_disagreement.v1.schema.json",
+      "sha256": "339742262677547ad203f01cf27e973ced85ce6b98587dcfeddcf33de13dccb1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/schemas/program_facts_evm_slither_raw.v1.schema.json",
+      "sha256": "6b9f59fa032e52481527aede4c956c7553a87448458cb84517cc5ee6e27e3cea"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/schemas/program_facts_evm_tool_manifest.v1.schema.json",
+      "sha256": "4b1a6cbe76b76d64be1261357cfe56d32181e91d317a2770dc62f288cda86bc4"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/schemas/program_facts_provider_registry.v1.schema.json",
+      "sha256": "7b69d38f2b603cb25529c4f075a3638deea7e1fb5170d33522fab5346c2baaac"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "rules/schemas/program_facts_slice.v1.schema.json",
+      "sha256": "046c00c140ab8e371a7103e52c58f6fd49793621d49bc3e92a42ea0430872a79"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/adaptive_attention_authority.py",
+      "sha256": "8ec89e2600819af0d6ddda5fe7a84ef4bf708771c4efbd6872f26376f894f8ae"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/adaptive_attention_controller.py",
+      "sha256": "15274d421ceb26619b9222221fa794aed12aadcf4b0e7c167a51031800b9a53d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/adaptive_attention_evaluator.py",
+      "sha256": "c461722e2f8b7a9cc4fb8a0f526103ed332f18057bcf413e9a532b5b4f381eed"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/adaptive_attention_reporting.py",
+      "sha256": "19580c9e59f37ad6a41752eb47b87f810c0d139bd1af75e09fce659df3c534dd"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/adaptive_attention_runtime.py",
+      "sha256": "94022f77e94f6272d353647f77557bae1fa520a2964f439abd295ec3e8faeb8a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/adaptive_attention_sources.py",
+      "sha256": "60796fb7ca6a434c3b8e5b13beb77095dfff68c93009768cef7564591b47abf2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/adaptive_attention_types.py",
+      "sha256": "c3d9ad1f0f7516b2513ba382334d2e1166bc783f2a6f74741879fc8d2aa385e9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/application_skeptic.py",
+      "sha256": "2da0bb88a85edc2dcef9015b300fa86345fc26b51358c5f2eb8d0426c6ecc2a3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/application_skeptic_workflow_discriminator_r12_contract.py",
+      "sha256": "ba32caeb9d813e503041b4a990cdbbe4b18ccfd5ba6ea5b2b3fba6f0f142c347"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/artifact_ledger.py",
+      "sha256": "54e6091b7465f4cf9376e3f0bef0fcb429fbbcded572afb8f60512c0e31fa9c9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/asset_representation_foundation.py",
+      "sha256": "a659a3509c45ceaa07e41779a6658d42ad058b122fd0e14bb0d3c32a13257192"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/assurance_limitations.py",
+      "sha256": "376ddb5d52e4f62e2ff29a1b4a21658096b13c5842adb91bf5804330a27f3708"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/attention_repair_shards.py",
+      "sha256": "fac4c01a4e7f9d3dd0da62dc5aa9f35aefab1b03e5fd91f033336c0c0ec6ec84"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/audit_snapshot.py",
+      "sha256": "8e5688c8affc403c00f9659eccf1c6f447ea334a3b35af2ae6d454661230f851"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/authentication_role_authority.py",
+      "sha256": "ac7b8cd3f14b8ce73d860376a46270367cee39877ce8923f8b775acd716bd310"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/auxiliary_writable_root_lease.py",
+      "sha256": "fe96acc26a75007fc1e68255303f6e64c743dc75a5576cd1c724013a45c5ce7f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/auxiliary_writable_root_startup.py",
+      "sha256": "c85e9d2bd2b262e3d8d9fc2dc9a9a12150bb3f7c6f1b587089f41283445a7255"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/axis_canonical_prior.py",
+      "sha256": "7963fb47ab8fb733c800a92d94a2c4dc0e7ad0cebecd85fbd9d6098a219b4f99"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/axis_disposition.py",
+      "sha256": "97699413e70c609f3ffce11c7fd0a8508575f4fa4bdc069128b30c92d95b9350"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/axis_promotion_lineage.py",
+      "sha256": "aead06229cfb6392476a0d68194276258b8b3f432ba4d18f6c9cc6853a90adce"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/backend_capability_registry.py",
+      "sha256": "897fa92b03dd3ee7a6031d3c61e073139511ace04655172f1ffdce26a5dee4a6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/banner.py",
+      "sha256": "33f9b53dfbb4ed854342526ee05d9e0f1cfd3d58f5856dcf264fc062816e66f4"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/banner_rich.py",
+      "sha256": "a7823ba6a2292dc78e626a1f78f83925f3fa902586f32769a1026ae82f5525d0"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/bb_path_authority.py",
+      "sha256": "3f31654eb204f56580e3fb1478cafd508596a978292fcd1e6b01abafc64b91e9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/bb_verification_policy.py",
+      "sha256": "4d67097627f57d5df6abb04e558bdd0b5e88e74131a6fbb399973e7b57d8e713"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/bb_wrapper_provider_adapter.py",
+      "sha256": "d5b4d3330291e75851e2e6eec182ca00bfac5ea8987a8d42c20a1e4d6bd7734f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/bounded_artifact_io.py",
+      "sha256": "333b31c7e56cfafd4d596539ea228882039553516a433096b71a6360d12b821a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/candidate_negative_authority.py",
+      "sha256": "0c2fd865598d33e0191b1ea16108afdfd9d6300dad600733a59164113eb8595b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/chain_candidate_inventory_union.py",
+      "sha256": "4ba283b6753c634987d8670eb988cabb6561083dcf5fe3abfd211374d9fd70d0"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/chain_grouping_assurance.py",
+      "sha256": "18884f3965e9c38c38ff4b1305ae67a32dc64b99679cf9458586e569724997f1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/chain_grouping_authority.py",
+      "sha256": "f07fc669ec11f7dc9aff99818a91637bc336a98c1e3f8cb8e0c2797207a87498"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/chain_pair_auto_map_transaction.py",
+      "sha256": "5c160117336003293ede1813755e1d597dac1aff598ab0202a524257a70c4a42"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/chain_prep.py",
+      "sha256": "6c2d3b9d34b36bf7af3aa10ebeed38bc9aefa26f0dcd9e6938bb89d3979053dd"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/chain_tail_authority.py",
+      "sha256": "6078b0922e2f68482b81655fa7cc1ff2239172f520b6763287f3ad70bdf29e7f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/ci_dependency_authority.py",
+      "sha256": "500b1db88419a9d3d066c162dc642e686a811022923bc73ca42c5fa5e557e83a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_attempt_profile.py",
+      "sha256": "7b6d55dd5f34b693faf8c4f75c6fa27903766edf3224c4dd75caacad2856f59e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_auth_route.py",
+      "sha256": "bf061e8ce8bf23b8a48715130bec9d6969a85ac9521154bbedbc60ec0994c956"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_child_environment.py",
+      "sha256": "4a901f5efca1ced47b5ddce822b89d824da443e080d3b14a96413a979f7b32b2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_executable_observation.py",
+      "sha256": "26f8ecb49a439afa1ef2a92de0538a693dcc65924b6287aa4a0401febf022357"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_headless_profile.py",
+      "sha256": "d084c0430518d4c0443a5fefe0bfd28c0e262757c938593e5448828352466254"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_launch_security.py",
+      "sha256": "6138587987a44794945411bb284f2c234811532a4f0df67397d2552d2aba09ea"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_phase_tool_policy.py",
+      "sha256": "8c8916550043021b0a336cebd808e67c8c0412f0b8b0d2b693a395e2a811093a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_provider_policy.py",
+      "sha256": "6773fe8c610bea1ddf3545f3927fe1a39f248cf9271d248bf684fd02d7881ca3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_provider_preparation.py",
+      "sha256": "58a9f1622e22ec81789f03d9e67eab0044307d44058d653707d5f586f69ee3f9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_runtime_materialization.py",
+      "sha256": "72c69860e23e398dc1d168a4eb19a683430b3b85f626f4a094e7bbb80d690dde"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_stored_subscription_source.py",
+      "sha256": "9c53fd21bd475f8edb22ab9c0a8da0d8e4a06bd399291b0a0103e757e416fe39"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_stream_json_evidence.py",
+      "sha256": "117142ca7479a9cbb1af2d1912e64d45e80293dd2e9391461a9873cd9d484d63"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/claude_worker_prompt_consistency.py",
+      "sha256": "699b21424dd2d057a731eae254ee329a964f6486025bb774bb510e17725edeb5"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/closure_broker_v2.py",
+      "sha256": "3f79c3553cab5fe74b055ae0d38ca32129fd6483cb2bee3d7aad057a530e019f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/codex_adapter.py",
+      "sha256": "bb0cf9d00f60aa02e14d76d7f89a4e64839f50427ace8f986670b1debc091fdb"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/codex_dependency_research.py",
+      "sha256": "ef6bf9aad0b55810cee333d049b2a893a33291398bcc3464ef0916670c5bf302"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/compound_plan_adapter.py",
+      "sha256": "16c9cc6462673c230fc112af868d8ae7e46ded84639bd0a6d982e0bd33631b51"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/compound_verification.py",
+      "sha256": "7dec000c819c0e5ae6cdbf8fabf505c85bd07d00003bec89326fc741eb2105ab"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/confidence_consensus_authority.py",
+      "sha256": "aec2280f991a2f02e9381b8e138414a8cbcab9214eef2e6d3a90fe495cdde49c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/conftest.py",
+      "sha256": "a593225c59a076d01c638753cb5d94c31f9dd3589a48ea19e352127f70752f4c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/coverage_shortfalls.py",
+      "sha256": "bcb3fc4074cae23e7ac2365fe58929cb50aeb7b90703fe501d209e093464eefa"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/dependency_obligations.py",
+      "sha256": "ee268f31eedf9b6692b8e97f1fd8656cc47b1fee4ebce90a81d9e7d78d4c4ca2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/depth_handoff.py",
+      "sha256": "24700e266622b97cd0a455fc9537e0c4b7dc761cb336f62dae2b4e6c70eccb17"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/enumeration_anchor_facts.py",
+      "sha256": "356d64d7c5801d71df1f1d180bb14034324f04e0334f8afb4c558eecca4abf71"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/enumeration_gate.py",
+      "sha256": "32e4bd51de46957b994235186407888b3b498e806210468871f365ca14aa345c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/enumeration_type_ir.py",
+      "sha256": "b58f2bae4fcf59650fbf329e03b3869e21b53952049019d23985a630551d412b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/enumgap_disposition.py",
+      "sha256": "568aef3866976d00cc117f923ca82f2f5dec69ef64ec9eb1a01a9a55d314772a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/enumgap_markdown.py",
+      "sha256": "01351cc7455e2b6b69a3bef55664cacb49e2d9c9f5422efc5ca9d8ead689e71b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/evidence_capabilities.py",
+      "sha256": "fb10f5ab952e3f1f72e01a1039365a78597e093e60a7a2a519af01b961454906"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/execution_scope_runtime.py",
+      "sha256": "11097a833df660a0c61edb4986899cc56de583a2765d6dc1f79cddb83caf01ac"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/exploration_clear_lifecycle.py",
+      "sha256": "85de0dba9fcfad45a821338468642bc8181c634c4530bae508b2f4806627c606"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/external_preimage_authority.py",
+      "sha256": "59754d2164a590b46946fbb438549274f11636e3a1c6d4b374794e89958d3833"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/fast_lane_skip_governance_r10_contract.py",
+      "sha256": "44b0dfafa461a3474418185934a93ffe26d0fddb75c146416e337952afe27480"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/finding_lifecycle_authority.py",
+      "sha256": "1c7310f9570543e1b8abb4d30f31930f9b9b67f9f4994e351dab318c386100e4"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/finding_producer_registry.py",
+      "sha256": "62d2a2e8f92d2ff5f27a41897faffcdda572737612dc3d7aca0d1a9fd9223a42"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/fuzz_workspace_authority.py",
+      "sha256": "4e4b259e044415a6a69cbf7114f3b3777af97f7a857ed7265c8b8ba7509eb1a1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/headless_worker_runtime.py",
+      "sha256": "8a59b22247911e2f9ea47e450ba727bc5305a9cf8cd7ccd5b37b3abeb448860b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/internal_identity_privacy.py",
+      "sha256": "28aa83273d38392814f726fde56ce60fc15525ed7e1e17370e2f6b0834ed597e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/inventory_aggregate_authority.py",
+      "sha256": "05348fdd40cb4eff99630cda6f05435176b11c3d6fceee612fb3822ed92db46a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/inventory_id_ledger_merge.py",
+      "sha256": "e207df1f4c530c515976e103d9984e45d4d9bb0959ac94302c1d4f11dc932825"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/inventory_reconciliation.py",
+      "sha256": "7ac7adcb3943dfdbd1efef571c12aae0d89b33d6d5d40f49c052c70e40b5f070"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/inventory_reemit_authority.py",
+      "sha256": "2773b49b03f0befb1513be6c42fcc363e859332a89d50fc99c8fab99c07daa80"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/isolated_execution_host.py",
+      "sha256": "0aa1006f986fc040b6368525a32d8d59a68ce648961aa1e27a1f6499465a5701"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/l1_composition_authority.py",
+      "sha256": "a910c57fadfede63ed7ee2d555ff4dad27d07fa384665b74b9e39572d66c3bf0"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/l1_composition_queue_runtime.py",
+      "sha256": "20165674827c08411a03dbfb623f03068a384c211943064d414687b1c4b0b3a9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/l1_composition_runtime.py",
+      "sha256": "7340eaf5c01c922b047c97012e361905d8b9ad4321566070bbd5c3559c92e2ed"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/l1_semantic_dedup_supplemental.py",
+      "sha256": "aea4a82cda58cdedcbb1f5efc06e4efd738c7695b380ef0580f050af89b5aae3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/late_committed_invariant_authority.py",
+      "sha256": "54f01068e5c8c8be81f53d37b2215be5583af29ca7de037c0acf7457fa840828"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/late_delivery_authority.py",
+      "sha256": "e806ae26d68809d30b94c4cf653324129e4a7ad22751b5974855b5f6a94b4c7f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/linux_cgroup_exec.py",
+      "sha256": "dcea6fa52585ae8b6b24fbe7b4e942b9580ed47df2538e283d34f0e401da7008"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/live_verify_queue_driver_adapter.py",
+      "sha256": "45e144c180bb825feb53c16206bcdf7ff73ab72d5e1fd981a419a78146b1189b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/live_verify_queue_executor.py",
+      "sha256": "a5ac88a0cf4459e360450399f8f86b3bf4009dd94f6446a0f84057f84ac25243"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/live_verify_queue_methodology_projection.py",
+      "sha256": "32dd87f56b42024405630c988db0935a5fe3cdd06a2f21f75be57f9fe5b3e0ff"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/live_verify_queue_prearm_inputs.py",
+      "sha256": "40f91d18a60782ec03b6f6dc5cfd42bd7e7d665de865d11a271989eb57d30dfc"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/live_verify_queue_semantics.py",
+      "sha256": "040c4b76dac668c26b51d8b9c6d6ffffefbe97f07e97a2dfb091fd936b84cdd8"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/locked_executable_guard.py",
+      "sha256": "6b9a6340b5721af5967a1b1c76ac705c5e8b9b19ca810ba3b5d7d897acdcb392"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mandatory_reverification.py",
+      "sha256": "716b105cfbb3826bf550e20867ae621898b22e23b1c2971408472e76b147fee3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mechanical_gate_execution_receipts.py",
+      "sha256": "12a807ceb216c96553dc13bb9ae014c8dcec5c8ed5174fe3183c833508dcfa06"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mechanical_gate_inventory.py",
+      "sha256": "dbc8f6b43f48d6dbda1bd172dc1514e85d75544933363e4a4aa513863d5e8a47"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mechanical_gate_migration_manifest.py",
+      "sha256": "32378ad4b1398e839a646fab36232c0cda2575440b6093a8e5806fb43a3d6f4c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mechanical_gate_registry.py",
+      "sha256": "febfc1a9c033be73b52765ba9694ef402bb765f93b04410fc2951eaba6768128"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mechanical_gate_runtime.py",
+      "sha256": "9f51216987343c89bce078c4dde30dc74e79bb2c61c085700e00d43cace12577"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mechanical_successor_receipts.py",
+      "sha256": "6549f36aa5567221d9d215301221614af89f7274fe1c0582470c0292da68278f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/mechanical_verify.py",
+      "sha256": "78df031d760bc59009cd659e93c16547db648629cedcf5bf7738bb8db6a3a042"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/method_card_application_authority.py",
+      "sha256": "6c07aa8de3bba14fddbdcdc87c533c77f7cf600dc050396e5d2d550b3fdab668"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/method_card_catalog.py",
+      "sha256": "f754197867a653250c6aa261ad805ab9469d4f06775a7a0a6fd9f9c6b1d53890"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/method_card_runtime_authority.py",
+      "sha256": "37c1569f90883a8ec406fcd56f85564bed0af609010f433f5287a1039b011f41"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/methodology_application.py",
+      "sha256": "c8d351e6e6a401757e6171c83c997d75aee5fc67877516cff774800cdc2e891f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/methodology_application_states.py",
+      "sha256": "c0e142326ec58b2b84d4c4aeae2c39471b292d583c4ff101c429c434ebc7f820"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/methodology_citation.py",
+      "sha256": "a3178ad4dc48d471ffe2412dacc94c785346bce7703273c3524e883620131e3e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/modularize.py",
+      "sha256": "5fd6566e178520676937748585dd6246fff6962dc37e162dd31d3399c66d1654"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/negative_closure_evidence_authority.py",
+      "sha256": "e4fe95997334e2ec5447165ba08ea0d84cf6d0daadfce6980234f0b581629df9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/negative_closure_policy.py",
+      "sha256": "d0259f3e31b292d56d47bca70b36dcf80ef70c421203771670fdda86424d2120"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/niche_lifecycle_authority.py",
+      "sha256": "bdafbd271b2001678bb160d3889c4448bcbf580e7558287c199d2c9f2e13e192"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/operational_markdown.py",
+      "sha256": "800663c5c5d306221215b56c67d89b9085852fbb8a6603a9fa46f76b9c901214"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/owned_directory_guard.py",
+      "sha256": "133193974894384c095f2c9a28f661771b5c7eca954dc69a6e8b29191e5bb851"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/owned_process_runner.py",
+      "sha256": "ded2c16880bd44a3f1537bde34863455ebba839b9397df5036ceba8d0a74e01c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/owned_process_scope.py",
+      "sha256": "049ebf8240c8ee7de26d3bc696bff8289af76abbddb669155bd3271ba799858d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/p0af_v2_queue_adapter.py",
+      "sha256": "eb75e1996d8e5c38ea0b4cf15ddaf7d0edb91ebc5509176d309a1f899db6e91b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/p0af_v2_queue_runtime.py",
+      "sha256": "6a69471f5cf270f15ea85dbc2f0ff792e7f4e45fd42fad57af73d8279b05bfee"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/phase_contract_compiler.py",
+      "sha256": "a646734690a960aa8b4b975db7ba403721e6aacfd06a030d42dd9ec34fc134a0"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/phase_io_contracts.py",
+      "sha256": "a0dc19c33773e589b9b17829e8c1358fdfcbc882046d28d5f0b636fe5a9119da"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_contracts.py",
+      "sha256": "958685c60fad565b3a1cf85171b80263d873dccc4876e7669d5d293e7f684632"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_display.py",
+      "sha256": "d5a744e9b3fa1c2bdac7a4e759a68dc849afb585c4d19dfae766591c55f20c8b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_driver.py",
+      "sha256": "b0c1ea70985ea72f4afe8d116a9997a1e7a990a5c75efbe232582df5aadfe98e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_markdown.py",
+      "sha256": "593da8eabe9d96923be7245e854195daea7bf02481c1c67d0f32dd5bee35e544"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_mcp_runtime.py",
+      "sha256": "9141ef0b9695399e36c75308c135b5753b3bc2c51cc8b7a5caf60f72a50328d9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_mechanical.py",
+      "sha256": "00edefdd3b7763d7ca7447bc2b7c9c6d9c86e541fe9e2232f961ba981634010c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_parsers.py",
+      "sha256": "6eb721e27d7ab635f84e746a25dc59074cf3291ad9350228650d5ba3d1004a54"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_prompt.py",
+      "sha256": "851212647bdea9ca83736f249d89a267eb2aa3970524d41e0decb0b0da648079"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_types.py",
+      "sha256": "4d72a3411023c5831995a0b8c8f99da87b58154a430015f30e3fc9ed230c48aa"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/plamen_validators.py",
+      "sha256": "687d29916e227553ae4335d43c8d3ea4db447239f9a2724de8017386c821f51e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/poc_demotion_scope.py",
+      "sha256": "9adeae9f6830dcc71272b132bed6fb3a90d3243ddb550e90bd20b2ba247f81df"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/post_verify_candidate_delta.py",
+      "sha256": "da4ff1872aedf529ffea74ec8837a31ede31bc5108a768a88d4677bb02a785d6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/post_verify_lifecycle.py",
+      "sha256": "fbc67412f5ca9a54c5d775bf2d4d2fb2db75985e5e1248e34e27827b7996142f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/precedent_evidence_authority.py",
+      "sha256": "b1870b85cfe26953e90adef5dcea2351b69ad7ceccdaa25846f7ce272380adde"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/precedent_finding_fact_provider.py",
+      "sha256": "f31df7516d24662eceaaf08d8485289dfc61359a90f352176f8dc1f50a160fcd"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/preflight_pty_transports.py",
+      "sha256": "58aa1a60ecb734a21dab92e3c54af6f677cfd2984b42aa05ea0df4e2771c3f73"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/preverify_chain_pair_projection.py",
+      "sha256": "fca2d38acb98760d41910f9990741fb492183c979c440cdf71f37898cb69b229"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/preverify_frozen_projection.py",
+      "sha256": "c29438613dd38284269e4d4e2e685709a1b3b12b8563970a9b2e7f4985a27eac"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/preverify_inventory_successor.py",
+      "sha256": "b2455e8209d4653648b79dd2d57fbfd08f71caeb67cde5db3213c41b475158c6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/preverify_projection_authority.py",
+      "sha256": "1f397221839cb785f03db7fa215d5df6ffb6d889d87118829fef16e7f8b64e0e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/production_source_scope.py",
+      "sha256": "c168ae96704e8fc3726cc95cb43b845988efb4c7ff3bb44524ce71dbd43619f9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_bake.py",
+      "sha256": "042ad7b92e4568b7685f8ed302cf5191cb29e7a56f776eee98482fc9fbfc8956"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_compatibility_delta.py",
+      "sha256": "c702a8c4867779acaead109e34c8ce8c37f0e0dd6aeafb3703125278bf6e6344"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_driver_integration.py",
+      "sha256": "8dfb0cd093468078c363b1406981af740678e55bb9659a67f5ade4ec00bfbb31"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_evm_environment_authority.py",
+      "sha256": "54e5f035a41dc0d43fb208d3db1621e9335c2b49578fd1efbcc2af07085c3c8e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_evm_execution_set.py",
+      "sha256": "46282f875b8ee64c79585f618db0a3d01349c90a6ccf398369b9ba2736c1a72f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_evm_helper.py",
+      "sha256": "c7bec0e79de2551078245e040c188cbac73df2899cd5bf2049da7f44cc7c4a11"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_evm_provider.py",
+      "sha256": "356783aa0cfeac2b7cdd731262dea3748994fc5adec3208d11d6fca6631c4981"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_evm_tool_authority.py",
+      "sha256": "6ae35a4b20cb4abcf999d23b349657ea062e69fb0b28746c37c6721023960aac"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_evm_wtx.py",
+      "sha256": "a6d476f29aad734c85eb6e181616b37166de7c2bec5bc2391b32757fd2930d70"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_loader.py",
+      "sha256": "76feb8afccfbe8e67ca3d123d436191fb178edfbe19f7c391de97cb293a4ce89"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_methodology_authority.py",
+      "sha256": "08881b4892a362610ae8e359c4335ed5aa48cfbc3a61574d0c58926842bb766c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_positive_composer.py",
+      "sha256": "726aa3e4ccf23adf983f8a40c9ee1a68498ef8dc75d3f1cb3b9d4df50adc0276"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_provider_api.py",
+      "sha256": "ca1b02126bf957238573ea1257afedc0784be41a7c593e58d865534b6a88cf88"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_provider_registry.py",
+      "sha256": "d622d2dfa4bfee26dd8d518a5aa2799e9dc948640b3231173f555a347c094041"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_publication.py",
+      "sha256": "8a5994314d11881777fa27617311fc0fef90ed8ab8ee54e9900552019393be56"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_r3_12_lineage_builder.py",
+      "sha256": "3f4ee6c185f1c3c457117d9b2af292b29550e401b35421cc034d22c52adc71bf"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_r3_13_evidence_builder.py",
+      "sha256": "07b45846a91042520a223e206ea9f2e1e4341d1927fcd3f485e1ef7e1c92d8dc"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_source_manifest.py",
+      "sha256": "0dcf64a7bebac87d5990a6bda7fb567bbf562f6214b5acd40639e13b668d3b52"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_types.py",
+      "sha256": "bf12bd163004eabc45c3e3d685c2c3d018a26c6e7c91be863f30fc7d4f31d685"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_v2_contracts.py",
+      "sha256": "b97207075ed9aceae1e254b8d2070450e6bcca8b7567035f962ec85aedb9f51c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_windows_native_launcher_r3_12.py",
+      "sha256": "a1ebb40eea8dbab01375d32ed1cfc23fdd7907bdbd267d826dfb6eb1258299b1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/program_facts_windows_native_launcher_r3_13.py",
+      "sha256": "68c56c036ceed57ea75b316ad379a538c8314299229a2d4140a472fd77dcfbd8"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/provider_command_authority.py",
+      "sha256": "6e7a2ce154ad279a5bf9b3717f09ad41e50f28ee69cae4c44612494d26c778c8"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/pty_completion_codec.py",
+      "sha256": "aedf97db9b1cb5e852b99194e41b8255279d77f9c20e2a146c23792c9018b6c6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/pty_completion_observer.py",
+      "sha256": "49ea3eabdce6389b7ea38d925d8c5a31002d51aec750cf90d46afe995a75fc89"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/pty_exec.py",
+      "sha256": "5bfcd0206ac97035a07efc9211839c81f5291b6987e42eed9b3775376129e783"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/pty_transport_bridge.py",
+      "sha256": "3abe018053678cd6d50570f6a8d7254a83c3e23ed7fbfe532bf416f04b84c284"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/pty_worker_host.py",
+      "sha256": "3123ca4d4aac924cce667292f59cce918b99bdddf07abd926a7bfe4dbc1b5bb0"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/pty_worker_protocol.py",
+      "sha256": "736377b1d1ac2d7062189877bf4279bc1b60eba809971715a4e4bc94a0f9f98c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/pty_worker_provider.py",
+      "sha256": "5528fee4dca3d35d91a30592b660ad62cbe4618a52336e18ee5ef1543bdd414f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/queue_work_items.py",
+      "sha256": "c1392c9a28245c947ff072a9e88f0363f694964ee7a1e46aa17a4ba5f64c185f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/recon_prepass.py",
+      "sha256": "4919edc83e7cfff111d5e616956a5461b28215a18d1e404d5549f1c2f2fac8bf"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/recovery_execution_authority.py",
+      "sha256": "57988ef4d0d7cdcd139a6512b3ff6c671512aca029c790e23b7d1d23aac246b6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/refresh_ci_dependency_evidence.py",
+      "sha256": "d60bb3031204d5cbe41fbaf5ea13608b23fdbe35e9d8d23c52d289766ea8dcc8"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/release_fast_lane_fixture_collector.py",
+      "sha256": "c3b9a09cb01493ac2bebcf797e9a519b380482441101a731a432897cafbc5620"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/release_fast_lane_fixture_governance_gate.py",
+      "sha256": "70b5f5c9bcac70207dfd8624b9e840d49d3e0196e5918212cbbd0cc333c92d89"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "runtime-data",
+      "path": "scripts/release_fast_lane_fixture_governance_manifest.json",
+      "sha256": "ccb074b2b5255638fba2bd31aabb9d591ef51f573fb9e1f21012ffd5cdddde52"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_assembly_capture.py",
+      "sha256": "f6453ba40cda5464224f6c007618859a237ecd20c6fce5eb6dc2e1f40ae3a89e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_capture_phaseio_authority.py",
+      "sha256": "42bc233ecfcb216f861aa79f8c494b3edab0ef336c39b814a5054131389bb504"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_dedup_authority.py",
+      "sha256": "6a925aade78beb635cb218a71cd0b0db9b4943c738780a5ff931eb36ada893b6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_disposition_authority.py",
+      "sha256": "46624f1f5f131d0e293c4421c4e3cebc14ccd486a671716ee4997f5052e6fbc2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_evidence_authority.py",
+      "sha256": "732383349059c95e37b0d417c8153ab26fcdd9dbd30a9da2c5e50d477a1704ad"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_index_canonical_validator.py",
+      "sha256": "0fb7223c3d9f6358b98e7a4a36a76bf66f127300513102de5939267e7e02f60f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_index_machinery.py",
+      "sha256": "9adb74277cd22bd2886d0b0aa83199547ea42363a868f7834e28f12220de16b5"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/report_mutation_transaction.py",
+      "sha256": "92eef979e61498e823ecc462490f366ad0bc041a0c716bdefaadb5f96bcd4ec1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/resource_grant.py",
+      "sha256": "dc12f798109dc0373d73cdebd042c7c3aba4037854cfe15e24151a96bc8b610b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/resource_policy_authority.py",
+      "sha256": "0ff36c932cf4798d8811b79d89bf855dfeb2da61378c8ae42b73350dd1a8eb58"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/rooted_path_io.py",
+      "sha256": "3192b834650f7b3edd35a7155597718d76645f6a33ff1143a2ef2faa8b38406a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runbundle_contracts.py",
+      "sha256": "b0384b1de3469550080f23e263bbdb90e71e6c9f5680ddc7c29439f4fb6b34fb"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runbundle_export.py",
+      "sha256": "b10be552d23010c15e21f895c859623fdc962aeb943031222717643ffdc6fd57"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runbundle_export_ready.py",
+      "sha256": "ebdba345704edc8868517b0edba799cd964d1195beb63ed6375f8fc7d824535f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runbundle_harvest.py",
+      "sha256": "1d482cee834faa4bea622c9ab49f867e6a1076fba5c82b6ed2af8cc0a6adbe14"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runbundle_phase_map.py",
+      "sha256": "1d2fec6df4ad2f71df515a00919edefcc6025c0f9d56842dc6107e7da5ca3ebd"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runbundle_privacy.py",
+      "sha256": "8962f43fb361029be4cd7332cbcc37b302a766d43e82fd25bd603b5a91e9b2e2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/runbundle_sources.py",
+      "sha256": "08053a2bd185b982edc8192326f3d27c961480cf20ddce6ecb19a1d878f48c0d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/security_obligation_authority.py",
+      "sha256": "df76c4ba7bb883f51b0ec8274ea760a4eeb8e1ae6728ab2b4c5944efd9b746db"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/security_obligation_lifecycle.py",
+      "sha256": "83b974013a5dbb37b385ecb6f4e99bdb3bda789008f7cbdfa219130ad08f479d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/semantic_dedup_authority.py",
+      "sha256": "586ba333dc21ce51abd177e985b016047ce125db489ecc56906ad9fd27e3ef54"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/semantic_dedup_transaction.py",
+      "sha256": "c032e4874548ae329b5e918eaf30aba77feec7fd6eccb7820cfe51fbbf29a171"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/semantic_invariant_authority.py",
+      "sha256": "68cb1183c2a44a4408cd3b4f49f5866b2c0f2e63c43d3c8d19d004497cf2d48f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/semantic_prompt_snapshot.py",
+      "sha256": "c433197467011f3c15fcb14acbc2f48d06e9c36df855c2f19d928d1eca4fa560"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/semantic_work_plan.py",
+      "sha256": "d3a89acce8a7f0275112e964a1cd40a7d49e68474f02637a64cbf4c8aa10ff67"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_adjudication_work.py",
+      "sha256": "a225154c98dae870a96acc70c611f785f550b2704881bf65403ca70a55d214ca"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_decision_ledger.py",
+      "sha256": "8a2c98132dc6b0823ba5e3701c5bd6236f9786d8e290886adecec30f9bb28952"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/severity_runtime.py",
+      "sha256": "9f2c7c3338baa6a763afa63e79089641f3aa8cad5ed8b45ba5ff0a6bf2423716"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/skeptic_assessment_transport.py",
+      "sha256": "296298b3718ccbbee1afecb035364bd554166f94e83241926cebde3dcca4117b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/skeptic_execution_work.py",
+      "sha256": "a5d2558eaffda92edfb97fce6c06907604a45e9b37f912b6692d0977f475f5ad"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/skill_selection_authority.py",
+      "sha256": "62bac4eeb11e22279c207c0440d5b5e3705ee8981f3b4721b19725585c3c60af"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/spike_mechanical_poc.py",
+      "sha256": "ba119d1ec5707e42932e8edb260da4bbd9ebf92201d7a9c2244a8b05d5afaca1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/state_symbol_authority.py",
+      "sha256": "88fd2baa1f81d0926d3d216f134b61fd91bf6a9f6f3052ceca25bf2daa4c9340"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/supply_chain_gate.py",
+      "sha256": "ca6ed062769175f6edb0ab62e07e19f6faa1cc35df02cbdbdfd25aef547302e2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/terminal_audit_launch.py",
+      "sha256": "eba7aee93047627bc980a43fbedd268a2f4976b5b1f25d553d40afec6359fc96"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/tool_coverage_ledger.py",
+      "sha256": "c2ee4ba2ca0b33576f3cdcf66534ce7c5fa44dabb0ab6292315bdee1e3a1ddcc"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/toolchain_control_authority.py",
+      "sha256": "4985ece57c84172dda161ae2381b0af93a1c2b6a4dc69a7630be017ec6bd35a9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/trust_evidence_authority.py",
+      "sha256": "2d3f11a169ae74ea30ba975ca99a1bb297cd9236ba909629560aa77e9f850441"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/trust_evidence_provider.py",
+      "sha256": "5f386fa53378130af1beca8e64c5b4ba3215aa15662a0346a4ffb3906d5d8697"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/typed_test_authority.py",
+      "sha256": "2cd3de7cae190888d2a963105a2b2701bee75f10ece42b188c117783b03e4fd5"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/typed_worker_output_authority.py",
+      "sha256": "a30afc3de3b7478f128fc3af16376c96a086576f2a0004554287802767a39784"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/verification_method_compiler.py",
+      "sha256": "c3476dfb84d8110bb3319d21c58cf5bae742289ad9b837c541e1b34cda0f372d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/verification_operator_consumers.py",
+      "sha256": "2251a4f283922ede5b6e66a50ae22fc839253b9a504b573ec66e5422b1319a78"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/verification_recovery_contract.py",
+      "sha256": "f60b7b4f59e11d9afe0cca484b79213e8c924a8cb0ea5cbe594e1f9da1202682"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/verifier_work_roster.py",
+      "sha256": "bfbcf5da32a8c3beb89fc7d3c949688e90888e1d01bdec4bfb215c6344566a1b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/verify_queue_context_authority.py",
+      "sha256": "9a409cb6e115b48643cea78c0c34481f802a5f4d8691e38bd7cab3e479de5990"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/verify_queue_phaseio_authority.py",
+      "sha256": "a967469f9936414510e639f6ae908af125ccd57e4424ed9172f6baedd49d9668"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/verify_queue_transaction.py",
+      "sha256": "db73789846a55cf6e6a8632dfb89232121839451fbd9f8732b9a9b7040c48854"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/windows_low_integrity_lease.py",
+      "sha256": "aa4592a118555ec86d2eb7da99685b45056bf64fe1494426332150c1420cac92"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/windows_private_execution_root.py",
+      "sha256": "bf754b7d7be292a95be86c19946f750a81bb525886bca559f7bf4cb6f1a4ac0e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/work_unit_capabilities.py",
+      "sha256": "c10266773dbdb12641fe6d93252a7fc85eb1cb56efa4462758110ac2fc4c9d8d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/worker_execution_receipts.py",
+      "sha256": "4200e17cfa4d0964344f544d8a8c8dd559e7669581e992097857a13ba3f91ac7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "scripts/worker_transaction.py",
+      "sha256": "736cbc0b024d2586aa6513db1404ff76fa507b5b574dcd7ded7217b400d8b610"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_advisory_evidence.v1.json",
+      "sha256": "368c2e184383542a2f7797a57e331e4a2814ed2a9f2ff7fb2735f63b50c890f7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_advisory_responses/request.json",
+      "sha256": "00d0e3b93d8677d0c7bdb5133ab4ce49d9f43d226a66ccb96c6b60b653aaa5b7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_advisory_responses/response.json",
+      "sha256": "39c60b15a7023caa52ed57cce48ce674c29b244419832afd1ca6c8846b92dd4c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_dependency_authority.v1.json",
+      "sha256": "393ed1b20e089fe0ed8dacf211d312aee4a0a20bd4b7ff931838013ad89d2564"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_dependency_provenance.v2.json",
+      "sha256": "a381234c07c195f37b27b2fee0c0e1dbf0f4672dde9cdf13cb0dfb2a848ca04f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_dependency_provenance.v2.schema.json",
+      "sha256": "1f8bc8be1160396c5aa84c0ab5a7659dac6a03c3f9bc29576ac4c1400f6d39f7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_metadata_evidence.v1.json",
+      "sha256": "ac1e2bf21a35a7d69cc4ad4a133c6329b1b456dfe5a243d589b33340b8eb0308"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/annotated-types-0.8.0.json",
+      "sha256": "a6e8e5b10c8fd2f596bba53e015cd37f6279fb5cec26ce0c5e9968625be4fefa"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/attrs-26.1.0.json",
+      "sha256": "a882bf941fb4a0bb748d0194df544121cc130f5fb15a710ab6b804c17d2899b7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/colorama-0.4.6.json",
+      "sha256": "43fb351344384a44c2b7d7fff1c63496b89ac830aea714301525c1f3718addd1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/execnet-2.1.2.json",
+      "sha256": "07188a4c9ac3b0c37c039fb8dd112f05996c4768b8d5da1171985ada0edfd8c0"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/iniconfig-2.3.0.json",
+      "sha256": "38c06d73779f13d8e4b48d48b3c524ff23e59d7be4bdb44cb6d90b3c5eb20182"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/inquirerpy-0.3.4.json",
+      "sha256": "9147844f92f4803a960d29a82a26a792f345d0de986347def02016c8e1802a2e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/jsonschema-4.26.0.json",
+      "sha256": "d0c9ccdfa30c3cdc57b048c2be21123dfb0c2f4d6bef2e8324dcb4eac985cfcf"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/jsonschema-specifications-2025.9.1.json",
+      "sha256": "91810d8f79384375ad0c0cf631e06903e2790b030d3fad2f1ad657b20ddd839e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/markdown-it-py-4.2.0.json",
+      "sha256": "62affba459c80b1279b5759735f7da3e9c7d24966086ff81ec0303c94512b966"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/mdurl-0.1.2.json",
+      "sha256": "c7baac0b363d92cf55f1f3a313f4bb0564bff27343e6a0a4e9d7ff03afc8a6c7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/packaging-26.2.json",
+      "sha256": "7eea47157cf6e38386b2a0026bd646cbff4b344f9399b22a89e15f5a79f54593"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pfzy-0.3.4.json",
+      "sha256": "b8a88d039caa84dffdd5213e9907f8aa420bb3458dbe5ba10f1ae3c78cd196a4"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pluggy-1.6.0.json",
+      "sha256": "db23d1227f5870da7538b1e29371d9fc9a93b0499989f8e3ef021fdccd75bc8e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/prompt-toolkit-3.0.53.json",
+      "sha256": "6ca170e9088be13eab820444feb4a9cbc8432293efcba8695b8528f5b37c0119"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/protobuf-7.35.1.json",
+      "sha256": "33d7570173008a495478451c4dc9883cae8a442014c4ad4ba806ae1b64806864"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pydantic-2.13.4.json",
+      "sha256": "3153628d2e962b20eb04b09326d00500be835671d8ed7186b5b9c524ab0548b9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pydantic-core-2.46.4.json",
+      "sha256": "40bd3810eccb48a3b5329c5d98b4fc6f0f8375e4c34f63f20afe61d31b5e5341"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pygments-2.20.0.json",
+      "sha256": "686d9f84f98058f9aaf7168488006f8c033464b0a7ede3b1c0c31983c81bfc30"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pytest-9.1.1.json",
+      "sha256": "8ed48304ba7fd0ae974a041f117487b499d553b40e5ce55a9ece677e946f68dd"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pytest-xdist-3.8.0.json",
+      "sha256": "61f60b83ce3a389e5c62d7c15d1a9c339f6e44e2669afadbf0487124c93f07e0"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pywinpty-2.0.15.json",
+      "sha256": "f2247c1434e4be3e22282e5f8565766a363a85f377edaf5315dd939b0d0a5d4d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/referencing-0.37.0.json",
+      "sha256": "a67968d8e03aa45e650fc2ff0d07796676db1a7841ce8e810bf2dba5af689464"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/rich-15.0.0.json",
+      "sha256": "455015cb0b237a24819d91236152ad0e71b2be39a83cbe6afa0e29ea8aafa550"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/rpds-py-2026.6.3.json",
+      "sha256": "fff1fa33d84392d5684f0c1a40fc23f0a2027113c966498a1f64614bc83b02c2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/typing-extensions-4.16.0.json",
+      "sha256": "2140da00d62dde967f52d0be0ae28444f1d6a3fe603f52c83c23988c32122d5a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/typing-inspection-0.4.2.json",
+      "sha256": "18246ec4d1215822a861d39c2cacdc6b9b2d073e8da22a2414c0241fa50a1bd2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/wcwidth-0.8.2.json",
+      "sha256": "5aca94dfcacd4697bb3b872ecc40cc31a122599b30d7ddf122add1e99dc9af0a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/protobuf_reviewed_content.v1.json",
+      "sha256": "24606d4cc5f8d856e2debee56d483c4b3d89c8ac1472520e1f978d65c78b8885"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/toolchain_governance.v1.json",
+      "sha256": "fe0204210c7dd3a5dbc2eae5f6a6b7080e42d707b958e42a0ae4951c4b73bf95"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/toolchain_version_lock.v1.json",
+      "sha256": "5b1ad506425eaa8d70e7198c1458e080f1551f6f8c22ee1f190ea3a595effe3a"
+    }
+  ],
+  "derivation": "python-ast-typed-runtime-closure-v2",
+  "entrypoints": [
+    "plamen.py",
+    "scripts/audit_snapshot.py",
+    "scripts/enumeration_type_ir.py",
+    "scripts/artifact_ledger.py",
+    "scripts/ci_dependency_authority.py",
+    "scripts/phase_io_contracts.py",
+    "scripts/plamen_mcp_runtime.py",
+    "scripts/program_facts_bake.py",
+    "scripts/program_facts_evm_provider.py",
+    "scripts/program_facts_evm_wtx.py",
+    "scripts/program_facts_loader.py",
+    "scripts/program_facts_provider_api.py",
+    "scripts/provider_command_authority.py",
+    "scripts/recon_prepass.py",
+    "scripts/refresh_ci_dependency_evidence.py",
+    "scripts/rooted_path_io.py",
+    "scripts/worker_execution_receipts.py",
+    "scripts/worker_transaction.py"
+  ],
+  "files": [
+    "plamen.py",
+    "plamen_l1/__init__.py",
+    "plamen_l1/sarif_merge.py",
+    "plamen_l1/scip_pb2.py",
+    "plamen_l1/scip_reader.py",
+    "requirements-ci-resolver.in",
+    "requirements-ci-resolver.lock",
+    "requirements-ci.constraints",
+    "requirements-ci.lock",
+    "requirements-dev.txt",
+    "requirements-runtime-core.in",
+    "requirements-runtime-core.lock",
+    "requirements-runtime-full.in",
+    "requirements-runtime-full.lock",
+    "requirements-runtime-rag.in",
+    "requirements-runtime-rag.lock",
+    "requirements-runtime-slither.in",
+    "requirements-runtime-slither.lock",
+    "requirements.txt",
+    "rules/language-toolchain-registry.json",
+    "rules/program-facts-evm-tool-manifest.v1.json",
+    "rules/program-facts-provider-registry.v1.json",
+    "rules/schemas/mechanical_program_facts.v1.schema.json",
+    "rules/schemas/mechanical_program_facts_debt.v1.schema.json",
+    "rules/schemas/mechanical_program_facts_receipt.v1.schema.json",
+    "rules/schemas/program_facts_disagreement.v1.schema.json",
+    "rules/schemas/program_facts_evm_slither_raw.v1.schema.json",
+    "rules/schemas/program_facts_evm_tool_manifest.v1.schema.json",
+    "rules/schemas/program_facts_provider_registry.v1.schema.json",
+    "rules/schemas/program_facts_slice.v1.schema.json",
+    "scripts/adaptive_attention_authority.py",
+    "scripts/adaptive_attention_controller.py",
+    "scripts/adaptive_attention_evaluator.py",
+    "scripts/adaptive_attention_reporting.py",
+    "scripts/adaptive_attention_runtime.py",
+    "scripts/adaptive_attention_sources.py",
+    "scripts/adaptive_attention_types.py",
+    "scripts/application_skeptic.py",
+    "scripts/application_skeptic_workflow_discriminator_r12_contract.py",
+    "scripts/artifact_ledger.py",
+    "scripts/asset_representation_foundation.py",
+    "scripts/assurance_limitations.py",
+    "scripts/attention_repair_shards.py",
+    "scripts/audit_snapshot.py",
+    "scripts/authentication_role_authority.py",
+    "scripts/auxiliary_writable_root_lease.py",
+    "scripts/auxiliary_writable_root_startup.py",
+    "scripts/axis_canonical_prior.py",
+    "scripts/axis_disposition.py",
+    "scripts/axis_promotion_lineage.py",
+    "scripts/backend_capability_registry.py",
+    "scripts/banner.py",
+    "scripts/banner_rich.py",
+    "scripts/bb_path_authority.py",
+    "scripts/bb_verification_policy.py",
+    "scripts/bb_wrapper_provider_adapter.py",
+    "scripts/bounded_artifact_io.py",
+    "scripts/candidate_negative_authority.py",
+    "scripts/chain_candidate_inventory_union.py",
+    "scripts/chain_grouping_assurance.py",
+    "scripts/chain_grouping_authority.py",
+    "scripts/chain_pair_auto_map_transaction.py",
+    "scripts/chain_prep.py",
+    "scripts/chain_tail_authority.py",
+    "scripts/ci_dependency_authority.py",
+    "scripts/claude_attempt_profile.py",
+    "scripts/claude_auth_route.py",
+    "scripts/claude_child_environment.py",
+    "scripts/claude_executable_observation.py",
+    "scripts/claude_headless_profile.py",
+    "scripts/claude_launch_security.py",
+    "scripts/claude_phase_tool_policy.py",
+    "scripts/claude_provider_policy.py",
+    "scripts/claude_provider_preparation.py",
+    "scripts/claude_runtime_materialization.py",
+    "scripts/claude_stored_subscription_source.py",
+    "scripts/claude_stream_json_evidence.py",
+    "scripts/claude_worker_prompt_consistency.py",
+    "scripts/closure_broker_v2.py",
+    "scripts/codex_adapter.py",
+    "scripts/codex_dependency_research.py",
+    "scripts/compound_plan_adapter.py",
+    "scripts/compound_verification.py",
+    "scripts/confidence_consensus_authority.py",
+    "scripts/conftest.py",
+    "scripts/coverage_shortfalls.py",
+    "scripts/dependency_obligations.py",
+    "scripts/depth_handoff.py",
+    "scripts/enumeration_anchor_facts.py",
+    "scripts/enumeration_gate.py",
+    "scripts/enumeration_type_ir.py",
+    "scripts/enumgap_disposition.py",
+    "scripts/enumgap_markdown.py",
+    "scripts/evidence_capabilities.py",
+    "scripts/execution_scope_runtime.py",
+    "scripts/exploration_clear_lifecycle.py",
+    "scripts/external_preimage_authority.py",
+    "scripts/fast_lane_skip_governance_r10_contract.py",
+    "scripts/finding_lifecycle_authority.py",
+    "scripts/finding_producer_registry.py",
+    "scripts/fuzz_workspace_authority.py",
+    "scripts/headless_worker_runtime.py",
+    "scripts/internal_identity_privacy.py",
+    "scripts/inventory_aggregate_authority.py",
+    "scripts/inventory_id_ledger_merge.py",
+    "scripts/inventory_reconciliation.py",
+    "scripts/inventory_reemit_authority.py",
+    "scripts/isolated_execution_host.py",
+    "scripts/l1_composition_authority.py",
+    "scripts/l1_composition_queue_runtime.py",
+    "scripts/l1_composition_runtime.py",
+    "scripts/l1_semantic_dedup_supplemental.py",
+    "scripts/late_committed_invariant_authority.py",
+    "scripts/late_delivery_authority.py",
+    "scripts/linux_cgroup_exec.py",
+    "scripts/live_verify_queue_driver_adapter.py",
+    "scripts/live_verify_queue_executor.py",
+    "scripts/live_verify_queue_methodology_projection.py",
+    "scripts/live_verify_queue_prearm_inputs.py",
+    "scripts/live_verify_queue_semantics.py",
+    "scripts/locked_executable_guard.py",
+    "scripts/mandatory_reverification.py",
+    "scripts/mechanical_gate_execution_receipts.py",
+    "scripts/mechanical_gate_inventory.py",
+    "scripts/mechanical_gate_migration_manifest.py",
+    "scripts/mechanical_gate_registry.py",
+    "scripts/mechanical_gate_runtime.py",
+    "scripts/mechanical_successor_receipts.py",
+    "scripts/mechanical_verify.py",
+    "scripts/method_card_application_authority.py",
+    "scripts/method_card_catalog.py",
+    "scripts/method_card_runtime_authority.py",
+    "scripts/methodology_application.py",
+    "scripts/methodology_application_states.py",
+    "scripts/methodology_citation.py",
+    "scripts/modularize.py",
+    "scripts/negative_closure_evidence_authority.py",
+    "scripts/negative_closure_policy.py",
+    "scripts/niche_lifecycle_authority.py",
+    "scripts/operational_markdown.py",
+    "scripts/owned_directory_guard.py",
+    "scripts/owned_process_runner.py",
+    "scripts/owned_process_scope.py",
+    "scripts/p0af_v2_queue_adapter.py",
+    "scripts/p0af_v2_queue_runtime.py",
+    "scripts/phase_contract_compiler.py",
+    "scripts/phase_io_contracts.py",
+    "scripts/plamen_contracts.py",
+    "scripts/plamen_display.py",
+    "scripts/plamen_driver.py",
+    "scripts/plamen_markdown.py",
+    "scripts/plamen_mcp_runtime.py",
+    "scripts/plamen_mechanical.py",
+    "scripts/plamen_parsers.py",
+    "scripts/plamen_prompt.py",
+    "scripts/plamen_types.py",
+    "scripts/plamen_validators.py",
+    "scripts/poc_demotion_scope.py",
+    "scripts/post_verify_candidate_delta.py",
+    "scripts/post_verify_lifecycle.py",
+    "scripts/precedent_evidence_authority.py",
+    "scripts/precedent_finding_fact_provider.py",
+    "scripts/preflight_pty_transports.py",
+    "scripts/preverify_chain_pair_projection.py",
+    "scripts/preverify_frozen_projection.py",
+    "scripts/preverify_inventory_successor.py",
+    "scripts/preverify_projection_authority.py",
+    "scripts/production_source_scope.py",
+    "scripts/program_facts_bake.py",
+    "scripts/program_facts_compatibility_delta.py",
+    "scripts/program_facts_driver_integration.py",
+    "scripts/program_facts_evm_environment_authority.py",
+    "scripts/program_facts_evm_execution_set.py",
+    "scripts/program_facts_evm_helper.py",
+    "scripts/program_facts_evm_provider.py",
+    "scripts/program_facts_evm_tool_authority.py",
+    "scripts/program_facts_evm_wtx.py",
+    "scripts/program_facts_loader.py",
+    "scripts/program_facts_methodology_authority.py",
+    "scripts/program_facts_positive_composer.py",
+    "scripts/program_facts_provider_api.py",
+    "scripts/program_facts_provider_registry.py",
+    "scripts/program_facts_publication.py",
+    "scripts/program_facts_r3_12_lineage_builder.py",
+    "scripts/program_facts_r3_13_evidence_builder.py",
+    "scripts/program_facts_source_manifest.py",
+    "scripts/program_facts_types.py",
+    "scripts/program_facts_v2_contracts.py",
+    "scripts/program_facts_windows_native_launcher_r3_12.py",
+    "scripts/program_facts_windows_native_launcher_r3_13.py",
+    "scripts/provider_command_authority.py",
+    "scripts/pty_completion_codec.py",
+    "scripts/pty_completion_observer.py",
+    "scripts/pty_exec.py",
+    "scripts/pty_transport_bridge.py",
+    "scripts/pty_worker_host.py",
+    "scripts/pty_worker_protocol.py",
+    "scripts/pty_worker_provider.py",
+    "scripts/queue_work_items.py",
+    "scripts/recon_prepass.py",
+    "scripts/recovery_execution_authority.py",
+    "scripts/refresh_ci_dependency_evidence.py",
+    "scripts/release_fast_lane_fixture_collector.py",
+    "scripts/release_fast_lane_fixture_governance_gate.py",
+    "scripts/release_fast_lane_fixture_governance_manifest.json",
+    "scripts/report_assembly_capture.py",
+    "scripts/report_capture_phaseio_authority.py",
+    "scripts/report_dedup_authority.py",
+    "scripts/report_disposition_authority.py",
+    "scripts/report_evidence_authority.py",
+    "scripts/report_index_canonical_validator.py",
+    "scripts/report_index_machinery.py",
+    "scripts/report_mutation_transaction.py",
+    "scripts/resource_grant.py",
+    "scripts/resource_policy_authority.py",
+    "scripts/rooted_path_io.py",
+    "scripts/runbundle_contracts.py",
+    "scripts/runbundle_export.py",
+    "scripts/runbundle_export_ready.py",
+    "scripts/runbundle_harvest.py",
+    "scripts/runbundle_phase_map.py",
+    "scripts/runbundle_privacy.py",
+    "scripts/runbundle_sources.py",
+    "scripts/security_obligation_authority.py",
+    "scripts/security_obligation_lifecycle.py",
+    "scripts/semantic_dedup_authority.py",
+    "scripts/semantic_dedup_transaction.py",
+    "scripts/semantic_invariant_authority.py",
+    "scripts/semantic_prompt_snapshot.py",
+    "scripts/semantic_work_plan.py",
+    "scripts/severity_adjudication_work.py",
+    "scripts/severity_decision_ledger.py",
+    "scripts/severity_runtime.py",
+    "scripts/skeptic_assessment_transport.py",
+    "scripts/skeptic_execution_work.py",
+    "scripts/skill_selection_authority.py",
+    "scripts/spike_mechanical_poc.py",
+    "scripts/state_symbol_authority.py",
+    "scripts/supply_chain_gate.py",
+    "scripts/terminal_audit_launch.py",
+    "scripts/tool_coverage_ledger.py",
+    "scripts/toolchain_control_authority.py",
+    "scripts/trust_evidence_authority.py",
+    "scripts/trust_evidence_provider.py",
+    "scripts/typed_test_authority.py",
+    "scripts/typed_worker_output_authority.py",
+    "scripts/verification_method_compiler.py",
+    "scripts/verification_operator_consumers.py",
+    "scripts/verification_recovery_contract.py",
+    "scripts/verifier_work_roster.py",
+    "scripts/verify_queue_context_authority.py",
+    "scripts/verify_queue_phaseio_authority.py",
+    "scripts/verify_queue_transaction.py",
+    "scripts/windows_low_integrity_lease.py",
+    "scripts/windows_private_execution_root.py",
+    "scripts/work_unit_capabilities.py",
+    "scripts/worker_execution_receipts.py",
+    "scripts/worker_transaction.py",
+    "verification_policy/ci_advisory_evidence.v1.json",
+    "verification_policy/ci_advisory_responses/request.json",
+    "verification_policy/ci_advisory_responses/response.json",
+    "verification_policy/ci_dependency_authority.v1.json",
+    "verification_policy/ci_dependency_provenance.v2.json",
+    "verification_policy/ci_dependency_provenance.v2.schema.json",
+    "verification_policy/ci_release_metadata_evidence.v1.json",
+    "verification_policy/ci_release_responses/annotated-types-0.8.0.json",
+    "verification_policy/ci_release_responses/attrs-26.1.0.json",
+    "verification_policy/ci_release_responses/colorama-0.4.6.json",
+    "verification_policy/ci_release_responses/execnet-2.1.2.json",
+    "verification_policy/ci_release_responses/iniconfig-2.3.0.json",
+    "verification_policy/ci_release_responses/inquirerpy-0.3.4.json",
+    "verification_policy/ci_release_responses/jsonschema-4.26.0.json",
+    "verification_policy/ci_release_responses/jsonschema-specifications-2025.9.1.json",
+    "verification_policy/ci_release_responses/markdown-it-py-4.2.0.json",
+    "verification_policy/ci_release_responses/mdurl-0.1.2.json",
+    "verification_policy/ci_release_responses/packaging-26.2.json",
+    "verification_policy/ci_release_responses/pfzy-0.3.4.json",
+    "verification_policy/ci_release_responses/pluggy-1.6.0.json",
+    "verification_policy/ci_release_responses/prompt-toolkit-3.0.53.json",
+    "verification_policy/ci_release_responses/protobuf-7.35.1.json",
+    "verification_policy/ci_release_responses/pydantic-2.13.4.json",
+    "verification_policy/ci_release_responses/pydantic-core-2.46.4.json",
+    "verification_policy/ci_release_responses/pygments-2.20.0.json",
+    "verification_policy/ci_release_responses/pytest-9.1.1.json",
+    "verification_policy/ci_release_responses/pytest-xdist-3.8.0.json",
+    "verification_policy/ci_release_responses/pywinpty-2.0.15.json",
+    "verification_policy/ci_release_responses/referencing-0.37.0.json",
+    "verification_policy/ci_release_responses/rich-15.0.0.json",
+    "verification_policy/ci_release_responses/rpds-py-2026.6.3.json",
+    "verification_policy/ci_release_responses/typing-extensions-4.16.0.json",
+    "verification_policy/ci_release_responses/typing-inspection-0.4.2.json",
+    "verification_policy/ci_release_responses/wcwidth-0.8.2.json",
+    "verification_policy/protobuf_reviewed_content.v1.json",
+    "verification_policy/toolchain_governance.v1.json",
+    "verification_policy/toolchain_runtime_closure.v1.json",
+    "verification_policy/toolchain_version_lock.v1.json"
+  ],
+  "manifest_control": {
+    "kind": "control",
+    "path": "verification_policy/toolchain_runtime_closure.v1.json"
+  },
+  "schema": "plamen.toolchain-runtime-closure.v1"
+}

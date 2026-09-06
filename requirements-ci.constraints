@@ -1,0 +1,32 @@
+# Exact resolver input for the reviewed CI graph.
+#
+# This is intentionally separate from requirements-ci.lock.  CI regenerates
+# the hash lock from requirements-dev.txt plus these exact constraints, then
+# byte-compares before installing the application/test environment.
+annotated-types==0.8.0
+attrs==26.1.0
+colorama==0.4.6
+execnet==2.1.2
+iniconfig==2.3.0
+inquirerpy==0.3.4
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+markdown-it-py==4.2.0
+mdurl==0.1.2
+packaging==26.2
+pfzy==0.3.4
+pluggy==1.6.0
+prompt-toolkit==3.0.53
+protobuf==7.35.1
+pydantic==2.13.4
+pydantic-core==2.46.4
+pygments==2.20.0
+pytest==9.1.1
+pytest-xdist==3.8.0
+pywinpty==2.0.15
+referencing==0.37.0
+rich==15.0.0
+rpds-py==2026.6.3
+typing-extensions==4.16.0
+typing-inspection==0.4.2
+wcwidth==0.8.2

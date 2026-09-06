@@ -681,9 +681,8 @@ def test_candidate_pairs_source_ids_bold_colon_format(tmp_path):
 
 # ─── v2.8.5: All-blocked-no-receipt regression ─────────────────
 
-def test_promotion_all_blocked_writes_receipt(tmp_path):
-    """When ALL depth findings are dedup-blocked, receipt must still be written
-    with blocked IDs in 'Likely Duplicates' section."""
+def test_promotion_all_similar_findings_are_promoted_and_receipted(tmp_path):
+    """Pre-verification similarity is tag-only and fully receipted."""
     sp = tmp_path / "scratchpad"
     sp.mkdir()
 
@@ -723,22 +722,24 @@ def test_promotion_all_blocked_writes_receipt(tmp_path):
     from plamen_validators import _promote_depth_findings_to_inventory
     promoted = _promote_depth_findings_to_inventory(sp)
     print(f"  Promoted: {promoted}")
-    assert promoted == [], "All findings should be dedup-blocked, zero promoted"
+    assert promoted == ["DX-1", "DX-2"]
 
     receipt_path = sp / "depth_promotion_receipt.md"
-    assert receipt_path.exists(), "Receipt MUST be written even when all findings are blocked"
+    assert receipt_path.exists(), "Receipt MUST record every promoted finding"
 
     receipt = receipt_path.read_text()
     print(f"  Receipt content:\n{receipt[:500]}")
-    assert "Promoted 0" in receipt, "Should say 0 promoted"
+    assert "Promoted 2" in receipt
     assert "## Likely Duplicates" in receipt, "Must have Likely Duplicates section"
-    assert "DX-1" in receipt, "Blocked DX-1 must appear in receipt"
-    assert "DX-2" in receipt, "Blocked DX-2 must appear in receipt"
+    assert "DX-1" in receipt
+    assert "DX-2" in receipt
+    inventory = inv.read_text(encoding="utf-8")
+    assert "**Source IDs**: [DX-1]" in inventory
+    assert "**Source IDs**: [DX-2]" in inventory
 
 
-def test_promotion_all_blocked_validator_passes(tmp_path):
-    """Receipt validator must pass when all depth findings are listed as blocked
-    in the receipt's 'Likely Duplicates' section (a past SC audit scenario)."""
+def test_promotion_all_similar_validator_passes(tmp_path):
+    """Receipt validation passes when similar findings are promoted and tagged."""
     sp = tmp_path / "scratchpad"
     sp.mkdir()
 
@@ -763,25 +764,25 @@ def test_promotion_all_blocked_validator_passes(tmp_path):
         "**Description**: Same issue.\n\n"
     )
 
-    # Step 1: Run promotion (which should block DX-1 and write receipt)
+    # Step 1: Run promotion; similarity tags DX-1 but cannot block it.
     from plamen_validators import (
         _promote_depth_findings_to_inventory,
         _validate_depth_promotion_receipt,
     )
     promoted = _promote_depth_findings_to_inventory(sp)
-    assert promoted == [], "DX-1 should be blocked"
+    assert promoted == ["DX-1"]
 
     # Step 2: Run the validator — it should find DX-1 in the receipt's
     # Likely Duplicates section and NOT flag it as missing
     issues = _validate_depth_promotion_receipt(sp)
     print(f"  Validator issues: {issues}")
     assert issues == [], (
-        f"Validator should pass (DX-1 is in receipt as blocked), got: {issues}"
+        f"Validator should pass (DX-1 was promoted and receipted), got: {issues}"
     )
 
 
-def test_promotion_mixed_blocked_and_promoted(tmp_path):
-    """Mix of blocked and promoted findings: receipt lists both sections."""
+def test_promotion_mixed_similar_and_novel_both_promote(tmp_path):
+    """Similar and novel findings both promote; similarity remains a hint."""
     sp = tmp_path / "scratchpad"
     sp.mkdir()
 
@@ -816,7 +817,7 @@ def test_promotion_mixed_blocked_and_promoted(tmp_path):
     promoted = _promote_depth_findings_to_inventory(sp)
     print(f"  Promoted: {promoted}")
     assert "DX-2" in promoted, "DX-2 is a novel finding, must be promoted"
-    assert "DX-1" not in promoted, "DX-1 overlaps INV-001, must be blocked"
+    assert "DX-1" in promoted, "DX-1 must reach semantic verification"
 
     receipt = (sp / "depth_promotion_receipt.md").read_text()
     assert "## Promoted" in receipt, "Receipt must have Promoted section"
@@ -826,8 +827,7 @@ def test_promotion_mixed_blocked_and_promoted(tmp_path):
 
     inv_text = inv.read_text()
     assert "DX-2" in inv_text, "DX-2 must be appended to inventory"
-    assert "DX-1" not in inv_text or "LIKELY-DUP" not in inv_text.split("DX-1")[0], \
-        "DX-1 should not be in inventory (it was blocked, not tagged)"
+    assert "DX-1" in inv_text and "LIKELY-DUP" in inv_text
 
 
 if __name__ == "__main__":

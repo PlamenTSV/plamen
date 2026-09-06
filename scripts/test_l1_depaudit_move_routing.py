@@ -13,6 +13,7 @@ classification on a synthetic input) -- never merely "does not crash".
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,33 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import recon_prepass as RP  # noqa: E402
 import plamen_driver as D  # noqa: E402
+
+
+_RECON_PREPASS_RUN_ID = "l1-depaudit-move-routing-fixture"
+
+
+@pytest.fixture(autouse=True)
+def _bound_synthetic_advisory_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """These legacy scanner fixtures isolate parsing, not DB freshness."""
+    monkeypatch.setattr(
+        RP,
+        "_resolve_advisory_source",
+        lambda source_id: (
+            tmp_path,
+            json.dumps({
+                "schema_version": "plamen.advisory_source.v1",
+                "source_id": source_id,
+                "provider": "synthetic-fixture",
+                "content_sha256": "a" * 64,
+                "as_of": "2026-07-25T00:00:00Z",
+                "expires_at": "2026-07-26T00:00:00Z",
+            }, sort_keys=True, separators=(",", ":")),
+            "",
+        ),
+    )
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -45,6 +73,9 @@ def _mk_rust_proj(tmp_path: Path) -> Path:
     p = tmp_path / "rust_project"
     p.mkdir()
     (p / "Cargo.toml").write_text("[package]\nname = \"l1client\"\n", encoding="utf-8")
+    (p / "Cargo.lock").write_text(
+        "# synthetic lockfile\nversion = 3\n", encoding="utf-8"
+    )
     return p
 
 
@@ -88,7 +119,7 @@ _CARGO_AUDIT_JSON = """{
 
 def test_govulncheck_scan_toolchain_unavailable(tmp_path):
     proj = _mk_go_proj(tmp_path)
-    with mock.patch("shutil.which", return_value=None):
+    with mock.patch.object(RP.shutil, "which", return_value=None):
         status, findings = RP._govulncheck_scan(proj)
     assert status.startswith("TOOLCHAIN_UNAVAILABLE")
     assert "govulncheck" in status
@@ -98,7 +129,7 @@ def test_govulncheck_scan_toolchain_unavailable(tmp_path):
 def test_govulncheck_scan_skips_no_go_mod(tmp_path):
     proj = tmp_path / "no_go_mod"
     proj.mkdir()
-    with mock.patch("shutil.which", return_value="/usr/bin/govulncheck"):
+    with mock.patch.object(RP.shutil, "which", return_value="/usr/bin/govulncheck"):
         status, findings = RP._govulncheck_scan(proj)
     assert status.startswith("SKIPPED")
     assert "go.mod" in status
@@ -109,8 +140,8 @@ def test_govulncheck_scan_parses_synthetic_hit(tmp_path):
     """Positive-harvest: a synthetic NDJSON finding must produce a real,
     non-empty parsed hit — not merely 'did not crash'."""
     proj = _mk_go_proj(tmp_path)
-    with mock.patch("shutil.which", return_value="/usr/bin/govulncheck"), \
-         mock.patch("recon_prepass._run_hardened", return_value=(3, _GOVULNCHECK_NDJSON)):
+    with mock.patch.object(RP.shutil, "which", return_value="/usr/bin/govulncheck"), \
+         mock.patch.object(RP, "_run_hardened", return_value=(3, _GOVULNCHECK_NDJSON)):
         status, findings = RP._govulncheck_scan(proj)
     assert status == "WRITTEN"
     assert len(findings) == 1
@@ -123,10 +154,10 @@ def test_govulncheck_scan_parses_synthetic_hit(tmp_path):
 
 def test_govulncheck_scan_failed_nonzero_no_findings(tmp_path):
     proj = _mk_go_proj(tmp_path)
-    with mock.patch("shutil.which", return_value="/usr/bin/govulncheck"), \
-         mock.patch("recon_prepass._run_hardened", return_value=(1, "not valid json at all")):
+    with mock.patch.object(RP.shutil, "which", return_value="/usr/bin/govulncheck"), \
+         mock.patch.object(RP, "_run_hardened", return_value=(1, "not valid json at all")):
         status, findings = RP._govulncheck_scan(proj)
-    assert status.startswith("FAILED")
+    assert "FAILED" in status
     assert findings == []
 
 
@@ -136,7 +167,7 @@ def test_govulncheck_scan_failed_nonzero_no_findings(tmp_path):
 
 def test_cargo_audit_scan_toolchain_unavailable_no_cargo(tmp_path):
     proj = _mk_rust_proj(tmp_path)
-    with mock.patch("shutil.which", return_value=None):
+    with mock.patch.object(RP.shutil, "which", return_value=None):
         status, findings = RP._cargo_audit_scan(proj)
     assert status.startswith("TOOLCHAIN_UNAVAILABLE")
     assert findings == []
@@ -144,18 +175,18 @@ def test_cargo_audit_scan_toolchain_unavailable_no_cargo(tmp_path):
 
 def test_cargo_audit_scan_toolchain_unavailable_no_subcommand(tmp_path):
     proj = _mk_rust_proj(tmp_path)
-    with mock.patch("shutil.which", return_value="/usr/bin/cargo"), \
-         mock.patch("recon_prepass._run_hardened", return_value=(1, "no such subcommand: `audit`")):
+    with mock.patch.object(RP.shutil, "which", return_value="/usr/bin/cargo-audit"), \
+         mock.patch.object(RP, "_run_hardened", return_value=(1, "probe failed")):
         status, findings = RP._cargo_audit_scan(proj)
     assert status.startswith("TOOLCHAIN_UNAVAILABLE")
-    assert "cargo-audit subcommand" in status
+    assert "cargo-audit executable probe" in status
     assert findings == []
 
 
 def test_cargo_audit_scan_skips_no_cargo_toml(tmp_path):
     proj = tmp_path / "no_cargo_toml"
     proj.mkdir()
-    with mock.patch("shutil.which", return_value="/usr/bin/cargo"):
+    with mock.patch.object(RP.shutil, "which", return_value="/usr/bin/cargo-audit"):
         status, findings = RP._cargo_audit_scan(proj)
     assert status.startswith("SKIPPED")
     assert findings == []
@@ -171,8 +202,8 @@ def test_cargo_audit_scan_parses_synthetic_hit(tmp_path):
             return 0, "cargo-audit 0.20.0"
         return 0, _CARGO_AUDIT_JSON
 
-    with mock.patch("shutil.which", return_value="/usr/bin/cargo"), \
-         mock.patch("recon_prepass._run_hardened", side_effect=_fake_run_hardened):
+    with mock.patch.object(RP.shutil, "which", return_value="/usr/bin/cargo-audit"), \
+         mock.patch.object(RP, "_run_hardened", side_effect=_fake_run_hardened):
         status, findings = RP._cargo_audit_scan(proj)
     assert status == "WRITTEN"
     assert len(findings) == 1
@@ -207,7 +238,7 @@ def test_run_dependency_audit_l1_toolchain_unavailable_writes_marker(tmp_path):
     TOOLCHAIN_UNAVAILABLE marker lands in the artifact (never raises)."""
     scratch = _mkscratch(tmp_path)
     proj = _mk_go_proj(tmp_path)
-    with mock.patch("shutil.which", return_value=None):
+    with mock.patch.object(RP.shutil, "which", return_value=None):
         status = RP._run_dependency_audit_l1(scratch, proj, "go")
     assert "TOOLCHAIN_UNAVAILABLE" in status
     dest = scratch / "dependency_audit_findings.md"
@@ -222,8 +253,8 @@ def test_run_dependency_audit_l1_writes_real_findings_on_synthetic_hit(tmp_path)
     dependency_audit_findings.md on a synthetic hit."""
     scratch = _mkscratch(tmp_path)
     proj = _mk_go_proj(tmp_path)
-    with mock.patch("shutil.which", return_value="/usr/bin/govulncheck"), \
-         mock.patch("recon_prepass._run_hardened", return_value=(3, _GOVULNCHECK_NDJSON)):
+    with mock.patch.object(RP.shutil, "which", return_value="/usr/bin/govulncheck"), \
+         mock.patch.object(RP, "_run_hardened", return_value=(3, _GOVULNCHECK_NDJSON)):
         status = RP._run_dependency_audit_l1(scratch, proj, "go")
     assert "WRITTEN" in status
     assert "go=WRITTEN:1" in status
@@ -241,7 +272,7 @@ def test_run_dependency_audit_l1_mixed_language_runs_both(tmp_path):
     proj.mkdir()
     (proj / "go.mod").write_text("module example.com/l1\n\ngo 1.21\n", encoding="utf-8")
     (proj / "Cargo.toml").write_text("[package]\nname = \"l1\"\n", encoding="utf-8")
-    with mock.patch("shutil.which", return_value=None):
+    with mock.patch.object(RP.shutil, "which", return_value=None):
         status = RP._run_dependency_audit_l1(scratch, proj, "mixed")
     assert "go=TOOLCHAIN_UNAVAILABLE" in status
     assert "rust=TOOLCHAIN_UNAVAILABLE" in status
@@ -255,9 +286,9 @@ def test_run_dependency_audit_l1_never_raises_on_internal_error(tmp_path):
     propagate, and a FAILED marker artifact must still be written."""
     scratch = _mkscratch(tmp_path)
     proj = _mk_go_proj(tmp_path)
-    with mock.patch("recon_prepass._govulncheck_scan", side_effect=RuntimeError("boom")):
+    with mock.patch.object(RP, "_govulncheck_scan", side_effect=RuntimeError("boom")):
         status = RP._run_dependency_audit_l1(scratch, proj, "go")
-    assert status.startswith("FAILED")
+    assert "FAILED" in status
     text = (scratch / "dependency_audit_findings.md").read_text(encoding="utf-8")
     assert "FAILED" in text
 
@@ -277,7 +308,7 @@ def test_driver_dependency_audit_lazy_wrapper_delegates(tmp_path):
     and is wired, without needing the full phase-execution machinery)."""
     scratch = _mkscratch(tmp_path)
     proj = _mk_go_proj(tmp_path)
-    with mock.patch("shutil.which", return_value=None):
+    with mock.patch.object(RP.shutil, "which", return_value=None):
         status = D._run_dependency_audit_l1(scratch, proj, "go")
     assert "TOOLCHAIN_UNAVAILABLE" in status
     assert (scratch / "dependency_audit_findings.md").exists()
@@ -289,8 +320,8 @@ def test_dependency_audit_wiring_is_l1_gated_in_source():
     `config.get("pipeline") == "l1"` (mirrors the existing Go/Rust SCIP-bake
     gating already used in the same hook)."""
     src = (SCRIPTS_DIR / "plamen_driver.py").read_text(encoding="utf-8")
-    idx = src.index('status = _run_dependency_audit_l1(scratchpad, _proj, _lang)')
-    window = src[max(0, idx - 400):idx]
+    idx = src.index('lambda: _run_dependency_audit_l1(')
+    window = src[max(0, idx - 2400):idx]
     assert 'config.get("pipeline") == "l1"' in window
 
 
@@ -364,6 +395,7 @@ def test_run_recon_prepass_l1_with_move_sources_end_to_end(tmp_path):
     results = RP.run_recon_prepass({
         "scratchpad": str(scratch),
         "project_root": str(proj),
+        "_run_id": _RECON_PREPASS_RUN_ID,
         "language": "go",
         "pipeline": "l1",
     })
@@ -379,6 +411,7 @@ def test_run_recon_prepass_l1_without_move_sources_no_flag(tmp_path):
     results = RP.run_recon_prepass({
         "scratchpad": str(scratch),
         "project_root": str(proj),
+        "_run_id": _RECON_PREPASS_RUN_ID,
         "language": "go",
         "pipeline": "l1",
     })
@@ -404,6 +437,7 @@ def test_run_recon_prepass_sc_pipeline_never_runs_move_sources_flag(tmp_path):
     results = RP.run_recon_prepass({
         "scratchpad": str(scratch),
         "project_root": str(proj),
+        "_run_id": _RECON_PREPASS_RUN_ID,
         "language": "aptos",
         "pipeline": "sc",
     })
@@ -455,7 +489,7 @@ def test_l1_move_skill_injection_block_positive_for_state_trace(tmp_path):
     # Every referenced skill path must actually exist on disk (real routing,
     # not a dangling reference).
     for name in ("MOVE_SAFETY_CORE_DIRECTIVES", "ABILITY_ANALYSIS", "TYPE_SAFETY"):
-        p = D._sc_skill_path_for_name(name)
+        p = D._sc_skill_path_for_name(name, "aptos")
         assert p is not None and p.exists(), f"{name} did not resolve"
         assert p.as_posix() in block
 

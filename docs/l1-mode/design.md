@@ -420,7 +420,7 @@ The Round 2 concern was that gopls on native Windows is 15-25× slower than on W
 - Go 1.25+ (`go` CLI for scip-go + builds)
 - Rust stable toolchain
 - rust-analyzer (latest stable) — provides the `scip` subcommand
-- scip-go (`go install github.com/scip-code/scip-go/cmd/scip-go@latest`)
+- scip-go (exact version governed by `verification_policy/toolchain_version_lock.v1.json`)
 - ast-grep (via cargo or prebuilt binary)
 - Opengrep (prebuilt binary from https://github.com/opengrep/opengrep/releases)
 - Python 3.11+

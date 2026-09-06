@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plamen.local/schemas/program_facts_evm_slither_raw.v2.schema.json",
+  "title": "Program Facts EVM Slither raw result v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "terminal_state",
+    "request_digest",
+    "build_plan_digest",
+    "build_attempt_digest",
+    "tool_manifest_digest",
+    "environment_digest",
+    "capability_ids",
+    "observations",
+    "coverage",
+    "diagnostics",
+    "truncated",
+    "terminal_negative_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plamen.program_facts_evm_slither_raw.v2"
+    },
+    "terminal_state": {
+      "$ref": "#/$defs/terminalState"
+    },
+    "request_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_plan_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_attempt_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "tool_manifest_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "environment_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "capability_ids": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/observation"
+      },
+      "maxItems": 1000000
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/coverage"
+      },
+      "maxItems": 100000
+    },
+    "diagnostics": {
+      "$ref": "#/$defs/identifierSet"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "terminal_negative_authority": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "identifierSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 1000000,
+      "uniqueItems": true
+    },
+    "terminalState": {
+      "enum": [
+        "OK",
+        "USAGE_INVALID",
+        "REQUEST_MALFORMED",
+        "REQUEST_OVERSIZED",
+        "INPUT_DRIFT",
+        "WORKSPACE_INVALID",
+        "BUILD_BLOCKED",
+        "BUILD_FAILED",
+        "TOOL_UNAVAILABLE",
+        "TOOL_DRIFT",
+        "READ_BOUNDARY_DENIED",
+        "NETWORK_BOUNDARY_DENIED",
+        "MEMORY_LIMIT",
+        "PROCESS_LIMIT",
+        "WORKSPACE_QUOTA",
+        "TIMEOUT",
+        "CANCELLED",
+        "RAW_LIMIT_EXCEEDED",
+        "INTERNAL_FAILURE"
+      ]
+    },
+    "coverageStatus": {
+      "enum": [
+        "FULL",
+        "PARTIAL",
+        "FAILED",
+        "STALE",
+        "UNSUPPORTED",
+        "UNKNOWN"
+      ]
+    },
+    "exactEmptyProof": {
+      "enum": [
+        "PROVEN",
+        "NOT_PROVEN",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_id",
+        "capability_id",
+        "source_file_id",
+        "kind",
+        "payload_digest"
+      ],
+      "properties": {
+        "observation_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "capability_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source_file_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "enum": [
+            "STRUCTURE",
+            "CONTROL_FLOW",
+            "CALL_RELATION",
+            "STATE_ACCESS",
+            "AUTHORIZATION",
+            "VALUE_FLOW",
+            "HOST_CONSTRAINT",
+            "DIAGNOSTIC"
+          ]
+        },
+        "payload_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_id",
+        "status",
+        "exact_empty_proof"
+      ],
+      "properties": {
+        "capability_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "status": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "exact_empty_proof": {
+          "$ref": "#/$defs/exactEmptyProof"
+        }
+      }
+    }
+  }
+}

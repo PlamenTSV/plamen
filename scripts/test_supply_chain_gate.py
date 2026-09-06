@@ -19,37 +19,60 @@ Poisoned-lockfile fixtures use a SYNTHETIC package name
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 
 def _scg():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    if "supply_chain_gate" in sys.modules:
-        del sys.modules["supply_chain_gate"]
     return importlib.import_module("supply_chain_gate")
 
 
 def _rp():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    if "recon_prepass" in sys.modules:
-        del sys.modules["recon_prepass"]
     return importlib.import_module("recon_prepass")
 
 
 def _mv():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    if "mechanical_verify" in sys.modules:
-        del sys.modules["mechanical_verify"]
     return importlib.import_module("mechanical_verify")
 
 
 def _mk(p: Path, body: str = "{}"):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body, encoding="utf-8")
+
+
+def _gate_scanner_payload(
+    scg,
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    scanner: str,
+    lock_name: str,
+    payload: dict,
+):
+    _mk(tmp_path / lock_name)
+    monkeypatch.setattr(
+        scg.shutil,
+        "which",
+        lambda name: f"/trusted/{name}" if name == scanner else None,
+    )
+    monkeypatch.setattr(
+        scg,
+        "_call_offline_scanner",
+        lambda binary, lockfile: scg.OfflineScanResult(
+            scg.OfflineScanState.SUCCEEDED,
+            output=json.dumps(payload),
+            returncode=1,
+        ),
+    )
+    return scg.gate_supply_chain(tmp_path, denylist=[])
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -91,11 +114,70 @@ def test_no_lockfile_is_clean_happy_path(tmp_path):
     scg.gate_supply_chain(tmp_path)
 
 
+def test_plamen_scratchpad_siblings_are_not_dependency_inputs(tmp_path):
+    scg = _scg()
+    _mk(tmp_path / "package-lock.json")
+    _mk(
+        tmp_path
+        / ".ScRaTcHpAd-rerun-old"
+        / "_recon_prepass_auxiliary_transactions"
+        / "payload"
+        / "package-lock.json"
+    )
+    _mk(
+        tmp_path
+        / ".plamen-stale-snapshots-older"
+        / "archived"
+        / "Cargo.lock"
+    )
+
+    assert scg._find_lockfiles(tmp_path) == [tmp_path / "package-lock.json"]
+
+
+def test_scanner_json_requires_one_exact_value_and_trailing_whitespace_only():
+    scg = _scg()
+    assert scg._validated_scanner_json(
+        "osv-scanner", '  {"results":[]}\r\n'
+    )[0] == {"results": []}
+    assert scg._validated_scanner_json(
+        "osv-scanner", 'progress\n{"results":[]}'
+    )[0] is None
+    assert scg._validated_scanner_json(
+        "osv-scanner", '{"results":[]}\nsecond-value'
+    )[0] is None
+
+
+def test_scanner_stderr_prose_is_not_json_classification_authority(
+    tmp_path, monkeypatch
+):
+    scg = _scg()
+    lockfile = tmp_path / "package-lock.json"
+    _mk(lockfile)
+    monkeypatch.setattr(
+        scg,
+        "run_owned_process",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout='{"results":[]}',
+            stderr="CRITICAL MALICIOUS MAL-2026-701 progress only",
+        ),
+    )
+    result = scg._call_offline_scanner("osv-scanner", lockfile)
+    assert result.state is scg.OfflineScanState.SUCCEEDED
+    assert json.loads(result.output) == {"results": []}
+
+
 def test_clean_lockfile_with_available_scanner_passes(tmp_path, monkeypatch):
     scg = _scg()
     _mk(tmp_path / "package-lock.json", '{"dependencies": {"left-pad": "1.0.0"}}')
     monkeypatch.setattr(scg.shutil, "which", lambda b: "/usr/bin/" + b if b == "osv-scanner" else None)
-    monkeypatch.setattr(scg, "_call_offline_scanner", lambda binary, lf: "no issues found")
+    monkeypatch.setattr(
+        scg, "_call_offline_scanner",
+        lambda binary, lf: scg.OfflineScanResult(
+            scg.OfflineScanState.SUCCEEDED,
+            output='{"results":[]}',
+        ),
+    )
     scg.gate_supply_chain(tmp_path)  # must not raise
 
 
@@ -112,11 +194,17 @@ def test_denylist_miss_does_not_abort_on_denylist_alone(tmp_path, monkeypatch):
     scg = _scg()
     _mk(tmp_path / "package-lock.json", '{"dependencies": {"left-pad": "1.0.0"}}')
     monkeypatch.setattr(scg.shutil, "which", lambda b: "/usr/bin/" + b if b == "osv-scanner" else None)
-    monkeypatch.setattr(scg, "_call_offline_scanner", lambda binary, lf: "")
+    monkeypatch.setattr(
+        scg, "_call_offline_scanner",
+        lambda binary, lf: scg.OfflineScanResult(
+            scg.OfflineScanState.SUCCEEDED,
+            output='{"results":[]}',
+        ),
+    )
     scg.gate_supply_chain(tmp_path, denylist=["plamen-test-evil-pkg"])  # no match, no abort
 
 
-def test_scanner_critical_hit_aborts(tmp_path, monkeypatch):
+def test_scanner_typed_mal_advisory_hit_aborts(tmp_path, monkeypatch):
     scg = _scg()
     poisoned_pkg = "plamen-test-evil-pkg"
     _mk(tmp_path / "package-lock.json",
@@ -124,10 +212,349 @@ def test_scanner_critical_hit_aborts(tmp_path, monkeypatch):
     monkeypatch.setattr(scg.shutil, "which", lambda b: "/usr/bin/" + b if b == "osv-scanner" else None)
     monkeypatch.setattr(
         scg, "_call_offline_scanner",
-        lambda binary, lf: f"CRITICAL: known-malicious package {poisoned_pkg}@0.0.0",
+        lambda binary, lf: scg.OfflineScanResult(
+            scg.OfflineScanState.SUCCEEDED,
+            output=json.dumps({
+                "results": [{
+                    "packages": [{
+                        "vulnerabilities": [{
+                            "id": "MAL-2026-701",
+                            "summary": f"Malicious code in {poisoned_pkg}",
+                        }],
+                    }],
+                }],
+            }),
+        ),
     )
     with pytest.raises(scg.SupplyChainAbortError):
         scg.gate_supply_chain(tmp_path, denylist=[])
+
+
+def test_osv_ordinary_critical_vulnerabilities_do_not_abort(
+    tmp_path, monkeypatch, caplog
+):
+    """The DODO-shaped regression: severity is audit risk, not malware."""
+    scg = _scg()
+    vulnerabilities = [
+        {
+            "id": f"GHSA-fixture-{index:04d}",
+            "summary": "A malicious user can exploit this vulnerability",
+            "database_specific": {"severity": "CRITICAL"},
+        }
+        for index in range(151)
+    ]
+    _gate_scanner_payload(
+        scg,
+        tmp_path,
+        monkeypatch,
+        scanner="osv-scanner",
+        lock_name="package-lock.json",
+        payload={
+            "results": [{
+                "packages": [{"vulnerabilities": vulnerabilities}],
+            }],
+        },
+    )
+    assert any(
+        "151 ordinary dependency vulnerability" in record.message
+        for record in caplog.records
+    )
+
+
+def test_osv_mal_alias_aborts(tmp_path, monkeypatch):
+    scg = _scg()
+    with pytest.raises(scg.SupplyChainAbortError, match="typed malicious"):
+        _gate_scanner_payload(
+            scg,
+            tmp_path,
+            monkeypatch,
+            scanner="osv-scanner",
+            lock_name="package-lock.json",
+            payload={
+                "results": [{
+                    "packages": [{
+                        "vulnerabilities": [{
+                            "id": "GHSA-fixture-safe-shape",
+                            "aliases": ["MAL-2026-11961"],
+                        }],
+                    }],
+                }],
+            },
+        )
+
+
+def test_osv_provider_specific_words_and_objects_are_not_untyped_markers(
+    tmp_path, monkeypatch
+):
+    scg = _scg()
+    _gate_scanner_payload(
+        scg,
+        tmp_path,
+        monkeypatch,
+        scanner="osv-scanner",
+        lock_name="package-lock.json",
+        payload={
+            "results": [{
+                "packages": [{
+                    "vulnerabilities": [{
+                        "id": "GHSA-fixture-not-malware",
+                        "summary": "MAL-2026-1 CRITICAL MALICIOUS",
+                        "database_specific": {
+                            "severity": "CRITICAL",
+                            "iocs": {"domains": ["example.invalid"]},
+                            "malicious-packages-origins": [{"source": "text"}],
+                        },
+                    }],
+                }],
+            }],
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"results": {}},
+        {"results": [{}]},
+        {"results": [{"packages": [{}]}]},
+        {"results": [{"packages": [{"vulnerabilities": [{}]}]}]},
+        {"results": [{"packages": [{"vulnerabilities": [{
+            "id": "MAL-not-a-governed-id",
+        }]}]}]},
+        {"results": [{"packages": [{"vulnerabilities": [{
+            "id": "GHSA-fixture", "aliases": "MAL-2026-1",
+        }]}]}]},
+    ],
+)
+def test_osv_malformed_or_missing_typed_shape_fails_closed(
+    tmp_path, monkeypatch, payload
+):
+    scg = _scg()
+    with pytest.raises(scg.SupplyChainAbortError, match="malformed|classif"):
+        _gate_scanner_payload(
+            scg,
+            tmp_path,
+            monkeypatch,
+            scanner="osv-scanner",
+            lock_name="package-lock.json",
+            payload=payload,
+        )
+
+
+def test_npm_critical_and_malicious_prose_is_not_a_malware_marker(
+    tmp_path, monkeypatch
+):
+    scg = _scg()
+    _gate_scanner_payload(
+        scg,
+        tmp_path,
+        monkeypatch,
+        scanner="npm",
+        lock_name="package-lock.json",
+        payload={
+            "auditReportVersion": 2,
+            "vulnerabilities": {
+                "fixture": {
+                    "severity": "critical",
+                    "via": [{
+                        "source": 123,
+                        "title": "MAL-2026-1: malicious critical payload",
+                        "severity": "critical",
+                        "cwe": ["CWE-79"],
+                    }],
+                },
+            },
+            "metadata": {"vulnerabilities": {
+                "info": 0, "low": 0, "moderate": 0,
+                "high": 0, "critical": 1, "total": 1,
+            }},
+        },
+    )
+
+
+def test_npm_exact_embedded_malicious_code_cwe_aborts(
+    tmp_path, monkeypatch
+):
+    scg = _scg()
+    with pytest.raises(scg.SupplyChainAbortError, match="typed malicious"):
+        _gate_scanner_payload(
+            scg,
+            tmp_path,
+            monkeypatch,
+            scanner="npm",
+            lock_name="package-lock.json",
+            payload={
+                "auditReportVersion": 2,
+                "vulnerabilities": {
+                    "fixture": {"via": [{"source": 123, "cwe": ["CWE-506"]}]},
+                },
+                "metadata": {"vulnerabilities": {
+                    "info": 0, "low": 0, "moderate": 0,
+                    "high": 0, "critical": 1, "total": 1,
+                }},
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_via",
+    [None, {}, [{"title": "missing typed source"}], [{"source": True}]],
+)
+def test_npm_malformed_advisory_shape_fails_closed(
+    tmp_path, monkeypatch, bad_via
+):
+    scg = _scg()
+    with pytest.raises(scg.SupplyChainAbortError, match="malformed"):
+        _gate_scanner_payload(
+            scg,
+            tmp_path,
+            monkeypatch,
+            scanner="npm",
+            lock_name="package-lock.json",
+            payload={
+                "auditReportVersion": 2,
+                "vulnerabilities": {"fixture": {"via": bad_via}},
+                "metadata": {"vulnerabilities": {
+                    "info": 0, "low": 0, "moderate": 0,
+                    "high": 0, "critical": 1, "total": 1,
+                }},
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "version, counts",
+    [
+        (1, {"info": 0, "low": 0, "moderate": 0, "high": 0,
+             "critical": 0, "total": 0}),
+        (2.0, {"info": 0, "low": 0, "moderate": 0, "high": 0,
+               "critical": 0, "total": 0}),
+        (True, {"info": 0, "low": 0, "moderate": 0, "high": 0,
+                "critical": 0, "total": 0}),
+        (2, {"info": 0, "low": 0, "moderate": 0, "high": 0,
+             "critical": 0, "total": True}),
+        (2, {"info": 0, "low": 0, "moderate": 0, "high": 0,
+             "critical": 0, "total": 1}),
+    ],
+)
+def test_npm_version_or_count_inconsistency_fails_closed(
+    tmp_path, monkeypatch, version, counts
+):
+    scg = _scg()
+    with pytest.raises(scg.SupplyChainAbortError, match="malformed"):
+        _gate_scanner_payload(
+            scg,
+            tmp_path,
+            monkeypatch,
+            scanner="npm",
+            lock_name="package-lock.json",
+            payload={
+                "auditReportVersion": version,
+                "vulnerabilities": {},
+                "metadata": {"vulnerabilities": counts},
+            },
+        )
+
+
+def test_cargo_critical_and_malicious_prose_is_not_a_malware_marker(
+    tmp_path, monkeypatch
+):
+    scg = _scg()
+    _gate_scanner_payload(
+        scg,
+        tmp_path,
+        monkeypatch,
+        scanner="cargo-audit",
+        lock_name="Cargo.lock",
+        payload={
+            "vulnerabilities": {"found": True, "count": 1, "list": [{
+                "advisory": {
+                    "id": "RUSTSEC-2026-0001",
+                    "title": "A malicious user can trigger critical impact",
+                    "categories": ["code-execution"],
+                },
+            }]},
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "advisory",
+    [
+        {"id": "RUSTSEC-2026-0001", "categories": ["malicious"]},
+        {"id": "MAL-2026-701", "categories": []},
+        {
+            "id": "RUSTSEC-2026-0001",
+            "aliases": ["MAL-2026-11961"],
+            "categories": [],
+        },
+    ],
+)
+def test_cargo_typed_malicious_markers_abort(
+    tmp_path, monkeypatch, advisory
+):
+    scg = _scg()
+    with pytest.raises(scg.SupplyChainAbortError, match="typed malicious"):
+        _gate_scanner_payload(
+            scg,
+            tmp_path,
+            monkeypatch,
+            scanner="cargo-audit",
+            lock_name="Cargo.lock",
+            payload={"vulnerabilities": {
+                "found": True,
+                "count": 1,
+                "list": [{"advisory": advisory}],
+            }},
+        )
+
+
+@pytest.mark.parametrize(
+    "row",
+    [{}, {"advisory": {}}, {"advisory": {
+        "id": "RUSTSEC-2026-0001", "categories": "malicious",
+    }}],
+)
+def test_cargo_malformed_or_missing_typed_shape_fails_closed(
+    tmp_path, monkeypatch, row
+):
+    scg = _scg()
+    with pytest.raises(scg.SupplyChainAbortError, match="malformed"):
+        _gate_scanner_payload(
+            scg,
+            tmp_path,
+            monkeypatch,
+            scanner="cargo-audit",
+            lock_name="Cargo.lock",
+            payload={"vulnerabilities": {
+                "found": True,
+                "count": 1,
+                "list": [row],
+            }},
+        )
+
+
+@pytest.mark.parametrize(
+    "found, count",
+    [(False, 1), (True, 0), (True, True), ("true", 1)],
+)
+def test_cargo_count_or_found_inconsistency_fails_closed(
+    tmp_path, monkeypatch, found, count
+):
+    scg = _scg()
+    with pytest.raises(scg.SupplyChainAbortError, match="malformed"):
+        _gate_scanner_payload(
+            scg,
+            tmp_path,
+            monkeypatch,
+            scanner="cargo-audit",
+            lock_name="Cargo.lock",
+            payload={"vulnerabilities": {
+                "found": found,
+                "count": count,
+                "list": [{"advisory": {"id": "RUSTSEC-2026-0001"}}],
+            }},
+        )
 
 
 def test_scanner_absent_with_lockfile_present_hard_stops(tmp_path, monkeypatch, caplog):
@@ -255,7 +682,21 @@ def test_recon_clean_lockfile_leaves_install_mock_unchanged(tmp_path, monkeypatc
     cmds = []
     monkeypatch.setattr(rp.shutil, "which", lambda n: "/usr/bin/" + n if n == "npm" else None)
     monkeypatch.setattr(rp, "_run_cmd", lambda cmd, cwd, t: (cmds.append(cmd) or 0))
-    monkeypatch.setattr(rp.supply_chain_gate, "_call_offline_scanner", lambda binary, lf: "")
+    monkeypatch.setattr(
+        rp.supply_chain_gate,
+        "_call_offline_scanner",
+        lambda binary, lf: rp.supply_chain_gate.OfflineScanResult(
+            rp.supply_chain_gate.OfflineScanState.SUCCEEDED,
+            output=json.dumps({
+                "auditReportVersion": 2,
+                "vulnerabilities": {},
+                "metadata": {"vulnerabilities": {
+                    "info": 0, "low": 0, "moderate": 0,
+                    "high": 0, "critical": 0, "total": 0,
+                }},
+            }),
+        ),
+    )
 
     note = rp._prepare_evm_build(root)
     assert ["npm", "ci"] in cmds

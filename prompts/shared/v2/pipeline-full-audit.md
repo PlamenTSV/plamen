@@ -476,8 +476,8 @@ Spawn ALL 10 subagents in parallel. Each writes findings to `{SCRATCHPAD}/audit_
 5. **Severity adjustment pipeline**: Multiple adjustments can stack:
    - Trust assumption downgrade (`TRUSTED-ACTOR` → -1)
    - Proven-only demotion (`CODE-TRACE` only → cap at Low)
-   - UNRESOLVED demotion (skeptic disagree → -1)
-   - PoC-fail demotion (from `poc_demotions.md`)
+   - UNRESOLVED/PARTIAL visibility (no automatic tier change; separate typed adjudication only)
+   - PoC-fail proposal (from `poc_demotion_proposals.json`; MUST NOT lower severity or dispose of the candidate)
    - Chain upgrade (postcondition enables precondition → upgrade)
    
    Can these stack in contradictory ways? What's the precedence? Can a finding be both upgraded and downgraded? Is there a minimum severity floor?

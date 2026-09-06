@@ -78,7 +78,7 @@ If you cannot construct a harm assertion, cap the finding at `[LSP-TRACE]` or `[
 
 ## Evidence Tags (L1)
 
-### Mechanical-proof tier (supports CONFIRMED at any severity)
+### Mechanically executed tier (authority is limited by typed proof scope)
 
 | Tag | Meaning | Typical source |
 |---|---|---|
@@ -100,16 +100,16 @@ If you cannot construct a harm assertion, cap the finding at `[LSP-TRACE]` or `[
 
 | Tag | Meaning |
 |---|---|
-| `[POC-FAIL]` | Test executed, harm assertion FAILED — the attack does not work as described. To override (call it a test-setup bug), you must demonstrate that setup is broken, not the defense. |
-| `[DIFF-SAME]` | Differential harness produced matching output → refutes semantic-drift claim |
-| `[NON-DET-SAME]` | 100+ repeated runs produced identical output → refutes non-determinism claim (record iteration count; a single-threaded single-entry test is INSUFFICIENT — use a realistic workload) |
+| `[POC-FAIL]` | Test executed but the encoded assertion was not established. This refutes only the represented parameterization/scope unless independent metadata proves exhaustive in-scope coverage. |
+| `[DIFF-SAME]` | Differential harness matched for the encoded inputs/domain; it does not refute unrepresented semantic-drift cases |
+| `[NON-DET-SAME]` | 100+ repeated runs produced identical output for the represented workload; it does not refute unrepresented schedules/environments (record iteration count; a single-threaded single-entry test is INSUFFICIENT — use a realistic workload) |
 
 ### Verdict ceiling rules
 
 - `[CODE-TRACE]` alone → CONTESTED maximum.
 - `[LSP-TRACE]` alone → CONFIRMED up to Medium; High/Critical require at least one mechanical tag.
 - Critical findings that cannot get a mechanical tag → record as CONTESTED and flag for human review (severity unchanged).
-- A single mechanical tag (any of POC/DIFF/CONFORMANCE/NON-DET/FUZZ/MEDUSA) with a valid harm assertion → CONFIRMED at the hypothesis severity.
+- A mechanical tag authenticates the encoded execution result. Harm confirmation additionally requires bound oracle provenance, full environment/reachability and precondition coverage, resolved external premises, and HARM proof scope.
 
 ---
 

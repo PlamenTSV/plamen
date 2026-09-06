@@ -18,15 +18,26 @@ Read:
 - `{SCRATCHPAD}/hypotheses.md` (grouped hypotheses from Agent 1)
 - `{SCRATCHPAD}/finding_mapping.md` (finding → hypothesis mapping from Agent 1)
 - `{SCRATCHPAD}/enabler_results.md` (enabler enumeration + cross-state interactions from Agent 1)
-- `{SCRATCHPAD}/variable_finding_map.md` (variable→finding cross-reference for variable-level matching — driver-produced by the chain-prep pre-pass; if missing, fall back to grep-based variable name matching in `findings_inventory.md`)
-- `{SCRATCHPAD}/chain_candidate_pairs.md` (pre-filtered pairs with shared state/identifier — driver-produced by the chain-prep pre-pass; this is the bounded, finite candidate set — evaluate ONLY these pairs. The complete set is in `chain_candidate_pairs_full.md`; the `chain_iter2` phase covers any tail. If `chain_candidate_pairs.md` is missing, fall back to the original algorithm.)
+- `{SCRATCHPAD}/variable_finding_map.md` (qualified state-symbol→finding cross-reference from the driver-owned graph resolver; if missing, grep is only a degraded recall fallback and cannot establish enumeration completeness)
+- `{SCRATCHPAD}/chain_candidate_pairs.md` (pre-filtered pairs with shared state/identifier — driver-produced bounded Agent-2 packet. Evaluate every listed pair. Additional real-signal pairs are routed to a bounded iteration-2 packet or a durable coverage-gap ledger; they are not automatically covered.)
 - `{SCRATCHPAD}/findings_inventory.md` — **FALLBACK-ONLY, single-finding, on-demand.** Open ONE specific finding's block only when a candidate pair's detail is missing from the bounded inputs above (hypotheses / finding_mapping / enabler_results / variable_finding_map / chain_candidate_pairs). **Do NOT bulk-read this file** — on large audits it is 100K+ of finding prose, and pulling it into one turn is the context-collapse / autocompact-thrash trigger this phase MUST avoid (it zombie-hangs the phase). The bounded ledgers are the authoritative working set.
 
 The pre-filter may include optional `discovery: ...` Shared Signal values
 derived from finding metadata. Treat them as prioritization hints only; they
 are not proof and must be confirmed from finding details or source.
 
+A `role: mutual-zero` signal is also nomination-only. Confirm BOTH halves in
+source: an authentication anchor can remain zero/unarmed while verification is
+operational, and a degenerate input derives to zero/null and is accepted. Reject
+the pair if arming is atomic/inert-until-armed or the verifier rejects the
+degenerate/zero result fail-closed. Create a chain only when the conjunction
+reaches a privileged or otherwise harmful effect that neither half proves alone.
+
 For specific chain candidates, read the relevant source files directly.
+
+After all code-derived pair dispositions and first test plans are sealed, you
+may additionally read `{SCRATCHPAD}/precedent_context.md` when present. It is a
+deterministic investigation projection, never negative or decision authority.
 
 ---
 
@@ -40,7 +51,9 @@ Read `{SCRATCHPAD}/chain_candidate_pairs.md`. If present:
 - If a pair's Shared Signal mentions discovery metadata, use it only to focus the review; source behavior still decides whether composition exists.
 - Create CHAIN HYPOTHESIS for valid matches
 - Mark each evaluated pair in `composition_coverage.md` as EXPLORED, COMPOSED, REJECTED, or DEFERRED with the reason
-- All pairs NOT in `chain_candidate_pairs.md` are EXCLUDED (no shared state or type) — mark them as a single summary row `EXCLUDED: {N} pairs with no shared state/type` in `composition_coverage.md`. Do NOT spend time evaluating them.
+- Do not disposition out-of-packet pairs. The driver reconciles the complete
+  set into the iteration-2 packet and durable coverage-gap ledger; never emit
+  an aggregate EXCLUDED count from the bounded file.
 
 If `chain_candidate_pairs.md` is MISSING, fall back to the original algorithm below.
 
@@ -65,7 +78,7 @@ Rejection must be explicit. Reject a semantic pair when ordering is impossible, 
 
 For each PARTIAL or REFUTED finding:
 1. Extract its missing precondition and type (STATE/ACCESS/TIMING/EXTERNAL/BALANCE)
-2. **For STATE-type preconditions**: extract the specific state variable name(s). Use `variable_finding_map.md` to find ALL findings that write to the SAME variable — match on variable names, not just descriptions.
+2. **For STATE-type preconditions**: extract the specific qualified state symbol(s). Use `variable_finding_map.md` to find ALL findings mechanically bound to the SAME symbol (declaration/read/write/reference). Do not merge same-bare fields from different contracts or modules, and do not infer extra pairs outside the driver-owned bounded ledgers.
 3. Search CONFIRMED/PARTIAL findings for matching postconditions and the semantic composition patterns above — across ALL severity tiers and vulnerability classes, using the bounded prioritization limits from Step 2.0a
 4. If found: Create CHAIN HYPOTHESIS with combined attack sequence
 
@@ -124,23 +137,22 @@ Coverage must explicitly state whether branch+effect, shared-state lifecycle, an
 
 ---
 
-## PHASE 3: RAG VALIDATION FOR CHAINS
+## PHASE 3: CENTRALIZED PRECEDENT STEERS (ADDITIVE ONLY)
 
-For each chain hypothesis:
-1. `assess_hypothesis_strength(hypothesis='Chain: {B title} enables {A title}')`
-2. `get_similar_findings(pattern='{combined attack description}')`
-3. If local results < 5: `search_solodit_live(keywords='{chain pattern}', impact=['HIGH','MEDIUM'], quality_score=3, max_results=20)`
-4. If historical precedent found → upgrade chain severity
-
-**RAG fallback**: If unified-vuln-db tools fail or return errors (missing deps, timeout, empty DB), skip RAG validation for chains. Use WebSearch as fallback: search `site:solodit.xyz {chain pattern}` for each chain hypothesis. If WebSearch also fails, proceed without historical validation — chain severity is determined by the postcondition-precondition match logic above, not by RAG. Do NOT retry failed MCP calls.
-
-**MCP Timeout Policy**: When an MCP tool call returns a timeout error or fails, do NOT retry the same call. Record `[MCP: TIMEOUT]` and skip ALL remaining calls to that provider — switch immediately to fallback. You cannot cancel a pending call — but you control what happens after the error returns.
+After every code-derived pair disposition and first chain test plan is sealed,
+you may read the driver-produced `precedent_context.md`. Do not call RAG,
+vulnerability-database, WebSearch, or WebFetch tools. The projection may add a
+positive path or test idea to an already open/positive row. It may not reject a
+pair, support a negative disposition, change confidence/severity/verdict,
+satisfy proof, or reduce remaining composition work. If the projection is
+absent/unavailable, continue from code with no penalty and no inferred safety.
 
 ---
 
 ## Output
 
-Update `{SCRATCHPAD}/hypotheses.md` — add chain hypotheses to the hypothesis table.
+Do **not** update `{SCRATCHPAD}/hypotheses.md`. It is an immutable Agent-1
+artifact. Downstream consumers read your dedicated chain delta directly.
 
 Write:
 - `{SCRATCHPAD}/synthesis_full.md` — full analysis (enabler + grouping + chain results)
@@ -155,4 +167,4 @@ Do NOT rely on `chain_hypotheses.md` to implicitly serve as composition coverage
 
 Return: `DONE: {M} chains identified, {K} severity upgrades, {U} unexplored pairs remaining, verification priority: [list]`
 
-SCOPE: You MAY read the inputs listed in "Your Inputs" as read-only inputs. Write ONLY to the output files listed above (including the append/update to `hypotheses.md`). MUST NOT modify `finding_mapping.md`, `enabler_results.md`, `variable_finding_map.md`, `chain_candidate_pairs.md`, `findings_inventory.md`, or other artifacts. Return your findings and stop.
+SCOPE: You MAY read the inputs listed in "Your Inputs" as read-only inputs. Write ONLY to `chain_hypotheses.md`, `composition_coverage.md`, and `synthesis_full.md`. MUST NOT modify `hypotheses.md`, `finding_mapping.md`, `enabler_results.md`, `variable_finding_map.md`, `chain_candidate_pairs.md`, `findings_inventory.md`, or other artifacts. Return your findings and stop.

@@ -6,7 +6,7 @@ description: "Trigger SHARE_ALLOCATION flag detected in pattern scan - Used by B
 # Skill: SHARE_ALLOCATION_FAIRNESS
 
 > **Trigger**: SHARE_ALLOCATION flag detected in pattern scan
-> **Used by**: Breadth agents, depth-edge-case
+> **Inject Into**: Breadth agents, depth-edge-case
 
 ## Purpose
 Analyze fairness of share/token allocation mechanisms where users receive shares proportional to deposits, contributions, or participation -- checking for late-entry advantages, queue-position gaming, and time-weighting omissions.

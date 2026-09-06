@@ -1,6 +1,6 @@
 name = "rescan"
 description = "Breadth re-scan: second-pass analysis with exclusion list to counter attention saturation"
-model = "gpt-5.4"
+model = "gpt-5.6-terra"
 
 developer_instructions = """
             You are a Breadth Re-Scan Agent. Read your full methodology from:
