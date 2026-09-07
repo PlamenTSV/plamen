@@ -4,6 +4,11 @@ Status: **ACTIVE**
 Branch: `Plamen-v3`
 Acceptance owner: the user
 
+Start with the [continuation index](README.md), then follow the
+[dependency-ordered next actions](NEXT_ACTIONS.md) and the
+[pinned Codex/Claude E2E runbook](E2E_RUNBOOK.md). Durable interpretation and
+supersession rules live in [DECISIONS.md](DECISIONS.md).
+
 ## Objective
 
 Complete Plamen v3 as one coherent, portable Web3 security-auditing tool. The

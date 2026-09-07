@@ -25,6 +25,24 @@ RUNTIME = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = RUNTIME
 SPEC.loader.exec_module(RUNTIME)
 
+
+def _patch_module_os_name(monkeypatch, module, name):
+    """Select a module OS branch without mutating the process-wide os module."""
+    backing = module.os
+    backing_name = backing.name
+
+    class ModuleOSView:
+        def __init__(self):
+            self.name = name
+
+        def __getattr__(self, attribute):
+            return getattr(backing, attribute)
+
+    monkeypatch.setattr(module, "os", ModuleOSView())
+    assert module.os.name == name
+    assert backing.name == backing_name
+
+
 KEY = b"unit-test-only-mcp-generation-key"
 PACKAGE = {
     "private": True,
@@ -311,11 +329,11 @@ def test_directory_census_identity_normalizes_windows_size_but_preserves_posix(
 
     first = DirectoryInfo(4096)
     jittered = DirectoryInfo(8192)
-    monkeypatch.setattr(RUNTIME.os, "name", "nt")
+    _patch_module_os_name(monkeypatch, RUNTIME, "nt")
     assert RUNTIME._directory_census_identity(first) == (
         RUNTIME._directory_census_identity(jittered)
     )
-    monkeypatch.setattr(RUNTIME.os, "name", "posix")
+    _patch_module_os_name(monkeypatch, RUNTIME, "posix")
     assert RUNTIME._directory_census_identity(first) != (
         RUNTIME._directory_census_identity(jittered)
     )

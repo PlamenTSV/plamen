@@ -28,6 +28,23 @@ _TEST_SEC3_IMAGE = (
 )
 
 
+def _patch_module_os_name(monkeypatch, module, name):
+    """Select a module OS branch without mutating the process-wide os module."""
+    backing = module.os
+    backing_name = backing.name
+
+    class ModuleOSView:
+        def __init__(self):
+            self.name = name
+
+        def __getattr__(self, attribute):
+            return getattr(backing, attribute)
+
+    monkeypatch.setattr(module, "os", ModuleOSView())
+    assert module.os.name == name
+    assert backing.name == backing_name
+
+
 def _synthetic_advisory_provider(source_id: str) -> str:
     return json.dumps({
         "schema_version": "plamen.advisory_source.v1",
@@ -568,9 +585,9 @@ def test_scope_target_identity_is_case_sensitive_only_on_posix(
 ) -> None:
     upper = Path("/repo/Token.sol")
     lower = Path("/repo/token.sol")
-    monkeypatch.setattr(SNAP.os, "name", "posix")
+    _patch_module_os_name(monkeypatch, SNAP, "posix")
     assert SNAP._scope_target_identity(upper) != SNAP._scope_target_identity(lower)
-    monkeypatch.setattr(SNAP.os, "name", "nt")
+    _patch_module_os_name(monkeypatch, SNAP, "nt")
     assert SNAP._scope_target_identity(upper) == SNAP._scope_target_identity(lower)
 
 

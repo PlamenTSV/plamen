@@ -34,6 +34,23 @@ def _load():
     return module
 
 
+def _patch_module_os_name(monkeypatch, module, name):
+    """Select a module OS branch without mutating the process-wide os module."""
+    backing = module.os
+    backing_name = backing.name
+
+    class ModuleOSView:
+        def __init__(self):
+            self.name = name
+
+        def __getattr__(self, attribute):
+            return getattr(backing, attribute)
+
+    monkeypatch.setattr(module, "os", ModuleOSView())
+    assert module.os.name == name
+    assert backing.name == backing_name
+
+
 def _receipt(source: Path, installed: Path, codex: Path):
     return {
         "schema": "plamen.codex_install.v2",
@@ -2977,8 +2994,10 @@ def test_windows_projection_journal_replace_retries_transient_error_with_same_te
     class Kernel:
         MoveFileExW = Function()
 
-    monkeypatch.setattr(module.os, "name", "nt")
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: Kernel())
+    _patch_module_os_name(monkeypatch, module, "nt")
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_a, **_k: Kernel(), raising=False,
+    )
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 32, raising=False)
     monkeypatch.setattr(module.time, "sleep", sleeps.append)
 
@@ -3018,8 +3037,10 @@ def test_windows_projection_journal_replace_transient_exhaustion_fails_closed(
     class Kernel:
         MoveFileExW = Function()
 
-    monkeypatch.setattr(module.os, "name", "nt")
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: Kernel())
+    _patch_module_os_name(monkeypatch, module, "nt")
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_a, **_k: Kernel(), raising=False,
+    )
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
     monkeypatch.setattr(module.time, "sleep", sleeps.append)
 
@@ -3056,8 +3077,10 @@ def test_windows_projection_journal_replace_permanent_error_is_not_retried(
     class Kernel:
         MoveFileExW = Function()
 
-    monkeypatch.setattr(module.os, "name", "nt")
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: Kernel())
+    _patch_module_os_name(monkeypatch, module, "nt")
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_a, **_k: Kernel(), raising=False,
+    )
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 87, raising=False)
     monkeypatch.setattr(module.time, "sleep", sleeps.append)
 
@@ -3109,8 +3132,10 @@ def test_windows_projection_journal_replace_rejects_target_substitution(
         MoveFileExW = Function()
 
     real_is_junction = module._is_junction
-    monkeypatch.setattr(module.os, "name", "nt")
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: Kernel())
+    _patch_module_os_name(monkeypatch, module, "nt")
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_a, **_k: Kernel(), raising=False,
+    )
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 33, raising=False)
 
     def sleep(delay):
@@ -6162,8 +6187,10 @@ def test_windows_trash_and_journal_retirement_use_write_through(
             self.MoveFileExW = Function(move)
             self.CloseHandle = Function(lambda *_a: 1)
 
-    monkeypatch.setattr(module.os, "name", "nt")
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: Kernel())
+    _patch_module_os_name(monkeypatch, module, "nt")
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_a, **_k: Kernel(), raising=False,
+    )
     monkeypatch.setattr(
         module, "_borrowed_reader_handle_identity",
         lambda _handle: {
@@ -6242,6 +6269,7 @@ def test_windows_trash_reparse_to_outside_is_rejected_without_source_change(
     assert sentinel.read_bytes() == b"outside\n"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows retained-handle semantics")
 def test_windows_retained_trash_handle_blocks_replacement_race(
     monkeypatch, tmp_path,
 ):
@@ -6305,6 +6333,7 @@ def test_windows_retained_trash_handle_blocks_replacement_race(
     assert not moved_root.exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows CreateFileW handle semantics")
 def test_windows_trash_createfile_gap_replacement_aborts_before_source_move(
     monkeypatch, tmp_path,
 ):

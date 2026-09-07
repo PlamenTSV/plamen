@@ -20,6 +20,16 @@ topic. The project [README](../README.md) and the AI-assistant install guide
 | [updating.md](updating.md) | What updates on `git pull` vs what needs `plamen install`, v1.x migration, v2.1.0 changes |
 | [mcp-servers.md](mcp-servers.md) | The 9 MCP servers, API keys, and Codex MCP caveats |
 
+## Plamen-v3 development handoff
+
+| Doc | What it covers |
+|-----|----------------|
+| [continuation/README.md](continuation/README.md) | Ordered index for the active goal, ledger, evidence, research corpus, and E2E procedure |
+| [continuation/GOAL.md](continuation/GOAL.md) | Full continuation objective, definition of done, and explicit benchmark deferral |
+| [continuation/E2E_RUNBOOK.md](continuation/E2E_RUNBOOK.md) | Pinned DODO Codex/Claude release-candidate E2E procedure and pending gates |
+| [development/macos.md](development/macos.md) | Apple Silicon source-development bootstrap and honest native-runtime boundary |
+| [development/machine-migration.md](development/machine-migration.md) | Safe Windows-to-macOS source and private-state migration |
+
 ## Using Plamen
 
 | Doc | What it covers |

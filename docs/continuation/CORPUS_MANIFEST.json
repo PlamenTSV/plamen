@@ -3694,6 +3694,8 @@
                      },
     "continuation_files":  [
                                "docs/continuation/GOAL.md",
+                               "docs/continuation/README.md",
+                               "docs/continuation/E2E_RUNBOOK.md",
                                "docs/continuation/REQUIREMENTS.jsonl",
                                "docs/continuation/DECISIONS.md",
                                "docs/continuation/EVIDENCE_INDEX.json",

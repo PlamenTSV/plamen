@@ -26,6 +26,27 @@ import isolated_execution_host as H  # noqa: E402
 import worker_execution_receipts as W  # noqa: E402
 
 
+def _patch_module_os_name(
+    monkeypatch: pytest.MonkeyPatch,
+    module: object,
+    name: str,
+) -> None:
+    """Select a module OS branch without mutating the process-wide os module."""
+    backing = module.os
+    backing_name = backing.name
+
+    class ModuleOSView:
+        def __init__(self) -> None:
+            self.name = name
+
+        def __getattr__(self, attribute: str) -> object:
+            return getattr(backing, attribute)
+
+    monkeypatch.setattr(module, "os", ModuleOSView())
+    assert module.os.name == name
+    assert backing.name == backing_name
+
+
 def _digest(raw: bytes) -> str:
     return base64.urlsafe_b64encode(
         hashlib.sha256(raw).digest()
@@ -164,7 +185,7 @@ def test_unavailable_immutable_stage_is_typed_capability_debt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(H.os, "name", "unsupported-r6")
+    _patch_module_os_name(monkeypatch, H, "unsupported-r6")
     with pytest.raises(
         H.SemanticDependencyIsolationUnavailable,
         match="immutable|unsupported|capability",

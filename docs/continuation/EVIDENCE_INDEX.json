@@ -76,8 +76,8 @@
       "kind": "end_to_end_attempt",
       "backend": "codex",
       "mode": "thorough",
-      "result": "RUNNING; Recon and Instantiate committed, Breadth started",
-      "current_state": "HISTORICAL LIVE OBSERVATION ONLY; the process is no longer running and no terminal p19 claim is carried into this public handoff",
+      "result": "HISTORICAL_NONTERMINAL_OBSERVATION; Recon and Instantiate committed and Breadth started before observation ended",
+      "current_state": "PROCESS_NOT_RUNNING; no terminal p19 success or failure claim is carried into this public handoff",
       "observed_boundary": "Breadth phase 3 of 75",
       "additional_debt": [
         "EVM build degraded after two Git-for-Windows/MSYS process failures and continued with grep plus on-demand compilation",
@@ -304,9 +304,44 @@
       "acceptance_effect": "Closes the independent ninth-pass source-freeze gate; commit-bound release, remote POSIX CI, fresh install, and E2E evidence remain open"
     },
     {
+      "id": "EV-PUBLIC-HANDOFF-FREEZE-17DDB029",
+      "kind": "source_commit_observation",
+      "source_commit": "17ddb029244337491a6477f553f1db39f81671c8",
+      "result": "COMMITTED_AND_PUSHED_PUBLIC_HANDOFF_FREEZE",
+      "scope": "Public source, hardening, methodology, research ports, continuation files, package manifest, tests, and operator documentation present at that commit",
+      "limitations": "Commit presence does not prove clean installation, doctor authentication, remote POSIX CI, either backend E2E, native POSIX runtime support, or final goal completion",
+      "acceptance_effect": "Establishes a reproducible public parent baseline for later release work"
+    },
+    {
+      "id": "EV-PUBLIC-CODE-BASELINE-7E8D82E",
+      "kind": "source_commit_observation",
+      "source_commit": "7e8d82eadadb9f1f655fac947b092d83daa433a3",
+      "parent_commit": "17ddb029244337491a6477f553f1db39f81671c8",
+      "result": "LAST_PUSHED_PUBLIC_CODE_BASELINE_RECORDED_BY_HANDOFF",
+      "scope": "Cross-volume Codex install-census repair, its tracked regression coverage, and regenerated runtime-closure identity",
+      "limitations": "Later source/test and handoff-document repairs remain mutable; this is not the final release-candidate SHA and has no successful release-candidate E2E attached",
+      "acceptance_effect": "Supersedes aa509d7 as the public code baseline without erasing the earlier failed-CI record"
+    },
+    {
+      "id": "EV-POST-7E8D82E-WORKTREE-GATE",
+      "kind": "acceptance_gate",
+      "result": "PENDING_UNCOMMITTED_REPAIRS",
+      "scope": "Source/test and handoff-document changes after the last pushed public code baseline",
+      "acceptance_effect": "A final SHA must not be claimed until the intended diff is reviewed, committed, pushed, and verified from a fresh clone"
+    },
+    {
+      "id": "EV-REMOTE-CI-FINAL-COMMIT-GATE",
+      "kind": "acceptance_gate",
+      "result": "PENDING_FINAL_COMMIT_AND_REMOTE_RUN",
+      "scope": "Install-smoke and test-matrix jobs on the eventual frozen and pushed handoff commit, including Ubuntu and macOS quarantine lanes",
+      "acceptance_effect": "The historical aa509d7 CI failure remains the last indexed terminal remote result; handoff acceptance requires a new terminal result bound to the final commit"
+    },
+    {
       "id": "EV-CODEX-E2E-GATE",
       "kind": "acceptance_gate",
       "result": "PENDING_NOT_LAUNCHED",
+      "runbook_ref": "docs/continuation/E2E_RUNBOOK.md#start-and-resume",
+      "target_commit": "d4834a468f7dad56b007b4450397289d4f767757",
       "scope": "Fresh packaged non-ground-truth audit through final report plus resume/fault evidence",
       "acceptance_effect": "Blocks tool completion"
     },
@@ -314,6 +349,8 @@
       "id": "EV-CLAUDE-E2E-GATE",
       "kind": "acceptance_gate",
       "result": "PENDING_NOT_LAUNCHED",
+      "runbook_ref": "docs/continuation/E2E_RUNBOOK.md#start-and-resume",
+      "target_commit": "d4834a468f7dad56b007b4450397289d4f767757",
       "scope": "Fresh packaged non-ground-truth audit through final report plus clean resume and route evidence",
       "acceptance_effect": "Blocks tool completion"
     },
@@ -355,7 +392,8 @@
     "The current runtime addendum supersedes p18-in-progress observations with the terminal failure observation.",
     "A future green package or E2E record may satisfy a gate but must not delete the earlier failure evidence.",
     "The p20 failure record is the current inventory and resume defect baseline; it does not erase earlier attempt evidence.",
-    "The 2026-09-07 local observations are mutable pre-E2E evidence based on aa509d7 plus uncommitted changes; none names or implies a final release-candidate commit.",
-    "The ninth-pass independent review is green; remote POSIX CI lanes, fresh authenticated install, both E2Es, and destination-side private transfer verification remain open."
+    "The 2026-09-07 local observations based on aa509d7 plus then-uncommitted changes remain historical scoped evidence; they do not become release receipts merely because their code was later committed.",
+    "17ddb029 is the public handoff parent and 7e8d82e is the last pushed public code baseline recorded here; pending post-7e8d82e work has no final SHA yet.",
+    "The ninth-pass independent review is green; current remote CI, fresh authenticated install/doctor, both pinned DODO E2Es, native POSIX runtime gates, and destination-side private transfer verification remain open."
   ]
 }

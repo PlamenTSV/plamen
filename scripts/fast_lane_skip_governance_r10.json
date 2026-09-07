@@ -44,7 +44,7 @@
     "unresolved_nodes_sha256": "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874",
     "quarantine_nodes_sha256": "29bdd0de57165822ae1472f57de64d272a30617a14c5fb654ac5ffae2158e98b",
     "source_path_roster_sha256": "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4",
-    "source_roster_sha256": "2dd2633a4c6e08168973732ef2d56b99bfca15f30042480ee69a8724678b61b8",
+    "source_roster_sha256": "badef23e1e9eb2a59b97d76b9866791d4d6865015f51c8a59cd471d3f450f7bf",
     "quarantine_source_path_roster_sha256": "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b",
     "quarantine_source_roster_sha256": "3165afe5458a71d9e820307a2a1b69a355986488871a53d2cd1bd84496fc7aad",
     "entry_roster_sha256": "ed7627a4d5705dac3529b91359eb964795bee193b24f5d416c442c05ae214fe1"
@@ -156,7 +156,7 @@
     },
     {
       "path": "scripts/test_semantic_runtime_dependency_r6_author_adversarial.py",
-      "sha256": "11218b4f560ff0ee27480c00ca58978625f64fe8680d7883a530227e43c19d22"
+      "sha256": "9448afbc8a249de61373eb4baafcf28c64125bec85130ae0493e36976e3d568d"
     },
     {
       "path": "scripts/test_semantic_wer_disposable_executor.py",

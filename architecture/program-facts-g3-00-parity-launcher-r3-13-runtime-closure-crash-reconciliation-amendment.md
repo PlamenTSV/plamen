@@ -143,7 +143,7 @@ ABI support, or production authority.
 
 | Path | Bytes | SHA-256 |
 |---|---:|---|
-| `scripts/program_facts_windows_native_launcher_r3_13.py` | 86,265 | `68c56c036ceed57ea75b316ad379a538c8314299229a2d4140a472fd77dcfbd8` |
+| `scripts/program_facts_windows_native_launcher_r3_13.py` | 86,265 | `32c7393d794556c33c1fc4e38350af48f202df5b1ddbb1b3dd1384b50dbc397f` |
 | `scripts/program_facts_r3_13_evidence_builder.py` | 1,993 | `07b45846a91042520a223e206ea9f2e1e4341d1927fcd3f485e1ef7e1c92d8dc` |
 | `test_r3_13_predecessor_red.py` | 4,181 | `20dcbb1ab58baa332377653da2f143593f44366b322f5ad498b0fc3baf20d46b` |
 | `test_r3_13_launcher_green.py` | 9,427 | `33cc983ffc2887243d65fa6c47861660d8953555f8cfbefebbc1d3eef7e0b00f` |
@@ -151,7 +151,7 @@ ABI support, or production authority.
 | `r3_13_fixture_native_execution_permit.v1.json` | 507 | `1cbec6e810df578b31325d2f115c9e0da5a4e0713c9e8b1a3a1bd746283346a0` |
 | `r3_13_runtime_closure.v1.json` | 42,269 | `8ea9b901bf3c62e1a1e0392d64a807ddd48f4b2020dc2020aba7141c2593a6d8` |
 | `scripts/test_isolated_execution_host.py` | 17,557 | `3db922c8cfbfcb7e08b16c1acd5e54caaab1d732174d51db795c01b009be1841` |
-| `scripts/test_semantic_runtime_dependency_r6_author_adversarial.py` | 5,738 | `11218b4f560ff0ee27480c00ca58978625f64fe8680d7883a530227e43c19d22` |
+| `scripts/test_semantic_runtime_dependency_r6_author_adversarial.py` | 6,315 | `9448afbc8a249de61373eb4baafcf28c64125bec85130ae0493e36976e3d568d` |
 | `test_r3_12_bounded_stage_red.py` | 2,655 | `da03435ef70b30be39f25dde8b1fa10d4b64f463ca36e7cd9065eda5f964437d` |
 
 ## Executed result ceiling

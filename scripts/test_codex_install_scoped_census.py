@@ -584,3 +584,300 @@ def test_fresh_secondary_volume_agents_survives_isolated_census_child(tmp_path):
             front._codex_native_close(writer_handle)
         if root_close is not None:
             root_close()
+
+
+def test_retained_directory_identity_uses_only_immutable_object_fields():
+    front = _load_front()
+    expected = {
+        "volume": 11, "file_id": 22, "attributes": 0x10,
+        "reparse_tag": 0, "links": 1, "size": 0,
+    }
+    ci_duplicate = dict(
+        expected, attributes=0x10 | 0x1 | 0x20, links=7, size=4096,
+    )
+
+    assert front._borrowed_retained_directory_identity_drift(
+        expected, ci_duplicate,
+    ) == ()
+    for field, value, label in (
+        ("volume", 12, "volume"),
+        ("file_id", 23, "file_id"),
+        ("attributes", 0, "object_class"),
+        ("attributes", 0x10 | 0x400, "object_class"),
+        ("reparse_tag", 0xA0000003, "reparse_tag"),
+    ):
+        observed = dict(ci_duplicate, **{field: value})
+        assert label in front._borrowed_retained_directory_identity_drift(
+            expected, observed,
+        )
+    assert front._borrowed_retained_directory_identity_drift(
+        expected, {**ci_duplicate, "file_id": True},
+    ) == ("observed_scalar",)
+    malformed = dict(ci_duplicate)
+    malformed.pop("size")
+    assert front._borrowed_retained_directory_identity_drift(
+        expected, malformed,
+    ) == ("field_set",)
+
+
+def test_census_child_accepts_ci_duplicate_metadata_but_rejects_object_drift(
+    monkeypatch,
+):
+    front = _load_front()
+    identities = {}
+    roots = []
+    for ordinal, typed_root in enumerate(("codex", "plamen", "source"), 1):
+        expected = {
+            "volume": 41, "file_id": ordinal, "attributes": 0x10,
+            "reparse_tag": 0, "links": 1, "size": 0,
+        }
+        handle = 100 + ordinal
+        roots.append({
+            "typed_root": typed_root,
+            "path": f"C:/retained/{typed_root}",
+            "handle": handle,
+            "identity": expected,
+        })
+        identities[handle] = dict(
+            expected, attributes=0x10 | 0x20, links=3, size=8192,
+        )
+    writer_identity = {
+        "volume": 41, "file_id": 50, "attributes": 0,
+        "reparse_tag": 0, "links": 1, "size": 1,
+    }
+    identities[150] = writer_identity
+    state = {
+        "schema": front._CODEX_INSTALL_CENSUS_SCHEMA,
+        "nonce": "1" * 32,
+        "label": "PRE_STAGE",
+        "include_rows": False,
+        "transaction_id": "2" * 32,
+        "writer_generation": "ci-runner",
+        "writer_handle": 150,
+        "writer_identity": writer_identity,
+        "installer_pid": 7,
+        "installer_started_100ns": 8,
+        "installer_parent_pid": 6,
+        "started_ns": 9,
+        "roots": roots,
+        "operation_policy": [],
+        "stable_b_keys": [],
+        "foreign_b_baseline": [],
+        "events": [],
+        "volatile": [],
+        "volatile_observations": {},
+        "volatile_manifest_sha256": "3" * 64,
+        "volatile_capability_secret": "4" * 64,
+        "interpreter_handle": 160,
+        "interpreter_identity": {"kind": "file", "sha256": "5" * 64},
+        "script_handle": 170,
+        "script_identity": {"kind": "file", "sha256": "6" * 64},
+    }
+    monkeypatch.setattr(
+        front, "_borrowed_reader_handle_identity", lambda handle: identities[handle],
+    )
+    monkeypatch.setattr(
+        front._CodexInstallMutationDispatcher,
+        "_native_handle_descriptor",
+        staticmethod(lambda _handle, **_kwargs: state["script_identity"]),
+    )
+
+    dispatcher = front._codex_install_census_dispatcher_from_state(state)
+    assert dispatcher.source_root == Path("C:/retained/source").absolute()
+
+    identities[103] = dict(identities[103], file_id=999)
+    with pytest.raises(RuntimeError, match="source root differs: file_id"):
+        front._codex_install_census_dispatcher_from_state(state)
+
+
+def test_old_backend_shim_requires_exact_authenticated_retained_generation(
+    tmp_path, monkeypatch,
+):
+    front = _load_front()
+    plamen_root = (tmp_path / "plamen").absolute()
+    plamen_root.mkdir()
+    (plamen_root / "plamen.py").write_bytes(b"# installed\n")
+    store_root = (tmp_path / "mcp-runtime").absolute()
+    request = "a" * 64
+    selection = {
+        "store_root": str(store_root),
+        "generation_id": "npm-" + request,
+        "receipt_sha256": "b" * 64,
+        "census_sha256": "c" * 64,
+        "request_sha256": request,
+        "generation_policy_sha256": "d" * 64,
+        "backend_launches": {"claude": {}},
+    }
+    raw = front._backend_shim_bytes(
+        "claude", plamen_root, sys.executable, selection=selection,
+    )
+    calls = []
+
+    class Runtime:
+        @staticmethod
+        def validate_generation_authority_fast(root, generation_id, **kwargs):
+            authority = (
+                str(Path(root).absolute()), generation_id,
+                kwargs["expected_receipt_sha256"],
+                kwargs["expected_census_sha256"],
+                kwargs["expected_request_sha256"],
+                kwargs["expected_generation_policy_sha256"],
+            )
+            calls.append(authority)
+            if authority != (
+                str(store_root), "npm-" + request, "b" * 64,
+                "c" * 64, request, "d" * 64,
+            ):
+                raise RuntimeError("unknown retained generation")
+
+    monkeypatch.setattr(
+        front, "_validated_committed_install_receipt",
+        lambda: {"plamen_root": str(plamen_root)},
+    )
+    monkeypatch.setattr(
+        front, "_mcp_receipt_callbacks",
+        lambda _receipt: (None, object(), "e" * 64, "f" * 64),
+    )
+    monkeypatch.setattr(front, "_mcp_runtime_module", lambda _root: Runtime())
+
+    assert front._authenticated_retained_backend_shim(
+        raw, backend="claude", plamen_root=plamen_root,
+        interpreter=sys.executable, store_root=store_root,
+    )
+    assert len(calls) == 1
+
+    unknown = raw.replace(("npm-" + request).encode(), ("npm-" + "9" * 64).encode())
+    unknown = unknown.replace(
+        f'"--request-sha256" "{request}"'.encode(),
+        f'"--request-sha256" "{"9" * 64}"'.encode(),
+    )
+    assert not front._authenticated_retained_backend_shim(
+        unknown, backend="claude", plamen_root=plamen_root,
+        interpreter=sys.executable, store_root=store_root,
+    )
+    assert not front._authenticated_retained_backend_shim(
+        raw.replace(b"authenticated", b"marker-only"),
+        backend="claude", plamen_root=plamen_root,
+        interpreter=sys.executable, store_root=store_root,
+    )
+    foreign_root = (tmp_path / "foreign").absolute()
+    foreign_root.mkdir()
+    (foreign_root / "plamen.py").write_bytes(b"# foreign\n")
+    assert not front._authenticated_retained_backend_shim(
+        raw, backend="claude", plamen_root=foreign_root,
+        interpreter=sys.executable, store_root=store_root,
+    )
+
+
+def test_backend_shim_plan_admits_only_authenticated_old_generation_without_mutation(
+    tmp_path, monkeypatch,
+):
+    front = _load_front()
+    plamen_root = (tmp_path / "plamen").absolute()
+    plamen_root.mkdir()
+    (plamen_root / "plamen.py").write_bytes(b"# installed\n")
+    store_root = (tmp_path / "mcp-runtime").absolute()
+    shim_root = (tmp_path / "bin").absolute()
+    shim_root.mkdir()
+    shim_paths = {
+        backend: shim_root / f"plamen-{backend}.cmd"
+        for backend in ("claude", "codex")
+    }
+
+    def selection(seed):
+        hexadecimal = "0123456789abcdef"
+        shifted = lambda offset: hexadecimal[(int(seed, 16) + offset) % 16]
+        return {
+            "store_root": str(store_root),
+            "generation_id": "npm-" + seed * 64,
+            "receipt_sha256": shifted(1) * 64,
+            "census_sha256": shifted(2) * 64,
+            "request_sha256": seed * 64,
+            "generation_policy_sha256": shifted(3) * 64,
+            "backend_launches": {"claude": {}, "codex": {}},
+        }
+
+    old = selection("1")
+    current = selection("5")
+    old_raw = front._backend_shim_bytes(
+        "claude", plamen_root, sys.executable, selection=old,
+    )
+    current_raw = front._backend_shim_bytes(
+        "claude", plamen_root, sys.executable, selection=current,
+    )
+    current_legacy_raw = front._backend_shim_bytes(
+        "claude", plamen_root, sys.executable, selection=current,
+        suppress_bytecode=False,
+    )
+    assert old_raw not in {current_raw, current_legacy_raw}
+    shim_paths["claude"].write_bytes(old_raw)
+    shim_paths["codex"].write_bytes(front._backend_shim_bytes(
+        "codex", plamen_root, sys.executable, selection=current,
+    ))
+
+    class Runtime:
+        signature_valid = True
+
+        def validate_generation_authority_fast(self, root, generation_id, **kwargs):
+            if not self.signature_valid:
+                raise RuntimeError("retained generation signature differs")
+            authority = (
+                str(Path(root).absolute()), generation_id,
+                kwargs["expected_receipt_sha256"],
+                kwargs["expected_census_sha256"],
+                kwargs["expected_request_sha256"],
+                kwargs["expected_generation_policy_sha256"],
+            )
+            expected = (
+                str(store_root), old["generation_id"], old["receipt_sha256"],
+                old["census_sha256"], old["request_sha256"],
+                old["generation_policy_sha256"],
+            )
+            if authority != expected:
+                raise RuntimeError("retained generation authority differs")
+
+    runtime = Runtime()
+    monkeypatch.setattr(
+        front, "_validated_mcp_current_selection",
+        lambda **_kwargs: current,
+    )
+    monkeypatch.setattr(
+        front, "_backend_shim_path", lambda backend: shim_paths[backend],
+    )
+    monkeypatch.setattr(
+        front, "_validated_committed_install_receipt",
+        lambda: {"plamen_root": str(plamen_root)},
+    )
+    monkeypatch.setattr(
+        front, "_mcp_receipt_callbacks",
+        lambda _receipt: (None, object(), "e" * 64, "f" * 64),
+    )
+    monkeypatch.setattr(front, "_mcp_runtime_module", lambda _root: runtime)
+
+    plan = front._backend_cli_shim_plan(plamen_root, sys.executable)
+    assert plan["claude"][0] == shim_paths["claude"]
+    assert plan["claude"][1] == current_raw
+    assert plan["claude"][2]["kind"] == "exact-existing"
+    assert plan["claude"][2]["raw"] == old_raw
+    assert shim_paths["claude"].read_bytes() == old_raw
+
+    rejected = []
+    runtime.signature_valid = False
+    rejected.append(old_raw)
+    runtime.signature_valid = True
+    bad_hash = front._backend_shim_bytes(
+        "claude", plamen_root, sys.executable,
+        selection={**old, "receipt_sha256": "0" * 64},
+    )
+    unknown = selection("9")
+    unknown_raw = front._backend_shim_bytes(
+        "claude", plamen_root, sys.executable, selection=unknown,
+    )
+    rejected.extend((bad_hash, unknown_raw, b"foreign backend command\r\n"))
+
+    for index, candidate in enumerate(rejected):
+        runtime.signature_valid = index != 0
+        shim_paths["claude"].write_bytes(candidate)
+        with pytest.raises(RuntimeError, match="foreign backend shim"):
+            front._backend_cli_shim_plan(plamen_root, sys.executable)
+        assert shim_paths["claude"].read_bytes() == candidate

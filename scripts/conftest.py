@@ -51,7 +51,7 @@ for _entry in (_SCRIPTS_DIR, str(_REPO_ROOT)):
 # (2) Exact, source-bound quarantine authority for the release fast lane.
 _FAST_GOVERNANCE_SCHEMA = "plamen.fast-lane-skip-governance.v1"
 _FAST_GOVERNANCE_MANIFEST_SHA256 = (
-    "7a70bdb3e04061d5f14fdb464ef48763cbbcf3b1bb23e7193c32024c0c3ec803"
+    "a3817408deba9d6a89ee4f0766baf438e521919bcb96dc80d2a2187457673561"
 )
 _FAST_GOVERNANCE_MANIFEST = Path(__file__).with_name(
     "fast_lane_skip_governance_r10.json"
@@ -140,7 +140,7 @@ _FAST_GOVERNANCE_HASHES = {
         "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4"
     ),
     "source_roster_sha256": (
-        "2dd2633a4c6e08168973732ef2d56b99bfca15f30042480ee69a8724678b61b8"
+        "badef23e1e9eb2a59b97d76b9866791d4d6865015f51c8a59cd471d3f450f7bf"
     ),
     "unresolved_nodes_sha256": (
         "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874"

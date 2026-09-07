@@ -354,6 +354,67 @@ def _borrowed_reader_handle_identity(handle):
     }
 
 
+_BORROWED_RETAINED_IDENTITY_FIELDS = frozenset({
+    "volume", "file_id", "attributes", "reparse_tag", "links", "size",
+})
+
+
+def _borrowed_retained_directory_identity_drift(expected, observed):
+    """Return immutable retained-directory identity drift, if any.
+
+    ``GetFileInformationByHandle`` exposes directory allocation size, link
+    count, and non-type attribute flags.  Those values are live metadata, not
+    object identity, and Windows filesystems/runners may report a newer value
+    through an inherited duplicate of the *same* kernel object.  Admission is
+    instead bound to the volume/file ID pair and the immutable directory /
+    no-reparse classification.  Full contents are still independently
+    censused through the retained handle.
+    """
+    if (
+        not isinstance(expected, dict) or not isinstance(observed, dict)
+        or set(expected) != _BORROWED_RETAINED_IDENTITY_FIELDS
+        or set(observed) != _BORROWED_RETAINED_IDENTITY_FIELDS
+    ):
+        return ("field_set",)
+    malformed = []
+    for label, value in (("expected", expected), ("observed", observed)):
+        if any(
+            type(value[field]) is not int or value[field] < 0
+            for field in _BORROWED_RETAINED_IDENTITY_FIELDS
+        ):
+            malformed.append(label + "_scalar")
+        if value.get("volume", 0) <= 0 or value.get("file_id", 0) <= 0:
+            malformed.append(label + "_object_id")
+        if value.get("links", 0) < 1:
+            malformed.append(label + "_links")
+    if malformed:
+        return tuple(malformed)
+    drift = [
+        field for field in ("volume", "file_id", "reparse_tag")
+        if expected[field] != observed[field]
+    ]
+    # FILE_ATTRIBUTE_DIRECTORY and FILE_ATTRIBUTE_REPARSE_POINT are the only
+    # attribute bits that participate in the retained object classification.
+    classification_mask = 0x10 | 0x400
+    if (
+        expected["attributes"] & classification_mask
+        != observed["attributes"] & classification_mask
+    ):
+        drift.append("object_class")
+    if (
+        not expected["attributes"] & 0x10
+        or not observed["attributes"] & 0x10
+    ):
+        drift.append("not_directory")
+    if (
+        expected["reparse_tag"] != 0 or observed["reparse_tag"] != 0
+        or expected["attributes"] & 0x400
+        or observed["attributes"] & 0x400
+    ):
+        drift.append("reparse")
+    return tuple(dict.fromkeys(drift))
+
+
 def _borrowed_reader_handle_bytes(handle, *, maximum=1024 * 1024):
     """Read one retained ordinary file before replaceable helpers exist."""
     identity = _borrowed_reader_handle_identity(handle)
@@ -17002,6 +17063,56 @@ def _publish_public_launcher(path, raw, state, *, mode, admitted_targets=()):
     return None
 
 
+def _authenticated_retained_backend_shim(
+    raw, *, backend, plamen_root, interpreter, store_root,
+):
+    """Admit one exact older shim only through its signed generation lineage."""
+    if backend not in {"claude", "codex"} or not isinstance(raw, bytes):
+        return False
+    try:
+        executable = str(Path(interpreter or sys.executable).resolve(strict=True))
+        target = str(
+            (Path(plamen_root).absolute() / "plamen.py").resolve(strict=True)
+        )
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+    digest = r"(?P<{}>[0-9a-f]{{64}})"
+    pattern = (
+        re.escape("@echo off\r\n")
+        + re.escape("REM Plamen authenticated immutable backend launcher v1.\r\n")
+        + re.escape(f'"{executable}"')
+        + r"(?: -B)? "
+        + re.escape(f'"{target}" "backend-launch" "--backend" "{backend}" ')
+        + r'"--generation" "npm-(?P<request>[0-9a-f]{64})" '
+        + r'"--receipt-sha256" "' + digest.format("receipt") + r'" '
+        + r'"--census-sha256" "' + digest.format("census") + r'" '
+        + r'"--request-sha256" "(?P=request)" '
+        + r'"--policy-sha256" "' + digest.format("policy") + r'" "--" %\*\r\n'
+    )
+    match = re.fullmatch(pattern, text)
+    if match is None:
+        return False
+    generation_id = "npm-" + match.group("request")
+    try:
+        committed = _validated_committed_install_receipt()
+        if Path(committed["plamen_root"]).absolute() != Path(plamen_root).absolute():
+            return False
+        _signer, verifier, _public, _key_id = _mcp_receipt_callbacks(committed)
+        runtime = _mcp_runtime_module(committed["plamen_root"])
+        runtime.validate_generation_authority_fast(
+            str(Path(store_root).absolute()), generation_id,
+            verifier=verifier,
+            expected_receipt_sha256=match.group("receipt"),
+            expected_census_sha256=match.group("census"),
+            expected_request_sha256=match.group("request"),
+            expected_generation_policy_sha256=match.group("policy"),
+        )
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        return False
+    return True
+
+
 def _backend_cli_shim_plan(
     plamen_root, interpreter=None, *, return_selection=False,
 ):
@@ -17031,7 +17142,14 @@ def _backend_cli_shim_plan(
             # shim is already byte-identical to ``raw``.  A generation change
             # must fail closed and leave the old shim available for explicit
             # recovery rather than guessing ownership from prose.
-            if observed not in {raw, legacy_raw}:
+            if (
+                observed not in {raw, legacy_raw}
+                and not _authenticated_retained_backend_shim(
+                    observed, backend=backend, plamen_root=plamen_root,
+                    interpreter=interpreter,
+                    store_root=selection["store_root"],
+                )
+            ):
                 raise RuntimeError("refusing to replace foreign backend shim: " + str(path))
             state = _launcher_existing_state(
                 path, observed, "existing backend shim",
@@ -21385,12 +21503,14 @@ class _CodexInstallMutationDispatcher:
         retained = self._root_identity[str(root)]
         handle = self._root_handles[str(root)][0]
         handle_value = _borrowed_reader_handle_identity(handle)
-        handle_keys = ("volume", "file_id", "attributes", "reparse_tag")
-        if (
-            any(handle_value.get(key) != retained["handle"].get(key) for key in handle_keys)
-            or handle_value["volume"] <= 0
-        ):
-            raise RuntimeError("Codex install dispatcher retained root drift")
+        drift = _borrowed_retained_directory_identity_drift(
+            retained["handle"], handle_value,
+        )
+        if drift:
+            raise RuntimeError(
+                "Codex install dispatcher retained root drift: "
+                + ",".join(drift)
+            )
         if _borrowed_reader_handle_identity(self.writer_handle) != self.anchor_identity:
             raise RuntimeError("Codex install dispatcher writer identity drift")
 
@@ -21634,8 +21754,17 @@ class _CodexInstallMutationDispatcher:
         before = _borrowed_reader_handle_identity(handle)
         names = _codex_native_directory_names(handle)
         after = _borrowed_reader_handle_identity(handle)
-        if before != after or after != self._root_identity[str(root)]["handle"]:
-            raise RuntimeError("native dispatcher root changed during census")
+        drift = tuple(dict.fromkeys((
+            *_borrowed_retained_directory_identity_drift(before, after),
+            *_borrowed_retained_directory_identity_drift(
+                self._root_identity[str(root)]["handle"], after,
+            ),
+        )))
+        if drift:
+            raise RuntimeError(
+                "native dispatcher root changed during census: "
+                + ",".join(drift)
+            )
         return names
 
     def _native_census(self, typed_root):
@@ -21764,12 +21893,16 @@ class _CodexInstallMutationDispatcher:
             retained["components"][:-1],
         ):
             observed = _codex_native_exact_component(handle, component)
-            stable_keys = ("volume", "file_id", "attributes", "reparse_tag")
-            if (
-                any(observed[key] != expected[key] for key in stable_keys)
-                or observed["volume"] != root_volume
-            ):
-                raise RuntimeError("native dispatcher retained parent drift")
+            drift = list(_borrowed_retained_directory_identity_drift(
+                expected, observed,
+            ))
+            if observed["volume"] != root_volume:
+                drift.append("root_volume")
+            if drift:
+                raise RuntimeError(
+                    "native dispatcher retained parent drift: "
+                    + ",".join(dict.fromkeys(drift))
+                )
 
     def _release_event(self, event):
         retained = event.pop("_native", None)
@@ -23003,12 +23136,23 @@ def _enumerate_codex_install_volatile_universe(dispatcher, *, label):
     installer_parent = getattr(dispatcher, "_installer_parent_pid", os.getppid())
     for typed_root, retained in dispatcher._volatile_roots.items():
         handle = retained["handle"]; rule = retained["rule"]
-        if (
-            _borrowed_reader_handle_identity(handle) != retained["identity"]
-            or _borrowed_reader_handle_identity(retained["parent_handle"])
-            != retained["parent_identity"]
-        ):
-            raise RuntimeError("install volatile retained root drift")
+        root_drift = _borrowed_retained_directory_identity_drift(
+            retained["identity"], _borrowed_reader_handle_identity(handle),
+        )
+        parent_drift = _borrowed_retained_directory_identity_drift(
+            retained["parent_identity"],
+            _borrowed_reader_handle_identity(retained["parent_handle"]),
+        )
+        if root_drift or parent_drift:
+            raise RuntimeError(
+                "install volatile retained root drift: "
+                + ";".join(
+                    label + "=" + ",".join(drift)
+                    for label, drift in (
+                        ("root", root_drift), ("parent", parent_drift),
+                    ) if drift
+                )
+            )
         joined_root = _codex_native_open_relative(
             retained["parent_handle"], retained["path"].name,
             directory=True, create=False,
@@ -23016,8 +23160,15 @@ def _enumerate_codex_install_volatile_universe(dispatcher, *, label):
             share_delete=False,
         )
         try:
-            if _borrowed_reader_handle_identity(joined_root) != retained["identity"]:
-                raise RuntimeError("install volatile root parent join differs")
+            joined_drift = _borrowed_retained_directory_identity_drift(
+                retained["identity"],
+                _borrowed_reader_handle_identity(joined_root),
+            )
+            if joined_drift:
+                raise RuntimeError(
+                    "install volatile root parent join differs: "
+                    + ",".join(joined_drift)
+                )
         finally:
             _codex_native_close(joined_root)
         names = _codex_native_directory_names(handle)
@@ -23671,8 +23822,14 @@ def _codex_install_census_dispatcher_from_state(state):
                 f"install census child retained {typed_root} root {handle} is unavailable: "
                 f"{type(exc).__name__}:{exc}"
             ) from exc
-        if observed_root_identity != row["identity"]:
-            raise RuntimeError("install census child retained root differs")
+        root_drift = _borrowed_retained_directory_identity_drift(
+            row["identity"], observed_root_identity,
+        )
+        if root_drift:
+            raise RuntimeError(
+                f"install census child retained {typed_root} root differs: "
+                + ",".join(root_drift)
+            )
         root_values[typed_root] = path
         dispatcher._root_handles[str(path)] = (handle, lambda: None)
         dispatcher._root_identity[str(path)] = {"handle": row["identity"]}
@@ -23723,12 +23880,23 @@ def _codex_install_census_dispatcher_from_state(state):
         if typed_root in dispatcher._volatile_roots:
             raise RuntimeError("install census child volatile root duplicates")
         handle = int(row["handle"]); parent_handle = int(row["parent_handle"])
-        if (
-            _borrowed_reader_handle_identity(handle) != row["identity"]
-            or _borrowed_reader_handle_identity(parent_handle)
-            != row["parent_identity"]
-        ):
-            raise RuntimeError("install census child volatile authority differs")
+        handle_drift = _borrowed_retained_directory_identity_drift(
+            row["identity"], _borrowed_reader_handle_identity(handle),
+        )
+        parent_drift = _borrowed_retained_directory_identity_drift(
+            row["parent_identity"],
+            _borrowed_reader_handle_identity(parent_handle),
+        )
+        if handle_drift or parent_drift:
+            details = []
+            if handle_drift:
+                details.append("root=" + ",".join(handle_drift))
+            if parent_drift:
+                details.append("parent=" + ",".join(parent_drift))
+            raise RuntimeError(
+                "install census child volatile authority differs: "
+                + ";".join(details)
+            )
         dispatcher._volatile_roots[typed_root] = {
             "path": Path(row["path"]).absolute(), "handle": handle,
             "parent_handle": parent_handle, "identity": row["identity"],

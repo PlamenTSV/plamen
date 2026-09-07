@@ -4,7 +4,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "plamen.py",
-      "sha256": "8b853b3b8d024a57baddafa6c085b50306fa0546c99bfc495108a1c27e2e3608"
+      "sha256": "c5961ef30f383f21f6f8e0c630945ffdc59c66d39e5b82fbfa913e2fa6474fa1"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -508,7 +508,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/conftest.py",
-      "sha256": "6b89aee4273483d69f948e28e1f64995dbb97de59752fbd07797803efc540e45"
+      "sha256": "f3c77b33912336bfedc43d0ebe5a4ca6fa2ba73ff0c4e2c54b9ba37714758f39"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1138,7 +1138,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/program_facts_windows_native_launcher_r3_13.py",
-      "sha256": "68c56c036ceed57ea75b316ad379a538c8314299229a2d4140a472fd77dcfbd8"
+      "sha256": "32c7393d794556c33c1fc4e38350af48f202df5b1ddbb1b3dd1384b50dbc397f"
     },
     {
       "digest_mode": "utf8-lf-v1",

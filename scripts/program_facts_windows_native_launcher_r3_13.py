@@ -108,7 +108,7 @@ REQUIRED_INPUTS: tuple[dict[str, object], ...] = (
     {"path": "review_fixtures/program_facts_runtime_gate3/g3_00_schema_launcher/r3_13_windows_native_candidate/r3_13_fixture_native_execution_permit.v1.json", "size": 507, "sha256": FIXTURE_NATIVE_EXECUTION_PERMIT_SHA256},
     {"path": "review_fixtures/program_facts_runtime_gate3/g3_00_schema_launcher/r3_13_windows_native_candidate/test_r3_13_predecessor_red.py", "size": 4181, "sha256": "20dcbb1ab58baa332377653da2f143593f44366b322f5ad498b0fc3baf20d46b"},
     {"path": "scripts/test_isolated_execution_host.py", "size": 17557, "sha256": "3db922c8cfbfcb7e08b16c1acd5e54caaab1d732174d51db795c01b009be1841"},
-    {"path": "scripts/test_semantic_runtime_dependency_r6_author_adversarial.py", "size": 5738, "sha256": "11218b4f560ff0ee27480c00ca58978625f64fe8680d7883a530227e43c19d22"},
+    {"path": "scripts/test_semantic_runtime_dependency_r6_author_adversarial.py", "size": 6315, "sha256": "9448afbc8a249de61373eb4baafcf28c64125bec85130ae0493e36976e3d568d"},
     {"path": "review_fixtures/program_facts_runtime_gate3/g3_00_schema_launcher/r3_12_windows_native_candidate/test_r3_12_bounded_stage_red.py", "size": 2655, "sha256": "da03435ef70b30be39f25dde8b1fa10d4b64f463ca36e7cd9065eda5f964437d"},
 )
 

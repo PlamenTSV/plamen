@@ -190,9 +190,19 @@ authority per decision and no silent loss across all live transformations.
 
 ### Current pre-E2E checkpoint (2026-09-07)
 
-The mutable `Plamen-v3` worktree has reached the following local checkpoint;
-these observations are based on committed base `aa509d7` plus uncommitted
-changes and are not a release-candidate identity or completion claim:
+The public branch has advanced beyond the historical `aa509d7` failure:
+
+- `17ddb029244337491a6477f553f1db39f81671c8` is the comprehensive public
+  source, hardening, research, and handoff freeze.
+- `7e8d82eadadb9f1f655fac947b092d83daa433a3` is the last pushed public code
+  baseline recorded here. It adds the cross-volume Codex install-census repair
+  and its regression coverage.
+- Additional source/test and handoff-document repairs after `7e8d82e` remain
+  mutable until reviewed, committed, pushed, and verified from a fresh clone.
+  No final release-candidate SHA exists in this document yet.
+
+The following observations predate that final freeze and retain their original
+scope; commit presence does not silently upgrade them into release evidence:
 
 - The eighth-pass parent recovery slice recorded 138 passes and six expected
   Windows-host POSIX or special-case skips.
@@ -210,9 +220,15 @@ changes and are not a release-candidate identity or completion claim:
   It independently passed real-constant 32,769-entry state and journal cases
   plus eight authority poison, race, crash, and matching-overflow probes. The
   source-freeze review gate is closed; commit-bound and runtime gates remain.
-- Neither the Codex nor Claude E2E has launched. Both gates remain pending, and
+- Neither release-candidate Codex nor Claude E2E has launched. Both gates remain pending, and
   the private research archive still requires destination-side decryption and
   member-hash verification on the Mac.
+
+The exact target identity, configs, distinct destination paths, start/resume
+commands, logs, checkpoints, and acceptance criteria are frozen in
+[`E2E_RUNBOOK.md`](E2E_RUNBOOK.md). Do not launch from `7e8d82e` while later
+release repairs remain uncommitted; first install and authenticate the final
+pushed source/package identity from a fresh clone.
 
 On one frozen source/package identity:
 

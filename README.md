@@ -500,7 +500,9 @@ Ecosystem (language) is auto-detected and **auto-corrected at startup** with no 
 | Authenticated updates | [docs/updating.md](docs/updating.md) |
 | macOS source development | [docs/development/macos.md](docs/development/macos.md) |
 | Move development to a Mac | [docs/development/machine-migration.md](docs/development/machine-migration.md) |
+| Plamen-v3 continuation index | [docs/continuation/README.md](docs/continuation/README.md) |
 | Plamen-v3 continuation goal | [docs/continuation/GOAL.md](docs/continuation/GOAL.md) |
+| Pinned release-candidate E2E runbook | [docs/continuation/E2E_RUNBOOK.md](docs/continuation/E2E_RUNBOOK.md) |
 | Platform dependencies | [docs/dependencies.md](docs/dependencies.md) |
 | Audit mode comparison | [docs/audit-modes.md](docs/audit-modes.md) |
 | Pipeline architecture | [docs/architecture.md](docs/architecture.md) |
