@@ -397,3 +397,190 @@ def test_census_ignores_unrelated_codex_root_but_protects_managed_adjacency(
             codex_close()
         if plamen_close is not None:
             plamen_close()
+
+
+def test_snapshot_parent_chain_separates_census_and_mutation_rights(monkeypatch):
+    """Read census must never ask an intermediate directory for write rights."""
+    front = _load_front()
+    dispatcher = front._CodexInstallMutationDispatcher.__new__(
+        front._CodexInstallMutationDispatcher
+    )
+    root = Path("C:/synthetic-retained-root")
+    dispatcher._root_handles = {str(root): (100, lambda: None)}
+    opened = []
+
+    def identity(handle):
+        return {
+            "volume": 7, "file_id": int(handle), "attributes": 0x10,
+            "reparse_tag": 0,
+        }
+
+    def open_relative(parent, component, **kwargs):
+        opened.append((parent, component, kwargs))
+        return 101 + len(opened)
+
+    monkeypatch.setattr(front, "_borrowed_reader_handle_identity", identity)
+    monkeypatch.setattr(front, "_codex_native_open_relative", open_relative)
+    monkeypatch.setattr(
+        front, "_codex_native_exact_component",
+        lambda handle, _component: identity(handle),
+    )
+    monkeypatch.setattr(front, "_codex_native_close", lambda _handle: None)
+
+    _parent, read_handles, _identities = dispatcher._native_parent_chain(
+        root, ("agents", "recon.toml"), mutation=False,
+    )
+    dispatcher._close_native_chain(read_handles)
+    _parent, mutation_handles, _identities = dispatcher._native_parent_chain(
+        root, ("agents", "recon.toml"), mutation=True,
+    )
+    dispatcher._close_native_chain(mutation_handles)
+
+    read_access = opened[0][2]["access"]
+    mutation_access = opened[1][2]["access"]
+    assert read_access == 0x00000001 | 0x00000020 | 0x00000080 | 0x00100000
+    assert read_access & (0x00000002 | 0x00000004 | 0x00000040) == 0
+    assert mutation_access & (0x00000002 | 0x00000004 | 0x00000040) == (
+        0x00000002 | 0x00000004 | 0x00000040
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native install dispatcher is Windows-only")
+def test_read_parent_chain_blocks_swap_and_rejects_reparse(
+    tmp_path, monkeypatch,
+):
+    front = _load_front()
+    source_root = (tmp_path / "source").absolute()
+    agents = source_root / "agents"
+    outside = (tmp_path / "outside").absolute()
+    agents.mkdir(parents=True)
+    outside.mkdir()
+    (agents / "worker.toml").write_bytes(b"trusted")
+    (outside / "worker.toml").write_bytes(b"external")
+    linked = source_root / "linked"
+    try:
+        os.symlink(outside, linked, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    root_handle = None
+    root_close = None
+    opened = []
+    dispatcher = front._CodexInstallMutationDispatcher.__new__(
+        front._CodexInstallMutationDispatcher
+    )
+    try:
+        root_handle, root_close = front._codex_dispatcher_open_root(
+            source_root, full_mutation=False,
+        )
+        dispatcher._root_handles = {str(source_root): (root_handle, root_close)}
+        dispatcher._root_identity = {
+            str(source_root): {
+                "handle": front._borrowed_reader_handle_identity(root_handle)
+            }
+        }
+        native_open = front._codex_native_open_relative
+        swap_errors = []
+
+        def attempt_swap(parent, component, **kwargs):
+            handle = native_open(parent, component, **kwargs)
+            if component == "agents":
+                try:
+                    os.replace(agents, source_root / "agents-displaced")
+                except OSError as exc:
+                    swap_errors.append(exc)
+                else:  # pragma: no cover - would be a security regression
+                    raise AssertionError("retained no-delete-share parent was displaced")
+            return handle
+
+        monkeypatch.setattr(front, "_codex_native_open_relative", attempt_swap)
+        _parent, opened, identities = dispatcher._native_parent_chain(
+            source_root, ("agents", "worker.toml"), mutation=False,
+        )
+        assert len(identities) == 1
+        assert swap_errors
+        dispatcher._close_native_chain(opened)
+        opened = []
+
+        with pytest.raises(RuntimeError, match="reparse/invalid component"):
+            dispatcher._native_parent_chain(
+                source_root, ("linked", "worker.toml"), mutation=False,
+            )
+        assert (agents / "worker.toml").read_bytes() == b"trusted"
+        assert (outside / "worker.toml").read_bytes() == b"external"
+        assert linked.is_symlink()
+    finally:
+        if opened:
+            dispatcher._close_native_chain(opened)
+        if root_close is not None:
+            root_close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native install census is Windows-only")
+def test_fresh_secondary_volume_agents_survives_isolated_census_child(tmp_path):
+    """Exercise the exact D-volume/fresh-clone census path that regressed."""
+    front = _load_front()
+    default_source = Path(
+        r"D:\Programming\PlamenV3Release\17ddb0292443\plamen-source"
+    )
+    source_root = Path(
+        os.environ.get("PLAMEN_TEST_SECONDARY_SOURCE", str(default_source))
+    ).absolute()
+    if not (source_root / "agents").is_dir():
+        pytest.skip("no secondary-volume Plamen source fixture")
+    if source_root.drive.casefold() == ROOT.drive.casefold():
+        pytest.skip("secondary-volume source fixture is not on another volume")
+
+    codex_root = (tmp_path / "codex").absolute()
+    plamen_root = (tmp_path / "plamen").absolute()
+    codex_root.mkdir()
+    plamen_root.mkdir()
+    anchor = codex_root / front._CODEX_INSTALL_ANCHOR
+    anchor.write_bytes(b"isolated-census-writer")
+    source_rows = front._codex_install_source_rows(source_root)
+
+    root_handle = writer_handle = None
+    root_close = None
+    dispatcher = None
+    try:
+        root_handle, root_close = front._codex_dispatcher_open_root(
+            codex_root, full_mutation=True,
+        )
+        writer_handle = front._codex_native_open_relative(
+            root_handle, anchor.name, directory=False, create=False,
+            access=0x80000000 | 0x40000000 | 0x00000080 | 0x00100000,
+            share_delete=False,
+        )
+        root_close()
+        root_close = None
+        dispatcher = front._CodexInstallMutationDispatcher(
+            front._CODEX_INSTALL_CONTEXT_AUTHORITY,
+            transaction_id="9" * 32,
+            writer_generation="secondary-volume-regression",
+            writer_handle=writer_handle,
+            source_root=source_root,
+            plamen_root=plamen_root,
+            codex_home=codex_root,
+            source_rows=source_rows,
+        )
+        capture = front._capture_codex_install_sentinel_isolated(
+            dispatcher=dispatcher,
+            source_rows=source_rows,
+            transaction_components=(".plamen-install-transactions", "9" * 32),
+            label="PRE_STAGE",
+            include_rows=False,
+        )
+        assert capture["unknown_count"] == 0
+        assert capture["b_count"] >= len(dispatcher._stable_b_keys)
+        agents = dispatcher._current(
+            dispatcher.address("source", ("agents",))
+        )
+        assert agents["kind"] == "directory"
+        assert agents["reparse_tag"] == 0
+    finally:
+        if dispatcher is not None and not dispatcher.closed:
+            dispatcher.close()
+        if writer_handle is not None:
+            front._codex_native_close(writer_handle)
+        if root_close is not None:
+            root_close()

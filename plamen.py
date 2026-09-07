@@ -20144,7 +20144,7 @@ def _codex_dispatcher_open_root(path, *, full_mutation=True):
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateFileW.restype = wintypes.HANDLE
         access = (
-            0x80000000 | 0x40000000 | 0x00000040 | 0x00100000
+            0x80000000 | 0x40000000 | 0x00000020 | 0x00000040 | 0x00100000
             if full_mutation else
             # Read/traverse only: backend-launch may run inside the owned
             # low-integrity scope, where ADD_FILE/ADD_SUBDIRECTORY would be
@@ -21405,8 +21405,16 @@ class _CodexInstallMutationDispatcher:
         if error is not None:
             raise error
 
-    def _native_parent_chain(self, root, components):
-        """Retain every existing parent relative to the retained typed root."""
+    def _native_parent_chain(self, root, components, *, mutation=True):
+        """Retain every existing parent relative to the retained typed root.
+
+        Census/snapshot traversal is deliberately least-privilege.  Requiring
+        add/delete-child access while only observing a tree makes a retained
+        read handle unusable in the isolated census process (and needlessly
+        broadens that process' authority).  Mutation callers retain the
+        original parent rights; both paths remain handle-relative and retain
+        the same per-component identity/reparse checks.
+        """
         root_handle = self._root_handles[str(root)][0]
         root_identity = _borrowed_reader_handle_identity(root_handle)
         opened = []
@@ -21414,12 +21422,15 @@ class _CodexInstallMutationDispatcher:
         parent_identities = []
         try:
             for component in components[:-1]:
+                access = (
+                    0x00000001 | 0x00000020 | 0x00000080 | 0x00100000
+                    if not mutation else
+                    0x00000001 | 0x00000002 | 0x00000004
+                    | 0x00000020 | 0x00000040 | 0x00000080 | 0x00100000
+                )
                 handle = _codex_native_open_relative(
                     parent, component, directory=True, create=False,
-                    access=(
-                        0x00000001 | 0x00000002 | 0x00000004
-                        | 0x00000020 | 0x00000040 | 0x00000080 | 0x00100000
-                    ),
+                    access=access,
                     share_delete=False,
                 )
                 opened.append(handle)
@@ -21532,7 +21543,10 @@ class _CodexInstallMutationDispatcher:
     def _native_snapshot(
         self, root, components, *, delete_access=False, write_attributes=False,
     ):
-        parent, opened, identities = self._native_parent_chain(root, components)
+        parent, opened, identities = self._native_parent_chain(
+            root, components,
+            mutation=bool(delete_access or write_attributes),
+        )
         leaf = None
         try:
             value, leaf = self._native_descriptor_from_parent(
@@ -23400,7 +23414,14 @@ def _codex_install_census_duplicate_for_child(handle):
     ]
     kernel32.DuplicateHandle.restype = wintypes.BOOL
     duplicate = wintypes.HANDLE()
+    # FILE_LIST_DIRECTORY/FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE.
+    # Directory handles additionally retain FILE_TRAVERSE.  Bit 0x20 means
+    # FILE_EXECUTE on a file, so asking for it on writer/script file handles
+    # would itself exceed their read-only grant.
+    source_identity = _borrowed_reader_handle_identity(handle)
     desired = 0x00000001 | 0x00000080 | 0x00100000
+    if source_identity.get("attributes", 0) & 0x10:
+        desired |= 0x00000020
     if not kernel32.DuplicateHandle(
         kernel32.GetCurrentProcess(), int(handle),
         kernel32.GetCurrentProcess(), ctypes.byref(duplicate),
@@ -23858,7 +23879,7 @@ def _codex_install_validate_census_ready(
 
 
 def _codex_install_read_census_ready(
-    process, *, launcher_started_100ns, timeout=30.0,
+    process, *, launcher_started_100ns, timeout=180.0,
 ):
     import queue
     result = queue.Queue(maxsize=1)
