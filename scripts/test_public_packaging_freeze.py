@@ -100,6 +100,10 @@ _PUBLIC_SOURCE_ONLY_TEST_SUPPORT = {
     "scripts/test_support/claude_runtime_test_support.py",
     "scripts/test_support/program_facts_r2_1_b0_red_support.py",
 }
+_EMBEDDED_RUNTIME_SUBMODULE_ROOTS = (
+    "custom-mcp/farofino-mcp",
+    "custom-mcp/slither-mcp",
+)
 _REQUIRED_POLICY_FILES = {
     "verification_policy/ci_advisory_evidence.v1.json",
     "verification_policy/ci_dependency_authority.v1.json",
@@ -377,6 +381,39 @@ def _prune_forbidden_index(env: dict[str, str]) -> set[str]:
     return set(forbidden)
 
 
+def _stage_public_paths(paths: list[str], env: dict[str, str]) -> None:
+    """Stage ordinary paths plus typed runtime files nested in gitlinks."""
+
+    embedded = {
+        root: sorted(
+            path for path in paths if path.startswith(root.rstrip("/") + "/")
+        )
+        for root in _EMBEDDED_RUNTIME_SUBMODULE_ROOTS
+    }
+    embedded_paths = {path for rows in embedded.values() for path in rows}
+    ordinary = [path for path in paths if path not in embedded_paths]
+    for offset in range(0, len(ordinary), 64):
+        _git("add", "--", *ordinary[offset : offset + 64], env=env)
+
+    # A Git tree cannot contain both a gitlink and ordinary files beneath the
+    # same path. The release archive intentionally embeds only the typed,
+    # digest-bound MCP runtime files, while an ordinary clone retains the
+    # pinned submodule. Mutate only the temporary package index.
+    for root, rows in embedded.items():
+        if not rows:
+            continue
+        _git(
+            "rm", "-q", "-r", "-f", "--cached", "--ignore-unmatch",
+            "--", root, env=env,
+        )
+        for path in rows:
+            blob = _git("hash-object", "-w", "--", path, env=env).stdout.strip()
+            _git(
+                "update-index", "--add", "--cacheinfo", "100644", blob, path,
+                env=env,
+            )
+
+
 def _temporary_public_archive(tmp_path: Path) -> Path:
     """Build an intended-public archive without touching the real Git index."""
     real_index_before = _real_index_digest()
@@ -397,8 +434,7 @@ def _temporary_public_archive(tmp_path: Path) -> Path:
     _prune_forbidden_index(env)
 
     paths = _public_worktree_paths()
-    for offset in range(0, len(paths), 64):
-        _git("add", "--", *paths[offset : offset + 64], env=env)
+    _stage_public_paths(paths, env)
     runtime_paths = list(
         TOOLCHAIN_CONTROL.TOOLCHAIN_RUNTIME_REQUIRED_FILES
     )
@@ -407,14 +443,7 @@ def _temporary_public_archive(tmp_path: Path) -> Path:
             raise AssertionError(
                 f"typed runtime asset cannot enter public archive: {path}"
             )
-    for offset in range(0, len(runtime_paths), 64):
-        _git(
-            "add",
-            "-f",
-            "--",
-            *runtime_paths[offset : offset + 64],
-            env=env,
-        )
+    _stage_public_paths(runtime_paths, env)
     indexed = set(_temporary_index_paths(env))
     missing_runtime = set(runtime_paths) - indexed
     if missing_runtime:

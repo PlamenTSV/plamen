@@ -632,8 +632,8 @@ def test_receipt_includes_both_mcp_config_authorities() -> None:
     assert {"mcp.json.example", "codex-adapter/config.toml.example"}.issubset(
         INSTALLER._CODEX_INSTALL_MCP_FILES
     )
-    assert INSTALLER._CODEX_INSTALL_SOURCE_COUNT == 769
-    assert INSTALLER._CODEX_INSTALL_RUNTIME_COUNT == 738
+    assert INSTALLER._CODEX_INSTALL_SOURCE_COUNT == 823
+    assert INSTALLER._CODEX_INSTALL_RUNTIME_COUNT == 792
     assert "scripts/plamen_mcp_runtime.py" in INSTALLER._CODEX_INSTALL_MCP_FILES
 
 

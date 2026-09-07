@@ -55,8 +55,8 @@ _PLAMEN_BORROWED_READER_FIELDS = frozenset({
     "command_kind", "mode", "expected", "inherited_handles", "one_use",
     "nested_child_authority", "signature",
 })
-_CODEX_INSTALL_SOURCE_COUNT = 769
-_CODEX_INSTALL_RUNTIME_COUNT = 738
+_CODEX_INSTALL_SOURCE_COUNT = 823
+_CODEX_INSTALL_RUNTIME_COUNT = 792
 _CODEX_INSTALL_ADAPTER_COUNT = 31
 _CLAUDE_PROJECTION_LEGACY_LOCK_RAW = b"\x00"
 _CLAUDE_PROJECTION_LEGACY_PUBLIC = "0" * 64

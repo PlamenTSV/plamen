@@ -24,8 +24,8 @@ _CODEX_KEEPER_IDLE_SECONDS = 15.0
 _CODEX_KEEPER_ABSOLUTE_SECONDS = 1800.0
 _CODEX_KEEPER_PROGRESS_SECONDS = 1.0
 _CODEX_INSTALL_TERMINAL_STATE = "COMMITTED"
-_CODEX_INSTALL_SOURCE_COUNT = 769
-_CODEX_INSTALL_RUNTIME_COUNT = 738
+_CODEX_INSTALL_SOURCE_COUNT = 823
+_CODEX_INSTALL_RUNTIME_COUNT = 792
 _CODEX_INSTALL_ADAPTER_COUNT = 31
 # The unsigned-lock migration predicate authenticates the one historical
 # predecessor package, not the mutable denominator of the package being
@@ -3861,6 +3861,34 @@ def _early_refuse_unsupported_posix_production_command():
 _early_refuse_unsupported_posix_production_command()
 
 PLAMEN_RUNTIME_ASSETS = (
+    {
+        "kind": "runtime-data",
+        "mode": "tree",
+        "root": "custom-mcp/farofino-mcp/farofino_mcp",
+        "pattern": "*.py",
+        "max_files": 16,
+    },
+    {
+        "kind": "runtime-data",
+        "mode": "tree",
+        "root": "custom-mcp/slither-mcp/slither_mcp",
+        "pattern": "*.py",
+        "max_files": 128,
+    },
+    {
+        "kind": "runtime-data",
+        "mode": "tree",
+        "root": "custom-mcp/solana-fender/solana_fender_mcp",
+        "pattern": "*.py",
+        "max_files": 16,
+    },
+    {
+        "kind": "runtime-data",
+        "mode": "tree",
+        "root": "custom-mcp/unified-vuln-db/unified_vuln",
+        "pattern": "*.py",
+        "max_files": 64,
+    },
     {
         "kind": "runtime-data",
         "mode": "file",
@@ -19157,7 +19185,7 @@ def _ensure_posix_plamen_command(*, user_root=None, plamen_root=None,
 def _sync_codex_adapter_source_cache(receipt):
     """Preserve the adapter sources needed by installed-copy self-repair.
 
-    The committed 769-row transaction installs adapter files into ~/.codex,
+    The committed 823-row transaction installs adapter files into ~/.codex,
     while an installed `plamen install --codex` uses ~/.plamen as its source.
     Keep a byte-exact, separately backed-up cache under
     ~/.plamen/codex-adapter so that source reconstruction cannot depend on
@@ -19433,10 +19461,10 @@ def _codex_install_doctor_issues(codex_home=None, plamen_root=None):
         or type(receipt.get("adapter_count")) is not int
         or receipt.get("adapter_count") != _CODEX_INSTALL_ADAPTER_COUNT
     ):
-        issues.append("Codex install receipt projection is not 738/31/769")
+        issues.append("Codex install receipt projection is not 792/31/823")
     rows = receipt.get("rows")
     if not isinstance(rows, list) or len(rows) != _CODEX_INSTALL_SOURCE_COUNT:
-        issues.append("Codex install receipt denominator is not 769")
+        issues.append("Codex install receipt denominator is not 823")
         rows = []
     for row in rows:
         if not isinstance(row, dict):
@@ -19540,7 +19568,7 @@ def _raw_rows_sha256(rows):
 
 
 def _codex_install_source_rows(source_root=None, *, failpoint=None, hook_context=None):
-    """Return the source-exact 738 runtime + 31 Codex adapter rows."""
+    """Return the source-exact 792 runtime + 31 Codex adapter rows."""
     source_root = Path(source_root or PLAMEN_HOME).absolute()
     closure_raw = _codex_install_committed_read(
         source_root,
@@ -19549,8 +19577,8 @@ def _codex_install_source_rows(source_root=None, *, failpoint=None, hook_context
     )[1]
     closure = _strict_json_bytes(closure_raw)
     assets = closure.get("assets")
-    if not isinstance(assets, list) or len(assets) != 300:
-        raise RuntimeError("runtime closure must contain exactly 300 typed assets")
+    if not isinstance(assets, list) or len(assets) != 354:
+        raise RuntimeError("runtime closure must contain exactly 354 typed assets")
     runtime_paths = {
         "verification_policy/toolchain_runtime_closure.v1.json",
         "verification_policy/__init__.py",
@@ -21245,7 +21273,7 @@ class _CodexInstallMutationDispatcher:
             not isinstance(source_rows, list)
             or len(source_rows) != _CODEX_INSTALL_SOURCE_COUNT
         ):
-            raise RuntimeError("Codex install dispatcher requires exact 769 plan")
+            raise RuntimeError("Codex install dispatcher requires exact 823 plan")
         self.transaction_id = transaction_id
         self.writer_generation = writer_generation
         self.writer_handle = writer_handle
@@ -22879,7 +22907,7 @@ def _capture_codex_install_batch_boundary(
     # Production batch checkpoints bind the exact broker event stream and all
     # retained root/writer identities.  Full A/B/C namespace censuses already
     # bracket every phase and terminal publication; repeating the entire
-    # 769-file source/install census before and after first/middle/last rows
+    # 823-file source/install census before and after first/middle/last rows
     # made Windows installs and recovery take tens of minutes without adding a
     # distinct security boundary.  Contract-failpoint tests retain the full
     # census so adversarial mutation hooks still exercise every edge.
@@ -24889,7 +24917,7 @@ def _install_codex_package_transaction(
     *, source_root=None, plamen_root=None, codex_home=None, failpoint=None,
     _transaction_context=None, enable_claude_projection=True,
 ):
-    """Stage, backup, commit, verify, and receipt the exact 769-file package."""
+    """Stage, backup, commit, verify, and receipt the exact 823-file package."""
     source_root = Path(source_root or PLAMEN_HOME).absolute()
     plamen_root = Path(plamen_root or os.path.expanduser("~/.plamen")).absolute()
     codex_home = Path(codex_home or os.path.expanduser("~/.codex")).absolute()
@@ -27820,7 +27848,7 @@ def run_doctor():
         # requirement on POSIX.
         installed_codex = Path(installed_runtime["address"]).parent / ".codex"
         integrity_started = time.monotonic()
-        w("  Checking committed package integrity (769 files; this may take up to a minute)...\n")
+        w("  Checking committed package integrity (823 files; this may take up to a minute)...\n")
         sys.stdout.flush()
         installed_issues = _codex_install_doctor_issues(
             codex_home=installed_codex,
@@ -27835,7 +27863,7 @@ def run_doctor():
             w("\n")
             return 1
         ok(
-            "Codex installed package: exact committed 769-row authority "
+            "Codex installed package: exact committed 823-row authority "
             f"({time.monotonic() - integrity_started:.1f}s)"
         )
 
@@ -27983,7 +28011,7 @@ def run_doctor():
         fail("~/.plamen missing")
 
     # R134: an installed Codex path is authoritative only when the complete
-    # committed 769-row transaction, junction, admission anchor, and wizard
+    # committed 823-row transaction, junction, admission anchor, and wizard
     # references validate.  This is purely local byte/metadata inspection.
     _codex_root = Path(os.path.expanduser("~/.codex"))
     try:
@@ -28002,7 +28030,7 @@ def run_doctor():
             for _issue in _install_issues:
                 fail(_issue)
         else:
-            ok("Codex installed package: exact committed 769-row authority")
+            ok("Codex installed package: exact committed 823-row authority")
 
     # 2. Required platform CLIs. Node/npm/npx are intentionally absent: the
     # committed generation authenticates its own exact Node/npm closure.

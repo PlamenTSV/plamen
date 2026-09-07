@@ -188,18 +188,20 @@ authority per decision and no silent loss across all live transformations.
 
 ## 7. Run release-candidate validation
 
-### Current pre-E2E checkpoint (2026-09-07)
+### Current handoff/E2E checkpoint (2026-09-08)
 
 The public branch has advanced beyond the historical `aa509d7` failure:
 
 - `17ddb029244337491a6477f553f1db39f81671c8` is the comprehensive public
   source, hardening, research, and handoff freeze.
-- `7e8d82eadadb9f1f655fac947b092d83daa433a3` is the last pushed public code
-  baseline recorded here. It adds the cross-volume Codex install-census repair
-  and its regression coverage.
-- Additional source/test and handoff-document repairs after `7e8d82e` remain
-  mutable until reviewed, committed, pushed, and verified from a fresh clone.
-  No final release-candidate SHA exists in this document yet.
+- `d42b851e706d30ab4f921f1384fc9fea290a0114` is the last attempted Codex E2E
+  baseline. Its fresh Windows install-smoke proved that the authenticated
+  package closure omitted all four Python MCP source packages; an older local
+  install had masked that clean-machine defect.
+- The current repair adds the exact 54 Python MCP runtime files to the typed
+  closure and changes the governed package denominator to 823 rows: 792
+  runtime rows plus 31 Codex-adapter rows. It is not a handoff candidate until
+  committed, pushed, and revalidated from the remote branch.
 
 The following observations predate that final freeze and retain their original
 scope; commit presence does not silently upgrade them into release evidence:
@@ -210,7 +212,7 @@ scope; commit presence does not silently upgrade them into release evidence:
   expected Windows-host POSIX or special-case skips. Its adjacent compatibility
   suites recorded 261 passes.
 - The final local source/package check exited zero after a 56,637-file runtime
-  census and reconciled the exact 769-row package: 738 runtime rows plus 31
+  census and reconciled the exact 823-row package: 792 runtime rows plus 31
   Codex-adapter rows.
 - The regenerated runtime-closure and public-package slice recorded 13 passes.
 - The CI quarantine-lane governance and selection slice recorded 10 passes.
@@ -220,13 +222,15 @@ scope; commit presence does not silently upgrade them into release evidence:
   It independently passed real-constant 32,769-entry state and journal cases
   plus eight authority poison, race, crash, and matching-overflow probes. The
   source-freeze review gate is closed; commit-bound and runtime gates remain.
-- Neither release-candidate Codex nor Claude E2E has launched. Both gates remain pending, and
-  the private research archive still requires destination-side decryption and
-  member-hash verification on the Mac.
+- The `d42b851` Codex attempt completed Recon with explicit dependency-research
+  debt, then was intentionally stopped with its checkpoint preserved. It is
+  useful partial evidence, not a release-candidate pass. Claude remains
+  unlaunched. The private research archive still requires destination-side
+  decryption and member-hash verification on the Mac.
 
 The exact target identity, configs, distinct destination paths, start/resume
 commands, logs, checkpoints, and acceptance criteria are frozen in
-[`E2E_RUNBOOK.md`](E2E_RUNBOOK.md). Do not launch from `7e8d82e` while later
+[`E2E_RUNBOOK.md`](E2E_RUNBOOK.md). Do not launch from `d42b851` while later
 release repairs remain uncommitted; first install and authenticate the final
 pushed source/package identity from a fresh clone.
 

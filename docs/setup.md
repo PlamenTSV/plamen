@@ -71,7 +71,7 @@ Windows PowerShell, with `python` resolving to CPython 3.12:
 python plamen.py install
 ```
 
-The installer first validates the exact governed 769-row source closure. It
+The installer first validates the exact governed 823-row source closure. It
 then performs a transactional publication to `~/.plamen`, commits an
 authenticated installation receipt, creates the private Python runtime,
 materializes managed Node/npm and both backends, and publishes the signed

@@ -6,15 +6,14 @@ It is an active engineering record, not a release-completion claim.
 ## Current source boundary
 
 - Branch: `Plamen-v3`
-- Last pushed public code baseline recorded by this handoff:
-  `7e8d82eadadb9f1f655fac947b092d83daa433a3`
-- Its parent handoff freeze is
-  `17ddb029244337491a6477f553f1db39f81671c8`.
-- Work after `7e8d82e` may still be pending in the source worktree. Do not invent
-  or record a final release-candidate SHA until those changes are reviewed,
-  committed, pushed, and verified from a fresh clone.
-- Codex and Claude release-candidate E2Es remain pending. The exact reproducible
-  procedure is in [E2E_RUNBOOK.md](E2E_RUNBOOK.md).
+- `d42b851e706d30ab4f921f1384fc9fea290a0114` is the last attempted Codex
+  E2E baseline, not the handoff branch identity. That attempt completed Recon
+  with recorded dependency-research debt and was then intentionally stopped.
+- The authoritative handoff candidate is the fetched `origin/Plamen-v3` tip.
+  Record `git rev-parse HEAD` after cloning and require it to match
+  `git rev-parse origin/Plamen-v3`; do not substitute the historical baseline.
+- Neither backend has a complete release-candidate E2E. The exact reproducible
+  start and resume procedure is in [E2E_RUNBOOK.md](E2E_RUNBOOK.md).
 - Native Linux and macOS production audits remain unsupported. macOS is a
   source-development handoff only until the POSIX gates in
   [GOAL.md](GOAL.md) close.

@@ -105,13 +105,20 @@ def test_current_source_roster_excludes_generated_bytecode_and_is_exact():
         *("codex-adapter/" + path for path in sorted(adapter_paths)),
     ]
 
-    assert len(closure["assets"]) == 300
-    assert len(source_paths) == front._CODEX_INSTALL_SOURCE_COUNT == 769
-    assert len(runtime_paths) == front._CODEX_INSTALL_RUNTIME_COUNT == 738
+    assert len(closure["assets"]) == 354
+    assert len(source_paths) == front._CODEX_INSTALL_SOURCE_COUNT == 823
+    assert len(runtime_paths) == front._CODEX_INSTALL_RUNTIME_COUNT == 792
     assert len(adapter_paths) == front._CODEX_INSTALL_ADAPTER_COUNT == 31
     assert source_paths.count("scripts/claude_worker_prompt_consistency.py") == 1
     assert source_paths.count("scripts/windows_private_execution_root.py") == 1
     assert source_paths.count("scripts/late_committed_invariant_authority.py") == 1
+    for prefix in (
+        "custom-mcp/farofino-mcp/farofino_mcp/",
+        "custom-mcp/slither-mcp/slither_mcp/",
+        "custom-mcp/solana-fender/solana_fender_mcp/",
+        "custom-mcp/unified-vuln-db/unified_vuln/",
+    ):
+        assert any(path.startswith(prefix) for path in runtime_paths)
     assert not any(
         "__pycache__" in {component.casefold() for component in path.split("/")}
         or path.casefold().endswith(".pyc")
@@ -520,12 +527,10 @@ def test_read_parent_chain_blocks_swap_and_rejects_reparse(
 def test_fresh_secondary_volume_agents_survives_isolated_census_child(tmp_path):
     """Exercise the exact D-volume/fresh-clone census path that regressed."""
     front = _load_front()
-    default_source = Path(
-        r"D:\Programming\PlamenV3Release\17ddb0292443\plamen-source"
-    )
-    source_root = Path(
-        os.environ.get("PLAMEN_TEST_SECONDARY_SOURCE", str(default_source))
-    ).absolute()
+    configured_source = os.environ.get("PLAMEN_TEST_SECONDARY_SOURCE")
+    if not configured_source:
+        pytest.skip("no explicitly configured secondary-volume source fixture")
+    source_root = Path(configured_source).absolute()
     if not (source_root / "agents").is_dir():
         pytest.skip("no secondary-volume Plamen source fixture")
     if source_root.drive.casefold() == ROOT.drive.casefold():

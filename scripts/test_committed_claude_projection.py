@@ -76,7 +76,7 @@ def _receipt(source: Path, installed: Path, codex: Path):
 
 
 def _build_borrowed_legacy_candidate(module, tmp_path, *, probe_early_admission=False):
-    """Build the current 769-row package carrying a legacy migration."""
+    """Build the current 823-row package carrying a legacy migration."""
     user_root = (tmp_path / "user").absolute()
     source = (tmp_path / "legacy-source").absolute()
     installed = user_root / ".plamen"

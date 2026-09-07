@@ -1,9 +1,12 @@
 # Pinned DODO release-candidate E2E runbook
 
-Status: **PENDING — neither release-candidate E2E has launched**
+Status: **INCOMPLETE — the Codex baseline attempt was intentionally paused
+after Recon; Claude has not launched**
 
 These audits validate pipeline execution without comparing against private or
-ground-truth findings. The Python V2 driver is the sole phase sequencer. Never
+ground-truth findings. The V3 product retains `plamen_driver.py` and its V2
+phase/checkpoint protocol as internal compatibility names; that Python driver
+is the sole phase sequencer. Never
 manually run or replace recon, breadth, depth, verification, or report phases.
 
 ## Frozen target identity
@@ -21,8 +24,10 @@ report is not proof-grade compiler or PoC closure while that debt remains.
 
 ## Release and destination preconditions
 
-1. Freeze and push the final Plamen source commit. The currently recorded
-   public code baseline is `7e8d82e`, not a final release candidate.
+1. Freeze and push the final Plamen source commit. The paused Codex attempt ran
+   from `d42b851e706d30ab4f921f1384fc9fea290a0114`, which is not a final release
+   candidate because its clean Windows install-smoke exposed an omitted Python
+   MCP source closure.
 2. Clone that exact final commit into a new source directory, run the governed
    Windows install once, and require `plamen doctor` to authenticate the exact
    source/package receipt.

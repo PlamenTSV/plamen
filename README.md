@@ -14,6 +14,12 @@ Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **So
 > packaged Codex and Claude E2E runs. Do not interpret the version heading as a
 > completed release or benchmark result.
 >
+> **Why some internals still say V2.** `plamen_driver.py`, the phase-graph
+> protocol, and `_v2_checkpoint.json` retain their historical compatibility
+> names so interrupted audits and evidence tooling remain readable. They are
+> internal format/engine identifiers, not the product version: the branch,
+> installer, launchers, methodology package, and handoff are Plamen V3.0.0.
+>
 > **Plamen-v3 platform status.** The governed production install and audit
 > runtime is currently release-qualified on Windows. Native Linux and macOS
 > production installation and E2E auditing are **not yet supported**: V3's
@@ -67,7 +73,7 @@ Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **So
 > truncation is only a web-UI listing limit. The source tree intentionally keeps
 > tests, fault fixtures, architecture records, and continuation research beside
 > the implementation. A production install publishes the exact governed
-> 769-row closure (738 runtime rows plus 31 Codex-adapter rows); normal CLI/audit
+> 823-row closure (792 runtime rows plus 31 Codex-adapter rows); normal CLI/audit
 > launch does not recursively enumerate every source test or research file.
 > Dependency and integrity census work is concentrated at install/update time.
 
@@ -157,7 +163,7 @@ must add `--yes`; model fallback remains disabled unless
 > **Important**: Use `plamen` after installation. Invoke `plamen.py install`
 > only from a complete source release; never execute or edit installed internals.
 
-The installer validates the exact governed 769-row source closure before any
+The installer validates the exact governed 823-row source closure before any
 publication. It transactionally commits the authenticated package at
 `~/.plamen`, a private hash-locked Python environment, managed Node.js
 24.20.0/npm 11.19.0, and exact Claude Code 2.1.252 and Codex 0.152.0 payloads.
@@ -280,7 +286,7 @@ hardening paths:
   assembly project accepted evidence. Report workers cannot silently mint,
   delete, omit, or rerate canonical findings.
 - **Packaging is source-governed.** The current installer admits an exact
-  769-row source closure, hash-locked Python wheels, reviewed Node/npm and
+  823-row source closure, hash-locked Python wheels, reviewed Node/npm and
   backend payloads, immutable installed bytes, and receipt-bound selections
   instead of ambient tools or an editable installed checkout.
 - **Claude and Codex share logical denominators.** Claude retains its PTY and

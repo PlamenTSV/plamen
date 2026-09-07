@@ -3,8 +3,332 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "custom-mcp/farofino-mcp/farofino_mcp/__init__.py",
+      "sha256": "872563b1869a2fbe6abbf041502eee40946021f32b5ad0c04dc94dc5b5831eca"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/farofino-mcp/farofino_mcp/__main__.py",
+      "sha256": "3512d190e4482b4e8ff72bbfcb3eb68f82a7fe34bfd64d0cc693de1c93c1ba45"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/__init__.py",
+      "sha256": "7ebf44250445053871119189b3bb2e39112777371452eedc2cf705a2883f1251"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/artifacts.py",
+      "sha256": "3bc8cab33da03c93ff270ae06f41dfa89e1794597a05cb01bebb603a0cf3c016"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/callees.py",
+      "sha256": "6bb676592391000d97dab0697c329dab26d0085c5d7096630c2916733cbf32dd"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/client/__init__.py",
+      "sha256": "3ee0ea777ece500b0b41fad0493a624b6943932e45e222f3536b4fa27eaef942"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/client/mcp_client.py",
+      "sha256": "1993c603b2f3f5e6016da4ef90c96974e1b0e3a63e42c76ca5d01476aab2ad98"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/constants.py",
+      "sha256": "801101a2908af0c2d56c832861bbd050b6b5cc3bcf10751b6574de50297e355e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/facts.py",
+      "sha256": "334270b4325d5039b64f6a8b2435bfe526df603dc4460c814961a9f8a5a2fd9e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/metrics.py",
+      "sha256": "3cd60ff53b2feb887bc98bc64230fed48a1f1b478432a7ddf78065c91a09f858"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/pagination.py",
+      "sha256": "a00b49258f576d5056a9385cec9b0ac807299724f92aaf1f62fb3c427bd21305"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/search.py",
+      "sha256": "f8f2cfeff3cc827528392df2da61f29cd1f81e3a9c00b6705b089b0f53e903a5"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/server.py",
+      "sha256": "22d250d5b0c8d8b4eb1a6c0ad3b2e214739cfb8ef343cd4ac9c90f333df91f2e"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/slither_wrapper.py",
+      "sha256": "5a9a195257a5032f9dc6e3ea6d9bd5850d43bd28bd456a531d4a514b94875612"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tool_registry.py",
+      "sha256": "c4abf92f47e339c4d676c79952f15f420ac5c1fe7d6faed39b024bdd8197e83c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/__init__.py",
+      "sha256": "3c2736b9425127539d345096717d32e7ee15296ef72515d71c95053e30203635"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/analyze_events.py",
+      "sha256": "ed9446919548cd330d31799c45de77d7dda96b0b790be453044ab7aa84f40dc3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/analyze_low_level_calls.py",
+      "sha256": "21861266184620b161d3bc199c30e3bf8a0d8ae26b60a8910108d56c0a63df56"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/analyze_modifiers.py",
+      "sha256": "070a6de53251534830430a1a3cf2c67d812f26fa0c9d03219956a3a977407770"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/analyze_state_variables.py",
+      "sha256": "5557fc17a7d9922eb13ad63156e8b66412e42fe10595472bb70f64a407796ff1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/export_call_graph.py",
+      "sha256": "e2936e62cb199809c704d9a0b9206b2b9b9d435ce2f349020ac000e37d43ccc7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/find_dead_code.py",
+      "sha256": "b3ae3ee1a1c5c1893078b8084ed1ecbee6363d89d9069c4bd2ab259a3d5a8337"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/get_contract.py",
+      "sha256": "f57e6fd73d6579a271620a1ed539eb14058bbd3f7afcefb982e0b71ec785f8d5"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/get_contract_dependencies.py",
+      "sha256": "84b223ac3f80b0d3c3284f528cebb275e5c8fba9b0a03b41b0fdbc269ce7239a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/get_contract_source.py",
+      "sha256": "2e8a7c45836b88c8b731ee610d4a603d46cdfe518c429dbce69845584f1a9048"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/get_derived_contracts.py",
+      "sha256": "c9bd1e6a47c5ff9b8cf7229beb9e2361208f4fa3e7dad00cea7db0746dc7efb3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/get_function_source.py",
+      "sha256": "45aac716f5016c6d32d444d304fa5d2f84abfec690231ad96b16fa584ab99247"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/get_inherited_contracts.py",
+      "sha256": "88198ddb99f4e84570a9075211b3bbe73ebe47dbd55ebf7b359a5f342dceb03f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/get_project_overview.py",
+      "sha256": "743bca8f954271a3f59e4d5af186dc3e330360519efa9dd47c9894fd244048d9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/get_storage_layout.py",
+      "sha256": "c3c5a9715d773b7d5751f4ff79e1beedbaa7460a792ec9b3365dd0dac7c80d08"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/list_contracts.py",
+      "sha256": "69fb43cbc02459a00ac16e0a1ead458b6721e143cbc91c0634142359c693939a"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/list_detectors.py",
+      "sha256": "f1541d217ac4a974757631b3051d68bfcd1064fd9970a01830c46ac33b0c82c9"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/list_function_callees.py",
+      "sha256": "7c0fc790d923062666be9b28c400d4624e8603d9a2d00419e878fc410aa1c9b6"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/list_function_callers.py",
+      "sha256": "77ba70b6a48440356e0ed051f552017f2b3e7a2fc6bda7a3717bfca8726732e4"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/list_function_implementations.py",
+      "sha256": "dd307e2c2cc15f21313a741f72d33c749f199be71dfc7c37db931cca6d037095"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/list_functions.py",
+      "sha256": "a45989adc496603df6a938883da449e66202dd8254f9a369e868781386f8d199"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/run_detectors.py",
+      "sha256": "b93d1b0ee7223cb3591e8514ef0c1ca0662912906f49fc375dc2a6ae5818c959"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/search_contracts.py",
+      "sha256": "f75c667b1e97c6e3c4551ec7687e9f1cba8469344c95e757f9986039ff84f6bc"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/tools/search_functions.py",
+      "sha256": "78faf41ba74b9c66e28f95f3243396cff71d385df594bc8e64255d2e94bb4cae"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/slither-mcp/slither_mcp/types.py",
+      "sha256": "6b4716da9636250d2bafc904d8aaac8261bff87b8dca2eb7aed57ed844b56c36"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/solana-fender/solana_fender_mcp/__init__.py",
+      "sha256": "00bb92dce74c19cf4818eee8e8e05a4296f0641fda5314962f9b2b208b261a38"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/solana-fender/solana_fender_mcp/__main__.py",
+      "sha256": "937a34cabeadc1912a91f04f4bd7f1767d036653446ab1ccd24c12adc9a41b43"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/__init__.py",
+      "sha256": "365a66e628a9dac1be0d6d6caa8ebe6920a4b3bbe535452ea21daf698e1e5d1f"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/chunking.py",
+      "sha256": "de1a7e703099096a5f6e91feca124bdf46d0d7bdf3ea389f94d315a132c3aa5c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/database.py",
+      "sha256": "1d608d162e66b98825f8d305b3c35d613626ab4ef2f86428f5c9968c990fa163"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/indexer.py",
+      "sha256": "77b6ea06819c33b66479a3cecd9aa6de35035230ab29c35d1b616823b7bcda44"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/schema.py",
+      "sha256": "8b26665fb7160e3a23d5189e6e7ee12266118844d1df05e33706073bec16c9e2"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/server.py",
+      "sha256": "6d17119a9a61c829e103cc7ca795efedeea7a6b8722e589f2d1da1b1bb2d4d1d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/sources/__init__.py",
+      "sha256": "4546bbe2cbbd577c8dc48e660a26fa99040c52ed7affe1e51cb06b269bbcc0f7"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/sources/defihacklabs.py",
+      "sha256": "f6cdfeae84ba1aae728ea27376be2fb05dd0a949445d267734d6055aa701515c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/sources/huggingface.py",
+      "sha256": "1c2f65f27c7422cc76db97ee6b5b1e11caf962548ad578ee317e88704d966439"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/sources/immunefi.py",
+      "sha256": "a6b7bf0b384a3a41a659f6f2959d677416f1d644add6680567737b3990ef42ac"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/sources/immunefi_competitions.py",
+      "sha256": "15222a4fffa051425f6f43439357a9a892f9ee43a6b5ed7f8ee0ac7472daffa3"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
+      "path": "custom-mcp/unified-vuln-db/unified_vuln/sources/solodit.py",
+      "sha256": "11aab309848c1cd5cb262f0654673e55cad43a74b761d40fd7ac2ba8ce7b7a3c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "plamen.py",
-      "sha256": "c5961ef30f383f21f6f8e0c630945ffdc59c66d39e5b82fbfa913e2fa6474fa1"
+      "sha256": "659d189450a37eaa8a02e4c7955a9221bef9f9ff115a86fcdc73bd9813c38e19"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -898,7 +1222,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_driver.py",
-      "sha256": "0948a2d9b57eac39e6e26903eca2722b20451ebc4061d16a468fdddd3aeae3d5"
+      "sha256": "81e3c15ea5dcc2cb30c1bc0b4ce443e7d274f4bd20630b5042eb5afb7f39785b"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1823,6 +2147,60 @@
     "scripts/worker_transaction.py"
   ],
   "files": [
+    "custom-mcp/farofino-mcp/farofino_mcp/__init__.py",
+    "custom-mcp/farofino-mcp/farofino_mcp/__main__.py",
+    "custom-mcp/slither-mcp/slither_mcp/__init__.py",
+    "custom-mcp/slither-mcp/slither_mcp/artifacts.py",
+    "custom-mcp/slither-mcp/slither_mcp/callees.py",
+    "custom-mcp/slither-mcp/slither_mcp/client/__init__.py",
+    "custom-mcp/slither-mcp/slither_mcp/client/mcp_client.py",
+    "custom-mcp/slither-mcp/slither_mcp/constants.py",
+    "custom-mcp/slither-mcp/slither_mcp/facts.py",
+    "custom-mcp/slither-mcp/slither_mcp/metrics.py",
+    "custom-mcp/slither-mcp/slither_mcp/pagination.py",
+    "custom-mcp/slither-mcp/slither_mcp/search.py",
+    "custom-mcp/slither-mcp/slither_mcp/server.py",
+    "custom-mcp/slither-mcp/slither_mcp/slither_wrapper.py",
+    "custom-mcp/slither-mcp/slither_mcp/tool_registry.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/__init__.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/analyze_events.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/analyze_low_level_calls.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/analyze_modifiers.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/analyze_state_variables.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/export_call_graph.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/find_dead_code.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/get_contract.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/get_contract_dependencies.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/get_contract_source.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/get_derived_contracts.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/get_function_source.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/get_inherited_contracts.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/get_project_overview.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/get_storage_layout.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/list_contracts.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/list_detectors.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/list_function_callees.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/list_function_callers.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/list_function_implementations.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/list_functions.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/run_detectors.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/search_contracts.py",
+    "custom-mcp/slither-mcp/slither_mcp/tools/search_functions.py",
+    "custom-mcp/slither-mcp/slither_mcp/types.py",
+    "custom-mcp/solana-fender/solana_fender_mcp/__init__.py",
+    "custom-mcp/solana-fender/solana_fender_mcp/__main__.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/__init__.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/chunking.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/database.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/indexer.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/schema.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/server.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/sources/__init__.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/sources/defihacklabs.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/sources/huggingface.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/sources/immunefi.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/sources/immunefi_competitions.py",
+    "custom-mcp/unified-vuln-db/unified_vuln/sources/solodit.py",
     "plamen.py",
     "plamen_l1/__init__.py",
     "plamen_l1/sarif_merge.py",
