@@ -59,7 +59,7 @@ def _receipt(source: Path, installed: Path, codex: Path):
 
 
 def _build_borrowed_legacy_candidate(module, tmp_path, *, probe_early_admission=False):
-    """Build the current 762-row package carrying a legacy migration."""
+    """Build the current 769-row package carrying a legacy migration."""
     user_root = (tmp_path / "user").absolute()
     source = (tmp_path / "legacy-source").absolute()
     installed = user_root / ".plamen"
@@ -86,7 +86,7 @@ def _build_borrowed_legacy_candidate(module, tmp_path, *, probe_early_admission=
     transaction_root = codex / ".plamen-install-transactions" / transaction_id
     (transaction_root / "stage").mkdir(parents=True)
 
-    # Derive the exact production 731/31 roster, but bind the current source
+    # Derive the exact production 738/31 roster, but bind the current source
     # bytes instead of consulting the intentionally stale governance digests.
     # This makes the borrowed child execute the real driver and every real
     # local import while keeping this source-only regression hermetic.
@@ -336,7 +336,12 @@ def test_borrowed_installed_legacy_migration_admission_is_prebootstrap_closed(
             ("DRIVER_HELP", driver, ("--help",)),
             ("DRIVER_DETECT", driver, ("--detect-language", str(candidate["cwd"]))),
         ):
-            result = run(kind, target, *arguments)
+            try:
+                result = run(kind, target, *arguments)
+            except RuntimeError as exc:
+                raise AssertionError(
+                    f"borrowed installed command failed: {kind}"
+                ) from exc
             assert result["returncode"] == 0
             assert result["acknowledged"] is True
 
@@ -1582,6 +1587,16 @@ def test_install_requires_operational_backend_versions_after_borrowed_doctor(
     receipt = _receipt(source, installed, codex)
     _patch_install_shell(monkeypatch, module, source, has_claude=False)
     monkeypatch.setattr(module, "_install_codex_adapter", lambda *_a, **_k: receipt)
+    # This test exercises the backend-version postcondition after a borrowed
+    # doctor admission, not persisted-receipt validation (covered separately).
+    # Supply the just-committed authority explicitly so the shared shell
+    # fixture's deliberate "no installed receipt" default cannot stop the
+    # install before reaching the boundary under test.
+    monkeypatch.setattr(
+        module,
+        "_committed_claude_projection_authority",
+        lambda *_a: (str(installed), (), dict(receipt)),
+    )
     monkeypatch.setattr(
         module, "_CODEX_INSTALL_READER_COMMAND_KIND", "FRONT_DOCTOR",
     )
@@ -2757,6 +2772,90 @@ def test_generation_independent_lock_survives_k1_to_k2_key_rotation(
     assert module._recover_claude_projection_transaction() is True
 
 
+def _fresh_provisional_lock(module, monkeypatch, tmp_path):
+    claude = tmp_path / ".claude"
+    claude.mkdir()
+    monkeypatch.setattr(module, "CLAUDE_HOME", str(claude))
+    monkeypatch.setattr(
+        module,
+        "_validated_committed_install_receipt",
+        lambda: (_ for _ in ()).throw(RuntimeError("no committed receipt")),
+    )
+    private, public, _key_raw = module._claude_projection_new_private_key_material()
+    selected, created = module._claude_projection_prepare_idle_lock(
+        private, public, return_created_authority=True,
+    )
+    assert selected == public
+    assert created is not None
+    lock_path = claude / ".plamen-projection.lock"
+    return lock_path, public, created
+
+
+def test_fresh_lock_uses_one_shot_provisional_authority_and_recovery_stays_gated(
+    monkeypatch, tmp_path,
+):
+    module = _load()
+    lock_path, public, created = _fresh_provisional_lock(
+        module, monkeypatch, tmp_path,
+    )
+    capability = module._claude_projection_bind_provisional_lock_authority(
+        created, path=str(lock_path), public_key=public,
+    )
+
+    with pytest.raises(RuntimeError, match="recovery authority is unavailable"):
+        with module._claude_projection_lock(create=False):
+            pass
+
+    with module._claude_projection_lock(
+        create=False, provisional_authority=capability,
+    ) as retained:
+        assert retained == {
+            "path": str(lock_path), "public_key": public,
+            "device": created["device"], "inode": created["inode"],
+            "links": 1, "size": created["size"],
+            "sha256": created["sha256"],
+        }
+
+    with pytest.raises(RuntimeError, match="unavailable or replayed"):
+        with module._claude_projection_lock(
+            create=False, provisional_authority=capability,
+        ):
+            pass
+
+
+@pytest.mark.parametrize(
+    "field", ("path", "public_key", "device", "inode", "size", "sha256"),
+)
+def test_fresh_lock_provisional_authority_rejects_every_bound_field_mismatch(
+    monkeypatch, tmp_path, field,
+):
+    module = _load()
+    lock_path, public, created = _fresh_provisional_lock(
+        module, monkeypatch, tmp_path,
+    )
+    candidate = dict(created)
+    candidate_path = str(lock_path)
+    candidate_public = public
+    if field == "path":
+        candidate_path = str(tmp_path / "other.lock")
+    elif field == "public_key":
+        candidate_public = "f" * 64 if public != "f" * 64 else "e" * 64
+    elif field in {"device", "inode", "size"}:
+        candidate[field] += 1
+    else:
+        candidate["sha256"] = (
+            "f" * 64 if candidate["sha256"] != "f" * 64 else "e" * 64
+        )
+    capability = module._claude_projection_bind_provisional_lock_authority(
+        candidate, path=candidate_path, public_key=candidate_public,
+    )
+    with pytest.raises(RuntimeError, match="provisional|lock authority"):
+        with module._claude_projection_lock(
+            create=False, provisional_authority=capability,
+        ):
+            pass
+
+
 def test_direct_codex_package_invalid_source_mutates_nothing(monkeypatch, tmp_path):
     module = _load()
     source = tmp_path / "invalid-source"
@@ -3609,8 +3708,12 @@ def test_fresh_pretransaction_failure_retires_key_idle_lock_and_owned_roots(
     }
 
     @contextlib.contextmanager
-    def lease(*, create=True):
+    def lease(*, create=True, provisional_authority=None):
         assert create is False
+        assert isinstance(
+            provisional_authority,
+            module._ClaudeProjectionProvisionalLockAuthority,
+        )
         yield lease_authority
 
     monkeypatch.setattr(module, "_claude_projection_lock", lease)
@@ -3678,8 +3781,12 @@ def test_combined_foreign_idle_lock_does_not_short_circuit_owned_cleanup(
     }
 
     @contextlib.contextmanager
-    def lease(*, create=True):
+    def lease(*, create=True, provisional_authority=None):
         assert create is False
+        assert isinstance(
+            provisional_authority,
+            module._ClaudeProjectionProvisionalLockAuthority,
+        )
         yield lease_authority
 
     monkeypatch.setattr(module, "_claude_projection_lock", lease)

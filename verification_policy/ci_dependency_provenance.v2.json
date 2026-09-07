@@ -1,15 +1,15 @@
 {
   "advisory_review": {
     "evidence_path": "verification_policy/ci_advisory_evidence.v1.json",
-    "evidence_sha256": "368c2e184383542a2f7797a57e331e4a2814ed2a9f2ff7fb2735f63b50c890f7",
-    "observed_at": "2026-08-15T20:12:14Z",
-    "query_count": 27,
-    "response_sha256": "39c60b15a7023caa52ed57cce48ce674c29b244419832afd1ca6c8846b92dd4c",
+    "evidence_sha256": "61d96f89420ee65021f9e0d3d75637e96036728af7dee6fd705645d78ea57d69",
+    "observed_at": "2026-09-07T05:49:01Z",
+    "query_count": 31,
+    "response_sha256": "0a7630ca69b5087c8f8955c50afae3e6dce2b2303a09b3fda70d9461d4fd8f70",
     "result": "none-observed-at-check",
     "source": "https://api.osv.dev/v1/querybatch"
   },
   "authority": "generated-reviewed-point-in-time",
-  "checked_at": "2026-08-15T20:12:14Z",
+  "checked_at": "2026-09-07T05:49:01Z",
   "clean_claim": {
     "offline_ci_claim": "hash-identity-compatibility-only",
     "offline_install_behavior": "fail-loud-no-network-fallback",
@@ -43,12 +43,12 @@
     "input_sha256": {
       "requirements-ci-resolver.in": "55e3173445050d9bf00a0d217abcbec83b6baa161f971d5192f28d664a2d45ef",
       "requirements-ci-resolver.lock": "842074be5fbac7fc368018d85a5b2bbb9cb3daacec5ff6e75d0da79cea89e44d",
-      "requirements-ci.constraints": "1e43da80fa17db917935ca61a5b8cd0b379984afd52289b3feecabe020d2f60e",
-      "requirements-dev.txt": "ce7863ed7a53020a8e07f6f851416d6a6f6464a66bf59186c2d73c171b751f32",
+      "requirements-ci.constraints": "567bc54c64d7664061d7e7d43a731fc2cca9cc18ef23827471d6ce6029793161",
+      "requirements-dev.txt": "18f78c7b60ce9a39864491b52f5d1f51ce00478b2e3a9b3e86c670fd650486cb",
       "requirements.txt": "539450e067e10f6e7f58dd4b84dd0f5c0dd303284c6df8b780d343fdf9553a50"
     },
     "output_path": "requirements-ci.lock",
-    "output_sha256": "f9f465a7f6c06c020a037f4d04a1d81e88436578a04a74bf99392575e60625a3"
+    "output_sha256": "efd4e4f85bbfa2785d85896a70e13bad124f2d9e62ba4e052dd3e82073f8ef03"
   },
   "locked_projects": [
     {
@@ -60,8 +60,16 @@
       "version": "26.1.0"
     },
     {
+      "name": "cffi",
+      "version": "2.1.1"
+    },
+    {
       "name": "colorama",
       "version": "0.4.6"
+    },
+    {
+      "name": "cryptography",
+      "version": "50.0.1"
     },
     {
       "name": "execnet",
@@ -112,6 +120,10 @@
       "version": "7.35.1"
     },
     {
+      "name": "pycparser",
+      "version": "3.0"
+    },
+    {
       "name": "pydantic",
       "version": "2.13.4"
     },
@@ -134,6 +146,10 @@
     {
       "name": "pywinpty",
       "version": "2.0.15"
+    },
+    {
+      "name": "pyyaml",
+      "version": "6.0.3"
     },
     {
       "name": "referencing",
@@ -164,7 +180,6 @@
     "platform": [
       "linux-x86_64",
       "macos-arm64",
-      "macos-x86_64",
       "windows-x86_64"
     ],
     "python": [
@@ -174,9 +189,9 @@
   },
   "release_metadata": {
     "evidence_path": "verification_policy/ci_release_metadata_evidence.v1.json",
-    "evidence_sha256": "ac1e2bf21a35a7d69cc4ad4a133c6329b1b456dfe5a243d589b33340b8eb0308",
-    "observed_at": "2026-08-15T20:12:14Z",
-    "response_set_sha256": "a7f93750c5ef7d5e1a72e861950a8cc2936ec8693855573fb555b79a8fd13553",
+    "evidence_sha256": "9a031c1628e9ef6096d855afa8d8ada648b3226a75eafe072aafc39d086f2d50",
+    "observed_at": "2026-09-07T05:49:01Z",
+    "response_set_sha256": "5f3446383468b1fa8691e060ee5c8382efa1086ee6e9e670569e75243f19ccd6",
     "source": "https://pypi.org/pypi/{name}/{version}/json"
   },
   "resolver": {
@@ -265,6 +280,11 @@
       "sha256": "5f50d5b2b3207fa72e7ec0ef08372ef652685470974a107d0d4999fc5a903a96"
     },
     {
+      "filename": "pycparser-3.0-py3-none-any.whl",
+      "project": "pycparser",
+      "sha256": "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992"
+    },
+    {
       "filename": "pluggy-1.6.0-py3-none-any.whl",
       "project": "pluggy",
       "sha256": "e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746"
@@ -324,6 +344,16 @@
     {
       "artifacts": [
         {
+          "filename": "cffi-2.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+          "project": "cffi",
+          "sha256": "34e261f78cb6ceaaa36f42f2613f4380d94d9c759a9c73c769ee6e0247364632"
+        },
+        {
+          "filename": "cryptography-50.0.1-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+          "project": "cryptography",
+          "sha256": "ff838d62ec1bfce4f9ba7fa16f4a7b554cd8d0c299e6be37502161a660c84eef"
+        },
+        {
           "filename": "pydantic_core-2.46.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
           "project": "pydantic-core",
           "sha256": "f9fa868638bf362d3d138ea55829cefb3d5f4b0d7f142234382a15e2485dbec4"
@@ -332,6 +362,11 @@
           "filename": "protobuf-7.35.1-cp310-abi3-manylinux2014_x86_64.whl",
           "project": "protobuf",
           "sha256": "74758715c53d7158fb76caf4f0cfdacc5329a4b1bb994f865d6cf302d413a1c4"
+        },
+        {
+          "filename": "pyyaml-6.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+          "project": "pyyaml",
+          "sha256": "b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d"
         },
         {
           "filename": "rpds_py-2026.6.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
@@ -345,6 +380,16 @@
     {
       "artifacts": [
         {
+          "filename": "cffi-2.1.1-cp311-cp311-macosx_11_0_arm64.whl",
+          "project": "cffi",
+          "sha256": "398aff33cee2767e3e781d2554c54bd0dff386bb437581e0d8011fde1a942ec1"
+        },
+        {
+          "filename": "cryptography-50.0.1-cp311-abi3-macosx_11_0_arm64.whl",
+          "project": "cryptography",
+          "sha256": "b8f852c65863251b9e3a1b8c150ce21e59b522dbb6a7d4bc80e680d38388e986"
+        },
+        {
           "filename": "pydantic_core-2.46.4-cp311-cp311-macosx_11_0_arm64.whl",
           "project": "pydantic-core",
           "sha256": "e0d65b8c354be7fb5f720c3caa8bc940bc2d20ce749c8e06135f07f8ed95dd7c"
@@ -353,6 +398,11 @@
           "filename": "protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl",
           "project": "protobuf",
           "sha256": "24f857477359a85c0c235261b8ba905fd51b2562f4a64ca1df5473f29850cbf6"
+        },
+        {
+          "filename": "pyyaml-6.0.3-cp311-cp311-macosx_11_0_arm64.whl",
+          "project": "pyyaml",
+          "sha256": "652cb6edd41e718550aad172851962662ff2681490a8a711af6a4d288dd96824"
         },
         {
           "filename": "rpds_py-2026.6.3-cp311-cp311-macosx_11_0_arm64.whl",
@@ -366,26 +416,15 @@
     {
       "artifacts": [
         {
-          "filename": "pydantic_core-2.46.4-cp311-cp311-macosx_10_12_x86_64.whl",
-          "project": "pydantic-core",
-          "sha256": "0e96592440881c74a213e5ad528e2b24d3d4f940de2766bed9010ab1d9e51594"
+          "filename": "cffi-2.1.1-cp311-cp311-win_amd64.whl",
+          "project": "cffi",
+          "sha256": "42f6930c31dc7f50732c9ae793c2786c7b6b044195967bbdde40bb9be81c4cc0"
         },
         {
-          "filename": "protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl",
-          "project": "protobuf",
-          "sha256": "24f857477359a85c0c235261b8ba905fd51b2562f4a64ca1df5473f29850cbf6"
+          "filename": "cryptography-50.0.1-cp311-abi3-win_amd64.whl",
+          "project": "cryptography",
+          "sha256": "aed8db4f6d71c51efb89530e12d9464e7bf2923d46c3205dc794a2a93f8c0648"
         },
-        {
-          "filename": "rpds_py-2026.6.3-cp311-cp311-macosx_10_12_x86_64.whl",
-          "project": "rpds-py",
-          "sha256": "7b689145a1485c335569bd056464f3243a29af7ed3871c7be31ad624ba239bc7"
-        }
-      ],
-      "platform": "macos-x86_64",
-      "python": "3.11"
-    },
-    {
-      "artifacts": [
         {
           "filename": "pydantic_core-2.46.4-cp311-cp311-win_amd64.whl",
           "project": "pydantic-core",
@@ -395,6 +434,11 @@
           "filename": "protobuf-7.35.1-cp310-abi3-win_amd64.whl",
           "project": "protobuf",
           "sha256": "230a75ddfc2de4806e56696ce9640c1cdfdb6543b7cfce98d42a4c0a0e7bdb87"
+        },
+        {
+          "filename": "pyyaml-6.0.3-cp311-cp311-win_amd64.whl",
+          "project": "pyyaml",
+          "sha256": "9f3bfb4965eb874431221a3ff3fdcddc7e74e3b07799e0e84ca4a0f867d449bf"
         },
         {
           "filename": "pywinpty-2.0.15-cp311-cp311-win_amd64.whl",
@@ -413,6 +457,16 @@
     {
       "artifacts": [
         {
+          "filename": "cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+          "project": "cffi",
+          "sha256": "c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf"
+        },
+        {
+          "filename": "cryptography-50.0.1-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+          "project": "cryptography",
+          "sha256": "ff838d62ec1bfce4f9ba7fa16f4a7b554cd8d0c299e6be37502161a660c84eef"
+        },
+        {
           "filename": "pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
           "project": "pydantic-core",
           "sha256": "926c9541b14b12b1681dca8a0b75feb510b06c6341b70a8e500c2fdcff837cce"
@@ -421,6 +475,11 @@
           "filename": "protobuf-7.35.1-cp310-abi3-manylinux2014_x86_64.whl",
           "project": "protobuf",
           "sha256": "74758715c53d7158fb76caf4f0cfdacc5329a4b1bb994f865d6cf302d413a1c4"
+        },
+        {
+          "filename": "pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+          "project": "pyyaml",
+          "sha256": "ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc"
         },
         {
           "filename": "rpds_py-2026.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
@@ -434,6 +493,16 @@
     {
       "artifacts": [
         {
+          "filename": "cffi-2.1.1-cp312-cp312-macosx_11_0_arm64.whl",
+          "project": "cffi",
+          "sha256": "f81b3b8f3d4e343550fa4baa0e479bba9f2d29ce9c2e9b51d1ce1718d7442fcf"
+        },
+        {
+          "filename": "cryptography-50.0.1-cp311-abi3-macosx_11_0_arm64.whl",
+          "project": "cryptography",
+          "sha256": "b8f852c65863251b9e3a1b8c150ce21e59b522dbb6a7d4bc80e680d38388e986"
+        },
+        {
           "filename": "pydantic_core-2.46.4-cp312-cp312-macosx_11_0_arm64.whl",
           "project": "pydantic-core",
           "sha256": "962ccbab7b642487b1d8b7df90ef677e03134cf1fd8880bf698649b22a69371f"
@@ -442,6 +511,11 @@
           "filename": "protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl",
           "project": "protobuf",
           "sha256": "24f857477359a85c0c235261b8ba905fd51b2562f4a64ca1df5473f29850cbf6"
+        },
+        {
+          "filename": "pyyaml-6.0.3-cp312-cp312-macosx_11_0_arm64.whl",
+          "project": "pyyaml",
+          "sha256": "fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0"
         },
         {
           "filename": "rpds_py-2026.6.3-cp312-cp312-macosx_11_0_arm64.whl",
@@ -455,26 +529,15 @@
     {
       "artifacts": [
         {
-          "filename": "pydantic_core-2.46.4-cp312-cp312-macosx_10_12_x86_64.whl",
-          "project": "pydantic-core",
-          "sha256": "3245406455a5d98187ec35530fd772b1d799b26667980872c8d4614991e2c4a2"
+          "filename": "cffi-2.1.1-cp312-cp312-win_amd64.whl",
+          "project": "cffi",
+          "sha256": "f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a"
         },
         {
-          "filename": "protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl",
-          "project": "protobuf",
-          "sha256": "24f857477359a85c0c235261b8ba905fd51b2562f4a64ca1df5473f29850cbf6"
+          "filename": "cryptography-50.0.1-cp311-abi3-win_amd64.whl",
+          "project": "cryptography",
+          "sha256": "aed8db4f6d71c51efb89530e12d9464e7bf2923d46c3205dc794a2a93f8c0648"
         },
-        {
-          "filename": "rpds_py-2026.6.3-cp312-cp312-macosx_10_12_x86_64.whl",
-          "project": "rpds-py",
-          "sha256": "a0811d33247c3d6128a3001d763f2aa056bb3425204335400ac54f89eec3a0d0"
-        }
-      ],
-      "platform": "macos-x86_64",
-      "python": "3.12"
-    },
-    {
-      "artifacts": [
         {
           "filename": "pydantic_core-2.46.4-cp312-cp312-win_amd64.whl",
           "project": "pydantic-core",
@@ -484,6 +547,11 @@
           "filename": "protobuf-7.35.1-cp310-abi3-win_amd64.whl",
           "project": "protobuf",
           "sha256": "230a75ddfc2de4806e56696ce9640c1cdfdb6543b7cfce98d42a4c0a0e7bdb87"
+        },
+        {
+          "filename": "pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
+          "project": "pyyaml",
+          "sha256": "5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b"
         },
         {
           "filename": "pywinpty-2.0.15-cp312-cp312-win_amd64.whl",

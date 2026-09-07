@@ -72,24 +72,29 @@ jobs:
           fi
           python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r requirements-ci.lock
 
-      # Two lanes, together = the full suite (no test is skipped across them):
-      #   fast lane        — everything EXCEPT the ~14 real-subprocess/timing
-      #                      files, parallelized with xdist (`-n auto`).
-      #   integration lane — ONLY those heavy files, run SERIALLY (they spawn
-      #                      real processes / assert on real timing; xdist would
-      #                      make them flaky). PLAMEN_AUTO_HALT_CHOICE=exit (job
-      #                      env) keeps the driver-loop tests from hanging.
-      # The lanes are separate steps so a failure names which class broke, and
-      # so wall-clock is dominated by the parallel fast lane, not the serial one.
+      # Three lanes form an exact total partition of the collected suite:
+      #   fast lane        — ordinary unit tests, parallelized with xdist.
+      #   integration lane — real subprocess/timing tests, run serially.
+      #   quarantine lane  — exact manifest-bound capability probes excluded
+      #                      from the release-fast numerator, run serially.
+      # Every collected test is selected exactly once. Capability-dependent
+      # skips inside the quarantine lane remain governed by the authenticated
+      # fast-lane manifest. PLAMEN_AUTO_HALT_CHOICE=exit (job env) keeps the
+      # driver-loop tests from hanging.
       - name: Fast lane (unit — parallel)
         shell: bash
         run: |
-          cd scripts && python -m pytest -m "not integration" -n auto -q
+          cd scripts && python -m pytest -m "not integration and not fast_quarantine" -n auto -q
 
       - name: Integration lane (real subprocess/timing — serial)
         shell: bash
         run: |
           cd scripts && python -m pytest -m "integration" -q
+
+      - name: Quarantine lane (manifest-bound capability probes — serial)
+        shell: bash
+        run: |
+          cd scripts && python -m pytest -m "fast_quarantine and not integration" -q
 
   dependency-review:
     name: dependency review (introduced High/Critical)

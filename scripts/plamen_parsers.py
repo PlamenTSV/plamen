@@ -1614,6 +1614,25 @@ def _match_canonical_header(header_lc: str) -> Optional[str]:
 
 
 _TYPED_QUEUE_ROW_KEY = "_typed_work_item_json"
+_TYPED_EVIDENCE_DEBT_PREFIX = "[verification-evidence-debt] "
+
+
+def _typed_queue_evidence_debt(item: QueueWorkItem) -> str:
+    """Recover only the legacy evidence debt explicitly bound in typed data.
+
+    QueueWorkItem v4 has no free-standing evidence-debt field.  Legacy queue
+    rows nevertheless expose that text to verifier prompts, so dropping it
+    while promoting a row creates two contradictory authorities: Markdown
+    carries the debt while the typed record cannot reproduce it.  Bind this
+    compatibility projection in the severity proposal rationale under a
+    reserved prefix.  Ordinary severity rationales remain distinct and are
+    never reclassified as evidence debt.
+    """
+
+    rationale = item.severity_proposal.rationale
+    if not rationale or not rationale.startswith(_TYPED_EVIDENCE_DEBT_PREFIX):
+        return ""
+    return rationale[len(_TYPED_EVIDENCE_DEBT_PREFIX):]
 
 
 def _typed_queue_item_legacy_row(item: QueueWorkItem) -> dict[str, Any]:
@@ -1627,7 +1646,7 @@ def _typed_queue_item_legacy_row(item: QueueWorkItem) -> dict[str, Any]:
     locations = [record.to_dict() for record in item.location_records]
     location = item.location_records[0].artifact if item.location_records else ""
     artifacts = list(item.primary_artifacts)
-    return {
+    row = {
         "queue #": str(item.queue_priority),
         "finding id": item.work_item_id,
         "expected output file": item.expected_output_file,
@@ -1647,6 +1666,10 @@ def _typed_queue_item_legacy_row(item: QueueWorkItem) -> dict[str, Any]:
         "required disposition": item.required_disposition,
         _TYPED_QUEUE_ROW_KEY: item.to_json(),
     }
+    evidence_debt = _typed_queue_evidence_debt(item)
+    if evidence_debt:
+        row["evidence debt"] = evidence_debt
+    return row
 
 
 def parse_verification_queue_rows(scratchpad: Path) -> list[dict[str, str]]:
@@ -2873,7 +2896,17 @@ def _typed_queue_items_from_rows(
         normalized["severity"] = normalize_severity(
             row.get("severity", "") or "Medium"
         )
-        promoted.append(QueueWorkItem.from_legacy_row(normalized))
+        item = QueueWorkItem.from_legacy_row(normalized)
+        evidence_debt = str(row.get("evidence debt", "") or "").strip()
+        if evidence_debt:
+            item = replace(
+                item,
+                severity_proposal=replace(
+                    item.severity_proposal,
+                    rationale=_TYPED_EVIDENCE_DEBT_PREFIX + evidence_debt,
+                ),
+            )
+        promoted.append(item)
     return validate_queue_work_items(promoted)
 
 
@@ -2996,7 +3029,7 @@ def _ensure_typed_queue_authority(
             item.work_item_id,
             item.expected_output_file,
             item.constituents,
-            item.severity_proposal.level,
+            item.severity_proposal,
             item.evidence_class,
             item.bug_class,
             item.preferred_tag,
@@ -4020,6 +4053,7 @@ def _queue_work_item_legacy_rows(
             "effective proof scope": item.effective_proof_scope,
             "effective harm scope": item.effective_harm_scope,
             "required disposition": item.required_disposition,
+            "evidence debt": _typed_queue_evidence_debt(item),
         })
     return records, rows
 

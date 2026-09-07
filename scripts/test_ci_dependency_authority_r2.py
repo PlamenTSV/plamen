@@ -319,9 +319,14 @@ def test_current_runtime_declarations_match_all_checked_dependency_axes(
         row["name"]: row["version"] for row in receipt["locked_projects"]
     }
     targets = {
+        "cffi": "2.1.1",
+        "cryptography": "50.0.1",
         "markdown-it-py": "4.2.0",
         "jsonschema": "4.26.0",
+        "packaging": "26.2",
         "protobuf": "7.35.1",
+        "pycparser": "3.0",
+        "pyyaml": "6.0.3",
     }
     assert set(targets) <= set(declared)
     for project, version in targets.items():
@@ -347,6 +352,29 @@ def test_current_runtime_declarations_match_all_checked_dependency_axes(
 
     (repository / AUTH.RECEIPT_PATH).write_bytes(AUTH.render_receipt(repository))
     AUTH.verify_static_bindings(repository, verify_workflows=False)
+
+
+def test_ci_import_dependencies_are_direct_exact_requirements() -> None:
+    direct: dict[str, str] = {}
+    for raw in (ROOT / "requirements-dev.txt").read_text(
+        encoding="utf-8"
+    ).splitlines():
+        row = raw.split("#", 1)[0].strip()
+        if not row or row.startswith(("-r ", "-c ")):
+            continue
+        match = AUTH._REQUIREMENT.fullmatch(row)
+        assert match is not None
+        exact = AUTH._EXACT.fullmatch(
+            "".join(match.group("specifier").split())
+        )
+        assert exact is not None
+        direct[AUTH._canonical(match.group("name"))] = exact.group(1)
+
+    assert {
+        "cryptography": "50.0.1",
+        "packaging": "26.2",
+        "pyyaml": "6.0.3",
+    }.items() <= direct.items()
 
 
 def test_receipt_rejects_incompatible_wheel_source_and_timestamps() -> None:

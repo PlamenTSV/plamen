@@ -22,7 +22,7 @@ from artifact_ledger import (
     read_artifact_ledger,
 )
 from program_facts_v2_contracts import ProgramFactsTypeError
-from review_fixtures.program_facts_r2_1_b0_red_support import (
+from test_support.program_facts_r2_1_b0_red_support import (
     PUBLIC_IDENTITIES,
     canonical_bytes,
     logical_output_bytes,

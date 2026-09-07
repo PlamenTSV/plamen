@@ -244,7 +244,8 @@ See [updating.md](updating.md) for details on what auto-updates and what doesn't
 ## Troubleshooting
 
 Production audits currently run on Windows. Linux remains a source-validation
-host; macOS arm64 and x86_64 support the isolated source-development bootstrap; see
+host; macOS Apple Silicon (`arm64`) supports the isolated source-development
+bootstrap while Intel macOS awaits a governed secure source-build dependency path; see
 [development/macos.md](development/macos.md). See
 [dependencies.md](dependencies.md) for supported-host dependency details.
 

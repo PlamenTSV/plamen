@@ -51,9 +51,13 @@ Plamen v3 is complete only when all of the following are true:
 
 ### 1. Requirements and architecture
 
-- Every row in all four requirement namespaces is `DONE`, or is covered by a
-  reviewed supersession with a named successor, rationale, and no-scope-loss
-  evidence.
+- Every active row in all four requirement namespaces is `DONE`, or is covered
+  by a reviewed supersession with a named successor, rationale, and
+  no-scope-loss evidence. A row may instead retain `DEFERRED_BY_USER` only when
+  its exact scope appears under **Explicitly deferred** below; that disposition
+  is completion-valid for this goal but cannot defer any listed
+  `does_not_defer` obligation or any implementation, runtime, backend, resume,
+  portability, privacy-boundary, or handoff requirement that remains active.
 - The five canonical normative sources and two redirect-only compatibility
   documents are internally consistent, package-reachable, link-clean, and
   independently reviewed.
@@ -155,6 +159,11 @@ The following are outside this goal and must not block tool completion:
 The tool and its blinded evaluation interfaces must remain capable of supporting
 that later work. Deferral is not permission to delete evaluation contracts or
 weaken the out-of-tree ground-truth boundary.
+
+`DEFERRED_BY_USER` is therefore a governed scope disposition, not evidence that
+work was implemented or proved. Before final acceptance, every such ledger row
+must map exactly to this section and every non-deferred obligation carried by
+that row must be reconciled separately.
 
 ## Evidence rule
 

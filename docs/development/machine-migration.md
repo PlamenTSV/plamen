@@ -61,6 +61,9 @@ Keep it until the branch has been cloned and validated on the Mac.
 
 ## Bootstrap the Mac
 
+The current hash-locked bootstrap requires an Apple Silicon (`arm64`) Mac.
+Intel macOS is rejected before mutation because secure `cryptography 50.0.1`
+has no CPython Intel wheel and the governed source-build path remains open.
 Install Xcode Command Line Tools and a reviewed CPython 3.12, then clone outside
 the reserved runtime directories:
 
@@ -78,10 +81,16 @@ cd "$HOME/src/plamen"
 Verify that the clone is the intended source generation:
 
 ```sh
-test "$(git rev-parse HEAD)" = "REPLACE_WITH_RECORDED_COMMIT"
+git rev-parse HEAD
 git submodule status --recursive
 git status --short --branch
 ```
+
+Compare the printed commit byte-for-byte with the final commit recorded on the
+old machine outside the checkout. Do not substitute the current branch tip,
+the historical `aa509d7` checkpoint, a tag name, or a locally guessed value for
+that recorded identity. If the final commit has not yet been created and
+pushed, the migration identity gate is still open.
 
 Create the isolated source-development environment:
 
@@ -89,6 +98,26 @@ Create the isolated source-development environment:
 sh scripts/bootstrap_macos_dev.sh --python "$(command -v python3.12)"
 . .venv-dev/bin/activate
 ```
+
+Verify the public research handoff without reading any machine-local or private
+fixture tree:
+
+```sh
+python scripts/replay_model_routing_research.py \
+  --root . \
+  --accept-declared-blocks
+```
+
+This verifies the bytes, sizes, and publication modes of all 127 public corpus
+ports, then runs the one model-routing validator whose exact prerequisite
+closure is public. It reports the other eight archived validators as declared
+blocks. The public runner deliberately never searches for or consumes private
+artifacts; `--accept-declared-blocks` acknowledges that documented boundary.
+Without that flag it exits `2` because a public-only replay cannot claim exact
+archival completeness. Reproducing the blocked validators is a separate,
+governed private workflow using the hash-verified material described in
+[`PRIVATE_ARTIFACTS.md`](../continuation/PRIVATE_ARTIFACTS.md); copying that
+material beside the checkout does not change this public runner's result.
 
 Authenticate Git and the provider CLIs afresh only when needed. Never put
 provider credentials in the repository or migration archive.

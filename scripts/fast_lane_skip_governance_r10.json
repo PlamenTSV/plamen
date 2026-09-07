@@ -44,9 +44,9 @@
     "unresolved_nodes_sha256": "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874",
     "quarantine_nodes_sha256": "29bdd0de57165822ae1472f57de64d272a30617a14c5fb654ac5ffae2158e98b",
     "source_path_roster_sha256": "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4",
-    "source_roster_sha256": "4ad55cf4244b45df28f215b5a54a48e59a81fdd317b8b77c7b0ae80c6171f293",
+    "source_roster_sha256": "2dd2633a4c6e08168973732ef2d56b99bfca15f30042480ee69a8724678b61b8",
     "quarantine_source_path_roster_sha256": "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b",
-    "quarantine_source_roster_sha256": "1d6cfe7a5df7745975ed7167e01c249d64abc878e207e6f30e55db3831e5088c",
+    "quarantine_source_roster_sha256": "3165afe5458a71d9e820307a2a1b69a355986488871a53d2cd1bd84496fc7aad",
     "entry_roster_sha256": "ed7627a4d5705dac3529b91359eb964795bee193b24f5d416c442c05ae214fe1"
   },
   "sources": [
@@ -348,11 +348,11 @@
     },
     {
       "path": "scripts/test_program_facts_r21_shared_seams_r7.py",
-      "sha256": "a80db772800e6e1096fbaa6aeed62bb6220f4ec21c814f852243aa785db659f2"
+      "sha256": "7cfc822323ff275ddd63afe0f2af49612cfcd89cd431a8805d8482569e5d8732"
     },
     {
       "path": "scripts/test_program_facts_r21_shared_seams_r7_r2.py",
-      "sha256": "d2604beeb08c2829eaf7c6a6619ad171b6df0c04385b3538ba366b508939c094"
+      "sha256": "7d8c78657c3c7552c7569cd2d757ba53dde0fad7d349c1b32935232afc748610"
     },
     {
       "path": "scripts/test_program_facts_source_manifest_authority_repair.py",
@@ -368,7 +368,7 @@
     },
     {
       "path": "scripts/test_terminal_audit_launch_readiness.py",
-      "sha256": "96da8713a5f7b38bde91dee92db84f2eb6b1b77c88c07519371a968468aa51a8"
+      "sha256": "2a75fa6bebe66ac996ac6360ea0e5edafc3f439a1c9fd092a53f6f0f89a2c6c6"
     },
     {
       "path": "scripts/test_toolchain_round3_blockers.py",

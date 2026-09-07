@@ -1,7 +1,10 @@
 # macOS source development
 
 Plamen-v3 supports an isolated **source-development environment** on macOS
-arm64 and x86_64. It does not yet support installing or running the native
+Apple Silicon (`arm64`). Intel macOS (`x86_64`) is currently rejected before
+mutation because secure `cryptography 50.0.1` has no CPython Intel-macOS wheel
+and the governed source-build path is not yet implemented. It does not yet
+support installing or running the native
 macOS audit runtime. The bootstrap in this document never calls
 `plamen.py install`, never writes into `~/.plamen`, and never claims that a
 provider or E2E audit completed.
@@ -10,9 +13,9 @@ provider or E2E audit completed.
 
 | Capability | arm64 | x86_64 | Status |
 |---|---:|---:|---|
-| Clone and edit the source checkout | Yes | Yes | Supported |
-| Hash-locked development venv | Yes | Yes | Supported when every reviewed wheel is available |
-| Dependency-authority and focused source checks | Yes | Yes | Supported |
+| Clone and edit the source checkout | Yes | Yes | Source files are portable |
+| Hash-locked development venv | Yes | No | Intel lacks a secure reviewed binary dependency closure |
+| Dependency-authority and focused source checks | Yes | No | Current governed matrix is Apple Silicon only |
 | Managed Node/backend package definitions | Present | Present | Source validation only |
 | `plamen.py install` | No | No | Windows-native install transaction blocks Darwin |
 | Codex E2E audit | No | No | Transaction-grade process/write authority is unavailable |
@@ -25,7 +28,7 @@ supported.
 
 ## Prerequisites
 
-- macOS on Apple Silicon (`arm64`) or Intel/Rosetta (`x86_64`)
+- macOS on Apple Silicon (`arm64`)
 - Xcode Command Line Tools: `xcode-select --install`
 - Git
 - CPython 3.12 exactly, from a reviewed organizational or python.org channel
@@ -65,7 +68,7 @@ sh scripts/bootstrap_macos_dev.sh \
 
 The bootstrap is idempotent. It:
 
-1. admits only Darwin `arm64` or `x86_64` and CPython 3.12;
+1. admits only Darwin `arm64` and CPython 3.12, rejecting Intel before mutation;
 2. refuses a checkout inside an installed/backend directory;
 3. synchronizes the repository's pinned Git submodules;
 4. runs the isolated deterministic dependency-authority gate;

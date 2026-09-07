@@ -667,6 +667,62 @@ def _retire_publication_source(source: Path) -> None:
     os.unlink(native_path(source))
 
 
+def _posix_exclusive_rename_at(
+    source_directory: int,
+    source_name: str,
+    destination_directory: int,
+    destination_name: str,
+) -> bool:
+    """Use an atomic descriptor-relative no-replace rename when available."""
+
+    source_raw = os.fsencode(source_name)
+    destination_raw = os.fsencode(destination_name)
+    unsupported = {
+        errno.ENOSYS,
+        errno.EINVAL,
+        getattr(errno, "ENOTSUP", errno.EINVAL),
+        getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+    }
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith("linux"):
+        rename = getattr(library, "renameat2", None)
+        flag = 1
+    elif sys.platform == "darwin":
+        rename = getattr(library, "renameatx_np", None)
+        flag = 0x4
+    else:
+        return False
+    if rename is None:
+        return False
+    rename.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    rename.restype = ctypes.c_int
+    result = rename(
+        source_directory,
+        source_raw,
+        destination_directory,
+        destination_raw,
+        flag,
+    )
+    if result == 0:
+        return True
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        raise FileExistsError(
+            error,
+            "descriptor-relative quarantine destination exists",
+            destination_name,
+        )
+    if error in unsupported:
+        return False
+    raise OSError(error, "descriptor-relative no-replace rename failed")
+
+
 def _durable_publish_new_link_fallback(
     source: Path,
     destination: Path,
@@ -2659,6 +2715,468 @@ def safe_descendant(
     return current
 
 
+def _reparse_pre_quarantine_hook(source: Path, destination: Path) -> None:
+    """Deterministic race/fault seam used by containment tests."""
+
+
+def _reparse_pre_handle_hook(
+    source_root: Path,
+    destination_root: Path,
+    source_relative: str,
+    destination_relative: str,
+) -> None:
+    """Deterministic seam after root retention, before child acquisition."""
+
+
+def _reparse_identity(row: os.stat_result) -> tuple[int, ...]:
+    return tuple(int(getattr(row, name, 0)) for name in (
+        "st_dev", "st_ino", "st_mode", "st_file_attributes", "st_reparse_tag",
+    ))
+
+
+def _relative_leaf(
+    root: str | os.PathLike[str],
+    relative: str,
+    *,
+    label: str,
+) -> tuple[Path, Path, str, tuple[tuple[Path, tuple[int, ...]], ...]]:
+    text = str(relative).replace("\\", "/")
+    parts = text.split("/")
+    if (
+        not text
+        or text != text.strip()
+        or text.startswith("/")
+        or any(part in {"", ".", ".."} or ":" in part for part in parts)
+    ):
+        raise RootedPathIOError(f"{label} path is malformed")
+    checked_root = checked_directory(root, label=f"{label} root")
+    chain: list[tuple[Path, tuple[int, ...]]] = [
+        (checked_root, _reparse_identity(lstat(checked_root)))
+    ]
+    parent_relative = "/".join(parts[:-1])
+    parent = (
+        safe_descendant(
+            checked_root,
+            parent_relative,
+            allow_missing=False,
+            label=f"{label} parent",
+        )
+        if parent_relative
+        else checked_root
+    )
+    parent = checked_directory(parent, label=f"{label} parent")
+    current = checked_root
+    for component in parts[:-1]:
+        current = current / component
+        checked = checked_directory(current, label=f"{label} ancestor")
+        chain.append((checked, _reparse_identity(lstat(checked))))
+        current = checked
+    if chain[-1][0] != parent:
+        raise RootedPathIOError(f"{label} parent authority drifted")
+    return checked_root, parent, parts[-1], tuple(chain)
+
+
+def durable_quarantine_reparse(
+    source_root: str | os.PathLike[str],
+    source_relative: str,
+    destination_root: str | os.PathLike[str],
+    destination_relative: str,
+    *,
+    expected_identity: tuple[int, ...] | None = None,
+    require_reparse: bool = True,
+    allow_directory: bool = False,
+) -> tuple[int, ...]:
+    """Move one exact non-directory object to quarantine without following it.
+
+    Windows retains both authority roots and both immediate parent handles,
+    then renames the open reparse handle while those namespaces cannot be
+    exchanged.  POSIX uses retained directory descriptors and validates the
+    moved inode before committing the namespace change.  The quarantined
+    object is deliberately preserved: no pathname unlink can race a
+    replacement and no target is ever traversed.  The default accepts only a
+    symlink/reparse object; driver-control bootstrap may explicitly accept an
+    exact ordinary or special non-directory object as well.
+    """
+
+    (
+        checked_source_root,
+        source_parent,
+        source_name,
+        source_chain,
+    ) = _relative_leaf(
+        source_root, source_relative, label="rooted reparse source"
+    )
+    (
+        checked_destination_root,
+        destination_parent,
+        destination_name,
+        destination_chain,
+    ) = _relative_leaf(
+        destination_root,
+        destination_relative,
+        label="rooted reparse destination",
+    )
+    source = source_parent / source_name
+    destination = destination_parent / destination_name
+    exact_existing_name(source)
+
+    if os.name == "nt":
+        if lexists(destination):
+            raise FileExistsError(
+                errno.EEXIST,
+                "rooted reparse quarantine destination exists",
+                os.fspath(destination),
+            )
+        share_without_delete = _FILE_SHARE_READ | _FILE_SHARE_WRITE
+
+        def _open_directory_handle(
+            path: Path, expected: tuple[int, ...],
+        ) -> int:
+            handle = _CreateFileW(
+                native_path(path),
+                _GENERIC_READ,
+                share_without_delete,
+                None,
+                _OPEN_EXISTING,
+                _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+                None,
+            )
+            if handle == _INVALID_HANDLE_VALUE:
+                error = ctypes.get_last_error()
+                raise OSError(error, "rooted quarantine directory lock failed")
+            information = _windows_handle_information(handle)
+            if (
+                int(information.dwFileAttributes)
+                & _FILE_ATTRIBUTE_DIRECTORY == 0
+                or int(information.dwFileAttributes)
+                & _FILE_ATTRIBUTE_REPARSE_POINT
+            ):
+                _CloseHandle(handle)
+                raise RootedPathIOError(
+                    "rooted quarantine parent is not a regular directory"
+                )
+            try:
+                named_identity = _reparse_identity(lstat(path))
+            except BaseException:
+                _CloseHandle(handle)
+                raise
+            if named_identity != expected:
+                _CloseHandle(handle)
+                raise RootedPathIOError(
+                    "rooted quarantine ancestor changed before handle lock"
+                )
+            return handle
+
+        source_chain_handles: list[int] = []
+        destination_chain_handles: list[int] = []
+        source_handle = -1
+        try:
+            # Retain both roots before exposing the pre-handle race seam.  On
+            # Windows these no-delete-share handles prohibit authority-root
+            # exchange; child exchanges are detected as each remaining
+            # component is opened and compared to its captured no-follow
+            # identity.
+            source_chain_handles.append(_open_directory_handle(
+                source_chain[0][0], source_chain[0][1]
+            ))
+            destination_chain_handles.append(_open_directory_handle(
+                destination_chain[0][0], destination_chain[0][1]
+            ))
+            _reparse_pre_handle_hook(
+                checked_source_root,
+                checked_destination_root,
+                source_relative,
+                destination_relative,
+            )
+            for ancestor_path, ancestor_identity in source_chain[1:]:
+                source_chain_handles.append(_open_directory_handle(
+                    ancestor_path, ancestor_identity
+                ))
+            for ancestor_path, ancestor_identity in destination_chain[1:]:
+                destination_chain_handles.append(_open_directory_handle(
+                    ancestor_path, ancestor_identity
+                ))
+
+            def _validate_chain(
+                chain: tuple[tuple[Path, tuple[int, ...]], ...],
+            ) -> None:
+                for ancestor_path, ancestor_identity in chain:
+                    if _reparse_identity(lstat(ancestor_path)) != ancestor_identity:
+                        raise RootedPathIOError(
+                            "rooted quarantine ancestor name changed"
+                        )
+
+            _validate_chain(source_chain)
+            _validate_chain(destination_chain)
+            source_handle = _CreateFileW(
+                native_path(source),
+                _GENERIC_READ | _DELETE_ACCESS,
+                share_without_delete,
+                None,
+                _OPEN_EXISTING,
+                _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+                None,
+            )
+            if source_handle == _INVALID_HANDLE_VALUE:
+                error = ctypes.get_last_error()
+                raise OSError(error, "rooted reparse object lock failed")
+            information = _windows_handle_information(source_handle)
+            is_reparse_object = bool(
+                int(information.dwFileAttributes)
+                & _FILE_ATTRIBUTE_REPARSE_POINT
+            )
+            if require_reparse and not is_reparse_object:
+                raise RootedPathIOError(
+                    "rooted quarantine source is not a reparse object"
+                )
+            if (
+                int(information.dwFileAttributes) & _FILE_ATTRIBUTE_DIRECTORY
+                and not (is_reparse_object or allow_directory)
+            ):
+                raise RootedPathIOError(
+                    "rooted quarantine source is a directory"
+                )
+            named_row = lstat(source)
+            named_identity = (
+                int(getattr(named_row, "st_dev", 0)),
+                int(getattr(named_row, "st_ino", 0)),
+                int(getattr(named_row, "st_mode", 0)),
+            )
+            if (
+                expected_identity is not None
+                and tuple(expected_identity[:3]) != named_identity
+            ):
+                raise RootedPathIOError(
+                    "rooted reparse source changed before object lock"
+                )
+            source_identity = (
+                *_windows_handle_identity(information),
+                int(information.dwFileAttributes),
+            )
+            _reparse_pre_quarantine_hook(source, destination)
+            _validate_chain(source_chain)
+            _validate_chain(destination_chain)
+            # The source mutation is bound to the held reparse handle.  The
+            # destination parent is simultaneously held without delete-share,
+            # so its validated namespace cannot be exchanged while the
+            # object-bound rename resolves the destination spelling.
+            _windows_rename_open_handle_new(source_handle, destination)
+            if not _FlushFileBuffers(source_handle):
+                # Directory reparse handles commonly reject data flush.  The
+                # namespace durability barriers below remain authoritative.
+                ctypes.set_last_error(0)
+            if lexists(source):
+                raise RootedPathIOError(
+                    "rooted reparse source name was replaced during quarantine"
+                )
+            _fsync_directory(source_parent)
+            if source_parent != destination_parent:
+                _fsync_directory(destination_parent)
+            return tuple(int(item) for item in source_identity)
+        finally:
+            if source_handle not in {-1, _INVALID_HANDLE_VALUE}:
+                _CloseHandle(source_handle)
+            for handle in reversed(destination_chain_handles):
+                _CloseHandle(handle)
+            for handle in reversed(source_chain_handles):
+                _CloseHandle(handle)
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    source_chain_fds: list[int] = []
+    destination_chain_fds: list[int] = []
+    try:
+        def _open_root(
+            chain: tuple[tuple[Path, tuple[int, ...]], ...],
+        ) -> int:
+            descriptor = os.open(native_path(chain[0][0]), directory_flags)
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or _reparse_identity(opened) != chain[0][1]
+            ):
+                os.close(descriptor)
+                raise RootedPathIOError(
+                    "rooted quarantine authority root changed before lock"
+                )
+            return descriptor
+
+        source_chain_fds.append(_open_root(source_chain))
+        destination_chain_fds.append(_open_root(destination_chain))
+        _reparse_pre_handle_hook(
+            checked_source_root,
+            checked_destination_root,
+            source_relative,
+            destination_relative,
+        )
+
+        def _validate_chain(
+            chain: tuple[tuple[Path, tuple[int, ...]], ...],
+            descriptors: list[int],
+        ) -> None:
+            if _reparse_identity(lstat(chain[0][0])) != chain[0][1]:
+                raise RootedPathIOError(
+                    "rooted quarantine authority root name changed"
+                )
+            for index in range(1, len(chain)):
+                named = os.stat(
+                    chain[index][0].name,
+                    dir_fd=descriptors[index - 1],
+                    follow_symlinks=False,
+                )
+                opened = os.fstat(descriptors[index])
+                if (
+                    _reparse_identity(named) != chain[index][1]
+                    or _reparse_identity(opened) != chain[index][1]
+                ):
+                    raise RootedPathIOError(
+                        "rooted quarantine ancestor name changed"
+                    )
+
+        if (
+            _reparse_identity(lstat(source_chain[0][0]))
+            != source_chain[0][1]
+            or _reparse_identity(lstat(destination_chain[0][0]))
+            != destination_chain[0][1]
+        ):
+            raise RootedPathIOError(
+                "rooted quarantine authority root name changed"
+            )
+
+        def _open_children(
+            chain: tuple[tuple[Path, tuple[int, ...]], ...],
+            descriptors: list[int],
+        ) -> None:
+            for index in range(1, len(chain)):
+                descriptor = os.open(
+                    chain[index][0].name,
+                    directory_flags,
+                    dir_fd=descriptors[index - 1],
+                )
+                opened = os.fstat(descriptor)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or _reparse_identity(opened) != chain[index][1]
+                ):
+                    os.close(descriptor)
+                    raise RootedPathIOError(
+                        "rooted quarantine ancestor changed before lock"
+                    )
+                descriptors.append(descriptor)
+
+        _open_children(source_chain, source_chain_fds)
+        _open_children(destination_chain, destination_chain_fds)
+        _validate_chain(source_chain, source_chain_fds)
+        _validate_chain(destination_chain, destination_chain_fds)
+        source_parent_fd = source_chain_fds[-1]
+        destination_parent_fd = destination_chain_fds[-1]
+        before = os.stat(
+            source_name, dir_fd=source_parent_fd, follow_symlinks=False
+        )
+        is_reparse_object = bool(
+            stat.S_ISLNK(before.st_mode) or _is_reparse_row(before)
+        )
+        if require_reparse and not is_reparse_object:
+            raise RootedPathIOError(
+                "rooted quarantine source is not a reparse object"
+            )
+        is_directory_object = stat.S_ISDIR(before.st_mode)
+        if is_directory_object and not allow_directory:
+            raise RootedPathIOError(
+                "rooted quarantine source is a directory"
+            )
+        identity = (
+            int(before.st_dev),
+            int(before.st_ino),
+            int(before.st_mode),
+        )
+        if (
+            expected_identity is not None
+            and tuple(expected_identity[:3]) != identity
+        ):
+            raise RootedPathIOError(
+                "rooted reparse source changed before directory lock"
+            )
+        _reparse_pre_quarantine_hook(source, destination)
+        _validate_chain(source_chain, source_chain_fds)
+        _validate_chain(destination_chain, destination_chain_fds)
+        try:
+            existing = os.stat(
+                destination_name,
+                dir_fd=destination_parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            existing = None
+        if existing is None and is_directory_object:
+            if not _posix_exclusive_rename_at(
+                source_parent_fd,
+                source_name,
+                destination_parent_fd,
+                destination_name,
+            ):
+                raise RootedPathIOError(
+                    "descriptor-relative no-replace directory quarantine is "
+                    "unsupported"
+                )
+            os.fsync(source_parent_fd)
+            os.fsync(destination_parent_fd)
+            return identity
+        if existing is None:
+            try:
+                os.link(
+                    source_name,
+                    destination_name,
+                    src_dir_fd=source_parent_fd,
+                    dst_dir_fd=destination_parent_fd,
+                    follow_symlinks=False,
+                )
+            except (NotImplementedError, TypeError) as exc:
+                raise RootedPathIOError(
+                    "descriptor-relative no-replace reparse publication is "
+                    "unsupported"
+                ) from exc
+            os.fsync(destination_parent_fd)
+        elif not _same_inode(before, existing):
+            raise FileExistsError(
+                errno.EEXIST,
+                "rooted reparse quarantine destination exists",
+                os.fspath(destination),
+            )
+        moved = os.stat(
+            destination_name,
+            dir_fd=destination_parent_fd,
+            follow_symlinks=False,
+        )
+        moved_identity = (
+            int(moved.st_dev), int(moved.st_ino), int(moved.st_mode)
+        )
+        if moved_identity != identity:
+            raise RootedPathIOError(
+                "rooted reparse identity changed before quarantine"
+            )
+        current_source = os.stat(
+            source_name, dir_fd=source_parent_fd, follow_symlinks=False
+        )
+        if not _same_inode(before, current_source):
+            raise RootedPathIOError(
+                "rooted reparse source was replaced before retirement"
+            )
+        os.unlink(source_name, dir_fd=source_parent_fd)
+        os.fsync(source_parent_fd)
+        if source_parent_fd != destination_parent_fd:
+            os.fsync(destination_parent_fd)
+        return identity
+    finally:
+        for descriptor in reversed(destination_chain_fds):
+            os.close(descriptor)
+        for descriptor in reversed(source_chain_fds):
+            os.close(descriptor)
+
+
 def unlink(path: str | os.PathLike[str]) -> None:
     os.unlink(native_path(path))
 
@@ -2687,6 +3205,7 @@ __all__ = [
     "checked_file",
     "durable_publish_new",
     "durable_replace",
+    "durable_quarantine_reparse",
     "durable_unlink",
     "durable_write_once_bytes",
     "ensure_directory",

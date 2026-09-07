@@ -24,7 +24,7 @@ import claude_launch_security as L
 import claude_provider_preparation as P
 import claude_runtime_materialization as M
 from provider_command_authority import argv_authority_sha256
-from review_fixtures import claude_runtime_test_support as test_support
+from test_support import claude_runtime_test_support as test_support
 import test_claude_provider_preparation as provider_fixtures
 from test_support_startup_permit import (
     FIXTURE_RUN_ID,

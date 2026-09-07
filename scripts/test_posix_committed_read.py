@@ -7,6 +7,7 @@ import importlib.util
 import os
 import re
 import stat
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path
@@ -114,6 +115,76 @@ def test_early_bootstrap_descriptor_routes_posix_before_late_dependencies():
     assert calls == [
         ("/installed", ("receipt.json",), False, True),
     ]
+
+
+def test_posix_production_refusal_precedes_bootstrap_and_rich_imports():
+    tree = ast.parse(PLAMEN.read_text(encoding="utf-8"))
+    refusal = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_early_refuse_unsupported_posix_production_command"
+    )
+    refusal_call = next(
+        node for node in tree.body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id
+        == "_early_refuse_unsupported_posix_production_command"
+    )
+    bootstrap_call = next(
+        node for node in tree.body
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "_bootstrap"
+            for child in ast.walk(node.test)
+        )
+    )
+    rich_import = next(
+        node for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "rich.console"
+    )
+    assert refusal.end_lineno < refusal_call.lineno
+    assert refusal_call.lineno < bootstrap_call.lineno < rich_import.lineno
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    (
+        (("install",), "production installation is currently qualified"),
+        (("setup",), "production installation is currently qualified"),
+        (("migrate",), "migration is currently qualified only on Windows"),
+        (
+            ("--recover-codex-install", "a" * 32),
+            "install recovery is currently qualified only on Windows",
+        ),
+    ),
+)
+def test_posix_production_routes_exit_three_without_home_mutation(
+    tmp_path, argv, message,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    environment = dict(os.environ)
+    environment["HOME"] = str(home)
+    environment.pop("USERPROFILE", None)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    completed = subprocess.run(
+        [sys.executable, str(PLAMEN), *argv],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+    )
+    assert completed.returncode == 3
+    assert message in completed.stderr
+    assert list(home.iterdir()) == []
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows dispatcher smoke test")

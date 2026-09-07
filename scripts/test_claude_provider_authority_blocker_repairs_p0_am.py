@@ -158,54 +158,56 @@ def test_windows_metadata_uses_only_the_winverifytrust_validated_signer(
 ) -> None:
     executable = tmp_path / "claude.exe"
     executable.write_bytes(b"MZ" + (b"\0" * 2048))
-    monkeypatch.setattr(O.os, "name", "nt")
-    monkeypatch.setattr(
-        O,
-        "_windows_version_strings",
-        lambda _path: {
-            "product_name": "Claude Code",
-            "file_version": f"{VERSION}.0",
-        },
-    )
-    monkeypatch.setattr(
-        O,
-        "_win_verify_trust_validated_signer",
-        lambda _path: {
-            "publisher_name": "Unrelated Publisher",
-            "signer_subject": "CN=Unrelated Publisher",
-        },
-    )
-    monkeypatch.setattr(
-        O,
-        "_pe_authenticode_signers",
-        lambda _path: [
-            {
+    with monkeypatch.context() as scoped:
+        scoped.setattr(O.os, "name", "nt")
+        scoped.setattr(
+            O,
+            "_windows_version_strings",
+            lambda _path: {
+                "product_name": "Claude Code",
+                "file_version": f"{VERSION}.0",
+            },
+        )
+        scoped.setattr(
+            O,
+            "_win_verify_trust_validated_signer",
+            lambda _path: {
                 "publisher_name": "Unrelated Publisher",
                 "signer_subject": "CN=Unrelated Publisher",
             },
-            {
+        )
+        scoped.setattr(
+            O,
+            "_pe_authenticode_signers",
+            lambda _path: [
+                {
+                    "publisher_name": "Unrelated Publisher",
+                    "signer_subject": "CN=Unrelated Publisher",
+                },
+                {
+                    "publisher_name": "Anthropic PBC",
+                    "signer_subject": "CN=Anthropic PBC",
+                },
+            ],
+        )
+        unrelated_metadata = O._query_windows_native_metadata(
+            executable,
+            environment={},
+        )
+        scoped.setattr(
+            O,
+            "_win_verify_trust_validated_signer",
+            lambda _path: {
                 "publisher_name": "Anthropic PBC",
                 "signer_subject": "CN=Anthropic PBC",
             },
-        ],
-    )
-    assert O._query_windows_native_metadata(
-        executable,
-        environment={},
-    ) is None
+        )
+        metadata = O._query_windows_native_metadata(
+            executable,
+            environment={},
+        )
 
-    monkeypatch.setattr(
-        O,
-        "_win_verify_trust_validated_signer",
-        lambda _path: {
-            "publisher_name": "Anthropic PBC",
-            "signer_subject": "CN=Anthropic PBC",
-        },
-    )
-    metadata = O._query_windows_native_metadata(
-        executable,
-        environment={},
-    )
+    assert unrelated_metadata is None
     assert metadata is not None
     assert metadata["publisher_name"] == "Anthropic PBC"
 

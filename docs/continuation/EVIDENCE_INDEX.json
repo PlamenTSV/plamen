@@ -1,7 +1,7 @@
 {
   "schema": "plamen.continuation.evidence-index.v1",
   "status": "ACTIVE_INCOMPLETE",
-  "generated_date": "2026-09-06",
+  "generated_date": "2026-09-07",
   "rules": [
     "Evidence is scoped to the exact source and command that produced it.",
     "A failure record remains evidence and cannot be overwritten by a later pass.",
@@ -77,6 +77,7 @@
       "backend": "codex",
       "mode": "thorough",
       "result": "RUNNING; Recon and Instantiate committed, Breadth started",
+      "current_state": "HISTORICAL LIVE OBSERVATION ONLY; the process is no longer running and no terminal p19 claim is carried into this public handoff",
       "observed_boundary": "Breadth phase 3 of 75",
       "additional_debt": [
         "EVM build degraded after two Git-for-Windows/MSYS process failures and continued with grep plus on-demand compilation",
@@ -85,6 +86,23 @@
       ],
       "scope": "Live runtime progress observation only; not a successful audit and not terminal evidence",
       "acceptance_effect": "Codex E2E completion gate remains open",
+      "private_artifacts_included": false
+    },
+    {
+      "id": "EV-PRIVATE-TARGET-P20-FAILED",
+      "kind": "end_to_end_attempt",
+      "backend": "codex",
+      "mode": "thorough",
+      "result": "FAILED at Inventory after Recon, Breadth, re-scan, and per-contract analysis completed; no final report",
+      "last_successful_boundary": "Inventory input denominator was fixed at 15 candidates; retry two reduced exact semantic-preservation debt from 15 rows to 5 rows",
+      "driver_defects_observed": [
+        "Retry progress normalization discarded the exact unresolved candidate set and falsely classified the 15-to-5 reduction as NO_PROGRESS",
+        "The next retry was rejected before provider launch because quarantined predecessor bytes remained at the canonical path and triggered UNREGISTERED_REPLACEMENT_PREDECESSOR",
+        "Windows PowerShell 5.1 input used its ambient text encoding instead of explicit UTF-8, changing em-dash code points before model synthesis",
+        "Ordinary resume removed Recon from the degraded projection even though its typed phase commit still carried dependency-research debt, then checkpoint validation rejected phase_commits_debt_not_degraded:recon"
+      ],
+      "scope": "Production-reachable inventory retry, exact semantic reconciliation, rejected-predecessor handling, UTF-8 transport, and debt-preserving resume evidence",
+      "acceptance_effect": "Codex E2E completion remains open; p20 is sealed failure evidence and a fresh destination is required after the generic fixes are frozen and packaged",
       "private_artifacts_included": false
     },
     {
@@ -105,7 +123,7 @@
         "docs/development/macos.md",
         "docs/development/machine-migration.md"
       ],
-      "scope": "Source-development bootstrap contract for Darwin arm64/x86_64 and explicit denial of unsupported native audit runtime",
+      "scope": "Source-development bootstrap contract for Darwin arm64, explicit pre-mutation rejection of Darwin x86_64, and explicit denial of unsupported native audit runtime",
       "acceptance_effect": "A real clean-clone Mac bootstrap remains required; this does not satisfy native macOS production audit support"
     },
     {
@@ -155,7 +173,8 @@
       "id": "EV-AUGUST-ARCHITECTURE-BASELINE",
       "kind": "historical_review_measurement",
       "source_ref": "docs/continuation/research/CLAUDE_REVIEW_codex_architecture_audit_2026-07-31.sanitized.md",
-      "source_sha256": "3ba029008c842bb8e514d33038bde58544314c8b177115012061e3b7d8d1934a",
+      "original_source_sha256": "3ba029008c842bb8e514d33038bde58544314c8b177115012061e3b7d8d1934a",
+      "portable_sha256": "0e1893d9f67edd26011a840a8a516014a1b6207047da9ed539d5c91346705e5e",
       "result": "A targeted suite slice measured 36 failed and 1161 passed; the reviewed change added about 370000 lines with 0 removed; 24 modules totaling 39824 lines were unreachable",
       "scope": "Historical audited tree only; counts are comparison baselines and must be remeasured on the frozen V3 release candidate",
       "acceptance_effect": "B-1 and the delete-legacy complexity budget remain open"
@@ -180,8 +199,10 @@
       "id": "EV-RUNTIME-ADDENDUM-CURRENT-20260906",
       "kind": "mutable_source_snapshot",
       "source_ref": "docs/continuation/research/Plamen_Runtime_Acceptance_Addendum_2026-09-06.sanitized.md",
-      "source_bytes": 68084,
-      "source_sha256": "86a67f0128e90c716122f546c57a5c11059180c56ee6d93ee38329648d7d178e",
+      "original_source_bytes": 68084,
+      "original_source_sha256": "86a67f0128e90c716122f546c57a5c11059180c56ee6d93ee38329648d7d178e",
+      "portable_bytes": 67831,
+      "portable_sha256": "2962e42209c6c23e6d2f38c853891d7af10fdf78b43e817e0bdfd639402c5196",
       "result": "Current addendum captured; it supersedes the 61348-byte historical inventory snapshot for source identity only",
       "scope": "Historical runtime observations and open debt; mutable prose is not release-candidate acceptance",
       "acceptance_effect": "All referenced runtime claims still require immutable frozen-source receipts"
@@ -194,16 +215,105 @@
       "acceptance_effect": "CUR-005 remains open; Linux and macOS production commands must reject before mutation until clean install/start/stop/recovery/resume evidence exists"
     },
     {
+      "id": "EV-GITHUB-AA509D7-CI-FAILED",
+      "kind": "continuous_integration_attempt",
+      "source_commit": "aa509d715a73293dc43e1d14de3f472944e06148",
+      "result": "FAILED in install-smoke and all six test-matrix jobs",
+      "root_causes": [
+        "POSIX production-command rejection occurred after top-level bootstrap had already created managed-runtime state in an otherwise clean HOME",
+        "Fresh Windows dual-backend install could not retain its newly signed idle lock because ordinary recovery required a committed receipt that cannot yet exist on first install",
+        "Two pre-existing f-string expressions were not Python 3.11-compatible, including one independently invalid nested-quote expression in the mechanical module"
+      ],
+      "secondary_observation": "After collection failures, POSIX xdist reporting also encountered WindowsPath construction while a test had globally mocked os.name; this remains a test-isolation concern until the repaired matrix reruns cleanly",
+      "scope": "Remote clean-checkout CI for source, installation rejection, fresh Windows install, and Python 3.11/3.12 test collection on Windows, Linux, and macOS",
+      "acceptance_effect": "The portable corpus commit is remotely present but is not a release candidate; corrective commits and a green rerun are required"
+    },
+    {
+      "id": "EV-RECOVERY-EIGHTH-PARENT-20260907",
+      "kind": "test_observation",
+      "source_state": "UNCOMMITTED_PRE_E2E_WORKTREE",
+      "committed_base": "aa509d715a73293dc43e1d14de3f472944e06148",
+      "result": "138 passed, 6 expected platform or special-case skips on the Windows host",
+      "scope": "Eighth-pass parent recovery, containment, inventory, retry, scalar, and adjacent compatibility slice",
+      "limitations": "The skipped POSIX or special-case paths did not execute on this Windows host; this observation is not a frozen-commit or clean-package receipt",
+      "acceptance_effect": "Historical pre-freeze regression evidence only; the ninth-pass change and final release candidate still require their own evidence",
+      "provenance": "unsealed_local_observation"
+    },
+    {
+      "id": "EV-RECOVERY-NINTH-INVENTORY-20260907",
+      "kind": "test_observation",
+      "source_state": "UNCOMMITTED_PRE_E2E_WORKTREE",
+      "committed_base": "aa509d715a73293dc43e1d14de3f472944e06148",
+      "result": "150 passed, 6 expected Windows-host POSIX or special-case skips",
+      "scope": "Full ninth-pass inventory exact-reconciliation coverage, including fixed canonical-control authority, poisoned-slot, race, crash, and bounded-overflow behavior",
+      "limitations": "The six skipped paths require their applicable non-Windows or special execution environments",
+      "acceptance_effect": "The owned inventory regression denominator and independent ninth-pass adversarial review are green locally; commit-bound release, remote POSIX CI, fresh install, and E2E evidence remain open",
+      "provenance": "unsealed_local_observation"
+    },
+    {
+      "id": "EV-RECOVERY-NINTH-COMPATIBILITY-20260907",
+      "kind": "test_observation",
+      "source_state": "UNCOMMITTED_PRE_E2E_WORKTREE",
+      "committed_base": "aa509d715a73293dc43e1d14de3f472944e06148",
+      "result": "261 passed, exit 0",
+      "scope": "Ninth-pass compatibility suites adjacent to inventory, retry, scalar persistence, containment, and recovery behavior",
+      "limitations": "Local compatibility evidence is not a substitute for the independent verdict, clean install, remote POSIX lanes, or either E2E",
+      "acceptance_effect": "Advances pre-E2E regression confidence without satisfying a release or audit gate",
+      "provenance": "unsealed_local_observation"
+    },
+    {
+      "id": "EV-PRE-E2E-SOURCE-CENSUS-20260907",
+      "kind": "package_observation",
+      "source_state": "UNCOMMITTED_PRE_E2E_WORKTREE",
+      "committed_base": "aa509d715a73293dc43e1d14de3f472944e06148",
+      "result": "Exit 0 after a 56637-file runtime census; exact package source denominator was 769 rows: 738 runtime and 31 Codex-adapter rows",
+      "scope": "Final local pre-E2E source/package census and denominator check",
+      "limitations": "No final release-candidate commit exists yet, and this source check is not a fresh installation or doctor receipt",
+      "acceptance_effect": "Package source cardinality is locally reconciled; commit, fresh install, and installed-byte authentication remain open",
+      "provenance": "unsealed_local_observation"
+    },
+    {
+      "id": "EV-PRE-E2E-CLOSURE-PACKAGING-20260907",
+      "kind": "package_observation",
+      "source_state": "UNCOMMITTED_PRE_E2E_WORKTREE",
+      "committed_base": "aa509d715a73293dc43e1d14de3f472944e06148",
+      "result": "13 passed, exit 0",
+      "scope": "Regenerated exact runtime-closure authority and intended public-package assembly, integrity, privacy, and source-only support checks",
+      "limitations": "This is a local source-package slice, not a remote clean checkout, authenticated install, doctor result, or E2E",
+      "acceptance_effect": "The earlier stale-closure package blocker is repaired for this mutable snapshot; it must remain byte-exact after final freeze",
+      "provenance": "unsealed_local_observation"
+    },
+    {
+      "id": "EV-CI-QUARANTINE-LANE-20260907",
+      "kind": "continuous_integration_preflight",
+      "source_state": "UNCOMMITTED_PRE_E2E_WORKTREE",
+      "committed_base": "aa509d715a73293dc43e1d14de3f472944e06148",
+      "result": "10 local governance and selection checks passed; the fast_quarantine non-integration lane is present for Ubuntu and macOS",
+      "scope": "CI workflow selection, governance contract, YAML parsing, dependency-authority static gate, and rooted-path quarantine-test inclusion",
+      "limitations": "The actual POSIX runtime lane has not run from this source; Ubuntu and macOS execution remains pending until the frozen commit is pushed",
+      "acceptance_effect": "The workflow omission is repaired, but remote POSIX evidence and replacement of the failed aa509d7 CI record remain open",
+      "provenance": "unsealed_local_observation"
+    },
+    {
+      "id": "EV-NINTH-INDEPENDENT-REVIEW-GATE",
+      "kind": "acceptance_gate",
+      "result": "PASS",
+      "scope": "Independent adversarial rereview of the ninth-pass recovery and inventory repair against the enumerated defect set",
+      "evidence": "Frozen validators SHA256 860b2d137f7ea7e3b6532d0370886ec521a5d12516ff6ac5d5936e3a4246a949; frozen inventory-test SHA256 44111576d754d11d34ca5ac9cccc59333ddc65c1f25369f235af14725279d65a; independent real-constant 32769-entry state and journal probes passed; 8 authority poison/race/crash/matching-overflow probes passed",
+      "limitations": "The verifier stopped the quarantine and evidence 32769-entry duplicates after state and journal independently exercised the shared per-tag implementation; the owned suite ran and passed all four tags. POSIX-only runtime shapes remain pending remote CI.",
+      "acceptance_effect": "Closes the independent ninth-pass source-freeze gate; commit-bound release, remote POSIX CI, fresh install, and E2E evidence remain open"
+    },
+    {
       "id": "EV-CODEX-E2E-GATE",
       "kind": "acceptance_gate",
-      "result": "MISSING",
+      "result": "PENDING_NOT_LAUNCHED",
       "scope": "Fresh packaged non-ground-truth audit through final report plus resume/fault evidence",
       "acceptance_effect": "Blocks tool completion"
     },
     {
       "id": "EV-CLAUDE-E2E-GATE",
       "kind": "acceptance_gate",
-      "result": "MISSING",
+      "result": "PENDING_NOT_LAUNCHED",
       "scope": "Fresh packaged non-ground-truth audit through final report plus clean resume and route evidence",
       "acceptance_effect": "Blocks tool completion"
     },
@@ -224,14 +334,28 @@
     {
       "id": "EV-PRIVATE-RESEARCH-TRANSFER-GATE",
       "kind": "acceptance_gate",
-      "result": "MISSING",
+      "result": "SOURCE_ARCHIVE_VERIFIED_DESTINATION_PENDING",
+      "source_bundle": {
+        "archive_basename": "Plamen-v3-private-research-20260907.tar.gz.aesgcm",
+        "archive_bytes": 940606,
+        "archive_sha256": "d224643e70797661cd8e1a0d049a4ea14eec62e8529ed9539382b99aab1d4a8a",
+        "envelope": "AES-256-GCM",
+        "manifest_basename": "Plamen-v3-private-research-20260907.manifest.json",
+        "member_count": 10,
+        "recovery_key_sha256": "83c976c08e3ea67348f30e5000cce3ff5d7b986fe674d04550c5598e684ff5e5",
+        "source_hashes_verified": true,
+        "decrypt_and_member_hashes_verified": true
+      },
       "scope": "Hash-verified out-of-Git transfer of every row in docs/continuation/research/PRIVATE_GAP_INDEX.json",
-      "acceptance_effect": "Blocks a complete next-machine research denominator and later exact research comparison"
+      "acceptance_effect": "The source-side encrypted archive is complete and verified; the gate remains open until the archive and separately transported recovery key reach the destination Mac and every member hash is recomputed there"
     }
   ],
   "supersession_notes": [
     "The 61-test observation supersedes earlier selected regression counts only for that source snapshot.",
     "The current runtime addendum supersedes p18-in-progress observations with the terminal failure observation.",
-    "A future green package or E2E record may satisfy a gate but must not delete the earlier failure evidence."
+    "A future green package or E2E record may satisfy a gate but must not delete the earlier failure evidence.",
+    "The p20 failure record is the current inventory and resume defect baseline; it does not erase earlier attempt evidence.",
+    "The 2026-09-07 local observations are mutable pre-E2E evidence based on aa509d7 plus uncommitted changes; none names or implies a final release-candidate commit.",
+    "The ninth-pass independent review is green; remote POSIX CI lanes, fresh authenticated install, both E2Es, and destination-side private transfer verification remain open."
   ]
 }

@@ -16353,13 +16353,14 @@ def _materialize_report_evidence_or_debt(scratchpad: Path) -> bool:
     try:
         _materialize_report_evidence_runtime(scratchpad)
     except (OSError, UnicodeError, json.JSONDecodeError, _ReportEvidenceError, ValueError) as exc:
+        detail = str(exc).replace("`", "'")[:800]
         (scratchpad / "report_evidence_runtime_debt.md").write_text(
             "# Report Evidence Runtime Debt\n\n"
             "Typed report evidence could not be reconciled before body rendering. "
             "All report assignments remain retained, but evidence presentation is "
             "degraded and requires human review.\n\n"
             f"- Failure class: `{type(exc).__name__}`\n"
-            f"- Detail: `{str(exc).replace('`', "'")[:800]}`\n",
+            f"- Detail: `{detail}`\n",
             encoding="utf-8",
         )
         return False

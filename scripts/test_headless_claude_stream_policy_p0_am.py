@@ -18,6 +18,7 @@ from test_claude_launch_authority_fixtures import (
     compile_test_claude_launch_authority,
     compile_test_claude_provider_preparation,
     install_test_only_launch_authority_adapter,
+    materialize_test_provider_executable,
 )
 import headless_worker_runtime as runtime
 from phase_io_contracts import (
@@ -39,14 +40,22 @@ OTHER_SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 STDOUT_LIMIT = 16 * 1024 * 1024
 
 
+@pytest.fixture(scope="module")
+def _test_provider_executable(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    return materialize_test_provider_executable(
+        tmp_path_factory.mktemp("stream-policy-provider")
+    )
+
+
 @pytest.fixture(autouse=True)
 def _test_only_provider_authority_adapter(
     monkeypatch: pytest.MonkeyPatch,
+    _test_provider_executable: Path,
 ) -> None:
     if os.name == "nt" and int(getattr(Path(sys.executable).stat(), "st_nlink", 1)) != 1:
-        reviewed = Path(r"C:\p27rt\python.exe")
-        if reviewed.is_file() and int(getattr(reviewed.stat(), "st_nlink", 1)) == 1:
-            monkeypatch.setattr(sys, "executable", str(reviewed.resolve(strict=True)))
+        monkeypatch.setattr(sys, "executable", str(_test_provider_executable))
     install_test_only_launch_authority_adapter(monkeypatch.setattr)
 
 

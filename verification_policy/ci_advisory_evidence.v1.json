@@ -1,10 +1,10 @@
 {
   "advisory_ids": [],
   "limitation": "Point-in-time primary-source observation; advisory data may change and must be refreshed before release.",
-  "observed_at": "2026-08-15T20:12:14Z",
-  "query_count": 27,
+  "observed_at": "2026-09-07T05:49:01Z",
+  "query_count": 31,
   "raw_request_path": "verification_policy/ci_advisory_responses/request.json",
-  "raw_request_sha256": "00d0e3b93d8677d0c7bdb5133ab4ce49d9f43d226a66ccb96c6b60b653aaa5b7",
+  "raw_request_sha256": "c82a76482c55f8dbcacf360f1df54ff32c2d0e0e45226a86a944fb6e5426f9ed",
   "raw_response_path": "verification_policy/ci_advisory_responses/response.json",
   "request": {
     "queries": [
@@ -25,9 +25,23 @@
       {
         "package": {
           "ecosystem": "PyPI",
+          "name": "cffi"
+        },
+        "version": "2.1.1"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
           "name": "colorama"
         },
         "version": "0.4.6"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "cryptography"
+        },
+        "version": "50.0.1"
       },
       {
         "package": {
@@ -116,6 +130,13 @@
       {
         "package": {
           "ecosystem": "PyPI",
+          "name": "pycparser"
+        },
+        "version": "3.0"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
           "name": "pydantic"
         },
         "version": "2.13.4"
@@ -154,6 +175,13 @@
           "name": "pywinpty"
         },
         "version": "2.0.15"
+      },
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "pyyaml"
+        },
+        "version": "6.0.3"
       },
       {
         "package": {
@@ -199,9 +227,13 @@
       }
     ]
   },
-  "request_sha256": "00d0e3b93d8677d0c7bdb5133ab4ce49d9f43d226a66ccb96c6b60b653aaa5b7",
+  "request_sha256": "c82a76482c55f8dbcacf360f1df54ff32c2d0e0e45226a86a944fb6e5426f9ed",
   "response": {
     "results": [
+      {},
+      {},
+      {},
+      {},
       {},
       {},
       {},
@@ -231,9 +263,9 @@
       {}
     ]
   },
-  "response_sha256": "39c60b15a7023caa52ed57cce48ce674c29b244419832afd1ca6c8846b92dd4c",
+  "response_sha256": "0a7630ca69b5087c8f8955c50afae3e6dce2b2303a09b3fda70d9461d4fd8f70",
   "result": "none-observed-at-check",
   "schema": "plamen.ci-advisory-evidence.v1",
   "source": "https://api.osv.dev/v1/querybatch",
-  "source_response_sha256": "39c60b15a7023caa52ed57cce48ce674c29b244419832afd1ca6c8846b92dd4c"
+  "source_response_sha256": "0a7630ca69b5087c8f8955c50afae3e6dce2b2303a09b3fda70d9461d4fd8f70"
 }

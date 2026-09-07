@@ -1,0 +1,261 @@
+{
+  "schema": "plamen.continuation.model-routing-portable-replay.v1",
+  "version": 1,
+  "purpose": "Fail-closed replay routing for the nine archived backend model-routing validators in a public checkout.",
+  "claim_policy": {
+    "sanitized_is_not_raw": true,
+    "semantic_evidence_is_not_archival_pass": true,
+    "private_search_is_forbidden": true,
+    "declared_nonpublic_requirements_block_execution": true
+  },
+  "corpus_manifest_ref": "docs/continuation/CORPUS_MANIFEST.json",
+  "expected_summary": {
+    "validator_count": 9,
+    "public_corpus_port_count": 127,
+    "public_exact_runnable": 1,
+    "declared_blocked": 8
+  },
+  "requirements": {
+    "raw_r2_3_guide": {
+      "required_by_validator_id": "r2_4",
+      "kind": "raw_source_with_sanitized_port",
+      "source_identity": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.3_2026-07-29.md",
+      "expected_raw_sha256": "d047d994f9aa114dea0ca9435b06922234c9ba54002321ca18f4d80a5e8b9d5f",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_Engineering_Guide_R2.3_2026-07-29.sanitized.md"
+      ],
+      "reason": "The archived validator binds the original bytes; the public corpus deliberately carries a sanitized semantic port."
+    },
+    "raw_r2_3_receipt": {
+      "required_by_validator_id": "r2_4",
+      "kind": "raw_source_with_sanitized_port",
+      "source_identity": "Plamen_Backend_Model_Routing_R2.3_Validation_Receipt_2026-07-29.json",
+      "expected_raw_sha256": "3df640bac21c0adfb70ad82d5c3d085409a562427a395c12acfb81cd6b1cfe46",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.3_Validation_Receipt_2026-07-29.sanitized.json"
+      ],
+      "reason": "The archived validator binds the original bytes; the public corpus deliberately carries a sanitized semantic port."
+    },
+    "raw_r2_4_guide": {
+      "required_by_validator_id": "r2_5",
+      "kind": "raw_source_with_sanitized_port",
+      "source_identity": "Plamen_Backend_Model_Routing_Engineering_Guide_R2.4_2026-07-29.md",
+      "expected_raw_sha256": "065d094e562bcc09a1c720ed7a22ffb666bdc4aa015d745c7c2617dc9fe48a17",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_Engineering_Guide_R2.4_2026-07-29.sanitized.md"
+      ],
+      "reason": "The archived validator binds the original bytes; the public corpus deliberately carries a sanitized semantic port."
+    },
+    "raw_r2_4_receipt": {
+      "required_by_validator_id": "r2_5",
+      "kind": "raw_source_with_sanitized_port",
+      "source_identity": "Plamen_Backend_Model_Routing_R2.4_Validation_Receipt_2026-07-29.json",
+      "expected_raw_sha256": "467f64365cd68c5cdf7ca09956d33a0553084e0266a014139c3a4a9184a3e02a",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.4_Validation_Receipt_2026-07-29.sanitized.json"
+      ],
+      "reason": "The archived validator binds the original bytes; the public corpus deliberately carries a sanitized semantic port."
+    },
+    "review_r2_4": {
+      "required_by_validator_id": "r2_5",
+      "kind": "omitted_private_review_witness",
+      "source_identity": "backend_model_routing_r2_4_independent_review_r1_20260730.md",
+      "expected_raw_sha256": "40c3468e08a5a615295e93e9189c7a53eb7af668a49f48e45a834aa55c1e06b8",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_Engineering_Guide_R2.5_2026-07-30.sanitized.md",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5_Validation_Receipt_2026-07-30.sanitized.json"
+      ],
+      "reason": "The exact independent-review witness was never a public corpus artifact; public documents preserve its engineering disposition, not its raw-byte identity."
+    },
+    "review_r2_5": {
+      "required_by_validator_id": "r2_5_1",
+      "kind": "omitted_private_review_witness",
+      "source_identity": "backend_model_routing_r2_5_independent_review_r1_20260730.md",
+      "expected_raw_sha256": "97db9904fd4aa53161d436206bf558b03df86a60ba512675331c9c43b2842cf8",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_Engineering_Guide_R2.5.1_2026-07-30.md",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.1_Validation_Receipt_2026-07-30.sanitized.json"
+      ],
+      "reason": "The exact independent-review witness was never a public corpus artifact; public documents preserve its engineering disposition, not its raw-byte identity."
+    },
+    "review_r2_5_1": {
+      "required_by_validator_id": "r2_5_2",
+      "kind": "omitted_private_review_witness",
+      "source_identity": "backend_model_routing_r2_5_1_independent_review_r1_20260730.md",
+      "expected_raw_sha256": "255952072991a889bb7119d744eabc1c77570bd9701f5f8ddd22d314663edf9a",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_Engineering_Guide_R2.5.2_2026-07-30.md",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.2_Validation_Receipt_2026-07-30.sanitized.json"
+      ],
+      "reason": "The exact independent-review witness was never a public corpus artifact; public documents preserve its engineering disposition, not its raw-byte identity."
+    },
+    "review_r2_5_2": {
+      "required_by_validator_id": "r2_5_3_red",
+      "kind": "omitted_private_review_witness",
+      "source_identity": "backend_model_routing_r2_5_2_independent_review_r1_20260730.md",
+      "expected_raw_sha256": "0bca91a40d52b14ab2bac0147da599afe45a06d40cc79090cb2bde844aa2db57",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.3_RED_Engineering_Plan_2026-07-30.md",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.3_RED_Validation_Receipt_2026-07-30.sanitized.json"
+      ],
+      "reason": "The exact independent-review witness was never a public corpus artifact; public documents preserve its engineering disposition, not its raw-byte identity."
+    },
+    "review_r2_5_3_red": {
+      "required_by_validator_id": "r2_5_4_red",
+      "kind": "omitted_private_review_witness",
+      "source_identity": "backend_model_routing_r2_5_3_red_independent_review_r1_20260730.md",
+      "expected_raw_sha256": "70f0c07214f0e18145070cd315b4129d99c054105f03f94134fe2fd45ef580c3",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.4_RED_Engineering_Plan_2026-07-30.md",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.4_RED_Validation_Receipt_2026-07-30.sanitized.json"
+      ],
+      "reason": "The exact independent-review witness was never a public corpus artifact; public documents preserve its engineering disposition, not its raw-byte identity."
+    },
+    "review_r2_5_4_red": {
+      "required_by_validator_id": "r2_5_5_red",
+      "kind": "omitted_private_review_witness",
+      "source_identity": "backend_model_routing_r2_5_4_red_independent_review_r1_20260730.md",
+      "expected_raw_sha256": "82b0bdb39cca446bacb2bddc596c81562b22cec9e2be0e3c5268a9fb53f4b9c9",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.5_RED_Engineering_Plan_2026-07-30.md",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.5_RED_Validation_Receipt_2026-07-30.sanitized.json"
+      ],
+      "reason": "The exact independent-review witness was never a public corpus artifact; public documents preserve its engineering disposition, not its raw-byte identity."
+    },
+    "raw_r2_5_6_schema": {
+      "required_by_validator_id": "r2_5_6_green_prep",
+      "kind": "raw_source_with_sanitized_port",
+      "source_identity": "Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Schemas_2026-07-30.json",
+      "expected_raw_sha256": "53225f9e11e71074ce4367651bde45a0157961535c17b06e6f4ce67349cea342",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Schemas_2026-07-30.sanitized.json"
+      ],
+      "reason": "The schema contains a historical local-root constant; the public corpus deliberately carries a sanitized semantic port."
+    },
+    "raw_r2_5_6_registry": {
+      "required_by_validator_id": "r2_5_6_green_prep",
+      "kind": "raw_source_with_sanitized_port",
+      "source_identity": "Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Source_Registry_2026-07-30.json",
+      "expected_raw_sha256": "646580b8ef21c72549f275bbdaceaef513440e7676ea7c68f3468c412f91826f",
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Source_Registry_2026-07-30.sanitized.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Validation_Receipt_2026-07-30.sanitized.json"
+      ],
+      "reason": "The registry contains a historical local root; the public corpus deliberately carries a sanitized semantic port."
+    },
+    "frozen_r2_5_6_source_tree": {
+      "required_by_validator_id": "r2_5_6_green_prep",
+      "validator_binding_literal": "Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Source_Registry_2026-07-30.json",
+      "kind": "frozen_environment",
+      "source_identity": "model-routing-r2.5.6-historical-source-tree",
+      "expected_repository_identity": {
+        "branch": "codex/recall-app-benchmark-r10_1",
+        "head": "67a0f85adc7a8169d79a286908b00bef7adb764a"
+      },
+      "public_evidence_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Source_Registry_2026-07-30.sanitized.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Validation_Receipt_2026-07-30.sanitized.json"
+      ],
+      "reason": "The validator proves a frozen historical worktree byte manifest, not the evolved V3 checkout."
+    }
+  },
+  "validators": [
+    {
+      "id": "r2_3",
+      "validator_ref": "docs/continuation/research/validate_plamen_model_routing_r2_3.py",
+      "package_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.3_Schemas_2026-07-29.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.3_Conformance_Vectors_2026-07-29.json"
+      ],
+      "predecessor_ids": [],
+      "nonpublic_requirement_ids": []
+    },
+    {
+      "id": "r2_4",
+      "validator_ref": "docs/continuation/research/validate_plamen_model_routing_r2_4.py",
+      "package_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.4_Schemas_2026-07-29.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.4_Conformance_Vectors_2026-07-29.json"
+      ],
+      "predecessor_ids": ["r2_3"],
+      "nonpublic_requirement_ids": ["raw_r2_3_guide", "raw_r2_3_receipt"]
+    },
+    {
+      "id": "r2_5",
+      "validator_ref": "docs/continuation/research/validate_plamen_model_routing_r2_5.py",
+      "package_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5_Schemas_2026-07-30.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5_Conformance_Vectors_2026-07-30.json"
+      ],
+      "predecessor_ids": ["r2_3", "r2_4"],
+      "nonpublic_requirement_ids": ["raw_r2_4_guide", "raw_r2_4_receipt", "review_r2_4"]
+    },
+    {
+      "id": "r2_5_1",
+      "validator_ref": "docs/continuation/research/validate_plamen_model_routing_r2_5_1.py",
+      "package_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.1_Schemas_2026-07-30.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.1_Conformance_Vectors_2026-07-30.json"
+      ],
+      "predecessor_ids": ["r2_5"],
+      "nonpublic_requirement_ids": ["review_r2_5"]
+    },
+    {
+      "id": "r2_5_2",
+      "validator_ref": "docs/continuation/research/validate_plamen_model_routing_r2_5_2.py",
+      "package_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.2_Schemas_2026-07-30.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.2_Conformance_Vectors_2026-07-30.json"
+      ],
+      "predecessor_ids": ["r2_5_1"],
+      "nonpublic_requirement_ids": ["review_r2_5_1"]
+    },
+    {
+      "id": "r2_5_3_red",
+      "validator_ref": "docs/continuation/research/validate_plamen_model_routing_r2_5_3_red.py",
+      "package_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.3_RED_Engineering_Plan_2026-07-30.md",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.3_RED_Fixture_Denominator_2026-07-30.json"
+      ],
+      "predecessor_ids": ["r2_5_2"],
+      "nonpublic_requirement_ids": ["review_r2_5_2"]
+    },
+    {
+      "id": "r2_5_4_red",
+      "validator_ref": "docs/continuation/research/validate_plamen_model_routing_r2_5_4_red.py",
+      "package_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.4_RED_Engineering_Plan_2026-07-30.md",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.4_RED_Schemas_2026-07-30.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.4_RED_Operation_Vectors_2026-07-30.json"
+      ],
+      "predecessor_ids": ["r2_5_3_red"],
+      "nonpublic_requirement_ids": ["review_r2_5_3_red"]
+    },
+    {
+      "id": "r2_5_5_red",
+      "validator_ref": "docs/continuation/research/validate_plamen_model_routing_r2_5_5_red.py",
+      "package_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.5_RED_Engineering_Plan_2026-07-30.md",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.5_RED_Schemas_2026-07-30.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.5_RED_Operation_Vectors_2026-07-30.json"
+      ],
+      "predecessor_ids": ["r2_5_4_red", "r2_5_2"],
+      "nonpublic_requirement_ids": ["review_r2_5_4_red"]
+    },
+    {
+      "id": "r2_5_6_green_prep",
+      "validator_ref": "docs/continuation/research/validate_plamen_model_routing_r2_5_6_green_prep.py",
+      "package_refs": [
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Schemas_2026-07-30.sanitized.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_Source_Registry_2026-07-30.sanitized.json",
+        "docs/continuation/research/Plamen_Backend_Model_Routing_R2.5.6_GREEN_Prep_RED_Vectors_2026-07-30.json"
+      ],
+      "predecessor_ids": [],
+      "nonpublic_requirement_ids": [
+        "raw_r2_5_6_schema",
+        "raw_r2_5_6_registry",
+        "frozen_r2_5_6_source_tree"
+      ]
+    }
+  ]
+}

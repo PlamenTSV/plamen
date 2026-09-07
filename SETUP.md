@@ -60,7 +60,7 @@ python plamen.py install
 ```
 
 This one command installs both supported model backends. It validates the
-exact governed 764-row source closure before publishing a transactional,
+exact governed 769-row source closure before publishing a transactional,
 authenticated package at `~/.plamen`; creates the installed `plamen` front in
 `~/.local/bin`; builds the private hash-locked Python runtime; and
 materializes the reviewed Node/npm and backend generation. It also publishes

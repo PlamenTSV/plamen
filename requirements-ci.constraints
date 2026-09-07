@@ -5,7 +5,9 @@
 # then compares every active row before installing the application/test environment.
 annotated-types==0.8.0
 attrs==26.1.0
+cffi==2.1.1
 colorama==0.4.6
+cryptography==50.0.1
 execnet==2.1.2
 iniconfig==2.3.0
 inquirerpy==0.3.4
@@ -20,9 +22,11 @@ prompt-toolkit==3.0.53
 protobuf==7.35.1
 pydantic==2.13.4
 pydantic-core==2.46.4
+pycparser==3.0
 pygments==2.20.0
 pytest==9.1.1
 pytest-xdist==3.8.0
+PyYAML==6.0.3
 pywinpty==2.0.15
 referencing==0.37.0
 rich==15.0.0

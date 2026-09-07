@@ -105,9 +105,9 @@ def test_current_source_roster_excludes_generated_bytecode_and_is_exact():
         *("codex-adapter/" + path for path in sorted(adapter_paths)),
     ]
 
-    assert len(closure["assets"]) == 295
-    assert len(source_paths) == front._CODEX_INSTALL_SOURCE_COUNT == 764
-    assert len(runtime_paths) == front._CODEX_INSTALL_RUNTIME_COUNT == 733
+    assert len(closure["assets"]) == 300
+    assert len(source_paths) == front._CODEX_INSTALL_SOURCE_COUNT == 769
+    assert len(runtime_paths) == front._CODEX_INSTALL_RUNTIME_COUNT == 738
     assert len(adapter_paths) == front._CODEX_INSTALL_ADAPTER_COUNT == 31
     assert source_paths.count("scripts/claude_worker_prompt_consistency.py") == 1
     assert source_paths.count("scripts/windows_private_execution_root.py") == 1

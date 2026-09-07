@@ -19,12 +19,15 @@ Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **So
 > production installation and E2E auditing are **not yet supported**: V3's
 > hardened package transaction, crash keeper, and recovery transport are still
 > Windows-native. POSIX remains a source-development and validation target.
-> macOS arm64 and x86_64 are supported for isolated source development through
+> macOS Apple Silicon (`arm64`) is supported for isolated source development through
 > [`scripts/bootstrap_macos_dev.sh`](scripts/bootstrap_macos_dev.sh); see the
 > [macOS development guide](docs/development/macos.md) and
 > [machine-migration guide](docs/development/machine-migration.md). Completing
 > native or governed-host Mac audit execution remains part of the
 > [Plamen-v3 continuation goal](docs/continuation/GOAL.md).
+> Intel macOS is currently rejected before mutation because secure
+> `cryptography 50.0.1` no longer publishes CPython Intel-macOS wheels and V3's
+> governed source-build path is not yet implemented.
 
 ---
 
@@ -64,7 +67,7 @@ Supports **EVM/Solidity**, **Solana/Anchor**, **Aptos Move**, **Sui Move**, **So
 > truncation is only a web-UI listing limit. The source tree intentionally keeps
 > tests, fault fixtures, architecture records, and continuation research beside
 > the implementation. A production install publishes the exact governed
-> 764-row closure (733 runtime rows plus 31 Codex-adapter rows); normal CLI/audit
+> 769-row closure (738 runtime rows plus 31 Codex-adapter rows); normal CLI/audit
 > launch does not recursively enumerate every source test or research file.
 > Dependency and integrity census work is concentrated at install/update time.
 
@@ -154,7 +157,7 @@ must add `--yes`; model fallback remains disabled unless
 > **Important**: Use `plamen` after installation. Invoke `plamen.py install`
 > only from a complete source release; never execute or edit installed internals.
 
-The installer validates the exact governed 764-row source closure before any
+The installer validates the exact governed 769-row source closure before any
 publication. It transactionally commits the authenticated package at
 `~/.plamen`, a private hash-locked Python environment, managed Node.js
 24.20.0/npm 11.19.0, and exact Claude Code 2.1.252 and Codex 0.152.0 payloads.
@@ -178,13 +181,19 @@ Acquire the new complete source release separately, then run its
 backend with npm. See [docs/updating.md](docs/updating.md) for authenticated
 update and recovery details.
 
-For an existing V3 source checkout, keep the branch selection explicit:
+For an existing V3 source checkout on a supported Windows host, keep the branch
+selection explicit and reinstall from the complete reviewed source:
 
-```bash
+```powershell
 git switch Plamen-v3
 git pull --ff-only origin Plamen-v3
-python3.12 plamen.py install
+python plamen.py install
 ```
+
+On Linux or macOS, update only the source checkout and rerun the applicable
+source-validation workflow. Do not run `plamen.py install`; see the
+[macOS source-development guide](docs/development/macos.md) and the open POSIX
+gates in the [continuation goal](docs/continuation/GOAL.md).
 
 ### Run your first audit
 
@@ -271,7 +280,7 @@ hardening paths:
   assembly project accepted evidence. Report workers cannot silently mint,
   delete, omit, or rerate canonical findings.
 - **Packaging is source-governed.** The current installer admits an exact
-  764-row source closure, hash-locked Python wheels, reviewed Node/npm and
+  769-row source closure, hash-locked Python wheels, reviewed Node/npm and
   backend payloads, immutable installed bytes, and receipt-bound selections
   instead of ambient tools or an editable installed checkout.
 - **Claude and Codex share logical denominators.** Claude retains its PTY and
@@ -291,6 +300,9 @@ fresh Codex and Claude E2E completion are still open. See the
 [evidence index](docs/continuation/EVIDENCE_INDEX.json), and the
 [architecture](docs/architecture.md) for the current boundary. Comparative
 benchmarking against older Plamen versions is explicitly deferred.
+The portable research denominator and its exact-versus-blocked replay status
+are recorded in [the corpus manifest](docs/continuation/CORPUS_MANIFEST.json)
+and [the model-routing replay manifest](docs/continuation/MODEL_ROUTING_PORTABLE_REPLAY.json).
 
 ---
 

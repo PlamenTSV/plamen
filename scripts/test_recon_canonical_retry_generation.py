@@ -22,6 +22,29 @@ from test_support_startup_permit import (
     durable_startup_permit,
 )
 from test_recon_canonical_prepass_handoff import RUN_ID, _workspace
+from test_claude_launch_authority_fixtures import (
+    materialize_test_provider_executable,
+)
+
+
+@pytest.fixture(scope="module")
+def _test_provider_executable(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    return materialize_test_provider_executable(
+        tmp_path_factory.mktemp("recon-retry-provider")
+    )
+
+
+@pytest.fixture(autouse=True)
+def _single_link_windows_test_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    _test_provider_executable: Path,
+) -> None:
+    if os.name == "nt" and int(
+        getattr(Path(sys.executable).stat(), "st_nlink", 1)
+    ) != 1:
+        monkeypatch.setattr(sys, "executable", str(_test_provider_executable))
 
 
 def _retry_plan(scratchpad: Path, *, run_id: str = RUN_ID) -> None:
@@ -140,7 +163,7 @@ def _commit_private_retry(
             "+'candidate evidence\\n'*20,encoding='utf-8') for name in names]"
         )
         return (
-            r"C:\p27rt\python.exe" if os.name == "nt" else sys.executable,
+            sys.executable,
             "-I",
             "-c",
             script,

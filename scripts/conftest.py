@@ -38,21 +38,24 @@ import pytest
 # the full suite unattended (the way it has for months) without it hanging.
 os.environ.setdefault("PLAMEN_AUTO_HALT_CHOICE", "exit")
 
-# (1) sys.path net — idempotent; scripts/ dir is this file's parent.
+# (1) sys.path net — idempotent and checkout-authoritative. Pytest is invoked
+# from scripts/ in CI, so the repository root is not otherwise importable and a
+# third-party ``scripts`` namespace can accidentally win resolution.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+for _entry in (_SCRIPTS_DIR, str(_REPO_ROOT)):
+    if _entry not in sys.path:
+        sys.path.insert(0, _entry)
 
 
 # (2) Exact, source-bound quarantine authority for the release fast lane.
 _FAST_GOVERNANCE_SCHEMA = "plamen.fast-lane-skip-governance.v1"
 _FAST_GOVERNANCE_MANIFEST_SHA256 = (
-    "de13b9b170d404ce8d2eb63bde53c73d9550d1909169e1783c21a65767e60ad0"
+    "7a70bdb3e04061d5f14fdb464ef48763cbbcf3b1bb23e7193c32024c0c3ec803"
 )
 _FAST_GOVERNANCE_MANIFEST = Path(__file__).with_name(
     "fast_lane_skip_governance_r10.json"
 )
-_REPO_ROOT = Path(__file__).resolve().parent.parent
 # These sources belong to the explicitly private bounty lane and are ignored by
 # the public repository.  The governance roster still pins their identities and
 # hashes so a private checkout can verify them.  A public checkout may omit the
@@ -128,7 +131,7 @@ _FAST_GOVERNANCE_HASHES = {
         "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b"
     ),
     "quarantine_source_roster_sha256": (
-        "1d6cfe7a5df7745975ed7167e01c249d64abc878e207e6f30e55db3831e5088c"
+        "3165afe5458a71d9e820307a2a1b69a355986488871a53d2cd1bd84496fc7aad"
     ),
     "r9_default_nodes_sha256": (
         "22bbcf73f724b188768fb532fc832e5e6a85aa9fba1196fa4c0dde7e4db2de1d"
@@ -137,7 +140,7 @@ _FAST_GOVERNANCE_HASHES = {
         "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4"
     ),
     "source_roster_sha256": (
-        "4ad55cf4244b45df28f215b5a54a48e59a81fdd317b8b77c7b0ae80c6171f293"
+        "2dd2633a4c6e08168973732ef2d56b99bfca15f30042480ee69a8724678b61b8"
     ),
     "unresolved_nodes_sha256": (
         "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874"

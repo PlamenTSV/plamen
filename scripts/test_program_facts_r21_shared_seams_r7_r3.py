@@ -10,7 +10,7 @@ import pytest
 import artifact_ledger
 from artifact_ledger import ArtifactLedgerError, LEDGER_NAME, read_artifact_ledger
 from program_facts_v2_contracts import ProgramFactsTypeError
-from review_fixtures.program_facts_r2_1_b0_red_support import (
+from test_support.program_facts_r2_1_b0_red_support import (
     PUBLIC_IDENTITIES,
     require_accepts,
 )

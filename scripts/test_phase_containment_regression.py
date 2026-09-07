@@ -1015,7 +1015,9 @@ def test_POLICY_validator_rejects_foreign_phase_writes_even_when_own_gate_passes
     ).exists()
 
 
-def test_BOUNDARY_fake_claude_foreign_write_is_hard_failure_signal(tmp_path: Path):
+def test_BOUNDARY_fake_claude_foreign_write_is_hard_failure_signal(
+    tmp_path: Path, caplog,
+):
     project = tmp_path / "project"
     scratchpad = project / ".scratchpad"
     project.mkdir()
@@ -1086,8 +1088,8 @@ print(json.dumps({"result": "x" * 700, "usage": {"input_tokens": 1, "output_toke
     )
     ok = (
         rc == D.EXIT_ERROR
-        and rejected is not None
-        and rejected.reason_code == "CLAUDE_BACKEND_SELECTION_UNAVAILABLE"
+        and rejected is None
+        and "refusing untyped Claude headless monolithic launch" in caplog.text
         and not passed
         and "inventory_shard_plan.md" in missing
         and not invoked_marker.exists()

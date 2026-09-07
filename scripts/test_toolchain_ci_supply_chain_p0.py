@@ -210,7 +210,6 @@ def test_ci_dependency_provenance_covers_matrix_and_lock_hashes() -> None:
         "platform": [
             "linux-x86_64",
             "macos-arm64",
-            "macos-x86_64",
             "windows-x86_64",
         ],
     }
@@ -229,9 +228,12 @@ def test_ci_dependency_provenance_covers_matrix_and_lock_hashes() -> None:
     }
     binary = set(locked) - universal
     assert binary == {
+        "cffi",
+        "cryptography",
         "protobuf",
         "pydantic-core",
         "pywinpty",
+        "pyyaml",
         "rpds-py",
     }
     assert universal.isdisjoint(binary)
@@ -251,12 +253,14 @@ def test_ci_dependency_provenance_covers_matrix_and_lock_hashes() -> None:
         for platform in (
             "linux-x86_64",
             "macos-arm64",
-            "macos-x86_64",
             "windows-x86_64",
         )
     }
     for target in receipt["wheel_coverage"]:
-        expected = {"pydantic-core", "protobuf", "rpds-py"}
+        expected = {
+            "cffi", "cryptography", "protobuf", "pydantic-core",
+            "pyyaml", "rpds-py",
+        }
         if target["platform"] == "windows-x86_64":
             expected.add("pywinpty")
         assert {artifact["project"] for artifact in target["artifacts"]} == expected

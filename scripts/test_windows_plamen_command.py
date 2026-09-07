@@ -1783,8 +1783,8 @@ def test_front_and_driver_share_current_install_denominator():
     driver_source = (ROOT / "scripts" / "plamen_driver.py").read_text(
         encoding="utf-8",
     )
-    assert "_CODEX_INSTALL_SOURCE_COUNT = 764" in driver_source
-    assert "_CODEX_INSTALL_RUNTIME_COUNT = 733" in driver_source
+    assert "_CODEX_INSTALL_SOURCE_COUNT = 769" in driver_source
+    assert "_CODEX_INSTALL_RUNTIME_COUNT = 738" in driver_source
     assert "_CODEX_INSTALL_ADAPTER_COUNT = 31" in driver_source
     admission = driver_source[
         driver_source.index("def _admit_installed_driver_before_local_imports"):

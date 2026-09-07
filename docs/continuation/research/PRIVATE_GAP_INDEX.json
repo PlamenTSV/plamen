@@ -53,8 +53,8 @@
                      "raw_transfer_required":  true,
                      "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
                      "semantic_representation_refs":  [
-                                                          "docs/continuation/research/Plamen_BB_Wrapper_Hardened_2026-07-27.manifest.json",
-                                                          "docs/continuation/research/Plamen_BB_Wrapper_Hardened_Handoff_2026-07-27.md",
+                                             "docs/continuation/research/Plamen_BB_Wrapper_Hardened_2026-07-27.manifest.sanitized.json",
+                                             "docs/continuation/research/Plamen_BB_Wrapper_Hardened_Handoff_2026-07-27.sanitized.md",
                                                           "docs/continuation/REQUIREMENTS.jsonl"
                                                       ],
                      "gap_status":  "RAW_ONLY_PENDING_HASH_TRANSFER",
@@ -78,8 +78,8 @@
                      "raw_transfer_required":  true,
                      "raw_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
                      "semantic_representation_refs":  [
-                                                          "docs/continuation/research/Plamen_BB_Wrapper_Hardened_2026-07-27.manifest.json",
-                                                          "docs/continuation/research/Plamen_BB_Wrapper_Hardened_Handoff_2026-07-27.md",
+                                             "docs/continuation/research/Plamen_BB_Wrapper_Hardened_2026-07-27.manifest.sanitized.json",
+                                             "docs/continuation/research/Plamen_BB_Wrapper_Hardened_Handoff_2026-07-27.sanitized.md",
                                                           "docs/continuation/REQUIREMENTS.jsonl"
                                                       ],
                      "gap_status":  "RAW_ONLY_PENDING_HASH_TRANSFER",

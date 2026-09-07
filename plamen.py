@@ -24,8 +24,8 @@ _CODEX_KEEPER_IDLE_SECONDS = 15.0
 _CODEX_KEEPER_ABSOLUTE_SECONDS = 1800.0
 _CODEX_KEEPER_PROGRESS_SECONDS = 1.0
 _CODEX_INSTALL_TERMINAL_STATE = "COMMITTED"
-_CODEX_INSTALL_SOURCE_COUNT = 764
-_CODEX_INSTALL_RUNTIME_COUNT = 733
+_CODEX_INSTALL_SOURCE_COUNT = 769
+_CODEX_INSTALL_RUNTIME_COUNT = 738
 _CODEX_INSTALL_ADAPTER_COUNT = 31
 # The unsigned-lock migration predicate authenticates the one historical
 # predecessor package, not the mutable denominator of the package being
@@ -3551,7 +3551,10 @@ def _admit_installed_runtime_before_bootstrap(
     codex_home = Path(user_root) / ".codex"
     receipt_path = codex_home / _CODEX_INSTALL_RECEIPT
     anchor_path = codex_home / _CODEX_INSTALL_ANCHOR
-    if discovery:
+    borrowed_channel_present = any(
+        name in os.environ for name in _PLAMEN_BORROWED_READER_ENV
+    )
+    if discovery and not borrowed_channel_present:
         try:
             _codex_install_committed_descriptor(
                 codex_home, (_CODEX_INSTALL_ANCHOR,),
@@ -3754,6 +3757,47 @@ def _early_cli_discovery():
 
 
 _early_cli_discovery()
+
+
+def _early_refuse_unsupported_posix_production_command():
+    """Reject unsupported mutating production routes before bootstrap writes.
+
+    Linux and macOS remain source-development hosts in this release.  Keep the
+    public refusal ahead of managed-runtime creation and third-party imports so
+    even a first invocation cannot mutate HOME before reporting that boundary.
+    Invalid private recovery argv is deliberately left to its ordinary syntax
+    error instead of being mistaken for an admitted recovery operation.
+    """
+    if os.name == "nt" or __name__ != "__main__" or len(sys.argv) < 2:
+        return
+    command = sys.argv[1].lower()
+    if command in {"install", "setup"}:
+        sys.stderr.write(
+            "Plamen V3 production installation is currently qualified "
+            "only on Windows. Linux and macOS remain source-development "
+            "hosts until the POSIX transaction/keeper goal is complete; "
+            "see docs/continuation/GOAL.md and docs/development/macos.md.\n"
+        )
+        raise SystemExit(3)
+    if command == "migrate":
+        sys.stderr.write(
+            "Plamen V3 migration is currently qualified only on "
+            "Windows; POSIX transaction/recovery support is unfinished.\n"
+        )
+        raise SystemExit(3)
+    if (
+        command == "--recover-codex-install"
+        and len(sys.argv) == 3
+        and re.fullmatch(r"[0-9a-f]{32}", sys.argv[2])
+    ):
+        sys.stderr.write(
+            "Plamen V3 install recovery is currently qualified only "
+            "on Windows; POSIX keeper/recovery support is unfinished.\n"
+        )
+        raise SystemExit(3)
+
+
+_early_refuse_unsupported_posix_production_command()
 
 PLAMEN_RUNTIME_ASSETS = (
     {
@@ -4812,7 +4856,22 @@ def _bootstrap():
             if verify.returncode != 0 or check.returncode != 0:
                 return False
             _write_runtime_stamp(lock_digest)
-        if active_runtime_root != _managed_runtime_root().absolute():
+        managed_runtime_root = _managed_runtime_root().absolute()
+        active_runtime_matches = active_runtime_root == managed_runtime_root
+        if os.name == "nt" and not active_runtime_matches:
+            # A retained install capability can intentionally address the
+            # reviewed venv through a transaction-private junction.  Windows
+            # preserves the junction spelling in the configured runtime root
+            # while sys.prefix names the same directory through its canonical
+            # path.  Compare the resolved, case-normalized directory identities
+            # before deciding to spawn a second process: the borrowed reader is
+            # one-shot and must never be forwarded by an accidental re-exec.
+            active_runtime_matches = os.path.normcase(os.fspath(
+                active_runtime_root.resolve(strict=True)
+            )) == os.path.normcase(os.fspath(
+                managed_runtime_root.resolve(strict=True)
+            ))
+        if not active_runtime_matches:
             argv = [
                 str(managed_python), "-B", str(Path(__file__).resolve()),
                 *sys.argv[1:],
@@ -12324,6 +12383,82 @@ class _ClaudeProjectionRetainedLease(dict):
         raise TypeError("Claude projection retained lease cannot be copied")
 
 
+class _ClaudeProjectionProvisionalLockAuthority:
+    """Opaque one-use admission for a lock published by this install attempt."""
+
+    __slots__ = ()
+
+    def __copy__(self):
+        raise TypeError("Claude projection provisional authority cannot be copied")
+
+    def __deepcopy__(self, memo):
+        del memo
+        raise TypeError("Claude projection provisional authority cannot be copied")
+
+
+def _claude_projection_provisional_lock_boundary():
+    issued = {}
+
+    def bind(created_authority, *, path, public_key):
+        fields = {"device", "inode", "size", "sha256"}
+        if (
+            not isinstance(created_authority, dict)
+            or set(created_authority) != fields
+            or any(
+                not isinstance(created_authority.get(field), int)
+                or isinstance(created_authority.get(field), bool)
+                for field in ("device", "inode", "size")
+            )
+            or created_authority["device"] < 0
+            or created_authority["inode"] <= 0
+            or not 0 < created_authority["size"] <= 4096
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", created_authority.get("sha256", "")
+            )
+            or not re.fullmatch(r"[0-9a-f]{64}", public_key or "")
+            or public_key == _CLAUDE_PROJECTION_LEGACY_PUBLIC
+        ):
+            raise RuntimeError("Claude projection provisional authority is malformed")
+        canonical_path = _claude_projection_canonical_path(path)
+        capability = _ClaudeProjectionProvisionalLockAuthority()
+        issued[id(capability)] = (
+            capability,
+            (
+                canonical_path, public_key, created_authority["device"],
+                created_authority["inode"], created_authority["size"],
+                created_authority["sha256"],
+            ),
+        )
+        return capability
+
+    def consume(capability):
+        registered = issued.pop(id(capability), None)
+        if (
+            not isinstance(capability, _ClaudeProjectionProvisionalLockAuthority)
+            or not isinstance(registered, tuple)
+            or len(registered) != 2
+            or registered[0] is not capability
+        ):
+            raise RuntimeError(
+                "Claude projection provisional authority is unavailable or replayed"
+            )
+        path, public_key, device, inode, size, sha256 = registered[1]
+        return {
+            "path": path, "public_key": public_key,
+            "device": device, "inode": inode, "links": 1,
+            "size": size, "sha256": sha256,
+        }
+
+    return bind, consume
+
+
+(
+    _claude_projection_bind_provisional_lock_authority,
+    _claude_projection_consume_provisional_lock_authority,
+) = _claude_projection_provisional_lock_boundary()
+del _claude_projection_provisional_lock_boundary
+
+
 def _claude_projection_prepare_idle_lock(
     signing_key, journal_public_key, prior_lock_public_key=None,
     return_created_authority=False, prior_lock_authority=None,
@@ -12492,8 +12627,18 @@ def _claude_projection_move_retained_lock(descriptor, authority, backup):
 def _claude_projection_lock_impl(
     _active_leases,
     *, create=True, allow_legacy_receipt=None, migration_request=None,
+    provisional_authority=None,
 ):
     lock_path = os.path.join(CLAUDE_HOME, ".plamen-projection.lock")
+    provisional = None
+    if provisional_authority is not None:
+        provisional = _claude_projection_consume_provisional_lock_authority(
+            provisional_authority
+        )
+        if create or allow_legacy_receipt is not None or migration_request is not None:
+            raise RuntimeError(
+                "Claude projection provisional authority has an invalid acquisition mode"
+            )
     if create:
         os.makedirs(CLAUDE_HOME, exist_ok=True)
     elif not os.path.isfile(lock_path):
@@ -12523,6 +12668,15 @@ def _claude_projection_lock_impl(
     if migration is not None:
         legacy_admitted = True
     signing_key = None
+    if provisional is not None:
+        if (
+            expected_public is not None
+            and expected_public != provisional["public_key"]
+        ):
+            raise RuntimeError(
+                "Claude projection provisional public key differs from receipt"
+            )
+        expected_public = provisional["public_key"]
     if not re.fullmatch(r"[0-9a-f]{64}", expected_public or ""):
         if not create and not legacy_admitted:
             raise RuntimeError("Claude projection recovery authority is unavailable")
@@ -12603,9 +12757,11 @@ def _claude_projection_lock_impl(
             if (
                 retained.st_dev != opened.st_dev or retained.st_ino != opened.st_ino
                 or retained.st_nlink != 1
+                or int(retained.st_size) != len(raw)
                 or retained_named.st_dev != retained.st_dev
                 or retained_named.st_ino != retained.st_ino
                 or retained_named.st_nlink != 1
+                or int(retained_named.st_size) != len(raw)
             ):
                 raise RuntimeError("Claude projection lock split-inode replacement detected")
             os.lseek(descriptor, 0, os.SEEK_SET)
@@ -12622,10 +12778,17 @@ def _claude_projection_lock_impl(
         named_after = os.stat(lock_path, follow_symlinks=False)
         if (
             named_after.st_dev != opened.st_dev or named_after.st_ino != opened.st_ino
-            or named_after.st_nlink != 1
+            or named_after.st_nlink != 1 or int(named_after.st_size) != len(raw)
         ):
             raise RuntimeError("Claude projection lock path was replaced")
         retained_stat = os.fstat(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        retained_raw = os.read(descriptor, 4097)
+        if (
+            int(retained_stat.st_size) != len(retained_raw)
+            or retained_raw != raw
+        ):
+            raise RuntimeError("Claude projection retained lock bytes differ")
         authority = {
             "path": _claude_projection_canonical_path(lock_path),
             "public_key": (
@@ -12634,9 +12797,11 @@ def _claude_projection_lock_impl(
             "device": int(retained_stat.st_dev),
             "inode": int(retained_stat.st_ino),
             "links": int(retained_stat.st_nlink),
-            "size": len(raw),
-            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size": len(retained_raw),
+            "sha256": hashlib.sha256(retained_raw).hexdigest(),
         }
+        if provisional is not None and authority != provisional:
+            raise RuntimeError("Claude projection provisional lock authority differs")
         expected_authority_sha256 = terminal.get(
             "projection_lock_authority_sha256"
         ) if isinstance(terminal, dict) else None
@@ -12747,11 +12912,15 @@ def _claude_projection_lease_capability_boundary(lock_impl):
             _claude_projection_revalidate_lock_authority(authority)
         return authority
 
-    def lock(*, create=True, allow_legacy_receipt=None, migration_request=None):
+    def lock(
+        *, create=True, allow_legacy_receipt=None, migration_request=None,
+        provisional_authority=None,
+    ):
         return lock_impl(
             active_leases, create=create,
             allow_legacy_receipt=allow_legacy_receipt,
             migration_request=migration_request,
+            provisional_authority=provisional_authority,
         )
 
     return validate, lock
@@ -18870,7 +19039,7 @@ def _ensure_posix_plamen_command(*, user_root=None, plamen_root=None,
 def _sync_codex_adapter_source_cache(receipt):
     """Preserve the adapter sources needed by installed-copy self-repair.
 
-    The committed 764-row transaction installs adapter files into ~/.codex,
+    The committed 769-row transaction installs adapter files into ~/.codex,
     while an installed `plamen install --codex` uses ~/.plamen as its source.
     Keep a byte-exact, separately backed-up cache under
     ~/.plamen/codex-adapter so that source reconstruction cannot depend on
@@ -19146,10 +19315,10 @@ def _codex_install_doctor_issues(codex_home=None, plamen_root=None):
         or type(receipt.get("adapter_count")) is not int
         or receipt.get("adapter_count") != _CODEX_INSTALL_ADAPTER_COUNT
     ):
-        issues.append("Codex install receipt projection is not 733/31/764")
+        issues.append("Codex install receipt projection is not 738/31/769")
     rows = receipt.get("rows")
     if not isinstance(rows, list) or len(rows) != _CODEX_INSTALL_SOURCE_COUNT:
-        issues.append("Codex install receipt denominator is not 764")
+        issues.append("Codex install receipt denominator is not 769")
         rows = []
     for row in rows:
         if not isinstance(row, dict):
@@ -19253,7 +19422,7 @@ def _raw_rows_sha256(rows):
 
 
 def _codex_install_source_rows(source_root=None, *, failpoint=None, hook_context=None):
-    """Return the source-exact 733 runtime + 31 Codex adapter rows."""
+    """Return the source-exact 738 runtime + 31 Codex adapter rows."""
     source_root = Path(source_root or PLAMEN_HOME).absolute()
     closure_raw = _codex_install_committed_read(
         source_root,
@@ -19262,8 +19431,8 @@ def _codex_install_source_rows(source_root=None, *, failpoint=None, hook_context
     )[1]
     closure = _strict_json_bytes(closure_raw)
     assets = closure.get("assets")
-    if not isinstance(assets, list) or len(assets) != 295:
-        raise RuntimeError("runtime closure must contain exactly 295 typed assets")
+    if not isinstance(assets, list) or len(assets) != 300:
+        raise RuntimeError("runtime closure must contain exactly 300 typed assets")
     runtime_paths = {
         "verification_policy/toolchain_runtime_closure.v1.json",
         "verification_policy/__init__.py",
@@ -19868,7 +20037,7 @@ def _validated_prior_committed_receipt(
     source_count = receipt.get("source_count")
     predecessor_runtime_counts = {
         741: 710, 743: 712, 751: 720, 756: 725, 758: 727, 759: 728,
-        760: 729, 761: 730, 762: 731, 764: 733,
+        760: 729, 761: 730, 762: 731, 764: 733, 769: 738,
     }
     exact_source_count = type(source_count) is int
     legacy_denominator = exact_source_count and source_count in {741, 743, 751}
@@ -20958,7 +21127,7 @@ class _CodexInstallMutationDispatcher:
             not isinstance(source_rows, list)
             or len(source_rows) != _CODEX_INSTALL_SOURCE_COUNT
         ):
-            raise RuntimeError("Codex install dispatcher requires exact 764 plan")
+            raise RuntimeError("Codex install dispatcher requires exact 769 plan")
         self.transaction_id = transaction_id
         self.writer_generation = writer_generation
         self.writer_handle = writer_handle
@@ -22563,7 +22732,7 @@ def _capture_codex_install_batch_boundary(
     # Production batch checkpoints bind the exact broker event stream and all
     # retained root/writer identities.  Full A/B/C namespace censuses already
     # bracket every phase and terminal publication; repeating the entire
-    # 764-file source/install census before and after first/middle/last rows
+    # 769-file source/install census before and after first/middle/last rows
     # made Windows installs and recovery take tens of minutes without adding a
     # distinct security boundary.  Contract-failpoint tests retain the full
     # census so adversarial mutation hooks still exercise every edge.
@@ -24531,7 +24700,7 @@ def _install_codex_package_transaction(
     *, source_root=None, plamen_root=None, codex_home=None, failpoint=None,
     _transaction_context=None, enable_claude_projection=True,
 ):
-    """Stage, backup, commit, verify, and receipt the exact 764-file package."""
+    """Stage, backup, commit, verify, and receipt the exact 769-file package."""
     source_root = Path(source_root or PLAMEN_HOME).absolute()
     plamen_root = Path(plamen_root or os.path.expanduser("~/.plamen")).absolute()
     codex_home = Path(codex_home or os.path.expanduser("~/.codex")).absolute()
@@ -24990,7 +25159,22 @@ def _install_codex_package_transaction(
         )
         if not prior_lock_lease_active:
             try:
-                prior_lock_lease = _claude_projection_lock(create=False)
+                provisional_lock_authority = (
+                    _claude_projection_bind_provisional_lock_authority(
+                        created_idle_lock_authority,
+                        path=os.path.join(
+                            CLAUDE_HOME, ".plamen-projection.lock"
+                        ),
+                        public_key=projection_lock_public_key,
+                    )
+                    if created_idle_lock_authority is not None else None
+                )
+                lock_options = {"create": False}
+                if provisional_lock_authority is not None:
+                    lock_options["provisional_authority"] = (
+                        provisional_lock_authority
+                    )
+                prior_lock_lease = _claude_projection_lock(**lock_options)
                 prior_lock_authority = prior_lock_lease.__enter__()
                 prior_lock_lease_active = True
             except BaseException as operation_exc:
@@ -27447,7 +27631,7 @@ def run_doctor():
         # requirement on POSIX.
         installed_codex = Path(installed_runtime["address"]).parent / ".codex"
         integrity_started = time.monotonic()
-        w("  Checking committed package integrity (764 files; this may take up to a minute)...\n")
+        w("  Checking committed package integrity (769 files; this may take up to a minute)...\n")
         sys.stdout.flush()
         installed_issues = _codex_install_doctor_issues(
             codex_home=installed_codex,
@@ -27462,7 +27646,7 @@ def run_doctor():
             w("\n")
             return 1
         ok(
-            "Codex installed package: exact committed 764-row authority "
+            "Codex installed package: exact committed 769-row authority "
             f"({time.monotonic() - integrity_started:.1f}s)"
         )
 
@@ -27610,7 +27794,7 @@ def run_doctor():
         fail("~/.plamen missing")
 
     # R134: an installed Codex path is authoritative only when the complete
-    # committed 764-row transaction, junction, admission anchor, and wizard
+    # committed 769-row transaction, junction, admission anchor, and wizard
     # references validate.  This is purely local byte/metadata inspection.
     _codex_root = Path(os.path.expanduser("~/.codex"))
     try:
@@ -27629,7 +27813,7 @@ def run_doctor():
             for _issue in _install_issues:
                 fail(_issue)
         else:
-            ok("Codex installed package: exact committed 764-row authority")
+            ok("Codex installed package: exact committed 769-row authority")
 
     # 2. Required platform CLIs. Node/npm/npx are intentionally absent: the
     # committed generation authenticates its own exact Node/npm closure.
@@ -32039,12 +32223,6 @@ def main():
                 raise RuntimeError(
                     "--recover-codex-install requires one exact 32-hex transaction id"
                 )
-            if os.name != "nt" and __name__ == "__main__":
-                sys.stderr.write(
-                    "Plamen V3 install recovery is currently qualified only "
-                    "on Windows; POSIX keeper/recovery support is unfinished.\n"
-                )
-                raise SystemExit(3)
             recovered = _recover_codex_package_transaction(sys.argv[2])
             sys.stdout.write(
                 f"Recovered transaction: {recovered['transaction_id']}\n"
@@ -32166,14 +32344,6 @@ def main():
         # `setup` runs install, then the interactive toolchain checkbox + RAG.
         # `--codex` runs only the Codex adapter generator (non-interactive).
         if arg in ("install", "setup"):
-            if os.name != "nt" and __name__ == "__main__":
-                sys.stderr.write(
-                    "Plamen V3 production installation is currently qualified "
-                    "only on Windows. Linux and macOS remain source-development "
-                    "hosts until the POSIX transaction/keeper goal is complete; "
-                    "see docs/continuation/GOAL.md and docs/development/macos.md.\n"
-                )
-                raise SystemExit(3)
             if "--codex" in sys.argv:
                 show_banner()
                 w = sys.stdout.write
@@ -32194,12 +32364,6 @@ def main():
             return
 
         if arg == "migrate":
-            if os.name != "nt" and __name__ == "__main__":
-                sys.stderr.write(
-                    "Plamen V3 migration is currently qualified only on "
-                    "Windows; POSIX transaction/recovery support is unfinished.\n"
-                )
-                raise SystemExit(3)
             run_migrate()
             return
 

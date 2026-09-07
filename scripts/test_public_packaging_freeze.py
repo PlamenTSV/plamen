@@ -95,6 +95,11 @@ _PUBLIC_UNTRACKED_FILES = {
     "requirements-ci-resolver.in",
     "requirements-ci-resolver.lock",
 }
+_PUBLIC_SOURCE_ONLY_TEST_SUPPORT = {
+    "scripts/test_support/__init__.py",
+    "scripts/test_support/claude_runtime_test_support.py",
+    "scripts/test_support/program_facts_r2_1_b0_red_support.py",
+}
 _REQUIRED_POLICY_FILES = {
     "verification_policy/ci_advisory_evidence.v1.json",
     "verification_policy/ci_dependency_authority.v1.json",
@@ -125,6 +130,8 @@ _REQUIRED_LIVE_ASSETS = {
     "rules/precedent-evidence-policy.md",
 }
 _REQUIRED_PUBLIC_SCRIPT_RULES = {
+    "!scripts/test_support/",
+    "!scripts/test_support/*.py",
     "!scripts/bootstrap_macos_dev.sh",
     "!scripts/attention_repair_shards.py",
     "!scripts/auxiliary_writable_root_lease.py",
@@ -527,6 +534,7 @@ def test_intended_public_archive_has_complete_runtime_and_no_private_files(
     required = (
         current_public_scripts
         | current_contract_assets
+        | _PUBLIC_SOURCE_ONLY_TEST_SUPPORT
         | _REQUIRED_POLICY_FILES
         | _REQUIRED_LIVE_ASSETS
         | _PUBLIC_UNTRACKED_FILES
@@ -589,6 +597,17 @@ def test_claude_provider_policy_is_visible_in_a_fresh_public_archive(
     members = _archive_members(archive)
     assert "scripts/claude_provider_policy.py" in members
     assert "scripts/bb_wrapper_provider_adapter.py" in members
+
+
+def test_public_test_support_is_source_only_not_runtime_authority() -> None:
+    ignored = _git_ignored_paths(_PUBLIC_SOURCE_ONLY_TEST_SUPPORT)
+    assert not ignored, f"public test support is ignored: {sorted(ignored)}"
+
+    runtime_paths = set(TOOLCHAIN_CONTROL.TOOLCHAIN_RUNTIME_REQUIRED_FILES)
+    assert _PUBLIC_SOURCE_ONLY_TEST_SUPPORT.isdisjoint(runtime_paths), (
+        "test-only helpers entered installed runtime authority: "
+        f"{sorted(_PUBLIC_SOURCE_ONLY_TEST_SUPPORT & runtime_paths)}"
+    )
 
 
 def test_clean_archive_compiles_and_imports_runtime_from_itself(

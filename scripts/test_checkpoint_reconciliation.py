@@ -1,8 +1,25 @@
 from pathlib import Path
+import uuid
 
 import pytest
 
 import plamen_driver as D
+
+
+def _typed_recon_commit(state: str, run_id: str) -> D.PhaseCommit:
+    failure = D.GateFailure(
+        gate_id="recon.methodology_selection.binding_manifest",
+        gate_class="METHODOLOGY_SELECTION",
+        message="typed recon selection debt",
+        fallback_policy="CONSUME_WITH_DEBT",
+        schema_id="recon.methodology_selection.binding_manifest/v1",
+    )
+    return D.PhaseCommit(
+        phase_name="recon",
+        state=state,
+        run_id=run_id,
+        unresolved_failures=(failure,),
+    )
 
 
 def _phase(name: str, artifacts: list[str]) -> D.Phase:
@@ -28,6 +45,53 @@ def test_completed_phase_with_missing_artifact_rewinds_downstream(tmp_path: Path
     assert removed == ["inventory", "report_index"]
     assert checkpoint.completed == ["recon"]
     assert checkpoint.degraded == []
+
+
+@pytest.mark.parametrize(
+    "state,completed",
+    [
+        ("COMPLETED_WITH_DEBT", ["recon"]),
+        ("INCOMPLETE_WITH_DEBT", []),
+    ],
+)
+def test_recon_finalization_preserves_typed_degradation_for_startup_reconciliation(
+    tmp_path: Path, state: str, completed: list[str],
+):
+    run_id = str(uuid.uuid4())
+    checkpoint = D.Checkpoint(
+        completed=completed,
+        degraded=["recon"],
+        run_id=run_id,
+        phase_commits={"recon": _typed_recon_commit(state, run_id)},
+    )
+    sentinel = tmp_path / "recon.degraded"
+    sentinel.write_text("typed debt\n", encoding="utf-8")
+
+    cleared = D._clear_stale_recon_degradation_after_finalization(
+        checkpoint, tmp_path, finalization_authority=True
+    )
+
+    assert cleared is False
+    assert checkpoint.degraded == ["recon"]
+    assert sentinel.exists()
+    assert checkpoint.validate_phase_names({"recon"}) == []
+
+
+def test_recon_finalization_clears_only_legacy_stale_degradation(
+    tmp_path: Path,
+):
+    checkpoint = D.Checkpoint(completed=["recon"], degraded=["recon"])
+    sentinel = tmp_path / "recon.degraded"
+    sentinel.write_text("legacy stale marker\n", encoding="utf-8")
+
+    cleared = D._clear_stale_recon_degradation_after_finalization(
+        checkpoint, tmp_path, finalization_authority=True
+    )
+
+    assert cleared is True
+    assert checkpoint.degraded == []
+    assert not sentinel.exists()
+    assert checkpoint.validate_phase_names({"recon"}) == []
 
 
 def test_completed_phase_reconciliation_keeps_valid_prefix(tmp_path: Path):

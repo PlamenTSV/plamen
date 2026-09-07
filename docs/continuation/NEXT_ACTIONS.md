@@ -48,10 +48,14 @@ private incident contents have entered Git.
   dispatcher.
 - Verify the 131-row research manifest: 127 published ports (54 exact and 73
   sanitized), including sanitized semantic ports for six privacy-interleaved
-  core sources. Ten raw-byte rows still require separate transfer, but only
-  four have no public text payload: two superseded ZIPs, the private audit
-  report, and its target postmortem. Transfer all ten raw files under
-  `PRIVATE_ARTIFACTS.md` and verify their original hashes on the new machine.
+  core sources. The source machine has verified an authenticated encrypted
+  ten-member bundle named
+  `Plamen-v3-private-research-20260907.tar.gz.aesgcm` (SHA-256
+  `d224643e70797661cd8e1a0d049a4ea14eec62e8529ed9539382b99aab1d4a8a`);
+  its recovery key must travel separately. Transfer it under
+  `PRIVATE_ARTIFACTS.md` and verify every original member hash on the new
+  machine. Four rows have no public text payload: two superseded ZIPs, the
+  private audit report, and its target postmortem.
 
 Exit condition: a new machine can clone the branch and determine prerequisites,
 configuration, installation, smoke-test, audit-start, and resume commands
@@ -75,16 +79,33 @@ start, stop, recovery, and resume checks on Windows, Linux, and macOS. Until
 then, POSIX production commands must reject before dependency or filesystem
 mutation and the platform remains unsupported.
 
-## 3. Integrate the immediate audit blocker
+## 3. Close the immediate audit blockers
 
 - Preserve the attention-repair global queue-ID contract: queue row N emits
   `ATT-N`; the heading validator accepts the canonical `### Finding [ATT-N]:`
   form and rejects locally renumbered or prefix-colliding IDs.
+- Make inventory retry progress consume the stable exact reconciliation
+  denominator and unresolved candidate-key set. A strict subset under the same
+  denominator is progress even when the prose gate category is unchanged.
+- Before every inventory retry, terminalize and move rejected predecessor bytes
+  through the governed transaction path so the replacement starts from a clean
+  canonical output location without losing provenance.
+- Keep exact UTF-8 semantic reconciliation strict. Retry guidance must identify
+  each unresolved candidate and failed facet, serialize expected non-ASCII text
+  safely, and require explicit UTF-8 reads; mojibake must remain debt rather than
+  becoming an accepted equivalence.
+- On resume, preserve the degraded projection and sentinel for every typed phase
+  commit that still carries debt. Compatibility cleanup may remove stale legacy
+  state only when no debt-bearing typed commit exists.
 - Re-run focused tests, affected phase tests, full serial tests, supported
   parallel tests, and clean-package tests on the frozen source.
-- Convert the existing unsealed local observation into an immutable test receipt.
+- Seal the failed inventory/resume attempt as evidence, then launch the next
+  Codex E2E audit only from a distinct clean destination with the corrected
+  packaged generation.
 
-Exit condition: the fix is source-, prompt-, test-, manifest-, and package-bound.
+Exit condition: the fixes are source-, prompt-, test-, manifest-, and
+package-bound; the fresh E2E attempt advances beyond Inventory without silent
+semantic loss or checkpoint self-invalidation.
 
 ## 4. Complete requirements reconciliation
 
@@ -167,6 +188,32 @@ authority per decision and no silent loss across all live transformations.
 
 ## 7. Run release-candidate validation
 
+### Current pre-E2E checkpoint (2026-09-07)
+
+The mutable `Plamen-v3` worktree has reached the following local checkpoint;
+these observations are based on committed base `aa509d7` plus uncommitted
+changes and are not a release-candidate identity or completion claim:
+
+- The eighth-pass parent recovery slice recorded 138 passes and six expected
+  Windows-host POSIX or special-case skips.
+- The full ninth-pass inventory denominator recorded 150 passes and six
+  expected Windows-host POSIX or special-case skips. Its adjacent compatibility
+  suites recorded 261 passes.
+- The final local source/package check exited zero after a 56,637-file runtime
+  census and reconciled the exact 769-row package: 738 runtime rows plus 31
+  Codex-adapter rows.
+- The regenerated runtime-closure and public-package slice recorded 13 passes.
+- The CI quarantine-lane governance and selection slice recorded 10 passes.
+  The actual `fast_quarantine and not integration` runtime on Ubuntu and macOS
+  remains pending until the frozen commit is pushed and GitHub Actions runs.
+- The independent ninth-pass adversarial verdict is PASS on the frozen repair.
+  It independently passed real-constant 32,769-entry state and journal cases
+  plus eight authority poison, race, crash, and matching-overflow probes. The
+  source-freeze review gate is closed; commit-bound and runtime gates remain.
+- Neither the Codex nor Claude E2E has launched. Both gates remain pending, and
+  the private research archive still requires destination-side decryption and
+  member-hash verification on the Mac.
+
 On one frozen source/package identity:
 
 1. Run lint, schema, ownership, duplication, and static-launch checks.
@@ -179,6 +226,15 @@ On one frozen source/package identity:
 8. Run a fresh Claude non-ground-truth E2E audit through final report.
 9. Exercise clean resume, cancellation, timeout, failure, and recovery for both
    backends without reusing failed staged output.
+
+For the pristine DODO release-candidate target, preserve both committed lock
+files and expect typed `AMBIGUOUS_JS_LOCKS` dependency/build debt. Historical
+repository activity favors Yarn, but the target has no machine-authoritative
+`packageManager` or CI install choice and Plamen deliberately does not guess.
+These E2Es validate pipeline completion, not proof-grade compiler/PoC closure.
+If an external package-manager choice is implemented later, bind it into config,
+the audit snapshot, selected-lock digest, materialization receipt, and run
+identity; `scope_notes` alone is not authority.
 
 Exit condition: immutable evidence records satisfy the applicable requirements;
 a generated report alone is not the exit condition.
@@ -197,6 +253,14 @@ a generated report alone is not the exit condition.
   POSIX runtime gate is proven. The research directory has 128 files: 127
   source ports plus `PRIVATE_GAP_INDEX.json`; the four raw-only sources explain
   the three-file difference from the 131-source denominator.
+- Run `python scripts/replay_model_routing_research.py --root .
+  --accept-declared-blocks` to verify all 127 public comparison-corpus ports
+  and the public-only model-routing replay subset. Treat its one exact pass
+  plus eight declared non-public prerequisite blocks as a portable handoff
+  result, not as complete archival replay. The default command remains nonzero
+  by design: this public runner never searches for or consumes the separately
+  transferred private archive. Exact blocked-validator reproduction is a
+  separate governed workflow under `PRIVATE_ARTIFACTS.md`.
 - Produce a hash-bound release/handoff receipt and obtain user acceptance.
 
 Only after this handoff should the separate old-versus-new benchmarking goal be

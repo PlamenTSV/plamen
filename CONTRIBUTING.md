@@ -67,8 +67,9 @@ source-level development and the default checks do not.
 ### macOS source development
 
 Native macOS production installation and E2E auditing are not yet supported.
-The Darwin package transaction and worker-containment paths fail closed. Both
-arm64 and x86_64 Macs can use the isolated source-development bootstrap:
+The Darwin package transaction and worker-containment paths fail closed. The
+isolated source-development bootstrap currently supports Apple Silicon
+(`arm64`) only; Intel macOS (`x86_64`) is rejected before mutation:
 
 ```bash
 git clone --branch Plamen-v3 --recurse-submodules \
@@ -115,7 +116,7 @@ python -I scripts/ci_dependency_authority.py static --root .
 Do not use `plamen.py install` to create a development environment. A
 production install is an authenticated publication from reviewed source, not
 an editable checkout; see [docs/setup.md](docs/setup.md). The current governed
-source closure contains 764 rows and publishes Claude and Codex together.
+source closure contains 769 rows and publishes Claude and Codex together.
 
 ## Testing changes
 

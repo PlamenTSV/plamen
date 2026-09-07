@@ -4,7 +4,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "plamen.py",
-      "sha256": "b25abe82cf7064e71ff0d678b5f35e90fa1f1b97d1946746a262d089ffc58273"
+      "sha256": "84116c9018aa9d4a4e32d3a5e376dc9f3681c699d5f50528f07edb21f2b8f170"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -46,19 +46,19 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "runtime-data",
       "path": "requirements-ci.constraints",
-      "sha256": "1e43da80fa17db917935ca61a5b8cd0b379984afd52289b3feecabe020d2f60e"
+      "sha256": "567bc54c64d7664061d7e7d43a731fc2cca9cc18ef23827471d6ce6029793161"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "runtime-data",
       "path": "requirements-ci.lock",
-      "sha256": "f9f465a7f6c06c020a037f4d04a1d81e88436578a04a74bf99392575e60625a3"
+      "sha256": "efd4e4f85bbfa2785d85896a70e13bad124f2d9e62ba4e052dd3e82073f8ef03"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "runtime-data",
       "path": "requirements-dev.txt",
-      "sha256": "ce7863ed7a53020a8e07f6f851416d6a6f6464a66bf59186c2d73c171b751f32"
+      "sha256": "18f78c7b60ce9a39864491b52f5d1f51ce00478b2e3a9b3e86c670fd650486cb"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -508,7 +508,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/conftest.py",
-      "sha256": "b38912fff5b50a645b0e7e9a33c769b5cd5ea701df6cc1d192ce9844f0ab5c16"
+      "sha256": "6b89aee4273483d69f948e28e1f64995dbb97de59752fbd07797803efc540e45"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -586,7 +586,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/fast_lane_skip_governance_r10_contract.py",
-      "sha256": "44b0dfafa461a3474418185934a93ffe26d0fddb75c146416e337952afe27480"
+      "sha256": "1456d8bf9fe34cf36b80945446c5da76bd22ec1594f409a139f645eefa78dff9"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -898,7 +898,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_driver.py",
-      "sha256": "b0c1ea70985ea72f4afe8d116a9997a1e7a990a5c75efbe232582df5aadfe98e"
+      "sha256": "0948a2d9b57eac39e6e26903eca2722b20451ebc4061d16a468fdddd3aeae3d5"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -916,31 +916,31 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_mechanical.py",
-      "sha256": "00edefdd3b7763d7ca7447bc2b7c9c6d9c86e541fe9e2232f961ba981634010c"
+      "sha256": "7226ff5f394e33c9bb02e86dddc65ab029dddcf65ef0066403b235f74d416bc0"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_parsers.py",
-      "sha256": "6eb721e27d7ab635f84e746a25dc59074cf3291ad9350228650d5ba3d1004a54"
+      "sha256": "1cbb8e0810bd4737677867bcfc6aa91329b8598f5d0a7c0193cda3e3a49d04f3"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_prompt.py",
-      "sha256": "851212647bdea9ca83736f249d89a267eb2aa3970524d41e0decb0b0da648079"
+      "sha256": "cb27f1d20bd4b27adf165972fe744f80c090b0cc6a8a50b17121d9439a02338b"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_types.py",
-      "sha256": "4d72a3411023c5831995a0b8c8f99da87b58154a430015f30e3fc9ed230c48aa"
+      "sha256": "20b73557a4badace10ce2bac78122d7c0d5f67730a18d3eccd6405702078c80a"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/plamen_validators.py",
-      "sha256": "c80918be1be1c4fcfaf6eb045e808348b18e043fc5fa489cf083f83ac653b0e0"
+      "sha256": "860b2d137f7ea7e3b6532d0370886ec521a5d12516ff6ac5d5936e3a4246a949"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1233,6 +1233,12 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/replay_model_routing_research.py",
+      "sha256": "8881f03bae6bb3488d3f53a02660f34ee96e43b8607a239bf3df18992600e15c"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/report_assembly_capture.py",
       "sha256": "f6453ba40cda5464224f6c007618859a237ecd20c6fce5eb6dc2e1f40ae3a89e"
     },
@@ -1294,7 +1300,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/rooted_path_io.py",
-      "sha256": "3192b834650f7b3edd35a7155597718d76645f6a33ff1143a2ef2faa8b38406a"
+      "sha256": "dd317b169d4750fa43cf2fb0b24d4df4c74df5f8f34517e76aa5dac9aaa7c0ca"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1552,43 +1558,43 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_advisory_evidence.v1.json",
-      "sha256": "368c2e184383542a2f7797a57e331e4a2814ed2a9f2ff7fb2735f63b50c890f7"
+      "sha256": "61d96f89420ee65021f9e0d3d75637e96036728af7dee6fd705645d78ea57d69"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_advisory_responses/request.json",
-      "sha256": "00d0e3b93d8677d0c7bdb5133ab4ce49d9f43d226a66ccb96c6b60b653aaa5b7"
+      "sha256": "c82a76482c55f8dbcacf360f1df54ff32c2d0e0e45226a86a944fb6e5426f9ed"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_advisory_responses/response.json",
-      "sha256": "39c60b15a7023caa52ed57cce48ce674c29b244419832afd1ca6c8846b92dd4c"
+      "sha256": "0a7630ca69b5087c8f8955c50afae3e6dce2b2303a09b3fda70d9461d4fd8f70"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_dependency_authority.v1.json",
-      "sha256": "393ed1b20e089fe0ed8dacf211d312aee4a0a20bd4b7ff931838013ad89d2564"
+      "sha256": "58571862170b4e29a18af10a4fb2158e418470784e46b95e69ddac00cf17f088"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_dependency_provenance.v2.json",
-      "sha256": "8655bcc91fa5cdc4c452b5285ab92b987c94d7ab57f1311b7a5f2506579a3520"
+      "sha256": "231ce93c1fd864b0188259ef92ac2d0b9e81bebd51c8f7ff0bac6570cabd0eee"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_dependency_provenance.v2.schema.json",
-      "sha256": "1f8bc8be1160396c5aa84c0ab5a7659dac6a03c3f9bc29576ac4c1400f6d39f7"
+      "sha256": "543267c4decedf2891779608a6c46c0214a037e3a5fb3cbc84cc7c1db752693d"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_release_metadata_evidence.v1.json",
-      "sha256": "ac1e2bf21a35a7d69cc4ad4a133c6329b1b456dfe5a243d589b33340b8eb0308"
+      "sha256": "9a031c1628e9ef6096d855afa8d8ada648b3226a75eafe072aafc39d086f2d50"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1605,8 +1611,20 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
+      "path": "verification_policy/ci_release_responses/cffi-2.1.1.json",
+      "sha256": "2255e530e3f80593a354e3d84a29966924d0e10309d1e3a6d50f845ab7d8df66"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
       "path": "verification_policy/ci_release_responses/colorama-0.4.6.json",
       "sha256": "43fb351344384a44c2b7d7fff1c63496b89ac830aea714301525c1f3718addd1"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/cryptography-50.0.1.json",
+      "sha256": "02bbd8a2728dac94f7d6a4a3d5de523afdadc90ca5b1476845ad3f505861ea63"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1678,25 +1696,31 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_release_responses/protobuf-7.35.1.json",
-      "sha256": "33d7570173008a495478451c4dc9883cae8a442014c4ad4ba806ae1b64806864"
+      "sha256": "06ec14d984c15524e65ab210b8a1e5f0e1f58f7910f0acad6d881f9dbe964c8b"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pycparser-3.0.json",
+      "sha256": "116983f7de9bda289946d08200ba1bd7b832547f151165c12bd87d6b8e59b015"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_release_responses/pydantic-2.13.4.json",
-      "sha256": "3153628d2e962b20eb04b09326d00500be835671d8ed7186b5b9c524ab0548b9"
+      "sha256": "74507896e4dc5f6fde428d7b874e6f7fc68a396a31808ca31b91906bb871534d"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_release_responses/pydantic-core-2.46.4.json",
-      "sha256": "40bd3810eccb48a3b5329c5d98b4fc6f0f8375e4c34f63f20afe61d31b5e5341"
+      "sha256": "3b4697c8aa288dcceba9ed0f87c192f1c2c0bbcb1e9cdd3c1c8a5805bd9276b1"
     },
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_release_responses/pygments-2.20.0.json",
-      "sha256": "686d9f84f98058f9aaf7168488006f8c033464b0a7ede3b1c0c31983c81bfc30"
+      "sha256": "3af5974de77ad03c694dcae44382c922da63a2b3ae83153f12f5024465c813a1"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1715,6 +1739,12 @@
       "kind": "control",
       "path": "verification_policy/ci_release_responses/pywinpty-2.0.15.json",
       "sha256": "f2247c1434e4be3e22282e5f8565766a363a85f377edaf5315dd939b0d0a5d4d"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "control",
+      "path": "verification_policy/ci_release_responses/pyyaml-6.0.3.json",
+      "sha256": "c3f35597bc2f08cc990c2a5fe57bef6687b3a3d7c61d8b0ba4cc067777eb1def"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1750,7 +1780,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "control",
       "path": "verification_policy/ci_release_responses/wcwidth-0.8.2.json",
-      "sha256": "5aca94dfcacd4697bb3b872ecc40cc31a122599b30d7ddf122add1e99dc9af0a"
+      "sha256": "589e1b620f955bfda0f1208e13816f93502ce779271e41f0b86cfe67207008a6"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1998,6 +2028,7 @@
     "scripts/release_fast_lane_fixture_collector.py",
     "scripts/release_fast_lane_fixture_governance_gate.py",
     "scripts/release_fast_lane_fixture_governance_manifest.json",
+    "scripts/replay_model_routing_research.py",
     "scripts/report_assembly_capture.py",
     "scripts/report_capture_phaseio_authority.py",
     "scripts/report_dedup_authority.py",
@@ -2060,7 +2091,9 @@
     "verification_policy/ci_release_metadata_evidence.v1.json",
     "verification_policy/ci_release_responses/annotated-types-0.8.0.json",
     "verification_policy/ci_release_responses/attrs-26.1.0.json",
+    "verification_policy/ci_release_responses/cffi-2.1.1.json",
     "verification_policy/ci_release_responses/colorama-0.4.6.json",
+    "verification_policy/ci_release_responses/cryptography-50.0.1.json",
     "verification_policy/ci_release_responses/execnet-2.1.2.json",
     "verification_policy/ci_release_responses/iniconfig-2.3.0.json",
     "verification_policy/ci_release_responses/inquirerpy-0.3.4.json",
@@ -2073,12 +2106,14 @@
     "verification_policy/ci_release_responses/pluggy-1.6.0.json",
     "verification_policy/ci_release_responses/prompt-toolkit-3.0.53.json",
     "verification_policy/ci_release_responses/protobuf-7.35.1.json",
+    "verification_policy/ci_release_responses/pycparser-3.0.json",
     "verification_policy/ci_release_responses/pydantic-2.13.4.json",
     "verification_policy/ci_release_responses/pydantic-core-2.46.4.json",
     "verification_policy/ci_release_responses/pygments-2.20.0.json",
     "verification_policy/ci_release_responses/pytest-9.1.1.json",
     "verification_policy/ci_release_responses/pytest-xdist-3.8.0.json",
     "verification_policy/ci_release_responses/pywinpty-2.0.15.json",
+    "verification_policy/ci_release_responses/pyyaml-6.0.3.json",
     "verification_policy/ci_release_responses/referencing-0.37.0.json",
     "verification_policy/ci_release_responses/rich-15.0.0.json",
     "verification_policy/ci_release_responses/rpds-py-2026.6.3.json",

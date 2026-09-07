@@ -15,19 +15,30 @@ import claude_launch_security as L
 from claude_headless_profile import compile_claude_headless_profile
 import test_worker_execution_receipts as fixtures
 import worker_execution_receipts as W
+from test_claude_launch_authority_fixtures import (
+    materialize_test_provider_executable,
+)
 
 
 POLICY_KEY = "claude_launch_security"
 
 
+@pytest.fixture(scope="module")
+def _test_provider_executable(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    return materialize_test_provider_executable(
+        tmp_path_factory.mktemp("wer-provider")
+    )
+
+
 @pytest.fixture(autouse=True)
 def _single_link_windows_test_runtime(
     monkeypatch: pytest.MonkeyPatch,
+    _test_provider_executable: Path,
 ) -> None:
     if os.name == "nt" and int(getattr(Path(sys.executable).stat(), "st_nlink", 1)) != 1:
-        reviewed = Path(r"C:\p27rt\python.exe")
-        if reviewed.is_file() and int(getattr(reviewed.stat(), "st_nlink", 1)) == 1:
-            monkeypatch.setattr(sys, "executable", str(reviewed.resolve(strict=True)))
+        monkeypatch.setattr(sys, "executable", str(_test_provider_executable))
 
 
 def _request(

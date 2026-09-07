@@ -34,7 +34,7 @@ the installed package by copying or linking a checkout over it.
 ## What the installer authenticates
 
 Before changing live state, `plamen install` validates the exact governed
-764-row source closure. It then publishes the new package transactionally and
+769-row source closure. It then publishes the new package transactionally and
 commits a receipt that binds the installed package, managed runtime, adapter,
 and model-runtime projection. An interrupted transaction is recovered or
 rejected; a partially published package is not accepted as current.

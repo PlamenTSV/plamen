@@ -16,6 +16,9 @@ import plamen_validators as validators
 import worker_transaction as transaction
 from plamen_types import SC_PHASES
 from test_support_startup_permit import FIXTURE_RUN_ID, durable_startup_permit
+from test_claude_launch_authority_fixtures import (
+    materialize_test_provider_executable,
+)
 
 
 def _queue(root: Path, count: int) -> Path:
@@ -517,9 +520,7 @@ def test_real_transactional_shards_reject_before_publish_then_retry_missing_only
     provider_callbacks: list[str] = []
     provider_python = Path(sys.executable)
     if os.name == "nt" and int(getattr(provider_python.stat(), "st_nlink", 1)) != 1:
-        reviewed = Path(r"C:\p27rt\python.exe")
-        if reviewed.is_file() and int(getattr(reviewed.stat(), "st_nlink", 1)) == 1:
-            provider_python = reviewed
+        provider_python = materialize_test_provider_executable(tmp_path)
     monkeypatch.setattr(driver, "CODEX_BIN", str(provider_python))
     monkeypatch.setattr(driver, "_codex_auth_available", lambda: True)
     monkeypatch.setattr(driver, "_codex_prompt_fits", lambda *_args: True)
@@ -651,6 +652,29 @@ destination.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
         re.fullmatch(r"attempt-[0-9a-f]{24}", attempt_id)
         for _work_unit, attempt_id in first_attempts
     )
+    rejected_attempt_completion_path = next(
+        path
+        for path in (
+            scratchpad / ".worker_transactions" / "attention_repair"
+        ).glob("*/attempts/attempt-*/completion.json")
+        if json.loads(path.read_text(encoding="utf-8"))["work_unit_id"]
+        == "worker.attn-0002"
+    )
+    rejected_attempt_completion = json.loads(
+        rejected_attempt_completion_path.read_text(encoding="utf-8")
+    )
+    rejected_provider_completion_path = (
+        scratchpad
+        / rejected_attempt_completion["provider_completion_relative_path"]
+    )
+    rejected_provider_completion_bytes = (
+        rejected_provider_completion_path.read_bytes()
+    )
+    assert json.loads(
+        rejected_provider_completion_bytes.decode("utf-8")
+    )["completion_sha256"] == (
+        rejected_attempt_completion["provider_completion_digest"]
+    )
     assert (scratchpad / "attention_repair_rows_0001.md").is_file()
     assert not (scratchpad / "attention_repair_rows_0002.md").exists()
     rejected = driver.read_artifact_ledger(scratchpad)["work_units"][
@@ -685,6 +709,14 @@ destination.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
         "worker.attn-0002",
         "worker.attn-0002.r0002",
     }
+    # A semantic rejection prevents canonical publication, but it does not
+    # invalidate the exact provider execution evidence already bound by the
+    # immutable attempt completion.  Retrying the missing shard must never
+    # clean up that predecessor receipt.
+    assert (
+        rejected_provider_completion_path.read_bytes()
+        == rejected_provider_completion_bytes
+    )
     assert driver._attention_shard_output_authority_issues(
         scratchpad=scratchpad,
         config=config,

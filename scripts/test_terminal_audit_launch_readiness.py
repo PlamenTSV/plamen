@@ -739,8 +739,9 @@ def test_repository_guidance_uses_only_the_shared_driver_and_safe_resume_contrac
     ).read_text(encoding="utf-8", errors="strict")
     for marker in (
         "scripts/terminal_audit_launch.py",
-        '"cli_backend": "claude-headless"',
+        '"cli_backend": "claude"',
         '"claude_exec_mode": "headless"',
+        "--claude-headless",
         "--startup-intent START_NEW_RUN",
         "resume_argv",
         "plamen_driver.py",

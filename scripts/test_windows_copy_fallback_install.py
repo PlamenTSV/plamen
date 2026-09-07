@@ -296,7 +296,7 @@ def test_authenticated_prior_install_roots_include_committed_runtime(
 
 @pytest.mark.parametrize(
     ("source_count", "runtime_count"),
-    ((756, 725), (758, 727), (760, 729), (762, 731), (764, 733)),
+    ((756, 725), (758, 727), (760, 729), (762, 731), (764, 733), (769, 738)),
 )
 def test_exact_predecessor_receipt_is_admitted(
     monkeypatch, tmp_path, source_count, runtime_count,

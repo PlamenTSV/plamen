@@ -100,7 +100,7 @@ release.
 ## Clean-clone workflow
 
 Use a new directory rather than reusing an installed package or an older source
-tree. For the V3 development branch on macOS or Linux:
+tree. Clone the V3 development branch on any development host:
 
 ```bash
 git clone --branch Plamen-v3 --single-branch --recurse-submodules \
@@ -108,8 +108,6 @@ git clone --branch Plamen-v3 --single-branch --recurse-submodules \
 cd "$HOME/plamen-source"
 git status --short
 git submodule status --recursive
-python3.12 plamen.py install
-~/.local/bin/plamen doctor
 ```
 
 `git status --short` must be empty before local development begins. Clone with
@@ -117,19 +115,45 @@ Git rather than a source ZIP because Git archives do not include submodule
 content. Do not clone into `~/.plamen`; that name is reserved for the governed
 installed package.
 
-For an isolated development/test environment:
+The production installer and audit runtime are currently qualified only on
+Windows. On a supported Windows host, install only from the reviewed clean
+clone and validate the resulting authenticated package:
 
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m pip install -r requirements-dev.txt
-python -m pytest
+```powershell
+python plamen.py install
+$HOME\.local\bin\plamen doctor
 ```
 
-The developer environment is distinct from the private runtime created by
-`plamen.py install`. Passing tests in the developer environment does not replace
-the clean-clone install and `plamen doctor` checks.
+On Apple Silicon macOS, use the governed source-development bootstrap instead:
+
+```sh
+sh scripts/bootstrap_macos_dev.sh --python "$(command -v python3.12)"
+. .venv-dev/bin/activate
+```
+
+The bootstrap rejects Intel macOS and unsupported native-audit requests before
+mutation. It does not install an audit runtime. See
+[`macos.md`](macos.md) for its exact support boundary and validation commands.
+
+Linux is likewise a source-development and source-validation host until the
+POSIX installer, dispatcher, keeper, and recovery gates close. There is not yet
+a release-qualified Linux production bootstrap. A development-only environment
+must use the repository's hash-locked CI dependency closure rather than the
+runtime installer or the unconstrained convenience requirements:
+
+```bash
+python3.12 -I scripts/ci_dependency_authority.py bootstrap-gate --root .
+python3.12 -m venv .venv-dev
+. .venv-dev/bin/activate
+python -I -m pip install --only-binary=:all: --require-hashes -r requirements-ci.lock
+(cd scripts && python -m pytest -m "not integration" -n auto -q)
+```
+
+These development environments are distinct from the private runtime created
+by the Windows production installer. Passing source tests on macOS or Linux
+does not establish native install, start, stop, recovery, resume, or E2E audit
+support. Until the POSIX gates in the continuation goal close, run production
+audits on a supported Windows host.
 
 ## Repository hygiene
 

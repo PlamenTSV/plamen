@@ -6,7 +6,8 @@ included in the same governed installation.
 
 Native Linux and macOS production installation and E2E auditing are not yet
 supported: V3's governed package transaction, keeper, and recovery transport
-remain Windows-native. Mac users can continue source development on arm64 or x86_64 with
+remain Windows-native. Apple Silicon Mac users can continue source development on
+`arm64`; Intel macOS remains blocked on a governed secure dependency source-build path. Use
 [`scripts/bootstrap_macos_dev.sh`](../scripts/bootstrap_macos_dev.sh). Follow
 the [macOS development guide](development/macos.md) and
 [machine-migration guide](development/machine-migration.md); the remaining
@@ -70,7 +71,7 @@ Windows PowerShell, with `python` resolving to CPython 3.12:
 python plamen.py install
 ```
 
-The installer first validates the exact governed 764-row source closure. It
+The installer first validates the exact governed 769-row source closure. It
 then performs a transactional publication to `~/.plamen`, commits an
 authenticated installation receipt, creates the private Python runtime,
 materializes managed Node/npm and both backends, and publishes the signed

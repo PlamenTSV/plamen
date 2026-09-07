@@ -5,7 +5,7 @@ from typing import Any, Callable, Mapping
 
 import pytest
 
-from review_fixtures.program_facts_r2_1_b0_red_support import (
+from test_support.program_facts_r2_1_b0_red_support import (
     body_digest,
     require_accepts,
     require_callable,

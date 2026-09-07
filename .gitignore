@@ -71,6 +71,8 @@ projects/
 /.tmp*
 /write_dedup.py
 scripts/*
+!scripts/test_support/
+!scripts/test_support/*.py
 !scripts/bootstrap_macos_dev.sh
 !scripts/codex_adapter.py
 !scripts/plamen_driver.py
@@ -151,6 +153,7 @@ scripts/*
 !scripts/conftest.py
 !scripts/fast_lane_skip_governance_r10.json
 !scripts/test_*.py
+!scripts/replay_model_routing_research.py
 !scripts/mandatory_reverification.py
 !scripts/chain_prep.py
 !scripts/mechanical_verify.py

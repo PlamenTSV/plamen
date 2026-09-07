@@ -51,7 +51,7 @@ def test_bootstrap_help_is_platform_independent() -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX executable semantics")
-@pytest.mark.parametrize("architecture", ["arm64", "x86_64"])
+@pytest.mark.parametrize("architecture", ["arm64"])
 def test_native_audit_requirement_fails_before_bootstrap_mutation(
     tmp_path: Path,
     architecture: str,
@@ -86,6 +86,36 @@ def test_native_audit_requirement_fails_before_bootstrap_mutation(
     )
     assert completed.returncode == 3
     assert "native macOS E2E audit execution is not supported" in completed.stderr
+    assert not (tmp_path / "must-not-exist").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX executable semantics")
+def test_intel_macos_is_rejected_before_bootstrap_mutation(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_uname = fake_bin / "uname"
+    fake_uname.write_text(
+        "#!/bin/sh\n"
+        "case \"${1:-}\" in\n"
+        "  -s) printf '%s\\n' Darwin ;;\n"
+        "  -m) printf '%s\\n' x86_64 ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_uname.chmod(0o755)
+    shell = shutil.which("sh")
+    assert shell is not None
+    environment = dict(os.environ)
+    environment["PATH"] = str(fake_bin) + os.pathsep + environment.get("PATH", "")
+    environment["PLAMEN_DEV_VENV"] = str(tmp_path / "must-not-exist")
+    completed = subprocess.run(
+        [shell, str(BOOTSTRAP)], cwd=ROOT, env=environment, check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="strict",
+    )
+    assert completed.returncode == 2
+    assert "Intel macOS source bootstrap is not supported" in completed.stderr
+    assert "cryptography 50.0.1" in completed.stderr
     assert not (tmp_path / "must-not-exist").exists()
 
 

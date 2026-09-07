@@ -4,6 +4,11 @@
 # does not read this test-only manifest.
 -c requirements-ci.constraints
 -r requirements.txt
+# cryptography 50 publishes no macOS x86_64 wheel; the binary-only CI
+# dependency gate therefore supports macOS arm64, not Intel macOS.
+cryptography==50.0.1  # exercised directly by signing and executable-observation tests
+packaging==26.2  # imported directly by the CI dependency authority
+PyYAML==6.0.3  # imported directly by the workflow Action authority
 pytest==9.1.1
 pytest-xdist==3.8.0  # `-n auto` fast-lane parallelism; already installed, pinned here
 colorama==0.4.6  # universal pure-wheel pin; pytest also consumes it on Windows

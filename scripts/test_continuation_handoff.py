@@ -37,6 +37,17 @@ def test_research_manifest_reconciles_every_source_and_portable_byte():
         re.fullmatch(r"[0-9a-f]{64}", row["source_sha256"])
         for row in rows
     )
+    continuation_files = set(manifest["continuation_files"])
+    assert {
+        "docs/continuation/GOAL.md",
+        "docs/continuation/REQUIREMENTS.jsonl",
+        "docs/continuation/CORPUS_MANIFEST.json",
+        "docs/continuation/MODEL_ROUTING_PORTABLE_REPLAY.json",
+        "scripts/replay_model_routing_research.py",
+        "scripts/test_model_routing_research_portable_replay.py",
+    } <= continuation_files
+    for relative in continuation_files:
+        assert (ROOT / relative).exists(), f"missing continuation file: {relative}"
 
     modes = {
         "EXACT", "SANITIZED", "SANITIZED_WITH_PRIVATE_RAW_GAP",
@@ -101,6 +112,13 @@ def test_research_manifest_reconciles_every_source_and_portable_byte():
     assert gaps["gap_count"] == len(gap_rows) == 10
     indexed = {row["gap_id"]: row for row in gaps["gaps"]}
     assert len(indexed) == len(gaps["gaps"])
+    for gap in gaps["gaps"]:
+        for reference in gap["semantic_representation_refs"]:
+            relative = reference.split("#", 1)[0]
+            assert (ROOT / relative).is_file(), (
+                f"missing semantic representation for {gap['gap_id']}: "
+                f"{reference}"
+            )
     for row in gap_rows:
         publication = row["publication"]
         gap = indexed[publication["gap_id"]]
@@ -129,6 +147,40 @@ def test_goal_and_requirement_ledger_are_complete_and_portable():
     assert {f"P-{index}" for index in range(1, 24)} <= ids
     assert {"P0-0", "P0-1", "P0-2", "P0-AM", "P1-M"} <= ids
     assert len(ids) == sum(bool(row.get("id")) for row in requirements)
+
+    for row in requirements:
+        for key in ("source_ref", "execution_ref", "private_source_gap_ref"):
+            reference = row.get(key)
+            if not reference or not reference.startswith("docs/"):
+                continue
+            relative = reference.split("#", 1)[0]
+            assert (ROOT / relative).is_file(), (
+                f"missing {key} for {row.get('id', row['record_type'])}: "
+                f"{reference}"
+            )
+
+    evidence = _json(CONTINUATION / "EVIDENCE_INDEX.json")
+    source_inventory = _json(CONTINUATION / "CORPUS_MANIFEST.json")[
+        "source_inventory"
+    ]
+    for row in evidence["records"]:
+        reference = row.get("source_ref")
+        portable_sha = row.get("portable_sha256")
+        if not reference or not portable_sha:
+            continue
+        raw = (ROOT / reference).read_bytes()
+        assert _sha256(raw) == portable_sha
+        if "portable_bytes" in row:
+            assert len(raw) == row["portable_bytes"]
+        if "original_source_sha256" in row:
+            sources = [
+                source for source in source_inventory
+                if source["publication"]["portable_path"] == reference
+            ]
+            assert len(sources) == 1
+            assert sources[0]["source_sha256"] == row["original_source_sha256"]
+            if "original_source_bytes" in row:
+                assert sources[0]["source_bytes"] == row["original_source_bytes"]
 
     portable = b"\n".join(
         path.read_bytes()

@@ -24,18 +24,20 @@ def _host(
     sys_platform: object,
     release: object = "6.8.0-generic",
 ) -> str:
-    monkeypatch.setattr(P.os, "name", os_name)
-    monkeypatch.setattr(P.sys, "platform", sys_platform)
-    if release is not _PRESERVE_UNAME:
-        monkeypatch.setattr(
-            P.os,
-            "uname",
-            lambda: SimpleNamespace(release=release),
-            raising=False,
-        )
-    monkeypatch.setattr(platform, "system", _unexpected_probe)
-    monkeypatch.setattr(platform, "release", _unexpected_probe)
-    return P._detect_host_family()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(P.os, "name", os_name)
+        scoped.setattr(P.sys, "platform", sys_platform)
+        if release is not _PRESERVE_UNAME:
+            scoped.setattr(
+                P.os,
+                "uname",
+                lambda: SimpleNamespace(release=release),
+                raising=False,
+            )
+        scoped.setattr(platform, "system", _unexpected_probe)
+        scoped.setattr(platform, "release", _unexpected_probe)
+        result = P._detect_host_family()
+    return result
 
 
 @pytest.mark.parametrize(
@@ -104,14 +106,16 @@ def test_contradictory_or_unknown_host_pair_fails_closed_without_linux_probe(
     os_name: object,
     sys_platform: object,
 ) -> None:
-    monkeypatch.setattr(P.os, "name", os_name)
-    monkeypatch.setattr(P.sys, "platform", sys_platform)
-    monkeypatch.setattr(P.os, "uname", _unexpected_probe, raising=False)
-    monkeypatch.setattr(P, "_read_linux_osrelease", _unexpected_probe)
-    monkeypatch.setattr(platform, "system", _unexpected_probe)
-    monkeypatch.setattr(platform, "release", _unexpected_probe)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(P.os, "name", os_name)
+        scoped.setattr(P.sys, "platform", sys_platform)
+        scoped.setattr(P.os, "uname", _unexpected_probe, raising=False)
+        scoped.setattr(P, "_read_linux_osrelease", _unexpected_probe)
+        scoped.setattr(platform, "system", _unexpected_probe)
+        scoped.setattr(platform, "release", _unexpected_probe)
+        result = P._detect_host_family()
 
-    assert P._detect_host_family() == "unsupported"
+    assert result == "unsupported"
 
 
 @pytest.mark.parametrize(

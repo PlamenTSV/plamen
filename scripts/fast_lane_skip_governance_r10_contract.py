@@ -79,6 +79,34 @@ def test_all_narrow_governance_markers_are_registered() -> None:
     assert names >= governance._FAST_GOVERNANCE_MARKERS | {"fast_quarantine"}
 
 
+def test_ci_workflow_executes_exact_total_marker_partition() -> None:
+    workflow = (
+        Path(governance.__file__).parent.parent
+        / ".github"
+        / "workflows"
+        / "tests.yml"
+    ).read_text(encoding="utf-8")
+    commands = (
+        'python -m pytest -m "not integration and not fast_quarantine"',
+        'python -m pytest -m "integration"',
+        'python -m pytest -m "fast_quarantine and not integration"',
+    )
+    for command in commands:
+        assert workflow.count(command) == 1
+
+    # The three selectors must cover each possible marker combination exactly
+    # once: ordinary unit, quarantined unit, integration, and quarantined
+    # integration. This prevents either silent omission or duplicate execution.
+    for integration in (False, True):
+        for quarantined in (False, True):
+            selected = (
+                (not integration and not quarantined),
+                integration,
+                (quarantined and not integration),
+            )
+            assert sum(selected) == 1
+
+
 def test_manifest_rejects_unknown_platform_and_malformed_policy() -> None:
     assert governance._require_supported_os_name("nt") == "nt"
     assert governance._require_supported_os_name("posix") == "posix"

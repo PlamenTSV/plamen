@@ -1,7 +1,7 @@
 {
     "schema":  "plamen.continuation.corpus-manifest.v2",
     "generated_date":  "2026-09-06",
-    "purpose":  "Portable, privacy-safe provenance and disposition for the complete known Plamen research denominator, with no machine paths, secrets, private target contents, or silent gaps",
+    "purpose":  "Portable, privacy-safe provenance and disposition for the governed immediate-Downloads Plamen research denominator plus four later content-discovered August sources, with no machine paths, secrets, private target contents, or silent gaps within that declared scope",
     "discovery_denominator":  {
                                   "selection":  "The governed 127-name historical immediate-download roster plus four later August research/review sources discovered by Plamen-specific content",
                                   "file_count":  131,
@@ -29,6 +29,8 @@
                                   "semantic_requirements_extracted":  true,
                                   "semantic_extraction_status":  "All architecture, methodology, execution-goal, acceptance, correction, DO-NOT-BUILD, and future-comparison semantics are portable through exact or sanitized source ports and row-level ledgers. The audit report remains private target evidence; postmortem tool obligations are extracted as POST-001 through POST-010; two superseded ZIP payloads add no unique governed semantics.",
                                   "nested_paths_enumerated":  false,
+                                  "scope_boundary":  "The 127-name historical roster covers governed regular files selected directly from the immediate Downloads directory. It is not a recursive inventory of nested Downloads directories. The four later August sources were added by the separately documented content-discovery pass.",
+                                  "recursive_downloads_completion_claim":  false,
                                   "supersession_inferred_from_filename":  false,
                                   "group_counts":  {
                                                        "architecture_requirements_design":  {
@@ -93,7 +95,9 @@
                                     "private_transfer_policy_ref":  "docs/continuation/PRIVATE_ARTIFACTS.md",
                                     "semantic_completion_claim":  true,
                                     "raw_byte_completion_claim":  false,
-                                    "completion_claim":  false
+                                    "completion_claim":  false,
+                                    "semantic_completion_scope":  "The declared 131-source immediate-download-plus-August denominator only; no recursive Downloads inventory is claimed.",
+                                    "private_raw_transfer_gate":  "Ten original raw rows require the separate hash-verified transfer governed by docs/continuation/PRIVATE_ARTIFACTS.md; four of those rows have no public payload."
                                 },
     "governing_sources":  [
                               {
@@ -3695,13 +3699,18 @@
                                "docs/continuation/EVIDENCE_INDEX.json",
                                "docs/continuation/NEXT_ACTIONS.md",
                                "docs/continuation/CORPUS_MANIFEST.json",
+                               "docs/continuation/MODEL_ROUTING_PORTABLE_REPLAY.json",
                                "docs/continuation/PRIVATE_ARTIFACTS.md",
+                               "scripts/replay_model_routing_research.py",
+                               "scripts/test_model_routing_research_portable_replay.py",
                                "docs/continuation/research/",
                                "docs/continuation/research/PRIVATE_GAP_INDEX.json"
                            ],
     "completion_claim":  {
                              "semantic_handoff_complete":  true,
                              "raw_131_source_bytes_complete":  false,
-                             "reason":  "Four raw payloads (two superseded ZIPs, one private audit report, and one private target postmortem) require hash-verified transfer outside Git; all goal-relevant semantics are portable."
+                             "recursive_downloads_enumerated":  false,
+                             "scope":  "The governed 131-source immediate-download-plus-August denominator; this is not a recursive claim over nested Downloads directories.",
+                             "reason":  "Ten original raw sources require hash-verified transfer outside Git for byte-complete reproduction: six have complete sanitized semantic ports, while four remain raw-only (two superseded ZIPs, one private audit report, and one private target postmortem). All goal-relevant semantics in the declared denominator are portable; exact raw comparison remains gated on the separate private transfer."
                          }
 }

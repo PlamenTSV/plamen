@@ -129,10 +129,14 @@ def test_bootstrap_identifies_posix_venv_by_prefix_not_resolved_executable() -> 
     bootstrap_source = inspect.getsource(front._bootstrap)
     assert "active_runtime_root = Path(sys.prefix).absolute()" in bootstrap_source
     assert "active_python != managed_python.resolve()" not in bootstrap_source
-    assert (
-        "active_runtime_root != _managed_runtime_root().absolute()"
-        in bootstrap_source
-    )
+    assert "active_runtime_matches = active_runtime_root == managed_runtime_root" in bootstrap_source
+    assert 'if os.name == "nt" and not active_runtime_matches:' in bootstrap_source
+    assert bootstrap_source.index(
+        'if os.name == "nt" and not active_runtime_matches:'
+    ) < bootstrap_source.index("resolve(strict=True)", bootstrap_source.index(
+        'if os.name == "nt" and not active_runtime_matches:'
+    ))
+    assert "if not active_runtime_matches:" in bootstrap_source
 
 
 def test_full_lock_and_reproducibility_inputs_are_runtime_assets() -> None:

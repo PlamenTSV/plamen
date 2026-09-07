@@ -4,7 +4,7 @@ from copy import deepcopy
 import hashlib
 from pathlib import Path
 
-from review_fixtures.program_facts_r2_1_b0_red_support import (
+from test_support.program_facts_r2_1_b0_red_support import (
     body_digest,
     canonical_bytes,
     logical_output_bytes,

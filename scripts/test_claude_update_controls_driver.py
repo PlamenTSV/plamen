@@ -16,11 +16,17 @@ def test_every_driver_claude_launch_builder_uses_exact_update_controls() -> None
         driver._severity_adjudication_environment,
         driver._run_transactional_headless_leaf,
         driver._run_one_codex_exec,
-        driver.run_phase,
+        driver._run_phase_once,
     )
     for builder in builders:
         source = inspect.getsource(builder)
         assert "_CLAUDE_UPDATE_DISABLE_ENV" in source, builder.__name__
+
+    # ``run_phase`` owns durable retry/adoption state but does not construct or
+    # launch a child process. Keep the wrapper in the structural coverage by
+    # proving that its only launch continuation is the checked builder above.
+    wrapper_source = inspect.getsource(driver.run_phase)
+    assert wrapper_source.count("_run_phase_once(") == 1
 
 
 def test_unrecognized_legacy_update_alias_is_absent_from_driver() -> None:

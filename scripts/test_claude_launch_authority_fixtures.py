@@ -16,6 +16,7 @@ from pathlib import Path
 import sys
 from typing import Any, Callable, Mapping, Sequence
 import uuid
+import venv
 
 import claude_launch_security as L
 import claude_provider_preparation as P
@@ -115,7 +116,9 @@ def install_test_only_launch_authority_adapter(
     patch(
         P,
         "observe_claude_executable",
-        lambda **_kwargs: _executable_observation(),
+        lambda *, configured_claude_bin, **_kwargs: (
+            _executable_observation(configured_claude_bin)
+        ),
     )
     unavailable_source = _stored_source_evidence()
     patch(
@@ -168,8 +171,14 @@ def _test_provider_command_template(
     return list(template)
 
 
-def _executable_observation() -> dict[str, Any]:
-    executable = Path(sys.executable).resolve(strict=True)
+def _executable_observation(
+    configured_executable: str | Path | None = None,
+) -> dict[str, Any]:
+    executable = Path(
+        sys.executable
+        if configured_executable is None
+        else configured_executable
+    ).resolve(strict=True)
     row = executable.stat()
     file_row = {
         "role": "CONFIGURED_EXECUTABLE",
@@ -179,7 +188,11 @@ def _executable_observation() -> dict[str, Any]:
         "device": int(row.st_dev),
         "inode": int(row.st_ino),
         "mode": int(row.st_mode),
-        "link_count": int(row.st_nlink),
+        # This is a synthetic proof-grade observation, not a host executable
+        # observation.  Keep its topology canonical even when the interpreter
+        # running pytest was installed as a hard link (for example by a local
+        # portable-Python bootstrap).
+        "link_count": 1,
     }
     compatibility_core = {
         "compatibility_id": "claude-code-2.1.252",
@@ -257,6 +270,28 @@ def _executable_observation() -> dict[str, Any]:
         "launch_authority": "PROOF_GRADE",
     }
     return {**core, "observation_sha256": _digest(core)}
+
+
+def materialize_test_provider_executable(root: Path) -> Path:
+    """Return an isolated single-link interpreter for provider execution tests."""
+
+    destination = Path(root).resolve(strict=True) / ".test-provider-venv"
+    executable = destination / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    if not executable.exists():
+        venv.EnvBuilder(with_pip=False, symlinks=False).create(destination)
+    resolved = executable.resolve(strict=True)
+    row = resolved.stat()
+    if (
+        not resolved.is_file()
+        or resolved.is_symlink()
+        or int(row.st_nlink) != 1
+    ):
+        raise AssertionError(
+            "test provider executable is not an isolated single-link file"
+        )
+    return resolved
 
 
 def _stream_bytes(
@@ -397,6 +432,7 @@ def compile_test_claude_launch_authority(
     required_tools: Sequence[str] = ("Read",),
     session_id: str | None = None,
     settings_mode: str = "SAFE_MODE",
+    configured_executable: str | Path | None = None,
 ) -> dict[str, Any]:
     """Compile a self-consistent fake policy/request/stream/argv denominator."""
 
@@ -414,7 +450,7 @@ def compile_test_claude_launch_authority(
         claude_code_version=VERSION,
         desired_route="OAUTH_TOKEN",
     )
-    executable = _executable_observation()
+    executable = _executable_observation(configured_executable)
     if settings_mode == "SAFE_MODE":
         bound_settings_bytes = None
         selected_mcp_config_bytes = None
@@ -597,9 +633,12 @@ def compile_test_claude_provider_preparation(
     ):
         raise AssertionError("offline provider authority is malformed")
     base = tuple(base_argv)
+    provider_executable = str(
+        request["executable_observation"]["resolved_executable"]
+    )
     if (
         not base
-        or base[0] != str(Path(sys.executable).resolve(strict=True))
+        or base[0] != provider_executable
         or base.count("-p") != 1
         or any(
             "__PLAMEN_ATTEMPT_" in item
@@ -668,7 +707,7 @@ def compile_test_claude_provider_preparation(
         phase_tool_policy=phase_tool_policy,
         settings_policy=settings_policy,
         mcp_policy=mcp_policy,
-        configured_claude_bin=str(Path(sys.executable).resolve(strict=True)),
+        configured_claude_bin=provider_executable,
         ambient_environment=runtime_inputs["ambient_environment"],
         settings_evidence={},
         stored_subscription_source_path=None,
@@ -705,4 +744,5 @@ __all__ = [
     "compile_test_claude_provider_preparation",
     "compile_test_claude_runtime_local_inputs",
     "install_test_only_launch_authority_adapter",
+    "materialize_test_provider_executable",
 ]

@@ -55,8 +55,8 @@ _PLAMEN_BORROWED_READER_FIELDS = frozenset({
     "command_kind", "mode", "expected", "inherited_handles", "one_use",
     "nested_child_authority", "signature",
 })
-_CODEX_INSTALL_SOURCE_COUNT = 764
-_CODEX_INSTALL_RUNTIME_COUNT = 733
+_CODEX_INSTALL_SOURCE_COUNT = 769
+_CODEX_INSTALL_RUNTIME_COUNT = 738
 _CODEX_INSTALL_ADAPTER_COUNT = 31
 _CLAUDE_PROJECTION_LEGACY_LOCK_RAW = b"\x00"
 _CLAUDE_PROJECTION_LEGACY_PUBLIC = "0" * 64
@@ -2893,6 +2893,48 @@ def _translate_prompt_for_codex(prompt_text: str, *,
             f"Create it as a symlink to your Plamen install "
             f"(e.g., mklink /D \"{codex_home}\" \"{Path.home() / '.claude'}\")"
         )
+    # The attempt-scoped inventory retry plan is immutable launch authority, not
+    # methodology prose.  Protect its exact canonical JSON bytes from backend
+    # wording/path translation (a valid failure message may itself mention
+    # ``use the Task tool`` or ``~/.claude``), then put those bytes back after
+    # translating only the surrounding prompt.
+    opaque_retry_plan = ""
+    opaque_retry_token = ""
+    retry_header = "## Authoritative semantic retry contract (HARD)"
+    retry_header_at = prompt_text.find(retry_header)
+    if retry_header_at >= 0:
+        if prompt_text.find(retry_header, retry_header_at + 1) >= 0:
+            raise RuntimeError(
+                "inventory retry prompt contains duplicate authority blocks"
+            )
+        fence_at = prompt_text.find("```json\n", retry_header_at)
+        if fence_at < 0:
+            raise RuntimeError(
+                "inventory retry prompt authority block has no JSON fence"
+            )
+        payload_at = fence_at + len("```json\n")
+        fence_end = prompt_text.find("\n```", payload_at)
+        if fence_end < 0:
+            raise RuntimeError(
+                "inventory retry prompt authority block is unterminated"
+            )
+        opaque_retry_plan = prompt_text[payload_at:fence_end]
+        if not opaque_retry_plan.strip():
+            raise RuntimeError(
+                "inventory retry prompt authority block is empty"
+            )
+        opaque_retry_token = (
+            "PLAMEN_OPAQUE_RETRY_PLAN_"
+            + hashlib.sha256(opaque_retry_plan.encode("utf-8")).hexdigest()
+        )
+        if opaque_retry_token in prompt_text:
+            raise RuntimeError("inventory retry prompt opaque token collision")
+        prompt_text = (
+            prompt_text[:payload_at]
+            + opaque_retry_token
+            + prompt_text[fence_end:]
+        )
+
     # Rewrite every ~/.claude reference to the Codex methodology mirror, covering
     # ALL forms the prompts / methodology files can carry, on every platform:
     #   ~/.claude/ , $HOME/.claude/ , <expanded-home>/.claude(/) , and the
@@ -2979,7 +3021,18 @@ def _translate_prompt_for_codex(prompt_text: str, *,
         ]
         translated = _codex_widen_depth_output_contract(translated, _secondary)
 
-    return preamble + "\n" + depth_checklist + fill_directive + translated
+    result = preamble + "\n" + depth_checklist + fill_directive + translated
+    if opaque_retry_plan:
+        if result.count(opaque_retry_token) != 1:
+            raise RuntimeError(
+                "inventory retry prompt authority placeholder drifted"
+            )
+        result = result.replace(opaque_retry_token, opaque_retry_plan, 1)
+        if result[result.find(retry_header):].count(opaque_retry_plan) != 1:
+            raise RuntimeError(
+                "inventory retry prompt authority bytes did not round-trip"
+            )
+    return result
 
 
 _CODEX_CONTEXT_LIMITS: dict[str, int] = {
@@ -20395,6 +20448,25 @@ def _typed_model_phase_contract_and_launch(
         config.setdefault("_phase_io_exact_inputs", {})[phase.name] = list(
             exact_inputs
         )
+    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+        attempt_map = (
+            "_phase_io_model_attempts"
+            if is_inventory_chunk
+            else "_active_model_attempts"
+        )
+        inventory_attempt = _attempt_map_ordinal(
+            config, attempt_map, phase.name, default=1, minimum=1
+        )
+        if inventory_attempt > 1:
+            exact_inputs = tuple(sorted({
+                *exact_inputs,
+                _inventory_retry_plan_relative(
+                    phase.name, inventory_attempt
+                ),
+            }))
+            config.setdefault("_phase_io_exact_inputs", {})[
+                phase.name
+            ] = list(exact_inputs)
     if phase.name == "post_verify_extract":
         exact_inputs = _postverify_extract_exact_inputs(Path(scratchpad))
         config.setdefault("_phase_io_exact_inputs", {})[phase.name] = list(
@@ -23683,13 +23755,394 @@ def _run_report_index_summary_parity_successor(
         ]
 
 
+_INVENTORY_RETRY_MODEL_PHASES = frozenset({
+    "inventory",
+    "inventory_chunk_a",
+    "inventory_chunk_b",
+    "inventory_chunk_c",
+})
+_INVENTORY_RETRY_PLAN_SCHEMA = "plamen.inventory-retry-plan/v2"
+
+
+def _inventory_retry_plan_relative(phase_name: str, attempt: int) -> str:
+    if phase_name not in _INVENTORY_RETRY_MODEL_PHASES:
+        raise ArtifactLedgerError("inventory retry plan phase is unsupported")
+    ordinal = _exact_attempt_ordinal(
+        attempt, label=f"{phase_name} retry plan"
+    )
+    return (
+        f"_retry_plans/{phase_name}/"
+        f"phase.attempt-{ordinal:04d}.json"
+    )
+
+
+def _rooted_inventory_directory_identity(path: Path, *, label: str) -> tuple[int, ...]:
+    checked = rooted_io.checked_directory(path, label=label)
+    row = rooted_io.lstat(checked)
+    return tuple(int(getattr(row, name, 0)) for name in (
+        "st_dev", "st_ino", "st_mode", "st_nlink",
+        "st_file_attributes", "st_reparse_tag",
+    ))
+
+
+def _inventory_attempt_unit(
+    phase: Phase,
+    scratchpad: Path,
+    config: Mapping[str, Any],
+    attempt: int,
+) -> tuple[str, Mapping[str, Any] | None]:
+    ordinal = _exact_attempt_ordinal(
+        attempt, label=f"{phase.name} inventory work unit"
+    )
+    unit_id = (
+        f"model.attempt{ordinal:04d}"
+        if phase.name.startswith("inventory_chunk_")
+        else "model" if ordinal == 1
+        else f"model.attempt-{ordinal:04d}"
+    )
+    key = canonical_work_unit_key(
+        str(config.get("pipeline") or "sc"),
+        str(config.get("mode") or "core"),
+        str(config.get("language") or "unknown"),
+        str(config.get("cli_backend") or "claude"),
+        phase.name,
+        unit_id,
+    )
+    ledger = read_artifact_ledger(Path(scratchpad))
+    units = ledger.get("work_units", {})
+    unit = units.get(key) if isinstance(units, Mapping) else None
+    return key, unit if isinstance(unit, Mapping) else None
+
+
+def _inventory_attempt_model_authority(
+    phase: Phase,
+    scratchpad: Path,
+    config: Mapping[str, Any],
+    attempt: int,
+) -> tuple[Any, LaunchSpec]:
+    """Compile the one attempt-specific MODEL contract shared by all retry authority."""
+
+    ordinal = _exact_attempt_ordinal(
+        attempt, label=f"{phase.name} inventory MODEL authority"
+    )
+    model_config = dict(config)
+    model_config["_active_model_attempts"] = {
+        **dict(config.get("_active_model_attempts") or {}),
+        phase.name: ordinal,
+    }
+    model_config["_phase_io_model_attempts"] = {
+        **dict(config.get("_phase_io_model_attempts") or {}),
+        phase.name: ordinal,
+    }
+    contract, launch = _typed_model_phase_contract_and_launch(
+        phase, Path(scratchpad), model_config
+    )
+    if contract is None or launch is None:
+        raise ArtifactLedgerError("inventory retry MODEL authority is unavailable")
+    return contract, launch
+
+
+def _inventory_quarantined_artifact_rows(
+    phase: Phase,
+    scratchpad: Path,
+    config: Mapping[str, Any],
+    attempt: int,
+) -> tuple[list[tuple[str, Mapping[str, Any]]], list[str]]:
+    run_id = str(config.get("_run_id") or "").strip()
+    if not run_id:
+        return [], [f"{phase.name}: inventory quarantine run_id is absent"]
+    key, unit = _inventory_attempt_unit(
+        phase, Path(scratchpad), config, attempt
+    )
+    if unit is None:
+        return [], [f"{phase.name}: quarantined MODEL work unit is absent: {key}"]
+    if (
+        unit.get("run_id") != run_id
+        or unit.get("model_invoked") is not True
+        or unit.get("semantic_status") != "QUARANTINED"
+        or unit.get("execution_state") != "OUTPUT_QUARANTINED"
+    ):
+        return [], [
+            f"{phase.name}: attempt {attempt} is not an exact same-run "
+            "QUARANTINED MODEL work unit"
+        ]
+    artifacts = unit.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        return [], [f"{phase.name}: quarantined artifact ledger is malformed"]
+    patterns = tuple(
+        pattern for pattern in (phase.expected_artifacts or ())
+        if pattern != "AUDIT_REPORT.md"
+    )
+    rows: list[tuple[str, Mapping[str, Any]]] = []
+    for identity, record in artifacts.items():
+        if not str(identity).startswith("scratchpad:"):
+            continue
+        relative = str(identity).split(":", 1)[1]
+        if not any(PurePosixPath(relative).match(pattern) for pattern in patterns):
+            continue
+        status = record.get("status") if isinstance(record, Mapping) else None
+        size = record.get("size") if isinstance(record, Mapping) else None
+        digest = record.get("sha256") if isinstance(record, Mapping) else None
+        exact_present = bool(
+            status == "QUARANTINED"
+            and type(size) is int
+            and size >= 0
+            and isinstance(digest, str)
+            and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+        )
+        exact_missing = bool(
+            status == "MISSING"
+            and size in {0, None}
+            and digest in {"", None, hashlib.sha256(b"").hexdigest()}
+        )
+        if not isinstance(record, Mapping) or not (
+            exact_present or exact_missing
+        ):
+            return [], [
+                f"{phase.name}: quarantined artifact record is malformed: "
+                f"{identity}"
+            ]
+        rows.append((relative, record))
+    for pattern in patterns:
+        if not any(PurePosixPath(relative).match(pattern) for relative, _ in rows):
+            return [], [
+                f"{phase.name}: quarantined artifact denominator omits {pattern}"
+            ]
+    return sorted(rows, key=lambda row: row[0]), []
+
+
+def _inventory_model_attempt_ordinal(
+    phase_name: str,
+    work_unit_key: str,
+) -> int | None:
+    """Return the immutable inventory MODEL ordinal encoded by a ledger key."""
+
+    parts = str(work_unit_key or "").split("/")
+    if len(parts) != 6 or parts[4] != phase_name:
+        return None
+    unit = parts[5]
+    if phase_name.startswith("inventory_chunk_"):
+        match = re.fullmatch(r"model\.attempt(\d{4})", unit)
+        return int(match.group(1)) if match is not None else None
+    if phase_name == "inventory":
+        if unit == "model":
+            return 1
+        match = re.fullmatch(r"model\.attempt-(\d{4})", unit)
+        return int(match.group(1)) if match is not None else None
+    return None
+
+
+def _inventory_resume_attempt_transition(
+    phase: Phase,
+    scratchpad: Path,
+    config: Mapping[str, Any],
+) -> tuple[int, int, list[str]]:
+    """Recover the exact inventory retry successor after a process restart.
+
+    Runtime attempt maps intentionally are not durable authority.  The ledger
+    is: every same-run inventory MODEL work unit consumes one ordinal whether
+    it committed, was quarantined, or stopped at input debt.  A restart may
+    therefore launch only the exact successor and may never reset to attempt 1.
+    """
+
+    if phase.name not in _INVENTORY_RETRY_MODEL_PHASES:
+        return 0, 1, []
+    try:
+        ledger = read_artifact_ledger(Path(scratchpad))
+    except (ArtifactLedgerError, OSError, TypeError, ValueError) as exc:
+        return 0, 1, [
+            f"{phase.name}: durable inventory attempt history is unreadable: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    run_id = str(config.get("_run_id") or config.get("run_id") or "").strip()
+    if not run_id:
+        return 0, 1, [f"{phase.name}: durable inventory attempt run_id is absent"]
+    attempts: dict[int, str] = {}
+    issues: list[str] = []
+    work_units = ledger.get("work_units", {})
+    if not isinstance(work_units, Mapping):
+        return 0, 1, [f"{phase.name}: artifact ledger work_units is malformed"]
+    for key, unit in work_units.items():
+        ordinal = _inventory_model_attempt_ordinal(phase.name, str(key))
+        if ordinal is None:
+            continue
+        if not isinstance(unit, Mapping):
+            issues.append(f"{phase.name}: attempt {ordinal} ledger row is malformed")
+            continue
+        if unit.get("run_id") != run_id:
+            issues.append(
+                f"{phase.name}: attempt {ordinal} belongs to another run"
+            )
+            continue
+        if unit.get("model_invoked") is not True:
+            issues.append(
+                f"{phase.name}: attempt {ordinal} is not a MODEL work unit"
+            )
+            continue
+        if ordinal in attempts:
+            issues.append(
+                f"{phase.name}: duplicate durable MODEL attempt ordinal {ordinal}"
+            )
+            continue
+        attempts[ordinal] = str(key)
+    maximum = _codex_max_attempts_for_phase(
+        str(config.get("cli_backend") or "claude"), phase.name
+    )
+    durable_terminal_ordinals: set[int] = set()
+    for ordinal in range(2, maximum + 1):
+        terminal = rooted_io.safe_descendant(
+            Path(scratchpad),
+            _inventory_terminal_authority_relative(phase.name, ordinal),
+            allow_missing=True,
+            label="inventory terminal namespace census",
+        )
+        receipt = rooted_io.safe_descendant(
+            Path(scratchpad),
+            f"_retry_receipts/{phase.name}/transport.attempt{ordinal}.json",
+            allow_missing=True,
+            label="inventory receipt namespace census",
+        )
+        if rooted_io.lexists(terminal) or rooted_io.lexists(receipt):
+            durable_terminal_ordinals.add(ordinal)
+        if _inventory_interruption_generations(
+            Path(scratchpad), phase.name, ordinal
+        ):
+            durable_terminal_ordinals.add(ordinal)
+    unrepresented_terminal = sorted(
+        durable_terminal_ordinals.difference(attempts)
+    )
+    if unrepresented_terminal:
+        issues.append(
+            f"{phase.name}: terminal retry authority is not represented in "
+            "the artifact ledger for attempt(s): "
+            + ", ".join(str(item) for item in unrepresented_terminal)
+        )
+    if issues:
+        return 0, 1, list(dict.fromkeys(issues))
+    if not attempts:
+        return 0, 1, []
+    highest = max(attempts)
+    if set(attempts) != set(range(1, highest + 1)):
+        return highest, highest, [
+            f"{phase.name}: durable inventory attempt history is non-contiguous: "
+            + ", ".join(str(item) for item in sorted(attempts))
+        ]
+    interrupted_highest = False
+    if highest >= 2:
+        for terminal_attempt in range(2, highest + 1):
+            canonical_authority = rooted_io.safe_descendant(
+                Path(scratchpad),
+                _inventory_terminal_authority_relative(
+                    phase.name, terminal_attempt
+                ),
+                allow_missing=True,
+                label="inventory canonical terminal authority",
+            )
+            generations = _inventory_interruption_generations(
+                Path(scratchpad), phase.name, terminal_attempt
+            )
+            if rooted_io.lexists(canonical_authority):
+                if generations and (
+                    generations != tuple(range(1, max(generations) + 1))
+                    or max(generations) > _INVENTORY_INTERRUPT_TRANSPORT_MAX
+                ):
+                    return highest, highest, [
+                        f"{phase.name}: interrupted transport generation history "
+                        "is non-contiguous or exceeds its bound"
+                    ]
+                for generation in generations:
+                    work_unit = _inventory_interruption_work_unit(generation)
+                    receipt_issues = _recover_inventory_terminal_receipt(
+                        phase,
+                        Path(scratchpad),
+                        config,
+                        terminal_attempt,
+                        work_unit_id=work_unit,
+                    )
+                    if receipt_issues:
+                        return highest, highest, receipt_issues
+                receipt_issues = _recover_inventory_terminal_receipt(
+                    phase, Path(scratchpad), config, terminal_attempt
+                )
+                if receipt_issues:
+                    return highest, highest, receipt_issues
+                continue
+            if not generations:
+                return highest, highest, [
+                    f"{phase.name}: attempt {terminal_attempt} has no durable "
+                    "terminal or interrupted transport authority"
+                ]
+            if terminal_attempt != highest:
+                return highest, highest, [
+                    f"{phase.name}: interrupted attempt {terminal_attempt} "
+                    "cannot precede a later semantic attempt"
+                ]
+            if (
+                generations != tuple(range(1, max(generations) + 1))
+                or max(generations) > _INVENTORY_INTERRUPT_TRANSPORT_MAX
+            ):
+                return highest, highest, [
+                    f"{phase.name}: interrupted transport generation history "
+                    "is non-contiguous"
+                ]
+            for generation in generations:
+                work_unit = _inventory_interruption_work_unit(generation)
+                receipt_issues = _recover_inventory_terminal_receipt(
+                    phase,
+                    Path(scratchpad),
+                    config,
+                    terminal_attempt,
+                    work_unit_id=work_unit,
+                )
+                if receipt_issues:
+                    return highest, highest, receipt_issues
+            if max(generations) >= _INVENTORY_INTERRUPT_TRANSPORT_MAX:
+                return highest, highest, [
+                    f"{phase.name}: interrupted transport generation budget "
+                    f"is exhausted at semantic attempt {highest}"
+                ]
+            interrupted_highest = True
+    if interrupted_highest:
+        return highest - 1, highest, []
+    if highest >= maximum:
+        return highest, highest, [
+            f"{phase.name}: durable inventory retry budget is exhausted at "
+            f"attempt {highest}; refusing an unauthorized relaunch"
+        ]
+    return highest, highest + 1, []
+
+
+def _inventory_retry_predecessor(
+    phase: Phase,
+    scratchpad: Path,
+    config: Mapping[str, Any],
+    requested_attempt: int,
+) -> int:
+    """Require the retry to be the exact contiguous durable successor."""
+
+    ordinal = _exact_attempt_ordinal(
+        requested_attempt, label=f"{phase.name} retry successor"
+    )
+    prior, successor, issues = _inventory_resume_attempt_transition(
+        phase, Path(scratchpad), config
+    )
+    if issues:
+        raise ArtifactLedgerError("; ".join(issues))
+    if prior != ordinal - 1 or successor != ordinal:
+        raise ArtifactLedgerError(
+            f"{phase.name}: retry attempt {ordinal} is not the exact durable "
+            f"successor {successor} of attempt {prior}"
+        )
+    return prior
+
+
 def _quarantine_inventory_chunk_model_attempt(
     phase: Phase,
     scratchpad: Path,
     config: dict[str, Any],
     attempt: int,
 ) -> list[str]:
-    """Terminalize one rejected chunk proposal before a retry can launch."""
+    """Terminalize one rejected inventory proposal before a retry launches."""
 
     try:
         attempts = _mutable_attempt_map(config, "_phase_io_model_attempts")
@@ -23729,6 +24182,214 @@ def _quarantine_inventory_chunk_model_attempt(
     except (ArtifactLedgerError, OSError, ValueError) as exc:
         return [
             f"{phase.name}: prior MODEL attempt quarantine failed: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+
+
+def _prepare_inventory_retry_prestate(
+    phase: Phase,
+    scratchpad: Path,
+    config: dict[str, Any],
+    *,
+    prior_attempt: int,
+    next_attempt: int,
+) -> tuple[list[str], list[str]]:
+    """Quarantine provenance and bytes before every inventory retry.
+
+    Attempt N's rejected output must still exist while its MODEL work unit is
+    terminalized.  Only then may the bytes move out of the live scratchpad.
+    Attempt-scoped destinations keep attempts 1 and 2 distinct, so attempt 3
+    cannot inherit attempt 2 merely because the attempt-1 backup already
+    occupies the legacy quarantine path.
+    """
+
+    if phase.name not in _INVENTORY_RETRY_MODEL_PHASES:
+        return [], []
+    try:
+        prior = _exact_attempt_ordinal(
+            prior_attempt, label=f"{phase.name} retry predecessor"
+        )
+        successor = _exact_attempt_ordinal(
+            next_attempt, label=f"{phase.name} retry successor"
+        )
+    except ArtifactLedgerError as exc:
+        return [], [str(exc)]
+    if successor != prior + 1:
+        return [], [
+            f"{phase.name}: inventory retry successor {successor} must be "
+            f"exactly predecessor {prior} plus one"
+        ]
+
+    root = Path(scratchpad)
+    run_id = str(config.get("_run_id") or "").strip()
+    if not run_id:
+        return [], [f"{phase.name}: inventory retry run_id is absent"]
+    try:
+        root_identity = _rooted_inventory_directory_identity(
+            root, label="inventory retry scratchpad"
+        )
+        _key, existing = _inventory_attempt_unit(
+            phase, root, config, prior
+        )
+        already_terminal = bool(
+            isinstance(existing, Mapping)
+            and existing.get("run_id") == run_id
+            and existing.get("semantic_status") == "QUARANTINED"
+            and existing.get("execution_state") == "OUTPUT_QUARANTINED"
+        )
+        if not already_terminal:
+            provenance_issues = _quarantine_inventory_chunk_model_attempt(
+                phase, root, config, prior
+            )
+            if provenance_issues:
+                return [], list(provenance_issues)
+
+        rows, row_issues = _inventory_quarantined_artifact_rows(
+            phase, root, config, prior
+        )
+        if row_issues:
+            return [], row_issues
+        quarantine_relative = (
+            f"_retry_quarantine/{phase.name}/attempt-{prior:04d}"
+        )
+        quarantine = rooted_io.safe_descendant(
+            root,
+            quarantine_relative,
+            allow_missing=True,
+            label="inventory retry quarantine",
+        )
+        rooted_io.ensure_directory(
+            quarantine,
+            parents=True,
+            label="inventory retry quarantine",
+        )
+        quarantine_identity = _rooted_inventory_directory_identity(
+            quarantine, label="inventory retry quarantine"
+        )
+        archived: list[str] = []
+        for relative, record in rows:
+            source = rooted_io.safe_descendant(
+                root,
+                relative,
+                allow_missing=True,
+                label="inventory rejected output",
+            )
+            destination = rooted_io.safe_descendant(
+                root,
+                f"{quarantine_relative}/{relative}",
+                allow_missing=True,
+                label="inventory retry archived output",
+            )
+            rooted_io.ensure_directory(
+                destination.parent,
+                parents=True,
+                label="inventory retry archive parent",
+            )
+            stage_relative = (
+                PurePosixPath(relative).parent
+                / (
+                    f".{PurePosixPath(relative).name}."
+                    f"inventory-attempt-{prior:04d}.stage"
+                )
+            ).as_posix()
+            stage = rooted_io.safe_descendant(
+                root,
+                stage_relative,
+                allow_missing=True,
+                label="inventory retry retirement stage",
+            )
+            expected_size = int(record["size"])
+            expected_sha = str(record["sha256"])
+            status = str(record["status"])
+            present = tuple(
+                name for name, path in (
+                    ("source", source),
+                    ("stage", stage),
+                    ("archive", destination),
+                )
+                if rooted_io.lexists(path)
+            )
+            if status == "MISSING":
+                if present:
+                    raise ArtifactLedgerError(
+                        f"{phase.name}: ledger-bound missing output became "
+                        f"present during retry quarantine: {relative} ({present})"
+                    )
+                continue
+
+            def _exact(path: Path, label: str) -> bytes:
+                raw = rooted_io.read_bytes(
+                    path,
+                    label=label,
+                    require_single_link=True,
+                    max_bytes=expected_size,
+                )
+                if (
+                    len(raw) != expected_size
+                    or hashlib.sha256(raw).hexdigest() != expected_sha
+                ):
+                    raise ArtifactLedgerError(
+                        f"{phase.name}: {label} differs from ledger-bound "
+                        f"attempt {prior}: {relative}"
+                    )
+                return raw
+
+            if rooted_io.lexists(stage) and rooted_io.lexists(source):
+                # The no-clobber same-directory move may have published its
+                # second name before retiring the first.  Its own recovery
+                # accepts only the same inode; any foreign collision is debt.
+                rooted_io.durable_publish_new(source, stage)
+            if rooted_io.lexists(stage):
+                raw = _exact(stage, "inventory retry retirement stage")
+            elif rooted_io.lexists(source):
+                raw = _exact(source, "inventory rejected output")
+            elif rooted_io.lexists(destination):
+                _exact(destination, "inventory archived output")
+                archived.append(relative)
+                continue
+            else:
+                raise ArtifactLedgerError(
+                    f"{phase.name}: ledger-bound rejected output disappeared: "
+                    f"{relative}"
+                )
+            rooted_io.durable_write_once_bytes(destination, raw)
+            _exact(destination, "inventory archived output")
+            if rooted_io.lexists(source):
+                rooted_io.durable_publish_new(source, stage)
+                _exact(stage, "inventory retry retirement stage")
+            if rooted_io.lexists(stage):
+                rooted_io.durable_unlink(stage)
+            if rooted_io.lexists(source) or rooted_io.lexists(stage):
+                raise ArtifactLedgerError(
+                    f"{phase.name}: rejected output remains live before "
+                    f"attempt {successor}: {relative}"
+                )
+            _exact(destination, "inventory archived output")
+            archived.append(relative)
+
+        if _rooted_inventory_directory_identity(
+            root, label="inventory retry scratchpad"
+        ) != root_identity:
+            raise ArtifactLedgerError(
+                f"{phase.name}: scratchpad identity changed during quarantine"
+            )
+        if _rooted_inventory_directory_identity(
+            quarantine, label="inventory retry quarantine"
+        ) != quarantine_identity:
+            raise ArtifactLedgerError(
+                f"{phase.name}: quarantine identity changed during archival"
+            )
+        return list(dict.fromkeys(archived)), []
+    except (
+        ArtifactLedgerError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        rooted_io.RootedPathIOError,
+    ) as exc:
+        return [], [
+            f"{phase.name}: retry output quarantine failed: "
             f"{type(exc).__name__}: {exc}"
         ]
 
@@ -30742,6 +31403,176 @@ def _resolved_phase_artifact_digest(
     return _stable_payload_digest(rows)
 
 
+_INVENTORY_RETRY_ARTIFACT_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _inventory_retry_artifact_digest(
+    phase: Phase,
+    scratchpad: Path,
+    project_root: str,
+    *,
+    quarantined_attempt: int | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve the inventory output preimage without following aliases.
+
+    A retry that crashed after retiring the rejected bytes may replay the
+    exact ledger-bound quarantine as the scratchpad preimage.  Otherwise the
+    live path is authoritative.  The inventory contract intentionally uses
+    exact filenames; broad patterns are rejected rather than traversed.
+    """
+
+    if phase.name not in _INVENTORY_RETRY_MODEL_PHASES:
+        raise ArtifactLedgerError("inventory retry artifact phase is unsupported")
+    patterns = tuple(phase.expected_artifacts or ())
+    if (
+        not patterns
+        or any(
+            not isinstance(pattern, str)
+            or not pattern
+            or any(marker in pattern for marker in "*?[")
+            or PurePosixPath(pattern).is_absolute()
+            or ".." in PurePosixPath(pattern).parts
+            for pattern in patterns
+        )
+    ):
+        raise ArtifactLedgerError(
+            "inventory retry artifact contract requires exact rooted paths"
+        )
+
+    root = rooted_io.checked_directory(
+        Path(scratchpad), label="inventory retry artifact scratchpad"
+    )
+    project = rooted_io.checked_directory(
+        Path(project_root), label="inventory retry artifact project root"
+    )
+    root_identity = _rooted_inventory_directory_identity(
+        root, label="inventory retry artifact scratchpad"
+    )
+    project_identity = _rooted_inventory_directory_identity(
+        project, label="inventory retry artifact project root"
+    )
+    archived: dict[str, Mapping[str, Any]] = {}
+    if quarantined_attempt is not None:
+        if config is None:
+            raise ArtifactLedgerError(
+                "inventory retry archived preimage requires run authority"
+            )
+        rows, issues = _inventory_quarantined_artifact_rows(
+            phase, root, config, quarantined_attempt
+        )
+        if issues:
+            raise ArtifactLedgerError("; ".join(issues))
+        archived = {relative: record for relative, record in rows}
+
+    rows: list[dict[str, object]] = []
+    seen_roots: set[tuple[int, ...]] = set()
+    for authority_root, root_kind, identity in (
+        (root, "scratchpad", root_identity),
+        (project, "project", project_identity),
+    ):
+        if identity in seen_roots:
+            continue
+        seen_roots.add(identity)
+        for relative in patterns:
+            if root_kind == "scratchpad" and quarantined_attempt is not None:
+                record = archived.get(relative)
+                if record is None:
+                    raise ArtifactLedgerError(
+                        f"inventory retry archived denominator omits {relative}"
+                    )
+                if record.get("status") == "MISSING":
+                    continue
+                size = int(record["size"])
+                digest = str(record["sha256"])
+                archive_relative = (
+                    f"_retry_quarantine/{phase.name}/"
+                    f"attempt-{quarantined_attempt:04d}/{relative}"
+                )
+                archive = rooted_io.safe_descendant(
+                    root,
+                    archive_relative,
+                    allow_missing=False,
+                    label="inventory retry archived preimage",
+                )
+                raw = rooted_io.read_bytes(
+                    archive,
+                    label="inventory retry archived preimage",
+                    require_single_link=True,
+                    max_bytes=min(
+                        _INVENTORY_RETRY_ARTIFACT_MAX_BYTES, size
+                    ),
+                )
+                if len(raw) != size or hashlib.sha256(raw).hexdigest() != digest:
+                    raise ArtifactLedgerError(
+                        f"inventory retry archived preimage drifted: {relative}"
+                    )
+                rows.append({
+                    "path": relative,
+                    "root": root_kind,
+                    "size": size,
+                    "sha256": digest,
+                })
+                continue
+            candidate = rooted_io.safe_descendant(
+                authority_root,
+                relative,
+                allow_missing=True,
+                label=f"inventory retry {root_kind} output",
+            )
+            if not rooted_io.lexists(candidate):
+                continue
+            raw = rooted_io.read_bytes(
+                candidate,
+                label=f"inventory retry {root_kind} output",
+                require_single_link=True,
+                max_bytes=_INVENTORY_RETRY_ARTIFACT_MAX_BYTES,
+            )
+            rows.append({
+                "path": relative,
+                "root": root_kind,
+                "size": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            })
+    return _stable_payload_digest(rows)
+
+
+def _inventory_retry_preimage_digest(
+    phase: Phase,
+    scratchpad: Path,
+    config: Mapping[str, Any],
+    *,
+    prior_attempt: int,
+) -> str:
+    """Return the live rejected preimage or its exact crash archive."""
+
+    root = Path(scratchpad)
+    _unit_key, prior_unit = _inventory_attempt_unit(
+        phase, root, config, prior_attempt
+    )
+    if (
+        isinstance(prior_unit, Mapping)
+        and prior_unit.get("run_id") == str(config.get("_run_id") or "")
+        and prior_unit.get("semantic_status") == "QUARANTINED"
+        and prior_unit.get("execution_state") == "OUTPUT_QUARANTINED"
+    ):
+        # The predecessor archive is the immutable retry-plan preimage.  A live
+        # expected artifact may already be a partial write from an interrupted
+        # replay of the successor and must never replace that authority.
+        return _inventory_retry_artifact_digest(
+            phase,
+            root,
+            str(config["project_root"]),
+            quarantined_attempt=prior_attempt,
+            config=config,
+        )
+    # Before predecessor terminalization, its exact live output (including the
+    # authoritative empty presence-gate state) remains the plan preimage.
+    return _inventory_retry_artifact_digest(
+        phase, root, str(config["project_root"])
+    )
+
+
 _LEGACY_GATE_REGISTRY: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (re.compile(
         r"CHAIN_ITER2_COVERAGE_GAPS|DEGRADED_COVERAGE_GAPS|"
@@ -30865,9 +31696,21 @@ def _gate_failures_from_issues(
                 evidence_paths.append(str(candidate.relative_to(scratchpad)))
             except ValueError:
                 evidence_paths.append(str(candidate))
+    inventory_exact_phase = (
+        phase.name == "inventory"
+        or phase.name.startswith("inventory_chunk_")
+    )
     for issue in issues or ["phase gate failed without a structured issue"]:
         message = str(issue).strip() or "phase gate failed"
-        gate_suffix, gate_class = _registered_gate_identity(message)
+        if inventory_exact_phase and "exact reconciliation" in message.lower():
+            # This predicate has a mechanically enumerable denominator.  Do
+            # not collapse it into the legacy prose registry: retries need the
+            # exact unresolved identity set in order to distinguish real
+            # repair from changed wording or a changed source denominator.
+            gate_suffix = "independent_disposition.exact_reconciliation"
+            gate_class = "INDEPENDENT_DISPOSITION"
+        else:
+            gate_suffix, gate_class = _registered_gate_identity(message)
         if (
             phase.name == "report_dedup_agent"
             and gate_class in {"ARTIFACT_PRESENCE", "SCHEMA"}
@@ -30884,6 +31727,33 @@ def _gate_failures_from_issues(
         gate_id = f"{phase.name}.{gate_suffix}"
         denominator_count = None
         denominator_digest = ""
+        if gate_suffix == "independent_disposition.exact_reconciliation":
+            try:
+                scope = (
+                    phase.name
+                    if phase.name.startswith("inventory_chunk_")
+                    else None
+                )
+                detail = _reconcile_exact_inventory(
+                    Path(scratchpad), phase_name=scope, persist=False
+                )
+                denominator_count = int(detail["denominator_count"])
+                denominator_digest = str(detail["denominator_digest"])
+                affected = tuple(sorted({
+                    str(row.get("candidate_key") or "").strip()
+                    for row in detail.get("candidates", ())
+                    if isinstance(row, Mapping)
+                    and row.get("disposition") == "HUMAN_REVIEW_DEBT"
+                    and str(row.get("candidate_key") or "").strip()
+                }))
+            except (
+                KeyError, OSError, TypeError, ValueError,
+            ):
+                # The failure remains hard and typed, but an unavailable exact
+                # denominator must never be invented from the prose message.
+                denominator_count = None
+                denominator_digest = ""
+                affected = ()
         if phase.name == "report_dedup_agent":
             try:
                 _dedup_detail = _report_dedup_exact_pair_coverage_detail(
@@ -30914,7 +31784,12 @@ def _gate_failures_from_issues(
             allowed_fallback=allowed_fallback or _fallback_for_gate_class(
                 gate_class
             ),
-            schema_id=f"{gate_id}/v1",
+            schema_id=(
+                "plamen.inventory_exact_reconciliation_gate.v1"
+                if gate_suffix
+                == "independent_disposition.exact_reconciliation"
+                else f"{gate_id}/v1"
+            ),
             schema_version=1,
             denominator_count=denominator_count,
             denominator_digest=denominator_digest,
@@ -31078,7 +31953,11 @@ class PhaseCommitController:
                 )
                 if clean_transients:
                     _clear_retry_hint(self.scratchpad, phase.name)
-                    _cleanup_quarantine_backups(self.scratchpad, phase)
+                    _cleanup_quarantine_backups(
+                        self.scratchpad,
+                        phase,
+                        run_id=str(self.checkpoint.run_id or ""),
+                    )
         else:
             if phase.name not in self.checkpoint.degraded:
                 self.checkpoint.degraded.append(phase.name)
@@ -34138,11 +35017,53 @@ def _commit_verification_transaction(
     )
 
 
+def _canonical_gate_failure_sequence(
+    failures: tuple[GateFailure, ...] | list[GateFailure],
+    *,
+    label: str,
+    require_ordered: bool = False,
+) -> tuple[GateFailure, ...]:
+    rows = tuple(failures)
+    exact: set[str] = set()
+    folded: set[str] = set()
+    instances: set[str] = set()
+    for failure in rows:
+        if not isinstance(failure, GateFailure):
+            raise ArtifactLedgerError(f"{label} contains an untyped failure")
+        folded_id = failure.gate_id.casefold()
+        if (
+            failure.gate_id in exact
+            or folded_id in folded
+            or failure.failure_instance_id in instances
+        ):
+            raise ArtifactLedgerError(
+                f"{label} contains duplicate/colliding failure identities"
+            )
+        exact.add(failure.gate_id)
+        folded.add(folded_id)
+        instances.add(failure.failure_instance_id)
+    canonical = tuple(sorted(
+        rows,
+        key=lambda row: (
+            row.gate_id.casefold(), row.gate_id, row.failure_instance_id
+        ),
+    ))
+    if require_ordered and canonical != rows:
+        raise ArtifactLedgerError(f"{label} is not canonically ordered")
+    return canonical
+
+
 def _retry_receipt_status(
     failures_before: tuple[GateFailure, ...],
     failures_after: tuple[GateFailure, ...],
 ) -> str:
     """Classify semantic progress; changed bytes alone are never progress."""
+    failures_before = _canonical_gate_failure_sequence(
+        failures_before, label="retry failures_before"
+    )
+    failures_after = _canonical_gate_failure_sequence(
+        failures_after, label="retry failures_after"
+    )
     if not failures_after:
         return "CLEARED"
     before = {failure.gate_id: failure for failure in failures_before}
@@ -34156,6 +35077,31 @@ def _retry_receipt_status(
     for gate_id in sorted(after_ids):
         old = before[gate_id]
         new = after[gate_id]
+        inventory_exact = (
+            old.schema_id == "plamen.inventory_exact_reconciliation_gate.v1"
+            or new.schema_id
+            == "plamen.inventory_exact_reconciliation_gate.v1"
+        )
+        if inventory_exact:
+            # Exact reconciliation progress is set-theoretic, not numeric.
+            # The raw-source denominator must be the same, nonempty authority
+            # on both sides, and the unresolved identity set must be a strict
+            # subset.  A changed denominator or a same-size identity swap is
+            # not retry progress.
+            same_nonempty_denominator = bool(
+                old.denominator_count is not None
+                and old.denominator_count > 0
+                and new.denominator_count == old.denominator_count
+                and old.denominator_digest
+                and new.denominator_digest == old.denominator_digest
+            )
+            if (
+                same_nonempty_denominator
+                and set(new.affected_identities)
+                < set(old.affected_identities)
+            ):
+                return "PROGRESSED"
+            continue
         if (
             old.denominator_count is not None
             and new.denominator_count is not None
@@ -34167,12 +35113,440 @@ def _retry_receipt_status(
     return "NO_PROGRESS"
 
 
-def _write_retry_receipt(scratchpad: Path, receipt: RetryReceipt) -> Path:
+def _inventory_retry_prompt_bytes(
+    scratchpad: Path,
+    phase_name: str,
+    attempt: int,
+) -> bytes:
+    ordinal = _exact_attempt_ordinal(
+        attempt, label=f"{phase_name} retry prompt"
+    )
+    prompt = rooted_io.safe_descendant(
+        Path(scratchpad),
+        f"_prompt_{phase_name}.attempt{ordinal}.md",
+        allow_missing=False,
+        label="inventory retry prompt snapshot",
+    )
+    return rooted_io.read_bytes(
+        prompt,
+        label="inventory retry prompt snapshot",
+        require_single_link=True,
+        max_bytes=16 * 1024 * 1024,
+    )
+
+
+def _load_inventory_retry_plan_for_receipt(
+    scratchpad: Path,
+    receipt: RetryReceipt,
+    *,
+    phase: Phase,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the exact immutable plan a receipt claims to close."""
+
+    path = rooted_io.safe_descendant(
+        Path(scratchpad),
+        _inventory_retry_plan_relative(
+            receipt.phase_name, receipt.attempt
+        ),
+        allow_missing=False,
+        label="inventory retry receipt plan",
+    )
+    raw = rooted_io.read_bytes(
+        path,
+        label="inventory retry receipt plan",
+        require_single_link=True,
+        max_bytes=4 * 1024 * 1024,
+    )
+    try:
+        payload = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_reject_duplicate_json_pairs,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ArtifactLedgerError(
+            f"inventory retry receipt plan is malformed: {exc}"
+        ) from exc
+    canonical_raw = (
+        json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if raw != canonical_raw:
+        raise ArtifactLedgerError(
+            "inventory retry receipt plan bytes are noncanonical"
+        )
+    required = {
+        "schema", "run_id", "phase_name", "work_unit_id", "attempt",
+        "input_digest", "output_digest_before", "contract_digest",
+        "launch_digest", "required_output_schema", "failed_predicates",
+        "semantic_retry", "plan_digest",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ArtifactLedgerError(
+            "inventory retry receipt plan field set is malformed"
+        )
+    unsigned = dict(payload)
+    plan_digest = unsigned.pop("plan_digest", None)
+    if (
+        payload.get("schema") != _INVENTORY_RETRY_PLAN_SCHEMA
+        or payload.get("run_id") != receipt.run_id
+        or payload.get("phase_name") != receipt.phase_name
+        or payload.get("work_unit_id") != "phase"
+        or payload.get("attempt") != receipt.attempt
+        or plan_digest != receipt.retry_plan_digest
+        or not isinstance(plan_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", plan_digest) is None
+        or plan_digest != _stable_payload_digest(unsigned)
+    ):
+        raise ArtifactLedgerError(
+            "inventory retry receipt plan identity/digest is invalid"
+        )
+    rows = payload.get("failed_predicates")
+    if not isinstance(rows, list) or not rows or len(rows) > 4096:
+        raise ArtifactLedgerError(
+            "inventory retry receipt predicate set is malformed"
+        )
+    failures: list[GateFailure] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ArtifactLedgerError(
+                "inventory retry receipt predicate is not an object"
+            )
+        try:
+            failure = GateFailure.from_dict(row)
+            unsigned_failure = dict(row)
+            unsigned_failure["predicate_digest"] = ""
+            unsigned_failure["failure_instance_id"] = ""
+            recomputed = GateFailure.from_dict(unsigned_failure)
+        except RuntimeError as exc:
+            raise ArtifactLedgerError(
+                f"inventory retry receipt predicate is malformed: {exc}"
+            ) from exc
+        if (
+            failure.to_dict() != row
+            or failure.predicate_digest != recomputed.predicate_digest
+            or failure.failure_instance_id != recomputed.failure_instance_id
+            or not failure.gate_id.startswith(f"{receipt.phase_name}.")
+        ):
+            raise ArtifactLedgerError(
+                "inventory retry receipt predicate is noncanonical or foreign"
+            )
+        failures.append(failure)
+
+    failures = list(_canonical_gate_failure_sequence(
+        failures,
+        label="inventory receipt plan predicates",
+        require_ordered=True,
+    ))
+
+    expected_semantic_retry = any(
+        failure.gate_class not in {
+            "ARTIFACT_PRESENCE", "ADVISORY_QUALITY"
+        }
+        for failure in failures
+    )
+    required_output_schema = payload.get("required_output_schema")
+    if (
+        payload.get("semantic_retry") is not expected_semantic_retry
+        or not isinstance(required_output_schema, list)
+        or not required_output_schema
+        or any(
+            not isinstance(row, dict)
+            or set(row) != {
+                "pattern", "minimum_bytes", "minimum_count"
+            }
+            or not isinstance(row.get("pattern"), str)
+            or type(row.get("minimum_bytes")) is not int
+            or type(row.get("minimum_count")) is not int
+            for row in required_output_schema
+        )
+    ):
+        raise ArtifactLedgerError(
+            "inventory retry receipt plan semantics are malformed"
+        )
+
+    expected_failure_ids = tuple(
+        failure.failure_instance_id for failure in failures
+    )
+    expected_gate_ids = tuple(failure.gate_id for failure in failures)
+    expected_before_predicate = _stable_payload_digest([
+        {
+            "gate_id": failure.gate_id,
+            "predicate_digest": failure.predicate_digest,
+            "affected": list(failure.affected_identities),
+            "denominator_count": failure.denominator_count,
+            "denominator_digest": failure.denominator_digest,
+        }
+        for failure in failures
+    ])
+    denominator_counts = [
+        failure.denominator_count for failure in failures
+        if failure.denominator_count is not None
+    ]
+    denominator_digests = sorted({
+        failure.denominator_digest for failure in failures
+        if failure.denominator_digest
+    })
+    if (
+        receipt.failure_instance_ids_before != expected_failure_ids
+        or receipt.gate_ids_before != expected_gate_ids
+        or receipt.input_digest != payload["input_digest"]
+        or receipt.output_digest_before != payload["output_digest_before"]
+        or receipt.contract_digest != payload["contract_digest"]
+        or receipt.launch_digest != payload["launch_digest"]
+        or receipt.repair_owner != receipt.phase_name
+        or receipt.predicate_digest_before != expected_before_predicate
+        or receipt.denominator_count
+        != (sum(denominator_counts) if denominator_counts else None)
+        or receipt.denominator_digest
+        != _stable_payload_digest(denominator_digests)
+    ):
+        raise ArtifactLedgerError(
+            "inventory retry receipt semantics disagree with its plan"
+        )
+
+    model_contract, model_launch = _inventory_attempt_model_authority(
+        phase, Path(scratchpad), config, receipt.attempt
+    )
+    _attempt_key, attempt_unit = _inventory_attempt_unit(
+        phase, Path(scratchpad), config, receipt.attempt
+    )
+    if not isinstance(attempt_unit, Mapping):
+        raise ArtifactLedgerError(
+            "inventory retry receipt has no exact MODEL ledger row"
+        )
+    plan_identity = "scratchpad:" + _inventory_retry_plan_relative(
+        receipt.phase_name, receipt.attempt
+    )
+    bindings = attempt_unit.get("input_bindings")
+    plan_binding = (
+        bindings.get(plan_identity) if isinstance(bindings, Mapping) else None
+    )
+    expected_schema_ids = sorted({failure.schema_id for failure in failures})
+    # ``recorded_at`` is the immutable prelaunch creation timestamp for this
+    # exact attempt.  ``output_recorded_at`` is populated later and therefore
+    # cannot be a stable receipt identity across terminal recovery/restart.
+    expected_created_at = str(attempt_unit.get("recorded_at") or "")
+    if (
+        attempt_unit.get("run_id") != receipt.run_id
+        or attempt_unit.get("model_invoked") is not True
+        or attempt_unit.get("contract_digest") != model_contract.digest
+        or attempt_unit.get("launch_digest") != model_launch.digest
+        or receipt.contract_digest != model_contract.digest
+        or receipt.launch_digest != model_launch.digest
+        or receipt.schema_id != "+".join(expected_schema_ids)
+        or receipt.schema_version
+        != max((failure.schema_version for failure in failures), default=1)
+        or receipt.created_at != expected_created_at
+        or not isinstance(plan_binding, Mapping)
+        or plan_binding.get("status") != "ACTIVE"
+        or plan_binding.get("size") != len(raw)
+        or plan_binding.get("sha256") != hashlib.sha256(raw).hexdigest()
+    ):
+        raise ArtifactLedgerError(
+            "inventory retry receipt/plan disagrees with MODEL ledger authority"
+        )
+
+    expected_lineage: list[dict[str, object]] = []
+    for prior_attempt in range(1, receipt.attempt):
+        prior_rows, prior_issues = _inventory_quarantined_artifact_rows(
+            phase,
+            Path(scratchpad),
+            config,
+            prior_attempt,
+        )
+        if prior_issues:
+            raise ArtifactLedgerError("; ".join(prior_issues))
+        for relative, record in prior_rows:
+            if record.get("status") != "QUARANTINED":
+                continue
+            archive_relative = (
+                f"_retry_quarantine/{receipt.phase_name}/"
+                f"attempt-{prior_attempt:04d}/{relative}"
+            )
+            lineage_row = {
+                "path": archive_relative,
+                "size": int(record["size"]),
+                "sha256": str(record["sha256"]),
+            }
+            archive = rooted_io.safe_descendant(
+                Path(scratchpad),
+                archive_relative,
+                allow_missing=False,
+                label="inventory retry receipt lineage replay",
+            )
+            live = rooted_io.read_bytes(
+                archive,
+                label="inventory retry receipt lineage replay",
+                require_single_link=True,
+                max_bytes=int(record["size"]),
+            )
+            if (
+                len(live) != int(record["size"])
+                or hashlib.sha256(live).hexdigest() != str(record["sha256"])
+            ):
+                raise ArtifactLedgerError(
+                    f"inventory retry receipt lineage drifted: {archive_relative}"
+                )
+            expected_lineage.append(lineage_row)
+    expected_lineage.sort(key=lambda row: str(row["path"]))
+    if tuple(expected_lineage) != receipt.quarantine_lineage:
+        raise ArtifactLedgerError(
+            "inventory retry receipt quarantine lineage is incomplete or stale"
+        )
+
+    prompt_raw = _inventory_retry_prompt_bytes(
+        Path(scratchpad), receipt.phase_name, receipt.attempt
+    )
+    canonical_plan = json.dumps(payload, indent=2, sort_keys=True).encode(
+        "utf-8"
+    )
+    if (
+        hashlib.sha256(prompt_raw).hexdigest() != receipt.prompt_digest
+        or canonical_plan not in prompt_raw
+        or str(plan_digest).encode("ascii") not in prompt_raw
+    ):
+        raise ArtifactLedgerError(
+            "inventory retry receipt prompt is not bound to the exact plan"
+        )
+    return payload
+
+
+def _write_retry_receipt(
+    scratchpad: Path,
+    receipt: RetryReceipt,
+    *,
+    phase: Phase | None = None,
+    config: Mapping[str, Any] | None = None,
+    failures_after: tuple[GateFailure, ...] | None = None,
+    full_gate_passed: bool | None = None,
+    terminal_rc: int | None = None,
+    authoritative_output_digest_after: str | None = None,
+) -> Path:
     safe_work_unit = re.sub(r"[^A-Za-z0-9_.-]+", "_", receipt.work_unit_id)
-    directory = Path(scratchpad) / "_retry_receipts" / receipt.phase_name
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{safe_work_unit}.attempt{receipt.attempt}.json"
+    inventory_receipt = receipt.phase_name in _INVENTORY_RETRY_MODEL_PHASES
+    if inventory_receipt and not receipt.retry_plan_digest:
+        raise ArtifactLedgerError(
+            "inventory retry receipt requires retry_plan_digest"
+        )
+    if inventory_receipt:
+        if phase is None or config is None:
+            raise ArtifactLedgerError(
+                "inventory retry receipt requires phase/run authority"
+            )
+        retry_plan = _load_inventory_retry_plan_for_receipt(
+            Path(scratchpad), receipt, phase=phase, config=config
+        )
+        failures_after = _canonical_gate_failure_sequence(
+            failures_after or (),
+            label="inventory retry receipt failures_after",
+            require_ordered=True,
+        )
+        if (
+            phase is None
+            or config is None
+            or failures_after is None
+            or type(full_gate_passed) is not bool
+            or type(terminal_rc) is not int
+            or phase.name != receipt.phase_name
+        ):
+            raise ArtifactLedgerError(
+                "inventory retry receipt requires full terminal gate authority"
+            )
+        current_output_digest = (
+            authoritative_output_digest_after
+            if authoritative_output_digest_after is not None
+            else _inventory_retry_artifact_digest(
+                phase,
+                Path(scratchpad),
+                str(config["project_root"]),
+            )
+        )
+        if (
+            authoritative_output_digest_after is not None
+            and (
+                not isinstance(authoritative_output_digest_after, str)
+                or re.fullmatch(
+                    r"[0-9a-f]{64}", authoritative_output_digest_after
+                ) is None
+            )
+        ):
+            raise ArtifactLedgerError(
+                "inventory retry receipt historical postimage is malformed"
+            )
+        expected_after_ids = tuple(
+            failure.failure_instance_id for failure in failures_after
+        )
+        expected_after_gates = tuple(
+            failure.gate_id for failure in failures_after
+        )
+        expected_after_predicate = _stable_payload_digest([
+            {
+                "gate_id": failure.gate_id,
+                "predicate_digest": failure.predicate_digest,
+                "affected": list(failure.affected_identities),
+                "denominator_count": failure.denominator_count,
+                "denominator_digest": failure.denominator_digest,
+            }
+            for failure in failures_after
+        ])
+        plan_failures = tuple(
+            GateFailure.from_dict(row)
+            for row in retry_plan["failed_predicates"]
+        )
+        expected_status = (
+            "INTERRUPTED"
+            if terminal_rc == -3
+            else "FAILED"
+            if terminal_rc != 0
+            else _retry_receipt_status(plan_failures, failures_after)
+        )
+        if (
+            receipt.output_digest_after != current_output_digest
+            or receipt.failure_instance_ids_after != expected_after_ids
+            or receipt.gate_ids_after != expected_after_gates
+            or receipt.predicate_digest_after != expected_after_predicate
+            or receipt.terminal_rc != terminal_rc
+            or receipt.status != expected_status
+            or full_gate_passed != (not failures_after)
+            or (terminal_rc != 0 and full_gate_passed)
+        ):
+            raise ArtifactLedgerError(
+                "inventory retry receipt terminal semantics disagree with "
+                "the full validator and current output"
+            )
+    relative = (
+        f"_retry_receipts/{receipt.phase_name}/"
+        f"{safe_work_unit}.attempt{receipt.attempt}.json"
+    )
+    path = (
+        rooted_io.safe_descendant(
+            Path(scratchpad),
+            relative,
+            allow_missing=True,
+            label="inventory retry receipt",
+        )
+        if inventory_receipt
+        else Path(scratchpad) / relative
+    )
+    directory = path.parent
+    if inventory_receipt:
+        rooted_io.ensure_directory(
+            directory, parents=True, label="inventory retry receipt parent"
+        )
+    else:
+        directory.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(receipt.to_dict(), indent=2, sort_keys=True) + "\n"
+    if inventory_receipt:
+        raw = payload.encode("utf-8")
+        rooted_io.durable_write_once_bytes(path, raw)
+        if rooted_io.read_bytes(
+            path,
+            label="inventory retry receipt",
+            require_single_link=True,
+            max_bytes=len(raw),
+        ) != raw:
+            raise ArtifactLedgerError("inventory retry receipt replay drifted")
+        return path
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
     os.replace(tmp, path)
@@ -34191,19 +35565,52 @@ def _write_retry_plan(
     """Persist the semantic contract the retry prompt must carry in-band."""
     if not checkpoint.run_id:
         raise RuntimeError("retry plan requires checkpoint run_id")
-    path = Path(scratchpad) / f"{phase.name}_retry_plan.json"
+    inventory_plan = phase.name in _INVENTORY_RETRY_MODEL_PHASES
+    if inventory_plan:
+        failures = _canonical_gate_failure_sequence(
+            failures, label="inventory retry plan failures"
+        )
+    path = (
+        rooted_io.safe_descendant(
+            Path(scratchpad),
+            _inventory_retry_plan_relative(phase.name, attempt),
+            allow_missing=True,
+            label="inventory retry plan",
+        )
+        if inventory_plan
+        else Path(scratchpad) / f"{phase.name}_retry_plan.json"
+    )
+    output_digest_before = (
+        _inventory_retry_artifact_digest(
+            phase, Path(scratchpad), str(config["project_root"])
+        )
+        if inventory_plan
+        else _resolved_phase_artifact_digest(
+            phase, scratchpad, config["project_root"]
+        )
+    )
+    if inventory_plan:
+        model_contract, model_launch = _inventory_attempt_model_authority(
+            phase, Path(scratchpad), config, attempt
+        )
+        contract_digest = model_contract.digest
+        launch_digest = model_launch.digest
+    else:
+        contract_digest = _resolved_phase_contract_digest(phase, config)
+        launch_digest = _resolved_phase_launch_digest(phase, config)
     payload = {
-        "schema": "plamen.retry-plan/v1",
+        "schema": (
+            _INVENTORY_RETRY_PLAN_SCHEMA
+            if inventory_plan else "plamen.retry-plan/v1"
+        ),
         "run_id": checkpoint.run_id,
         "phase_name": phase.name,
         "work_unit_id": "phase",
         "attempt": attempt,
         "input_digest": _resolved_phase_input_digest(phase, config),
-        "output_digest_before": _resolved_phase_artifact_digest(
-            phase, scratchpad, config["project_root"]
-        ),
-        "contract_digest": _resolved_phase_contract_digest(phase, config),
-        "launch_digest": _resolved_phase_launch_digest(phase, config),
+        "output_digest_before": output_digest_before,
+        "contract_digest": contract_digest,
+        "launch_digest": launch_digest,
         "required_output_schema": [
             {
                 "pattern": pattern,
@@ -34220,6 +35627,26 @@ def _write_retry_plan(
             for failure in failures
         ),
     }
+    if inventory_plan:
+        payload["plan_digest"] = _stable_payload_digest(payload)
+        rooted_io.ensure_directory(
+            path.parent, parents=True, label="inventory retry plan parent"
+        )
+        raw = (
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        rooted_io.durable_write_once_bytes(path, raw)
+        _validated_inventory_retry_plan(
+            Path(scratchpad),
+            phase,
+            config,
+            attempt=attempt,
+            expected_failures=failures,
+            expected_output_digest_before=str(
+                payload["output_digest_before"]
+            ),
+        )
+        return path
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -34227,6 +35654,751 @@ def _write_retry_plan(
     )
     os.replace(tmp, path)
     return path
+
+
+_INVENTORY_TERMINAL_AUTHORITY_SCHEMA = (
+    "plamen.inventory-retry-terminal-authority/v1"
+)
+_INVENTORY_INTERRUPT_TRANSPORT_MAX = 3
+
+
+def _inventory_interruption_work_unit(generation: int) -> str:
+    if type(generation) is not int or not (
+        1 <= generation <= _INVENTORY_INTERRUPT_TRANSPORT_MAX
+    ):
+        raise ArtifactLedgerError("inventory interruption generation is invalid")
+    return f"transport.interruption-{generation:04d}"
+
+
+def _inventory_interruption_generations(
+    scratchpad: Path, phase_name: str, attempt: int,
+) -> tuple[int, ...]:
+    generations: set[int] = set()
+    for generation in range(1, _INVENTORY_INTERRUPT_TRANSPORT_MAX + 1):
+        work_unit = _inventory_interruption_work_unit(generation)
+        authority = rooted_io.safe_descendant(
+            Path(scratchpad),
+            _inventory_terminal_authority_relative(
+                phase_name, attempt, work_unit
+            ),
+            allow_missing=True,
+            label="inventory interruption authority census",
+        )
+        receipt = rooted_io.safe_descendant(
+            Path(scratchpad),
+            f"_retry_receipts/{phase_name}/{work_unit}.attempt{attempt}.json",
+            allow_missing=True,
+            label="inventory interruption receipt census",
+        )
+        if rooted_io.lexists(authority) or rooted_io.lexists(receipt):
+            generations.add(generation)
+    namespaces = (
+        (
+            f"_retry_terminal/{phase_name}",
+            re.compile(
+                r"transport\.interruption-(\d{4})\.attempt-"
+                + f"{attempt:04d}"
+                + r"\.json"
+            ),
+        ),
+        (
+            f"_retry_receipts/{phase_name}",
+            re.compile(
+                r"transport\.interruption-(\d{4})\.attempt"
+                + str(attempt)
+                + r"\.json"
+            ),
+        ),
+    )
+    for relative, pattern in namespaces:
+        directory = rooted_io.safe_descendant(
+            Path(scratchpad),
+            relative,
+            allow_missing=True,
+            label="inventory interruption generation namespace",
+        )
+        if not rooted_io.lexists(directory):
+            continue
+        directory = rooted_io.checked_directory(
+            directory, label="inventory interruption generation namespace"
+        )
+        count = 0
+        with rooted_io.scandir(directory) as entries:
+            for entry in entries:
+                count += 1
+                if count > 4096:
+                    raise ArtifactLedgerError(
+                        "inventory interruption generation namespace is oversized"
+                    )
+                match = pattern.fullmatch(entry.name)
+                if match is not None:
+                    generations.add(int(match.group(1)))
+    return tuple(sorted(generations))
+
+
+def _inventory_interruption_receipt(
+    scratchpad: Path,
+    phase_name: str,
+    attempt: int,
+    generation: int,
+) -> RetryReceipt:
+    work_unit = _inventory_interruption_work_unit(generation)
+    path = rooted_io.safe_descendant(
+        Path(scratchpad),
+        f"_retry_receipts/{phase_name}/{work_unit}.attempt{attempt}.json",
+        allow_missing=False,
+        label="inventory interruption receipt",
+    )
+    raw = rooted_io.read_bytes(
+        path,
+        label="inventory interruption receipt",
+        require_single_link=True,
+        max_bytes=8 * 1024 * 1024,
+    )
+    payload = json.loads(
+        raw.decode("utf-8", errors="strict"),
+        object_pairs_hook=_reject_duplicate_json_pairs,
+    )
+    if not isinstance(payload, dict):
+        raise ArtifactLedgerError("inventory interruption receipt is malformed")
+    canonical = (
+        json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    receipt = RetryReceipt.from_dict(payload)
+    if (
+        raw != canonical
+        or receipt.to_dict() != payload
+        or receipt.phase_name != phase_name
+        or receipt.attempt != attempt
+        or receipt.work_unit_id != work_unit
+        or receipt.terminal_rc != -3
+        or receipt.status != "INTERRUPTED"
+    ):
+        raise ArtifactLedgerError(
+            "inventory interruption receipt identity is invalid"
+        )
+    return receipt
+
+
+def _inventory_interruption_output_digest(
+    phase: Phase,
+    scratchpad: Path,
+    project_root: str,
+    *,
+    attempt: int,
+    generation: int,
+) -> str:
+    """Hash one interruption postimage from its live/archive union."""
+
+    root = rooted_io.checked_directory(
+        Path(scratchpad), label="inventory interruption scratchpad"
+    )
+    project = rooted_io.checked_directory(
+        Path(project_root), label="inventory interruption project root"
+    )
+    patterns = tuple(phase.expected_artifacts or ())
+    if (
+        not patterns
+        or any(
+            not isinstance(relative, str)
+            or not relative
+            or any(marker in relative for marker in "*?[")
+            or PurePosixPath(relative).is_absolute()
+            or ".." in PurePosixPath(relative).parts
+            for relative in patterns
+        )
+    ):
+        raise ArtifactLedgerError(
+            "inventory interruption contract requires exact rooted paths"
+        )
+    rows: list[dict[str, object]] = []
+    for relative in patterns:
+        live = rooted_io.safe_descendant(
+            root,
+            relative,
+            allow_missing=True,
+            label="inventory interrupted live output",
+        )
+        archive = rooted_io.safe_descendant(
+            root,
+            (
+                f"_retry_quarantine/{phase.name}/attempt-{attempt:04d}/"
+                f"interruption-{generation:04d}/{relative}"
+            ),
+            allow_missing=True,
+            label="inventory interrupted output archive",
+        )
+        live_raw = (
+            rooted_io.read_bytes(
+                live,
+                label="inventory interrupted live output",
+                require_single_link=True,
+                max_bytes=_INVENTORY_RETRY_ARTIFACT_MAX_BYTES,
+            )
+            if rooted_io.lexists(live)
+            else None
+        )
+        archive_raw = (
+            rooted_io.read_bytes(
+                archive,
+                label="inventory interrupted output archive",
+                require_single_link=True,
+                max_bytes=_INVENTORY_RETRY_ARTIFACT_MAX_BYTES,
+            )
+            if rooted_io.lexists(archive)
+            else None
+        )
+        if live_raw is not None and archive_raw is not None and live_raw != archive_raw:
+            raise ArtifactLedgerError(
+                f"inventory interruption live/archive collision: {relative}"
+            )
+        raw = archive_raw if archive_raw is not None else live_raw
+        if raw is not None:
+            rows.append({
+                "path": relative,
+                "root": "scratchpad",
+                "size": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            })
+
+    if _rooted_inventory_directory_identity(
+        project, label="inventory interruption project root"
+    ) != _rooted_inventory_directory_identity(
+        root, label="inventory interruption scratchpad"
+    ):
+        for relative in patterns:
+            candidate = rooted_io.safe_descendant(
+                project,
+                relative,
+                allow_missing=True,
+                label="inventory interrupted project output",
+            )
+            if rooted_io.lexists(candidate):
+                raw = rooted_io.read_bytes(
+                    candidate,
+                    label="inventory interrupted project output",
+                    require_single_link=True,
+                    max_bytes=_INVENTORY_RETRY_ARTIFACT_MAX_BYTES,
+                )
+                rows.append({
+                    "path": relative,
+                    "root": "project",
+                    "size": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                })
+    return _stable_payload_digest(rows)
+
+
+def _quarantine_inventory_interruption_outputs(
+    phase: Phase,
+    scratchpad: Path,
+    config: Mapping[str, Any],
+    *,
+    attempt: int,
+    generation: int,
+    receipt: RetryReceipt,
+) -> None:
+    """Durably remove one receipt-bound interrupted partial before replay."""
+
+    root = rooted_io.checked_directory(
+        Path(scratchpad), label="inventory interruption scratchpad"
+    )
+    before = _inventory_interruption_output_digest(
+        phase,
+        root,
+        str(config["project_root"]),
+        attempt=attempt,
+        generation=generation,
+    )
+    if before != receipt.output_digest_after:
+        raise ArtifactLedgerError(
+            "inventory interruption output postimage drifted"
+        )
+    for relative in tuple(phase.expected_artifacts or ()):
+        live = rooted_io.safe_descendant(
+            root,
+            relative,
+            allow_missing=True,
+            label="inventory interrupted live output",
+        )
+        archive = rooted_io.safe_descendant(
+            root,
+            (
+                f"_retry_quarantine/{phase.name}/attempt-{attempt:04d}/"
+                f"interruption-{generation:04d}/{relative}"
+            ),
+            allow_missing=True,
+            label="inventory interrupted output archive",
+        )
+        if not rooted_io.lexists(live):
+            continue
+        raw = rooted_io.read_bytes(
+            live,
+            label="inventory interrupted live output",
+            require_single_link=True,
+            max_bytes=_INVENTORY_RETRY_ARTIFACT_MAX_BYTES,
+        )
+        rooted_io.ensure_directory(
+            archive.parent,
+            parents=True,
+            label="inventory interrupted output archive parent",
+        )
+        rooted_io.durable_write_once_bytes(archive, raw)
+        if rooted_io.read_bytes(
+            archive,
+            label="inventory interrupted output archive",
+            require_single_link=True,
+            max_bytes=len(raw),
+        ) != raw:
+            raise ArtifactLedgerError(
+                f"inventory interruption archive drifted: {relative}"
+            )
+        rooted_io.durable_unlink(live)
+    after = _inventory_interruption_output_digest(
+        phase,
+        root,
+        str(config["project_root"]),
+        attempt=attempt,
+        generation=generation,
+    )
+    if after != receipt.output_digest_after:
+        raise ArtifactLedgerError(
+            "inventory interruption archived postimage drifted"
+        )
+
+
+def _inventory_terminal_authority_relative(
+    phase_name: str, attempt: int, work_unit_id: str = "transport",
+) -> str:
+    ordinal = _exact_attempt_ordinal(
+        attempt, label=f"{phase_name} terminal authority"
+    )
+    safe_work_unit = re.sub(r"[^A-Za-z0-9_.-]+", "_", work_unit_id)
+    return (
+        f"_retry_terminal/{phase_name}/"
+        f"{safe_work_unit}.attempt-{ordinal:04d}.json"
+    )
+
+
+def _write_inventory_terminal_authority(
+    scratchpad: Path,
+    *,
+    receipt: RetryReceipt,
+    failures_after: tuple[GateFailure, ...],
+    full_gate_passed: bool,
+) -> Path:
+    failures_after = _canonical_gate_failure_sequence(
+        failures_after,
+        label="inventory terminal failures_after",
+        require_ordered=True,
+    )
+    payload: dict[str, Any] = {
+        "schema": _INVENTORY_TERMINAL_AUTHORITY_SCHEMA,
+        "run_id": receipt.run_id,
+        "phase_name": receipt.phase_name,
+        "attempt": receipt.attempt,
+        "terminal_rc": receipt.terminal_rc,
+        "full_gate_passed": full_gate_passed,
+        "failures_after": [failure.to_dict() for failure in failures_after],
+        "receipt": receipt.to_dict(),
+    }
+    payload["authority_digest"] = _stable_payload_digest(payload)
+    path = rooted_io.safe_descendant(
+        Path(scratchpad),
+        _inventory_terminal_authority_relative(
+            receipt.phase_name, receipt.attempt, receipt.work_unit_id
+        ),
+        allow_missing=True,
+        label="inventory retry terminal authority",
+    )
+    rooted_io.ensure_directory(
+        path.parent,
+        parents=True,
+        label="inventory retry terminal authority parent",
+    )
+    rooted_io.durable_write_once_bytes(
+        path,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        ),
+    )
+    return path
+
+
+def _recover_inventory_terminal_receipt(
+    phase: Phase,
+    scratchpad: Path,
+    config: Mapping[str, Any],
+    attempt: int,
+    *,
+    work_unit_id: str = "transport",
+) -> list[str]:
+    """Replay a receipt only from its immutable full-validator authority."""
+
+    try:
+        ordinal = _exact_attempt_ordinal(
+            attempt, label=f"{phase.name} terminal receipt recovery"
+        )
+        path = rooted_io.safe_descendant(
+            Path(scratchpad),
+            _inventory_terminal_authority_relative(
+                phase.name, ordinal, work_unit_id
+            ),
+            allow_missing=False,
+            label="inventory retry terminal authority",
+        )
+        raw = rooted_io.read_bytes(
+            path,
+            label="inventory retry terminal authority",
+            require_single_link=True,
+            max_bytes=8 * 1024 * 1024,
+        )
+        payload = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_reject_duplicate_json_pairs,
+        )
+        canonical_raw = (
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        if raw != canonical_raw:
+            raise ArtifactLedgerError(
+                "inventory terminal authority bytes are noncanonical"
+            )
+        required = {
+            "schema", "run_id", "phase_name", "attempt", "terminal_rc",
+            "full_gate_passed", "failures_after", "receipt",
+            "authority_digest",
+        }
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise ArtifactLedgerError(
+                "inventory terminal authority field set is malformed"
+            )
+        unsigned = dict(payload)
+        authority_digest = unsigned.pop("authority_digest", None)
+        if (
+            authority_digest != _stable_payload_digest(unsigned)
+            or payload["schema"] != _INVENTORY_TERMINAL_AUTHORITY_SCHEMA
+            or payload["run_id"] != str(config.get("_run_id") or "")
+            or payload["phase_name"] != phase.name
+            or payload["attempt"] != ordinal
+            or type(payload["terminal_rc"]) is not int
+            or type(payload["full_gate_passed"]) is not bool
+            or not isinstance(payload["failures_after"], list)
+        ):
+            raise ArtifactLedgerError(
+                "inventory terminal authority identity/digest is invalid"
+            )
+        receipt_raw = payload["receipt"]
+        if not isinstance(receipt_raw, dict):
+            raise ArtifactLedgerError(
+                "inventory terminal authority receipt is not an object"
+            )
+        receipt = RetryReceipt.from_dict(receipt_raw)
+        if receipt.to_dict() != receipt_raw:
+            raise ArtifactLedgerError(
+                "inventory terminal authority receipt is noncanonical"
+            )
+        recovered_failures: list[GateFailure] = []
+        for row in payload["failures_after"]:
+            if not isinstance(row, dict):
+                raise ArtifactLedgerError(
+                    "inventory terminal authority failure is not an object"
+                )
+            failure = GateFailure.from_dict(row)
+            recompute_row = dict(row)
+            recompute_row["predicate_digest"] = ""
+            recompute_row["failure_instance_id"] = ""
+            recomputed = GateFailure.from_dict(recompute_row)
+            if (
+                failure.to_dict() != row
+                or failure.predicate_digest != recomputed.predicate_digest
+                or failure.failure_instance_id != recomputed.failure_instance_id
+                or not failure.gate_id.startswith(f"{phase.name}.")
+            ):
+                raise ArtifactLedgerError(
+                    "inventory terminal authority failure is noncanonical"
+                )
+            recovered_failures.append(failure)
+        failures_after = _canonical_gate_failure_sequence(
+            recovered_failures,
+            label="inventory recovered terminal failures_after",
+            require_ordered=True,
+        )
+        if (
+            receipt.run_id != payload["run_id"]
+            or receipt.phase_name != phase.name
+            or receipt.work_unit_id != work_unit_id
+            or receipt.attempt != ordinal
+            or receipt.terminal_rc != payload["terminal_rc"]
+        ):
+            raise ArtifactLedgerError(
+                "inventory terminal authority receipt identity is invalid"
+            )
+        historical_postimage: str | None = None
+        _attempt_key, attempt_unit = _inventory_attempt_unit(
+            phase, Path(scratchpad), config, ordinal
+        )
+        if not isinstance(attempt_unit, Mapping):
+            raise ArtifactLedgerError(
+                "inventory terminal authority has no exact MODEL ledger row"
+            )
+        model_config = dict(config)
+        model_config["_active_model_attempts"] = {
+            **dict(config.get("_active_model_attempts") or {}),
+            phase.name: ordinal,
+        }
+        model_config["_phase_io_model_attempts"] = {
+            **dict(config.get("_phase_io_model_attempts") or {}),
+            phase.name: ordinal,
+        }
+        model_contract, model_launch = _typed_model_phase_contract_and_launch(
+            phase, Path(scratchpad), model_config
+        )
+        if model_contract is None or model_launch is None:
+            raise ArtifactLedgerError(
+                "inventory terminal MODEL contract is unavailable"
+            )
+        if (
+            attempt_unit.get("run_id") != receipt.run_id
+            or attempt_unit.get("model_invoked") is not True
+            or attempt_unit.get("contract_digest") != model_contract.digest
+            or attempt_unit.get("launch_digest") != model_launch.digest
+            or receipt.contract_digest != model_contract.digest
+            or receipt.launch_digest != model_launch.digest
+        ):
+            raise ArtifactLedgerError(
+                "inventory terminal authority disagrees with MODEL ledger identity"
+            )
+        semantic_status = str(attempt_unit.get("semantic_status") or "")
+        execution_state = str(attempt_unit.get("execution_state") or "")
+        if receipt.terminal_rc == 0 and (
+            semantic_status != "ACTIVE"
+            or execution_state != "OUTPUT_COMMITTED"
+        ):
+            raise ArtifactLedgerError(
+                "successful inventory terminal authority lacks committed MODEL output"
+            )
+        if receipt.terminal_rc != 0 and (
+            (semantic_status, execution_state)
+            not in {
+                ("INPUTS_BOUND", "INPUTS_BOUND_PREEXECUTION"),
+                ("ACTIVE", "OUTPUT_COMMITTED"),
+                ("QUARANTINED", "OUTPUT_QUARANTINED"),
+            }
+        ):
+            raise ArtifactLedgerError(
+                "failed inventory terminal authority has invalid MODEL ledger state"
+            )
+        if (
+            semantic_status == "QUARANTINED"
+            and execution_state == "OUTPUT_QUARANTINED"
+        ):
+            historical_postimage = _inventory_retry_artifact_digest(
+                phase,
+                Path(scratchpad),
+                str(config["project_root"]),
+                quarantined_attempt=ordinal,
+                config=config,
+            )
+        interruption_match = re.fullmatch(
+            r"transport\.interruption-(\d{4})", work_unit_id
+        )
+        if interruption_match is not None:
+            generation = int(interruption_match.group(1))
+            if not (1 <= generation <= _INVENTORY_INTERRUPT_TRANSPORT_MAX):
+                raise ArtifactLedgerError(
+                    "inventory interruption generation is invalid"
+                )
+            historical_postimage = _inventory_interruption_output_digest(
+                phase,
+                Path(scratchpad),
+                str(config["project_root"]),
+                attempt=ordinal,
+                generation=generation,
+            )
+        _write_retry_receipt(
+            Path(scratchpad),
+            receipt,
+            phase=phase,
+            config=config,
+            failures_after=failures_after,
+            full_gate_passed=payload["full_gate_passed"],
+            terminal_rc=payload["terminal_rc"],
+            authoritative_output_digest_after=historical_postimage,
+        )
+        return []
+    except (
+        ArtifactLedgerError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        rooted_io.RootedPathIOError,
+    ) as exc:
+        return [
+            f"{phase.name}: attempt {attempt} terminal receipt recovery "
+            f"failed: {type(exc).__name__}: {exc}"
+        ]
+
+
+def _validated_inventory_retry_plan(
+    scratchpad: Path,
+    phase: Phase,
+    config: Mapping[str, Any],
+    *,
+    attempt: int,
+    expected_failures: tuple[GateFailure, ...] | None = None,
+    expected_output_digest_before: str | None = None,
+) -> tuple[dict[str, Any], Path]:
+    """Replay one immutable attempt-scoped inventory launch authority."""
+
+    if phase.name not in _INVENTORY_RETRY_MODEL_PHASES:
+        raise ArtifactLedgerError("inventory retry plan phase is unsupported")
+    ordinal = _exact_attempt_ordinal(
+        attempt, label=f"{phase.name} retry plan replay"
+    )
+    if ordinal <= 1:
+        raise ArtifactLedgerError("inventory retry plan requires attempt >= 2")
+    maximum = _codex_max_attempts_for_phase(
+        str(config.get("cli_backend") or "claude"), phase.name
+    )
+    if ordinal > maximum:
+        raise ArtifactLedgerError(
+            f"inventory retry plan attempt {ordinal} exceeds budget {maximum}"
+        )
+    path = rooted_io.safe_descendant(
+        Path(scratchpad),
+        _inventory_retry_plan_relative(phase.name, ordinal),
+        allow_missing=False,
+        label="inventory retry plan",
+    )
+    raw = rooted_io.read_bytes(
+        path,
+        label="inventory retry plan",
+        require_single_link=True,
+        max_bytes=4 * 1024 * 1024,
+    )
+    try:
+        payload = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_reject_duplicate_json_pairs,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ArtifactLedgerError(
+            f"inventory retry plan is malformed: {exc}"
+        ) from exc
+    canonical_raw = (
+        json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if raw != canonical_raw:
+        raise ArtifactLedgerError("inventory retry plan bytes are noncanonical")
+    required = {
+        "schema", "run_id", "phase_name", "work_unit_id", "attempt",
+        "input_digest", "output_digest_before", "contract_digest",
+        "launch_digest", "required_output_schema", "failed_predicates",
+        "semantic_retry", "plan_digest",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ArtifactLedgerError("inventory retry plan field set is malformed")
+    run_id = str(config.get("_run_id") or "").strip()
+    if (
+        not run_id
+        or payload["schema"] != _INVENTORY_RETRY_PLAN_SCHEMA
+        or payload["run_id"] != run_id
+        or payload["phase_name"] != phase.name
+        or payload["work_unit_id"] != "phase"
+        or type(payload["attempt"]) is not int
+        or payload["attempt"] != ordinal
+    ):
+        raise ArtifactLedgerError("inventory retry plan identity is stale")
+    unsigned = dict(payload)
+    plan_digest = unsigned.pop("plan_digest", None)
+    if (
+        not isinstance(plan_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", plan_digest) is None
+        or plan_digest != _stable_payload_digest(unsigned)
+    ):
+        raise ArtifactLedgerError("inventory retry plan self-digest is invalid")
+    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+        model_contract, model_launch = _inventory_attempt_model_authority(
+            phase, Path(scratchpad), config, ordinal
+        )
+        current_contract_digest = model_contract.digest
+        current_launch_digest = model_launch.digest
+    else:
+        current_contract_digest = _resolved_phase_contract_digest(
+            phase, dict(config)
+        )
+        current_launch_digest = _resolved_phase_launch_digest(
+            phase, dict(config)
+        )
+    current = {
+        "input_digest": _resolved_phase_input_digest(phase, dict(config)),
+        "contract_digest": current_contract_digest,
+        "launch_digest": current_launch_digest,
+    }
+    if any(payload[name] != digest for name, digest in current.items()):
+        raise ArtifactLedgerError("inventory retry plan phase authority drifted")
+    expected_schema = [
+        {
+            "pattern": pattern,
+            "minimum_bytes": phase.min_artifact_bytes,
+            "minimum_count": phase.min_artifacts_count,
+        }
+        for pattern in phase.expected_artifacts
+    ]
+    if payload["required_output_schema"] != expected_schema:
+        raise ArtifactLedgerError("inventory retry output schema drifted")
+    rows = payload.get("failed_predicates")
+    if not isinstance(rows, list) or not rows or len(rows) > 4096:
+        raise ArtifactLedgerError("inventory retry predicate set is malformed")
+    replayed: list[GateFailure] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ArtifactLedgerError(
+                "inventory retry predicate is not an object"
+            )
+        try:
+            failure = GateFailure.from_dict(row)
+            recompute_row = dict(row)
+            recompute_row["predicate_digest"] = ""
+            recompute_row["failure_instance_id"] = ""
+            recomputed = GateFailure.from_dict(recompute_row)
+        except RuntimeError as exc:
+            raise ArtifactLedgerError(
+                f"inventory retry predicate is malformed: {exc}"
+            ) from exc
+        if (
+            failure.to_dict() != row
+            or failure.predicate_digest != recomputed.predicate_digest
+            or failure.failure_instance_id != recomputed.failure_instance_id
+            or not failure.gate_id.startswith(f"{phase.name}.")
+        ):
+            raise ArtifactLedgerError(
+                "inventory retry predicate is noncanonical or foreign"
+            )
+        replayed.append(failure)
+    replayed = list(_canonical_gate_failure_sequence(
+        replayed,
+        label="inventory retry plan predicates",
+        require_ordered=True,
+    ))
+    if expected_failures is not None and tuple(
+        failure.to_dict() for failure in replayed
+    ) != tuple(failure.to_dict() for failure in expected_failures):
+        raise ArtifactLedgerError("inventory retry predicate authority drifted")
+    if (
+        expected_output_digest_before is not None
+        and payload["output_digest_before"]
+        != expected_output_digest_before
+    ):
+        raise ArtifactLedgerError("inventory retry preimage digest drifted")
+    if payload["semantic_retry"] is not any(
+        failure.gate_class not in {"ARTIFACT_PRESENCE", "ADVISORY_QUALITY"}
+        for failure in replayed
+    ):
+        raise ArtifactLedgerError("inventory retry semantic classification drifted")
+    return payload, path
 
 
 def _build_retry_receipt(
@@ -34241,16 +36413,73 @@ def _build_retry_receipt(
     output_digest_before: str,
     output_digest_after: str,
     work_unit_id: str = "phase",
+    terminal_rc: int = 0,
 ) -> RetryReceipt:
     if not checkpoint.run_id:
         raise RuntimeError("retry receipt requires checkpoint run_id")
-    hint = _read_retry_hint(scratchpad, phase.name)
-    prompt_digest = _stable_payload_digest({
-        "phase": phase.name,
-        "work_unit_id": work_unit_id,
-        "retry_hint": hint,
-        "failed_gate_ids": [failure.gate_id for failure in failures_before],
-    })
+    retry_plan_digest = ""
+    receipt_contract_digest = _resolved_phase_contract_digest(phase, config)
+    receipt_launch_digest = _resolved_phase_launch_digest(phase, config)
+    receipt_created_at = datetime.now(timezone.utc).isoformat()
+    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+        retry_plan, _retry_plan_path = _validated_inventory_retry_plan(
+            Path(scratchpad),
+            phase,
+            config,
+            attempt=attempt,
+        )
+        retry_plan_digest = str(retry_plan["plan_digest"])
+        receipt_contract_digest = str(retry_plan["contract_digest"])
+        receipt_launch_digest = str(retry_plan["launch_digest"])
+        _attempt_key, attempt_unit = _inventory_attempt_unit(
+            phase, Path(scratchpad), config, attempt
+        )
+        if not isinstance(attempt_unit, Mapping):
+            raise ArtifactLedgerError(
+                "inventory retry receipt has no exact MODEL ledger row"
+            )
+        receipt_created_at = str(attempt_unit.get("recorded_at") or "")
+        if not receipt_created_at:
+            raise ArtifactLedgerError(
+                "inventory retry MODEL ledger timestamp is absent"
+            )
+        failures_before = tuple(
+            GateFailure.from_dict(row)
+            for row in retry_plan["failed_predicates"]
+        )
+        output_digest_before = str(retry_plan["output_digest_before"])
+        prompt_raw = _inventory_retry_prompt_bytes(
+            Path(scratchpad), phase.name, attempt
+        )
+        canonical_plan = json.dumps(
+            retry_plan, indent=2, sort_keys=True
+        ).encode("utf-8")
+        if (
+            canonical_plan not in prompt_raw
+            or retry_plan_digest.encode("ascii") not in prompt_raw
+        ):
+            raise ArtifactLedgerError(
+                "inventory retry prompt omits its exact attempt-scoped plan"
+            )
+        prompt_digest = hashlib.sha256(prompt_raw).hexdigest()
+    else:
+        hint = _read_retry_hint(scratchpad, phase.name)
+        prompt_digest = _stable_payload_digest({
+            "phase": phase.name,
+            "work_unit_id": work_unit_id,
+            "retry_hint": hint,
+            "failed_gate_ids": [failure.gate_id for failure in failures_before],
+        })
+    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+        failures_before = _canonical_gate_failure_sequence(
+            failures_before,
+            label="inventory receipt failures_before",
+            require_ordered=True,
+        )
+        failures_after = _canonical_gate_failure_sequence(
+            failures_after,
+            label="inventory receipt failures_after",
+        )
     before_predicate = _stable_payload_digest([
         {
             "gate_id": failure.gate_id,
@@ -34279,29 +36508,94 @@ def _build_retry_receipt(
         failure.denominator_digest for failure in failures_before
         if failure.denominator_digest
     })
-    quarantine = Path(scratchpad) / "_retry_quarantine" / phase.name
-    lineage_paths = [
-        str(path.relative_to(scratchpad)).replace("\\", "/")
-        for path in sorted(quarantine.rglob("*"))
-        if path.is_file()
-    ] if quarantine.exists() else []
+    lineage_rows: list[object] = []
+    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+        for prior_attempt in range(1, attempt):
+            rows, row_issues = _inventory_quarantined_artifact_rows(
+                phase, Path(scratchpad), config, prior_attempt
+            )
+            if row_issues:
+                raise ArtifactLedgerError("; ".join(row_issues))
+            for relative, record in rows:
+                if record.get("status") != "QUARANTINED":
+                    continue
+                archive_relative = (
+                    f"_retry_quarantine/{phase.name}/"
+                    f"attempt-{prior_attempt:04d}/{relative}"
+                )
+                archive = rooted_io.safe_descendant(
+                    Path(scratchpad),
+                    archive_relative,
+                    allow_missing=False,
+                    label="inventory retry receipt lineage",
+                )
+                expected_size = int(record["size"])
+                raw = rooted_io.read_bytes(
+                    archive,
+                    label="inventory retry receipt lineage",
+                    require_single_link=True,
+                    max_bytes=expected_size,
+                )
+                if (
+                    len(raw) != expected_size
+                    or hashlib.sha256(raw).hexdigest() != record["sha256"]
+                ):
+                    raise ArtifactLedgerError(
+                        "inventory retry receipt lineage drifted: "
+                        f"{archive_relative}"
+                    )
+                lineage_rows.append({
+                    "path": archive_relative,
+                    "size": expected_size,
+                    "sha256": str(record["sha256"]),
+                })
+    else:
+        quarantine = Path(scratchpad) / "_retry_quarantine" / phase.name
+        lineage_rows = [
+            str(path.relative_to(scratchpad)).replace("\\", "/")
+            for path in sorted(quarantine.rglob("*"))
+            if path.is_file()
+        ] if quarantine.exists() else []
     if phase.name == "instantiate":
         history_root = Path(scratchpad) / "_attempt_history" / "instantiate"
         if history_root.exists():
-            lineage_paths.extend(
+            lineage_rows.extend(
                 str(path.relative_to(scratchpad)).replace("\\", "/")
                 for path in sorted(history_root.rglob("*"))
                 if path.is_file()
             )
-    lineage = tuple(dict.fromkeys(lineage_paths))
+    lineage: tuple[object, ...]
+    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+        by_path: dict[str, object] = {}
+        for item in lineage_rows:
+            assert isinstance(item, dict)
+            path_key = str(item["path"])
+            if path_key in by_path and by_path[path_key] != item:
+                raise ArtifactLedgerError(
+                    "inventory retry quarantine lineage path collision"
+                )
+            by_path[path_key] = item
+        lineage = tuple(by_path[key] for key in sorted(by_path))
+    else:
+        lineage = tuple(dict.fromkeys(lineage_rows))
     schema_ids = sorted({failure.schema_id for failure in failures_before})
     schema_versions = [failure.schema_version for failure in failures_before]
+    if type(terminal_rc) is not int:
+        raise ArtifactLedgerError("retry receipt terminal_rc is not an integer")
+    status = (
+        "INTERRUPTED"
+        if terminal_rc == -3
+        else "FAILED"
+        if terminal_rc != 0
+        else _retry_receipt_status(failures_before, failures_after)
+    )
     return RetryReceipt(
         run_id=str(checkpoint.run_id),
         phase_name=phase.name,
         work_unit_id=work_unit_id,
         attempt=attempt,
-        status=_retry_receipt_status(failures_before, failures_after),
+        terminal_rc=terminal_rc,
+        status=status,
         failure_instance_ids_before=tuple(
             failure.failure_instance_id for failure in failures_before
         ),
@@ -34321,10 +36615,11 @@ def _build_retry_receipt(
         predicate_digest_after=after_predicate,
         repair_owner=phase.name,
         prompt_digest=prompt_digest,
-        launch_digest=_resolved_phase_launch_digest(phase, config),
-        contract_digest=_resolved_phase_contract_digest(phase, config),
+        launch_digest=receipt_launch_digest,
+        contract_digest=receipt_contract_digest,
+        retry_plan_digest=retry_plan_digest,
         quarantine_lineage=lineage,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=receipt_created_at,
     )
 
 
@@ -47295,9 +49590,8 @@ def _build_recon_direct_retry_prompt(
             raise ValueError("direct recon retry prompt predicate is malformed")
         gate_id = str(row.get("gate_id") or "UNKNOWN").replace("|", "\\|")
         message = " ".join(str(row.get("message") or "").split())
-        failure_lines.append(
-            f"| `{gate_id}` | {message[:600].replace('|', '\\|')} |"
-        )
+        escaped_message = message[:600].replace("|", "\\|")
+        failure_lines.append(f"| `{gate_id}` | {escaped_message} |")
 
     skill_block = ""
     if pipeline == "sc":
@@ -51589,7 +53883,13 @@ def _dependency_research_base_shard_issues(
                 # current owners after their registered successor commits.
                 require_live_input_authority=False,
             )
-        except (ArtifactLedgerError, OSError, TypeError, ValueError) as exc:
+        except (
+            ArtifactLedgerError,
+            OSError,
+            TypeError,
+            ValueError,
+            rooted_io.RootedPathIOError,
+        ) as exc:
             authority_issues = [str(exc)]
         if authority_issues:
             issues.append(
@@ -75067,6 +77367,104 @@ def _run_phase_once(phase: Phase, config: dict, attempt: int) -> int:
             str(exc),
         )
         return EXIT_ERROR
+    if (
+        phase.name in _INVENTORY_RETRY_MODEL_PHASES
+        and current_attempt > 1
+    ):
+        durable_prior, durable_successor, durable_issues = (
+            _inventory_resume_attempt_transition(phase, scratchpad, config)
+        )
+        if (
+            durable_issues
+            or durable_prior != current_attempt - 1
+            or durable_successor != current_attempt
+        ):
+            detail = list(durable_issues) or [
+                f"{phase.name}: requested retry {current_attempt} is not "
+                f"the exact durable successor {durable_successor} of "
+                f"attempt {durable_prior}"
+            ]
+            for issue in detail:
+                _append_phase_io_debt(
+                    scratchpad,
+                    phase.name,
+                    "INVENTORY_RETRY_ATTEMPT_DEBT",
+                    issue,
+                )
+            return EXIT_ERROR
+        prior_active_attempt = durable_prior
+        active_attempts[phase.name] = durable_prior
+        if phase.name.startswith("inventory_chunk_"):
+            _mutable_attempt_map(
+                config, "_phase_io_model_attempts"
+            )[phase.name] = durable_prior
+    if (
+        phase.name in _INVENTORY_RETRY_MODEL_PHASES
+        and current_attempt > 1
+    ):
+        try:
+            retry_preimage_digest = _inventory_retry_preimage_digest(
+                phase,
+                scratchpad,
+                config,
+                prior_attempt=prior_active_attempt,
+            )
+            retry_prompt_plan, _retry_prompt_plan_path = (
+                _validated_inventory_retry_plan(
+                    scratchpad,
+                    phase,
+                    config,
+                    attempt=current_attempt,
+                    expected_output_digest_before=retry_preimage_digest,
+                )
+            )
+            config.setdefault("_inventory_retry_prompt_plans", {})[
+                phase.name
+            ] = retry_prompt_plan
+        except (
+            ArtifactLedgerError,
+            OSError,
+            TypeError,
+            ValueError,
+            rooted_io.RootedPathIOError,
+        ) as exc:
+            _append_phase_io_debt(
+                scratchpad,
+                phase.name,
+                "INVENTORY_RETRY_PLAN_DEBT",
+                f"attempt {current_attempt} launch vetoed: {exc}",
+            )
+            return EXIT_ERROR
+    if (
+        phase.name in _INVENTORY_RETRY_MODEL_PHASES
+        and prior_active_attempt
+        and current_attempt != prior_active_attempt
+    ):
+        archived, retry_prestate_issues = _prepare_inventory_retry_prestate(
+            phase,
+            scratchpad,
+            config,
+            prior_attempt=prior_active_attempt,
+            next_attempt=current_attempt,
+        )
+        if archived:
+            log.info(
+                "[%s] quarantined rejected attempt %s output(s) before "
+                "attempt %s: %s",
+                phase.name,
+                prior_active_attempt,
+                current_attempt,
+                archived,
+            )
+        if retry_prestate_issues:
+            for issue in retry_prestate_issues:
+                _append_phase_io_debt(
+                    scratchpad,
+                    phase.name,
+                    "INVENTORY_RETRY_PRESTATE_DEBT",
+                    issue,
+                )
+            return EXIT_ERROR
     if phase.name == "instantiate":
         run_id = str(config.get("_run_id") or "")
         durable_receipt, receipt_issues = _load_instantiate_attempt_receipt(
@@ -75398,19 +77796,6 @@ def _run_phase_once(phase: Phase, config: dict, attempt: int) -> int:
             default=0,
         )
         if prior_attempt != current_attempt:
-            if prior_attempt:
-                prior_issues = _quarantine_inventory_chunk_model_attempt(
-                    phase, scratchpad, config, prior_attempt
-                )
-                if prior_issues:
-                    for issue in prior_issues:
-                        _append_phase_io_debt(
-                            scratchpad,
-                            phase.name,
-                            "INVENTORY_CHUNK_RETRY_QUARANTINE_DEBT",
-                            issue,
-                        )
-                    return EXIT_ERROR
             attempts[phase.name] = current_attempt
             input_issues = _bind_typed_model_phase_inputs(
                 phase, scratchpad, config
@@ -76075,14 +78460,58 @@ def _run_phase_once(phase: Phase, config: dict, attempt: int) -> int:
     # was diagnostic-only and a write-failure was a warning). This removes
     # the divergence risk between "what the child got" and "what the
     # post-mortem reads".
-    snap = scratchpad / f"_prompt_{phase.name}.attempt{attempt}.md"
+    inventory_retry_prompt = bool(
+        phase.name in _INVENTORY_RETRY_MODEL_PHASES and attempt > 1
+    )
+    snap = (
+        rooted_io.safe_descendant(
+            scratchpad,
+            f"_prompt_{phase.name}.attempt{attempt}.md",
+            allow_missing=True,
+            label="inventory retry prompt snapshot",
+        )
+        if inventory_retry_prompt
+        else scratchpad / f"_prompt_{phase.name}.attempt{attempt}.md"
+    )
     try:
         # The transactional runtime hashes/compares the exact prompt bytes.
         # Pin LF here on every OS; Path.write_text's platform newline
         # translation otherwise turns the Windows snapshot into CRLF while
         # the in-memory authority remains LF, producing a false collision
         # before an otherwise valid worker can launch.
-        snap.write_text(prompt, encoding="utf-8", newline="\n")
+        if inventory_retry_prompt:
+            prompt_plans = config.get("_inventory_retry_prompt_plans")
+            prompt_plan = (
+                prompt_plans.get(phase.name)
+                if isinstance(prompt_plans, Mapping)
+                else None
+            )
+            if not isinstance(prompt_plan, dict):
+                raise ArtifactLedgerError(
+                    "inventory retry prompt plan disappeared before launch"
+                )
+            canonical_plan = json.dumps(
+                prompt_plan, indent=2, sort_keys=True
+            )
+            plan_digest = str(prompt_plan.get("plan_digest") or "")
+            if canonical_plan not in prompt or plan_digest not in prompt:
+                raise ArtifactLedgerError(
+                    "inventory retry prompt translation drifted from its "
+                    "exact attempt-scoped plan"
+                )
+            prompt_raw = prompt.encode("utf-8")
+            rooted_io.durable_write_once_bytes(snap, prompt_raw)
+            if rooted_io.read_bytes(
+                snap,
+                label="inventory retry prompt snapshot",
+                require_single_link=True,
+                max_bytes=len(prompt_raw),
+            ) != prompt_raw:
+                raise ArtifactLedgerError(
+                    "inventory retry prompt snapshot replay drifted"
+                )
+        else:
+            snap.write_text(prompt, encoding="utf-8", newline="\n")
     except Exception as e:
         log.error(
             f"[{phase.name}] prompt snapshot failed: {e} — "
@@ -78320,6 +80749,436 @@ def _ensure_retry_hint(
             phase, missing, scratchpad, project_root
         ),
     )
+
+
+def _augment_inventory_exact_retry_hint(
+    scratchpad: Path,
+    phase: Phase,
+) -> None:
+    """Add exact candidate/facet repair data using ASCII-safe JSON escapes."""
+
+    if phase.name not in _INVENTORY_RETRY_MODEL_PHASES:
+        return
+    marker = "## Driver-bound exact reconciliation repair set"
+    try:
+        existing = _read_retry_hint(Path(scratchpad), phase.name)
+        if marker in existing:
+            # Attempt 3 must receive attempt 2's smaller unresolved set, not
+            # the attempt-1 denominator snapshot retained in the first hint.
+            existing = existing.split(marker, 1)[0].rstrip()
+        scope = (
+            phase.name if phase.name.startswith("inventory_chunk_") else None
+        )
+        payload = _reconcile_exact_inventory(
+            Path(scratchpad), phase_name=scope, persist=False
+        )
+        rows: list[dict[str, Any]] = []
+        axis_fields = {
+            "ROOT_CAUSE": "source_root_cause",
+            "IMPACT": "source_impact",
+            "PRECONDITIONS": "source_preconditions",
+        }
+        for candidate in payload.get("candidates", ()):
+            if (
+                not isinstance(candidate, Mapping)
+                or candidate.get("disposition") != "HUMAN_REVIEW_DEBT"
+            ):
+                continue
+            axes = [
+                str(axis) for axis in
+                (candidate.get("required_preservation_axes") or ())
+            ]
+            facets: dict[str, str] = {}
+            for axis in axes:
+                normalized_axis = axis.removeprefix("UNPARSEABLE_")
+                field = axis_fields.get(normalized_axis)
+                if field and str(candidate.get(field) or ""):
+                    facets[normalized_axis] = str(candidate[field])
+            rows.append({
+                "candidate_key": str(candidate.get("candidate_key") or ""),
+                "source_artifact": str(
+                    candidate.get("source_artifact") or ""
+                ),
+                "source_finding_id": str(
+                    candidate.get("source_finding_id") or ""
+                ),
+                "required_preservation_axes": axes,
+                "required_source_facets": facets,
+            })
+        lines = [
+            existing.rstrip(),
+            "",
+            marker,
+            "",
+            f"Denominator count: {payload.get('denominator_count', 0)}",
+            f"Denominator digest: {payload.get('denominator_digest', '')}",
+            "Unresolved candidate count: " + str(len(rows)),
+            "",
+            "On Windows PowerShell, read every source with `Get-Content "
+            "-Raw -Encoding UTF8`; the default encoding is forbidden for "
+            "this repair. The JSON rows below use ASCII `\\uXXXX` escapes "
+            "for non-ASCII code points. Decode those escapes to the named "
+            "Unicode code points when writing Markdown; do not preserve "
+            "mojibake and do not paste literal backslash-u text.",
+            "",
+            "Repair exactly these unresolved candidate facets:",
+        ]
+        lines.extend(
+            "- " + json.dumps(
+                row,
+                ensure_ascii=True,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for row in rows
+        )
+        if not rows:
+            lines.append("- (none mechanically enumerable)")
+        _write_retry_hint(
+            Path(scratchpad), phase.name, "\n".join(lines).rstrip() + "\n"
+        )
+    except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+        # The original hard gate and hint remain authoritative.  Failure to
+        # render convenience detail must not fabricate a smaller retry set.
+        return
+
+
+def _authorize_inventory_retry_launch(
+    *,
+    checkpoint: Checkpoint,
+    phase: Phase,
+    config: dict[str, Any],
+    scratchpad: Path,
+    attempt: int,
+    issues: list[Any],
+) -> tuple[GateFailure, ...]:
+    """Create or replay the immutable authority for one inventory retry."""
+
+    if phase.name not in _INVENTORY_RETRY_MODEL_PHASES:
+        return ()
+    ordinal = _exact_attempt_ordinal(
+        attempt, label=f"{phase.name} retry authorization"
+    )
+    if ordinal <= 1:
+        raise ArtifactLedgerError(
+            "inventory retry authorization requires attempt >= 2"
+        )
+    maximum = _codex_max_attempts_for_phase(
+        str(config.get("cli_backend") or "claude"), phase.name
+    )
+    if ordinal > maximum:
+        raise ArtifactLedgerError(
+            f"inventory retry attempt {ordinal} exceeds budget {maximum}"
+        )
+    run_id = str(config.get("_run_id") or "").strip()
+    if not run_id or run_id != str(checkpoint.run_id or "").strip():
+        raise ArtifactLedgerError(
+            "inventory retry authorization run_id disagrees with checkpoint"
+        )
+    prior = _inventory_retry_predecessor(
+        phase, Path(scratchpad), config, ordinal
+    )
+    plan_path = rooted_io.safe_descendant(
+        Path(scratchpad),
+        _inventory_retry_plan_relative(phase.name, ordinal),
+        allow_missing=True,
+        label="inventory retry plan",
+    )
+    if rooted_io.lexists(plan_path):
+        output_digest = _inventory_retry_preimage_digest(
+            phase,
+            Path(scratchpad),
+            config,
+            prior_attempt=prior,
+        )
+        payload, _path = _validated_inventory_retry_plan(
+            Path(scratchpad),
+            phase,
+            config,
+            attempt=ordinal,
+            expected_output_digest_before=output_digest,
+        )
+        config.setdefault("_inventory_retry_prompt_plans", {})[
+            phase.name
+        ] = payload
+        return tuple(
+            GateFailure.from_dict(row)
+            for row in payload["failed_predicates"]
+        )
+
+    normalized_issues = [
+        str(issue).strip() for issue in issues if str(issue).strip()
+    ] or [
+        f"{phase.name}: retry attempt {ordinal} requires fresh MODEL output"
+    ]
+    _ensure_retry_hint(
+        Path(scratchpad),
+        phase,
+        normalized_issues,
+        str(config["project_root"]),
+    )
+    _augment_inventory_exact_retry_hint(Path(scratchpad), phase)
+    output_digest = _inventory_retry_artifact_digest(
+        phase, Path(scratchpad), str(config["project_root"])
+    )
+    failures = _gate_failures_from_issues(
+        phase,
+        normalized_issues,
+        contract_digest=_resolved_phase_contract_digest(phase, config),
+        output_digest=output_digest,
+        scratchpad=Path(scratchpad),
+        input_digest=_resolved_phase_input_digest(phase, config),
+    )
+    _write_retry_plan(
+        Path(scratchpad),
+        checkpoint,
+        phase,
+        config,
+        failures,
+        attempt=ordinal,
+    )
+    payload, _validated_path = _validated_inventory_retry_plan(
+        Path(scratchpad),
+        phase,
+        config,
+        attempt=ordinal,
+        expected_failures=failures,
+        expected_output_digest_before=output_digest,
+    )
+    config.setdefault("_inventory_retry_prompt_plans", {})[
+        phase.name
+    ] = payload
+    return failures
+
+
+def _run_retry_phase(
+    phase: Phase,
+    config: dict[str, Any],
+    *,
+    checkpoint: Checkpoint,
+    scratchpad: Path,
+    attempt: int,
+    issues: list[Any],
+    receipt_failure_injector: Any = None,
+) -> int:
+    """Launch a retry only after inventory retry authority is durable."""
+
+    inventory_retry = phase.name in _INVENTORY_RETRY_MODEL_PHASES
+    failures_before: tuple[GateFailure, ...] = ()
+    interruption_generation: int | None = None
+    if inventory_retry:
+        try:
+            failures_before = _authorize_inventory_retry_launch(
+                checkpoint=checkpoint,
+                phase=phase,
+                config=config,
+                scratchpad=Path(scratchpad),
+                attempt=attempt,
+                issues=issues,
+            )
+        except (
+            ArtifactLedgerError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            rooted_io.RootedPathIOError,
+        ) as exc:
+            _append_phase_io_debt(
+                Path(scratchpad),
+                phase.name,
+                "INVENTORY_RETRY_PLAN_DEBT",
+                f"attempt {attempt} launch vetoed: {type(exc).__name__}: {exc}",
+            )
+            return EXIT_ERROR
+        try:
+            prior_generations = _inventory_interruption_generations(
+                Path(scratchpad), phase.name, attempt
+            )
+            if prior_generations:
+                latest_generation = max(prior_generations)
+                prior_interruption = _inventory_interruption_receipt(
+                    Path(scratchpad),
+                    phase.name,
+                    attempt,
+                    latest_generation,
+                )
+                _quarantine_inventory_interruption_outputs(
+                    phase,
+                    Path(scratchpad),
+                    config,
+                    attempt=attempt,
+                    generation=latest_generation,
+                    receipt=prior_interruption,
+                )
+        except (
+            ArtifactLedgerError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            rooted_io.RootedPathIOError,
+        ) as exc:
+            _append_phase_io_debt(
+                Path(scratchpad),
+                phase.name,
+                "INVENTORY_INTERRUPTION_RECOVERY_DEBT",
+                f"attempt {attempt} interrupted output recovery vetoed: "
+                f"{type(exc).__name__}: {exc}",
+            )
+            return EXIT_ERROR
+        try:
+            terminal_state_before = _snapshot_file_state(
+                Path(scratchpad), str(config["project_root"])
+            )
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            rooted_io.RootedPathIOError,
+        ) as exc:
+            _append_phase_io_debt(
+                Path(scratchpad),
+                phase.name,
+                "INVENTORY_RETRY_CONTAINMENT_BASELINE_DEBT",
+                f"attempt {attempt} launch baseline vetoed: "
+                f"{type(exc).__name__}: {exc}",
+            )
+            return EXIT_ERROR
+    rc = run_phase(phase, config, attempt=attempt)
+    if not inventory_retry:
+        return rc
+    try:
+        if receipt_failure_injector is not None:
+            receipt_failure_injector("after_terminal_before_authority")
+        output_after = _inventory_retry_artifact_digest(
+            phase, Path(scratchpad), str(config["project_root"])
+        )
+        try:
+            full_gate_passed, full_gate_issues = _run_phase_validators(
+                phase,
+                config,
+                Path(scratchpad),
+                L1_PHASES
+                if str(config.get("pipeline") or "sc").lower() == "l1"
+                else SC_PHASES,
+                rc,
+                terminal_state_before,
+                0,
+            )
+            terminal_issues = list(full_gate_issues)
+        except Exception as validator_exc:
+            full_gate_passed = False
+            terminal_issues = [
+                f"{phase.name}: full retry validator raised "
+                f"{type(validator_exc).__name__}: {validator_exc}"
+            ]
+        if rc != 0:
+            full_gate_passed = False
+            terminal_issues.append(
+                f"{phase.name}: retry transport terminated with exit code {rc}"
+            )
+        failures_after = (
+            ()
+            if full_gate_passed and rc == 0
+            else _gate_failures_from_issues(
+                phase,
+                terminal_issues or [
+                    f"{phase.name}: retry did not clear its gate"
+                ],
+                contract_digest=_resolved_phase_contract_digest(
+                    phase, config
+                ),
+                output_digest=output_after,
+                scratchpad=Path(scratchpad),
+                input_digest=_resolved_phase_input_digest(phase, config),
+            )
+        )
+        failures_after = _canonical_gate_failure_sequence(
+            failures_after,
+            label="inventory retry terminal failures_after",
+        )
+        terminal_work_unit_id = "transport"
+        if rc == -3:
+            used_generations = _inventory_interruption_generations(
+                Path(scratchpad), phase.name, attempt
+            )
+            next_generation = (
+                max(used_generations, default=0) + 1
+            )
+            interruption_generation = next_generation
+            terminal_work_unit_id = _inventory_interruption_work_unit(
+                next_generation
+            )
+        receipt = _build_retry_receipt(
+            checkpoint=checkpoint,
+            phase=phase,
+            config=config,
+            scratchpad=Path(scratchpad),
+            attempt=attempt,
+            failures_before=failures_before,
+            failures_after=failures_after,
+            output_digest_before="plan-bound",
+            output_digest_after=output_after,
+            work_unit_id=terminal_work_unit_id,
+            terminal_rc=rc,
+        )
+        _write_inventory_terminal_authority(
+            Path(scratchpad),
+            receipt=receipt,
+            failures_after=failures_after,
+            full_gate_passed=bool(full_gate_passed and rc == 0),
+        )
+        if receipt_failure_injector is not None:
+            receipt_failure_injector("after_terminal_authority")
+        _write_retry_receipt(
+            Path(scratchpad),
+            receipt,
+            phase=phase,
+            config=config,
+            failures_after=failures_after,
+            full_gate_passed=bool(full_gate_passed and rc == 0),
+            terminal_rc=rc,
+        )
+        if interruption_generation is not None:
+            _quarantine_inventory_interruption_outputs(
+                phase,
+                Path(scratchpad),
+                config,
+                attempt=attempt,
+                generation=interruption_generation,
+                receipt=receipt,
+            )
+        if receipt_failure_injector is not None:
+            receipt_failure_injector("after_receipt_publication")
+    except (
+        ArtifactLedgerError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        rooted_io.RootedPathIOError,
+    ) as exc:
+        _append_phase_io_debt(
+            Path(scratchpad),
+            phase.name,
+            "INVENTORY_RETRY_RECEIPT_DEBT",
+            f"attempt {attempt} terminal receipt vetoed: "
+            f"{type(exc).__name__}: {exc}",
+        )
+        return EXIT_ERROR
+    return rc
+
+
+def _transport_resume_attempt(phase: Phase, interrupted_attempt: int) -> int:
+    """Resume transport without consuming a fresh semantic retry ordinal."""
+
+    ordinal = _exact_attempt_ordinal(
+        interrupted_attempt, label=f"{phase.name} interrupted transport"
+    )
+    return ordinal
 
 
 def _reemit_percontract_self_exclusions(
@@ -83759,6 +86618,38 @@ def _run_recon_startup_authority_barrier(
     )
 
 
+def _clear_stale_recon_degradation_after_finalization(
+    checkpoint: Checkpoint,
+    scratchpad: Path,
+    *,
+    finalization_authority: bool,
+) -> bool:
+    """Clear only legacy stale recon degradation after finalization replay.
+
+    A typed debt-bearing commit owns the degraded projection.  Removing that
+    projection makes ``Checkpoint.validate_phase_names`` reject the checkpoint
+    immediately, so completed finalization authority must not be mistaken for
+    clearance of an unrelated typed gate failure.
+    """
+
+    if (
+        not finalization_authority
+        or "recon" not in set(checkpoint.degraded or ())
+    ):
+        return False
+    typed_commit = checkpoint.phase_commits.get("recon")
+    if typed_commit is not None and typed_commit.state != "CLEAN":
+        return False
+    checkpoint.degraded = [
+        name for name in checkpoint.degraded if name != "recon"
+    ]
+    try:
+        (Path(scratchpad) / "recon.degraded").unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True
+
+
 def _resume_recon_finalization_before_prepass(
     scratchpad: Path,
     config: dict[str, Any],
@@ -86948,21 +89839,13 @@ def main():
         log.error("[startup] recon finalization remains pending: %s", exc)
         checkpoint.save(scratchpad)
         sys.exit(EXIT_DEGRADED)
-    if (
-        _startup_recon_finalization_authority
-        and "recon" in set(checkpoint.degraded or [])
+    if _clear_stale_recon_degradation_after_finalization(
+        checkpoint,
+        scratchpad,
+        finalization_authority=bool(
+            _startup_recon_finalization_authority
+        ),
     ):
-        # Repair stale state written by the pre-v1 finalization path. The
-        # active canonical generation still has to pass artifact recovery;
-        # this only removes the flag that incorrectly disabled that recovery
-        # and forced a model relaunch.
-        checkpoint.degraded = [
-            name for name in checkpoint.degraded if name != "recon"
-        ]
-        try:
-            (Path(scratchpad) / "recon.degraded").unlink(missing_ok=True)
-        except OSError:
-            pass
         checkpoint.save(scratchpad)
 
     # Mechanical pre-pass (writes inventory/variables/functions/build_status/subsystems).
@@ -91412,7 +94295,65 @@ def main():
                 _halted = True
                 break
 
-        # Attempt 1
+        # First launch for this process.  Inventory phases may already have a
+        # durable rejected predecessor from an earlier process; in that case
+        # resume at its exact successor rather than reusing attempt 1.
+        current_attempt = 1
+        _inventory_resume_prior = 0
+        _inventory_resume_issues: list[str] = []
+        if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+            (
+                _inventory_resume_prior,
+                current_attempt,
+                _inventory_resume_issues,
+            ) = _inventory_resume_attempt_transition(
+                phase, scratchpad, config
+            )
+            if _inventory_resume_prior and not _inventory_resume_issues:
+                try:
+                    _mutable_attempt_map(
+                        config, "_active_model_attempts"
+                    )[phase.name] = _inventory_resume_prior
+                    if phase.name.startswith("inventory_chunk_"):
+                        _mutable_attempt_map(
+                            config, "_phase_io_model_attempts"
+                        )[phase.name] = _inventory_resume_prior
+                except ArtifactLedgerError as exc:
+                    _inventory_resume_issues = [str(exc)]
+            if _inventory_resume_prior and not _inventory_resume_issues:
+                try:
+                    _resume_gate_passed, _resume_gate_issues = gate_passes(
+                        scratchpad, config["project_root"], phase
+                    )
+                    _authorize_inventory_retry_launch(
+                        checkpoint=checkpoint,
+                        phase=phase,
+                        config=config,
+                        scratchpad=scratchpad,
+                        attempt=current_attempt,
+                        issues=(
+                            list(_resume_gate_issues)
+                            if not _resume_gate_passed
+                            else [
+                                f"{phase.name}: durable rejected attempt "
+                                f"{_inventory_resume_prior} requires exact "
+                                f"successor {current_attempt}"
+                            ]
+                        ),
+                    )
+                except (
+                    ArtifactLedgerError,
+                    OSError,
+                    RuntimeError,
+                    TypeError,
+                    ValueError,
+                    rooted_io.RootedPathIOError,
+                ) as exc:
+                    _inventory_resume_issues = [
+                        f"{phase.name}: resumed retry plan authority failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    ]
+
         violations_before = 0
         if phase.name == "depth":
             vp = scratchpad / "violations.md"
@@ -91421,7 +94362,14 @@ def main():
             except Exception:
                 violations_before = 0
 
-        if phase.name in {
+        if _inventory_resume_issues:
+            _prelaunch_io_issues = list(_inventory_resume_issues)
+        elif _inventory_resume_prior:
+            # `_run_phase_once` terminalizes and moves the durable predecessor
+            # before it binds this successor.  Prebinding here would snapshot
+            # the rejected output as the successor's live prestate.
+            _prelaunch_io_issues = []
+        elif phase.name in {
             "inventory_chunk_a",
             "inventory_chunk_b",
             "inventory_chunk_c",
@@ -91474,14 +94422,39 @@ def main():
                 phase.name,
                 "typed semantic input authority unavailable; model vetoed",
             )
+            if _inventory_resume_issues:
+                display.print_failure_diagnosis(
+                    phase.name,
+                    str(scratchpad),
+                    list(_inventory_resume_issues),
+                    config,
+                )
+                checkpoint.save(scratchpad)
+                sys.exit(EXIT_DEGRADED)
             continue
         file_state_before = _snapshot_file_state(scratchpad, config["project_root"])
         display.print_phase_start(
             phase_idx + 1, total_active, phase.name,
             phase_model(phase, mode, config),
+            attempt=current_attempt,
         )
-        rc = run_phase(phase, config, attempt=1)
-        current_attempt = 1
+        rc = (
+            _run_retry_phase(
+                phase,
+                config,
+                checkpoint=checkpoint,
+                scratchpad=scratchpad,
+                attempt=current_attempt,
+                issues=[
+                    f"{phase.name}: resumed durable inventory successor"
+                ],
+            )
+            if (
+                phase.name in _INVENTORY_RETRY_MODEL_PHASES
+                and current_attempt > 1
+            )
+            else run_phase(phase, config, attempt=current_attempt)
+        )
 
         # Codex CLI crash detection: invalid flags are permanent failures.
         # No retry, no rate-limit wait — fail fast with diagnostic.
@@ -91563,7 +94536,21 @@ def main():
                     )
                     config["_codex_model_unavailable"] = requested
                     config["_codex_model_fallback"] = fallback
-                    rc = run_phase(phase, config, attempt=1)
+                    _unavailable_retry_attempt = (
+                        current_attempt + 1
+                        if phase.name in _INVENTORY_RETRY_MODEL_PHASES
+                        else 1
+                    )
+                    rc = _run_retry_phase(
+                        phase,
+                        config,
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=_unavailable_retry_attempt,
+                        issues=["Codex unavailable-model transport recovery"],
+                    )
+                    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                        current_attempt = _unavailable_retry_attempt
                 else:
                     log.error(
                         f"[{phase.name}] Model {requested} not available and "
@@ -91594,7 +94581,14 @@ def main():
                         phase_model(phase, mode, config),
                         attempt=current_attempt + 1,
                     )
-                    rc = run_phase(phase, config, attempt=current_attempt + 1)
+                    rc = _run_retry_phase(
+                        phase,
+                        config,
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=current_attempt + 1,
+                        issues=["Codex model-capacity transport recovery"],
+                    )
                     current_attempt += 1
                 else:
                     log.warning(
@@ -91625,7 +94619,21 @@ def main():
                     f"(ChatGPT-auth restriction). Retrying without --model."
                 )
                 config["_codex_skip_model"] = True
-                rc = run_phase(phase, config, attempt=1)
+                _rejection_retry_attempt = (
+                    current_attempt + 1
+                    if phase.name in _INVENTORY_RETRY_MODEL_PHASES
+                    else 1
+                )
+                rc = _run_retry_phase(
+                    phase,
+                    config,
+                    checkpoint=checkpoint,
+                    scratchpad=scratchpad,
+                    attempt=_rejection_retry_attempt,
+                    issues=["Codex rejected-model transport recovery"],
+                )
+                if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                    current_attempt = _rejection_retry_attempt
                 config.pop("_codex_skip_model", None)
                 if rc != 0 and _detect_codex_cli_crash(
                     scratchpad / f"_stdio_{phase.name}.log"
@@ -91667,7 +94675,14 @@ def main():
                     phase_model(phase, mode, config),
                     attempt=current_attempt + 1,
                 )
-                rc = run_phase(phase, config, attempt=current_attempt + 1)
+                rc = _run_retry_phase(
+                    phase,
+                    config,
+                    checkpoint=checkpoint,
+                    scratchpad=scratchpad,
+                    attempt=current_attempt + 1,
+                    issues=["Codex content-filter transport recovery"],
+                )
                 current_attempt += 1
                 # If bonus retry also gets filtered, fall through to
                 # the normal gate-failure path (which adds a second retry).
@@ -91677,14 +94692,34 @@ def main():
             if _prompt_halt_resume_choice(
                 checkpoint, scratchpad, phase.name, config_path
             ):
-                rc = run_phase(phase, config, attempt=2)
-                current_attempt = 2
+                _esc_resume_attempt = _transport_resume_attempt(
+                    phase, current_attempt
+                )
+                rc = _run_retry_phase(
+                    phase,
+                    config,
+                    checkpoint=checkpoint,
+                    scratchpad=scratchpad,
+                    attempt=_esc_resume_attempt,
+                    issues=["operator-resumed interrupted MODEL attempt"],
+                )
+                current_attempt = _esc_resume_attempt
                 if rc == -3:
                     if _prompt_halt_resume_choice(
                         checkpoint, scratchpad, phase.name, config_path
                     ):
-                        rc = run_phase(phase, config, attempt=3)
-                        current_attempt = 3
+                        _esc_resume_attempt = _transport_resume_attempt(
+                            phase, current_attempt
+                        )
+                        rc = _run_retry_phase(
+                            phase,
+                            config,
+                            checkpoint=checkpoint,
+                            scratchpad=scratchpad,
+                            attempt=_esc_resume_attempt,
+                            issues=["operator-resumed interrupted MODEL attempt"],
+                        )
+                        current_attempt = _esc_resume_attempt
                     else:
                         _halted = True
                         break
@@ -91760,7 +94795,14 @@ def main():
                         phase_model(phase, mode, config),
                         attempt=current_attempt + 1,
                     )
-                    rc = run_phase(phase, config, attempt=current_attempt + 1)
+                    rc = _run_retry_phase(
+                        phase,
+                        config,
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=current_attempt + 1,
+                        issues=["Codex model-capacity transport recovery"],
+                    )
                     current_attempt += 1
                     _stdio_log = scratchpad / f"_stdio_{phase.name}.attempt{current_attempt}.log"
                     _is_rate_limited = _detect_codex_rate_limit(_stdio_log, rc)
@@ -91805,12 +94847,30 @@ def main():
                     time.sleep(_overload_sleep_seconds(_ovl_wait))
                     _ovl_attempts += 1
                     _ovl_run_attempt += 1
-                    rc = run_phase(phase, config, attempt=_ovl_run_attempt)
+                    rc = _run_retry_phase(
+                        phase,
+                        config,
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=_ovl_run_attempt,
+                        issues=["Anthropic overload transport recovery"],
+                    )
                     if rc == -3:
                         if _prompt_halt_resume_choice(
                             checkpoint, scratchpad, phase.name, config_path
                         ):
-                            rc = run_phase(phase, config, attempt=_ovl_run_attempt)
+                            _ovl_resume_attempt = _transport_resume_attempt(
+                                phase, _ovl_run_attempt
+                            )
+                            rc = _run_retry_phase(
+                                phase,
+                                config,
+                                checkpoint=checkpoint,
+                                scratchpad=scratchpad,
+                                attempt=_ovl_resume_attempt,
+                                issues=["Anthropic overload resumed recovery"],
+                            )
+                            _ovl_run_attempt = _ovl_resume_attempt
                         else:
                             _halted = True
                             break
@@ -91927,20 +94987,39 @@ def main():
                             f"[{phase.name}] rate-limited; appends-existing "
                             f"phase, savings guard bypassed -- spawning retry"
                         )
-                    rc = run_phase(
+                    _rl_dispatch_attempt = int(_rl_dispatch["attempt"])
+                    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                        current_attempt = _rl_dispatch_attempt
+                    rc = _run_retry_phase(
                         phase,
                         config,
-                        attempt=int(_rl_dispatch["attempt"]),
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=_rl_dispatch_attempt,
+                        issues=list(_rl_pre_missing) or [
+                            "provider rate-limit transport recovery"
+                        ],
                     )
                 if rc == -3:
                     if _prompt_halt_resume_choice(
                         checkpoint, scratchpad, phase.name, config_path
                     ):
-                        rc = run_phase(
+                        _rl_resume_attempt = _transport_resume_attempt(
+                            phase, int(_rl_dispatch["attempt"])
+                        )
+                        rc = _run_retry_phase(
                             phase,
                             config,
-                            attempt=int(_rl_dispatch["attempt"]),
+                            checkpoint=checkpoint,
+                            scratchpad=scratchpad,
+                            attempt=_rl_resume_attempt,
+                            issues=list(_rl_pre_missing) or [
+                                "provider rate-limit resumed recovery"
+                            ],
                         )
+                        if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                            _rl_dispatch["attempt"] = _rl_resume_attempt
+                            current_attempt = _rl_resume_attempt
                     else:
                         _halted = True
                         break
@@ -92194,13 +95273,32 @@ def main():
                     attempt3_state_before = _snapshot_file_state(
                         scratchpad, config["project_root"]
                     )
-                    rc = run_phase(phase, config, attempt=3)
+                    rc = _run_retry_phase(
+                        phase,
+                        config,
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=3,
+                        issues=list(missing),
+                    )
                     current_attempt = max(current_attempt, 3)
                     if rc == -3:
                         if _prompt_halt_resume_choice(
                             checkpoint, scratchpad, phase.name, config_path
                         ):
-                            rc = run_phase(phase, config, attempt=3)
+                            _attempt3_resume = _transport_resume_attempt(
+                                phase, 3
+                            )
+                            rc = _run_retry_phase(
+                                phase,
+                                config,
+                                checkpoint=checkpoint,
+                                scratchpad=scratchpad,
+                                attempt=_attempt3_resume,
+                                issues=list(missing),
+                            )
+                            if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                                current_attempt = _attempt3_resume
                         else:
                             _halted = True
                             break
@@ -92241,19 +95339,67 @@ def main():
                         display.print_failure_diagnosis(
                             phase.name, str(scratchpad), list(missing_3), config,
                         )
-                        _restore_quarantined_on_retry_failure(scratchpad, phase)
+                        _restore_quarantined_on_retry_failure(
+                            scratchpad,
+                            phase,
+                            run_id=str(checkpoint.run_id or ""),
+                        )
                         sys.exit(EXIT_DEGRADED)
                 elif choice == "skip":
                     log.warning(f"[{phase.name}] user chose SKIP — marking critical phase degraded, continuing pipeline")
-                    _restore_quarantined_on_retry_failure(scratchpad, phase)
+                    _restore_quarantined_on_retry_failure(
+                        scratchpad,
+                        phase,
+                        run_id=str(checkpoint.run_id or ""),
+                    )
                 else:
                     display.print_failure_diagnosis(phase.name, str(scratchpad), list(missing), config)
-                    _restore_quarantined_on_retry_failure(scratchpad, phase)
+                    _restore_quarantined_on_retry_failure(
+                        scratchpad,
+                        phase,
+                        run_id=str(checkpoint.run_id or ""),
+                    )
                     sys.exit(EXIT_DEGRADED)
             if not _rl_retry_recovered:
                 continue
 
         elif not passed:
+            if (
+                phase.name in _INVENTORY_RETRY_MODEL_PHASES
+                and current_attempt >= _codex_max_attempts_for_phase(
+                    config.get("cli_backend"), phase.name
+                )
+            ):
+                _exhausted_issue = (
+                    f"{phase.name}: durable inventory retry budget exhausted "
+                    f"after attempt {current_attempt}; refusing an additional "
+                    "MODEL generation"
+                )
+                _append_phase_io_debt(
+                    scratchpad,
+                    phase.name,
+                    "INVENTORY_RETRY_BUDGET_DEBT",
+                    _exhausted_issue,
+                )
+                _commit_incomplete_phase_attempt(
+                    phase,
+                    checkpoint,
+                    scratchpad,
+                    config,
+                    list(missing) + [_exhausted_issue],
+                )
+                display.print_failure_diagnosis(
+                    phase.name,
+                    str(scratchpad),
+                    list(missing) + [_exhausted_issue],
+                    config,
+                )
+                sys.exit(EXIT_DEGRADED)
+            _semantic_retry_attempt = (
+                current_attempt + 1
+                if phase.name in _INVENTORY_RETRY_MODEL_PHASES
+                else 2
+            )
             _retry_contract_digest = _resolved_phase_contract_digest(phase, config)
             _retry_output_digest_before = _resolved_phase_artifact_digest(
                 phase, scratchpad, config["project_root"]
@@ -92269,7 +95415,11 @@ def main():
             display.print_phase_retry(
                 phase_idx + 1, total_active, phase.name, list(missing),
             )
-            log.warning(f"[{phase.name}] gate failed after attempt 1: missing {missing} -- retrying")
+            log.warning(
+                f"[{phase.name}] gate failed after attempt {current_attempt}: "
+                f"missing {missing} -- retrying as attempt "
+                f"{_semantic_retry_attempt}"
+            )
             _recon_retry_predecessor = ""
             if (
                 phase.name == "recon"
@@ -92304,13 +95454,17 @@ def main():
                     sys.exit(EXIT_DEGRADED)
             # v2.3.14: quarantine stale artifacts so RESUMPTION PROTOCOL
             # doesn't suppress the retry LLM from re-producing them.
-            renamed = _quarantine_stale_on_retry(
-                scratchpad,
-                phase,
-                list(missing),
-                include_recon_canonical=(
-                    _recon_retry_predecessor == "canonical_merge"
-                ),
+            renamed = (
+                []
+                if phase.name in _INVENTORY_RETRY_MODEL_PHASES
+                else _quarantine_stale_on_retry(
+                    scratchpad,
+                    phase,
+                    list(missing),
+                    include_recon_canonical=(
+                        _recon_retry_predecessor == "canonical_merge"
+                    ),
+                )
             )
             if renamed:
                 log.info(
@@ -92337,6 +95491,7 @@ def main():
             _ensure_retry_hint(
                 scratchpad, phase, list(missing), config["project_root"]
             )
+            _augment_inventory_exact_retry_hint(scratchpad, phase)
             try:
                 _retry_plan_path = _write_retry_plan(
                     scratchpad,
@@ -92344,7 +95499,7 @@ def main():
                     phase,
                     config,
                     _retry_failures_before,
-                    attempt=2,
+                    attempt=_semantic_retry_attempt,
                 )
                 log.info(
                     f"[{phase.name}] wrote predicate-bound retry plan "
@@ -92398,14 +95553,35 @@ def main():
             )
             display.print_phase_start(
                 phase_idx + 1, total_active, phase.name,
-                phase_model(phase, mode, config), attempt=2,
+                phase_model(phase, mode, config),
+                attempt=_semantic_retry_attempt,
             )
-            rc = run_phase(phase, config, attempt=2)
+            rc = _run_retry_phase(
+                phase,
+                config,
+                checkpoint=checkpoint,
+                scratchpad=scratchpad,
+                attempt=_semantic_retry_attempt,
+                issues=list(missing),
+            )
+            current_attempt = _semantic_retry_attempt
             if rc == -3:
                 if _prompt_halt_resume_choice(
                     checkpoint, scratchpad, phase.name, config_path
                 ):
-                    rc = run_phase(phase, config, attempt=2)
+                    _semantic_resume_attempt = _transport_resume_attempt(
+                        phase, current_attempt
+                    )
+                    rc = _run_retry_phase(
+                        phase,
+                        config,
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=_semantic_resume_attempt,
+                        issues=list(missing),
+                    )
+                    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                        current_attempt = _semantic_resume_attempt
                 else:
                     _halted = True
                     break
@@ -92414,7 +95590,9 @@ def main():
             # also returns rc=0 with no output, do NOT silently accept
             # stale artifacts.
             if rc == 0:
-                stdio_log = scratchpad / f"_stdio_{phase.name}.attempt2.log"
+                stdio_log = scratchpad / (
+                    f"_stdio_{phase.name}.attempt{current_attempt}.log"
+                )
                 try:
                     if (
                         stdio_log.exists()
@@ -92432,33 +95610,71 @@ def main():
                     pass
 
             # v2.7.7: content-filter bonus retry on the gate-failure retry too.
-            if config.get("cli_backend") == "codex" and rc != 0:
-                _cf_retry_log = scratchpad / f"_stdio_{phase.name}.attempt2.log"
+            if (
+                config.get("cli_backend") == "codex"
+                and rc != 0
+                and (
+                    phase.name not in _INVENTORY_RETRY_MODEL_PHASES
+                    or current_attempt
+                    < _codex_max_attempts_for_phase(
+                        config.get("cli_backend"), phase.name
+                    )
+                )
+            ):
+                _cf_retry_log = scratchpad / (
+                    f"_stdio_{phase.name}.attempt{current_attempt}.log"
+                )
                 if not _cf_retry_log.exists():
                     _cf_retry_log = scratchpad / f"_stdio_{phase.name}.log"
                 if _detect_codex_content_filter(_cf_retry_log):
                     log.warning(
-                        f"[{phase.name}] content filter on retry — bonus attempt 3"
+                        f"[{phase.name}] content filter on retry — bonus attempt "
+                        f"{current_attempt + 1}"
                     )
                     file_state_before = _snapshot_file_state(
                         scratchpad, config["project_root"]
                     )
                     display.print_phase_start(
                         phase_idx + 1, total_active, phase.name,
-                        phase_model(phase, mode, config), attempt=3,
+                        phase_model(phase, mode, config),
+                        attempt=current_attempt + 1,
                     )
-                    rc = run_phase(phase, config, attempt=3)
+                    rc = _run_retry_phase(
+                        phase,
+                        config,
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=current_attempt + 1,
+                        issues=list(missing),
+                    )
+                    current_attempt += 1
                     if rc == -3:
                         if _prompt_halt_resume_choice(
                             checkpoint, scratchpad, phase.name, config_path
                         ):
-                            rc = run_phase(phase, config, attempt=3)
+                            _content_resume_attempt = (
+                                _transport_resume_attempt(
+                                    phase, current_attempt
+                                )
+                            )
+                            rc = _run_retry_phase(
+                                phase,
+                                config,
+                                checkpoint=checkpoint,
+                                scratchpad=scratchpad,
+                                attempt=_content_resume_attempt,
+                                issues=list(missing),
+                            )
+                            if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                                current_attempt = _content_resume_attempt
                         else:
                             _halted = True
                             break
 
             # v2.4.3: check attempt2 log, not canonical (which may contain stale attempt1 data on timeout)
-            retry_log = scratchpad / f"_stdio_{phase.name}.attempt2.log"
+            retry_log = scratchpad / (
+                f"_stdio_{phase.name}.attempt{current_attempt}.log"
+            )
             if not retry_log.exists():
                 retry_log = scratchpad / f"_stdio_{phase.name}.log"
             retry_rate_limit_consumed = False
@@ -92498,7 +95714,7 @@ def main():
                     phase,
                     config,
                     scratchpad,
-                    current_attempt=3,
+                    current_attempt=current_attempt,
                     shallow_gate_passed=_rl3_pre_passed,
                 )
                 if _rl3_dispatch["skip_spawn"]:
@@ -92515,21 +95731,40 @@ def main():
                             "presence; executing the authorized attempt-3 "
                             "transport successor"
                         )
-                    rc = run_phase(
+                    _rl3_dispatch_attempt = int(_rl3_dispatch["attempt"])
+                    if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                        current_attempt = _rl3_dispatch_attempt
+                    rc = _run_retry_phase(
                         phase,
                         config,
-                        attempt=int(_rl3_dispatch["attempt"]),
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=_rl3_dispatch_attempt,
+                        issues=list(_rl3_pre_missing) or [
+                            "provider rate-limit retry recovery"
+                        ],
                     )
                 retry_rate_limit_consumed = True
                 if rc == -3:
                     if _prompt_halt_resume_choice(
                         checkpoint, scratchpad, phase.name, config_path
                     ):
-                        rc = run_phase(
+                        _rl3_resume_attempt = _transport_resume_attempt(
+                            phase, int(_rl3_dispatch["attempt"])
+                        )
+                        rc = _run_retry_phase(
                             phase,
                             config,
-                            attempt=int(_rl3_dispatch["attempt"]),
+                            checkpoint=checkpoint,
+                            scratchpad=scratchpad,
+                            attempt=_rl3_resume_attempt,
+                            issues=list(_rl3_pre_missing) or [
+                                "provider rate-limit resumed retry"
+                            ],
                         )
+                        if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                            _rl3_dispatch["attempt"] = _rl3_resume_attempt
+                            current_attempt = _rl3_resume_attempt
                     else:
                         _halted = True
                         break
@@ -92586,6 +95821,11 @@ def main():
                     input_digest=_resolved_phase_input_digest(phase, config),
                 )
             )
+            if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                _retry_failures_after = _canonical_gate_failure_sequence(
+                    _retry_failures_after,
+                    label="inventory outer retry failures_after",
+                )
             _semantic_retry_no_progress = False
             try:
                 _retry_receipt = _build_retry_receipt(
@@ -92598,9 +95838,16 @@ def main():
                     failures_after=_retry_failures_after,
                     output_digest_before=_retry_output_digest_before,
                     output_digest_after=_retry_output_digest_after,
+                    terminal_rc=rc,
                 )
                 _retry_receipt_path = _write_retry_receipt(
-                    scratchpad, _retry_receipt
+                    scratchpad,
+                    _retry_receipt,
+                    phase=phase,
+                    config=config,
+                    failures_after=_retry_failures_after,
+                    full_gate_passed=bool(passed),
+                    terminal_rc=rc,
                 )
                 _semantic_retry_no_progress = (
                     _retry_receipt.status == "NO_PROGRESS"
@@ -92722,7 +95969,11 @@ def main():
                         f"[{phase.name}] {passthrough_issue}; {reason}"
                     )
                     _clear_retry_hint(scratchpad, phase.name)
-                    _cleanup_quarantine_backups(scratchpad, phase)
+                    _cleanup_quarantine_backups(
+                        scratchpad,
+                        phase,
+                        run_id=str(checkpoint.run_id or ""),
+                    )
                     _passthrough_content_issues = _commit_content_with_gate_debt(
                         phase,
                         config,
@@ -92759,7 +96010,7 @@ def main():
                 _codex_budget = _codex_max_attempts_for_phase(
                     config.get("cli_backend"), phase.name
                 )
-                _codex_attempt = 2  # attempts 1 + 2 already consumed above
+                _codex_attempt = current_attempt
                 # Only COVERAGE/CONTENT gaps are hint-recoverable. A CONTAINMENT
                 # violation (the phase wrote foreign later-phase artifacts) is
                 # NOT — re-running with a hint cannot fix phase-scope discipline
@@ -92786,6 +96037,40 @@ def main():
                     _ensure_retry_hint(
                         scratchpad, phase, list(missing), config["project_root"]
                     )
+                    _augment_inventory_exact_retry_hint(scratchpad, phase)
+                    _extra_failures_before = _gate_failures_from_issues(
+                        phase,
+                        list(missing),
+                        contract_digest=_resolved_phase_contract_digest(
+                            phase, config
+                        ),
+                        output_digest=_resolved_phase_artifact_digest(
+                            phase, scratchpad, config["project_root"]
+                        ),
+                        scratchpad=scratchpad,
+                        input_digest=_resolved_phase_input_digest(
+                            phase, config
+                        ),
+                    )
+                    try:
+                        _write_retry_plan(
+                            scratchpad,
+                            checkpoint,
+                            phase,
+                            config,
+                            _extra_failures_before,
+                            attempt=_codex_attempt,
+                        )
+                    except Exception as _extra_retry_plan_exc:
+                        log.warning(
+                            f"[{phase.name}] attempt {_codex_attempt} retry "
+                            f"plan degraded: {_extra_retry_plan_exc!r}"
+                        )
+                    _extra_output_digest_before = (
+                        _resolved_phase_artifact_digest(
+                            phase, scratchpad, config["project_root"]
+                        )
+                    )
                     file_state_before = _snapshot_file_state(
                         scratchpad, config["project_root"]
                     )
@@ -92793,14 +96078,33 @@ def main():
                         phase_idx + 1, total_active, phase.name,
                         phase_model(phase, mode, config), attempt=_codex_attempt,
                     )
-                    rc = run_phase(phase, config, attempt=_codex_attempt)
+                    rc = _run_retry_phase(
+                        phase,
+                        config,
+                        checkpoint=checkpoint,
+                        scratchpad=scratchpad,
+                        attempt=_codex_attempt,
+                        issues=list(missing),
+                    )
+                    current_attempt = _codex_attempt
                     if rc == -3:
                         if _prompt_halt_resume_choice(
                             checkpoint, scratchpad, phase.name, config_path
                         ):
-                            rc = run_phase(
-                                phase, config, attempt=_codex_attempt
+                            _codex_resume_attempt = _transport_resume_attempt(
+                                phase, _codex_attempt
                             )
+                            rc = _run_retry_phase(
+                                phase,
+                                config,
+                                checkpoint=checkpoint,
+                                scratchpad=scratchpad,
+                                attempt=_codex_resume_attempt,
+                                issues=list(missing),
+                            )
+                            if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                                _codex_attempt = _codex_resume_attempt
+                                current_attempt = _codex_resume_attempt
                         else:
                             _halted = True
                             break
@@ -92819,6 +96123,59 @@ def main():
                         phase, config, scratchpad, phases, rc,
                         file_state_before, violations_before,
                     )
+                    _extra_output_digest_after = (
+                        _resolved_phase_artifact_digest(
+                            phase, scratchpad, config["project_root"]
+                        )
+                    )
+                    _extra_failures_after = (
+                        ()
+                        if passed
+                        else _gate_failures_from_issues(
+                            phase,
+                            list(missing),
+                            contract_digest=(
+                                _resolved_phase_contract_digest(phase, config)
+                            ),
+                            output_digest=_extra_output_digest_after,
+                            scratchpad=scratchpad,
+                            input_digest=_resolved_phase_input_digest(
+                                phase, config
+                            ),
+                        )
+                    )
+                    try:
+                        _extra_retry_receipt = _build_retry_receipt(
+                            checkpoint=checkpoint,
+                            phase=phase,
+                            config=config,
+                            scratchpad=scratchpad,
+                            attempt=_codex_attempt,
+                            failures_before=_extra_failures_before,
+                            failures_after=_extra_failures_after,
+                            output_digest_before=(
+                                _extra_output_digest_before
+                            ),
+                            output_digest_after=_extra_output_digest_after,
+                            terminal_rc=rc,
+                        )
+                        _write_retry_receipt(
+                            scratchpad,
+                            _extra_retry_receipt,
+                            phase=phase,
+                            config=config,
+                            failures_after=_extra_failures_after,
+                            full_gate_passed=bool(passed),
+                            terminal_rc=rc,
+                        )
+                        _semantic_retry_no_progress = (
+                            _extra_retry_receipt.status == "NO_PROGRESS"
+                        )
+                    except Exception as _extra_retry_receipt_exc:
+                        log.warning(
+                            f"[{phase.name}] attempt {_codex_attempt} retry "
+                            f"receipt degraded: {_extra_retry_receipt_exc!r}"
+                        )
                 if _halted:
                     break
 
@@ -92826,7 +96183,11 @@ def main():
             # doesn't contaminate future runs if the checkpoint is reused.
             if passed:
                 _clear_retry_hint(scratchpad, phase.name)
-                _cleanup_quarantine_backups(scratchpad, phase)
+                _cleanup_quarantine_backups(
+                    scratchpad,
+                    phase,
+                    run_id=str(checkpoint.run_id or ""),
+                )
 
             if not passed:
                 # LAST-RESORT recon degrade (FIX 1b): the worker pool, the
@@ -92854,7 +96215,11 @@ def main():
                             "after exhausting all attempts; continuing pipeline"
                         )
                         _clear_retry_hint(scratchpad, phase.name)
-                        _cleanup_quarantine_backups(scratchpad, phase)
+                        _cleanup_quarantine_backups(
+                            scratchpad,
+                            phase,
+                            run_id=str(checkpoint.run_id or ""),
+                        )
                         _recon_content_issues = _commit_content_with_gate_debt(
                             phase,
                             config,
@@ -93032,7 +96397,11 @@ def main():
                     )
                     if passed_r:
                         _clear_retry_hint(scratchpad, phase.name)
-                        _cleanup_quarantine_backups(scratchpad, phase)
+                        _cleanup_quarantine_backups(
+                            scratchpad,
+                            phase,
+                            run_id=str(checkpoint.run_id or ""),
+                        )
                         # fall through to mark_completed below
                     else:
                         log.warning(
@@ -93162,15 +96531,36 @@ def main():
                         attempt3_state_before = _snapshot_file_state(
                             scratchpad, config["project_root"]
                         )
-                        rc = run_phase(phase, config, attempt=critical_retry_attempt)
+                        rc = _run_retry_phase(
+                            phase,
+                            config,
+                            checkpoint=checkpoint,
+                            scratchpad=scratchpad,
+                            attempt=critical_retry_attempt,
+                            issues=list(missing),
+                        )
                         if rc == -3:
                             if _prompt_halt_resume_choice(
                                 checkpoint, scratchpad, phase.name, config_path
                             ):
-                                rc = run_phase(
-                                    phase, config,
-                                    attempt=critical_retry_attempt,
+                                critical_resume_attempt = (
+                                    _transport_resume_attempt(
+                                        phase, critical_retry_attempt
+                                    )
                                 )
+                                rc = _run_retry_phase(
+                                    phase,
+                                    config,
+                                    checkpoint=checkpoint,
+                                    scratchpad=scratchpad,
+                                    attempt=critical_resume_attempt,
+                                    issues=list(missing),
+                                )
+                                if phase.name in _INVENTORY_RETRY_MODEL_PHASES:
+                                    critical_retry_attempt = (
+                                        critical_resume_attempt
+                                    )
+                                    current_attempt = critical_resume_attempt
                             else:
                                 _halted = True
                                 break
@@ -93198,7 +96588,11 @@ def main():
                         )
                         if passed_3:
                             _clear_retry_hint(scratchpad, phase.name)
-                            _cleanup_quarantine_backups(scratchpad, phase)
+                            _cleanup_quarantine_backups(
+                                scratchpad,
+                                phase,
+                                run_id=str(checkpoint.run_id or ""),
+                            )
                             # Fall through to mark_completed below
                         else:
                             log.error(f"[{phase.name}] attempt 3 also failed: {missing_3}")
@@ -93212,17 +96606,29 @@ def main():
                             display.print_failure_diagnosis(
                                 phase.name, str(scratchpad), list(missing_3), config,
                             )
-                            _restore_quarantined_on_retry_failure(scratchpad, phase)
+                            _restore_quarantined_on_retry_failure(
+                                scratchpad,
+                                phase,
+                                run_id=str(checkpoint.run_id or ""),
+                            )
                             sys.exit(EXIT_DEGRADED)
                     elif choice == "skip":
                         log.warning(f"[{phase.name}] user chose SKIP — marking critical phase degraded, continuing pipeline")
-                        _restore_quarantined_on_retry_failure(scratchpad, phase)
+                        _restore_quarantined_on_retry_failure(
+                            scratchpad,
+                            phase,
+                            run_id=str(checkpoint.run_id or ""),
+                        )
                         continue
                     else:
                         display.print_failure_diagnosis(
                             phase.name, str(scratchpad), list(missing), config,
                         )
-                        _restore_quarantined_on_retry_failure(scratchpad, phase)
+                        _restore_quarantined_on_retry_failure(
+                            scratchpad,
+                            phase,
+                            run_id=str(checkpoint.run_id or ""),
+                        )
                         sys.exit(EXIT_DEGRADED)
 
         # P1-D POST: exact typed producer delivery replaces the legacy

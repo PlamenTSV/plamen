@@ -32,6 +32,7 @@ def _retry_receipt_payload() -> dict[str, object]:
         phase_name="recon",
         work_unit_id="phase",
         attempt=1,
+        terminal_rc=0,
         status="NO_PROGRESS",
         failure_instance_ids_before=(),
         failure_instance_ids_after=(),
@@ -68,7 +69,7 @@ def test_gate_failure_rejects_bool_for_persisted_integer(
 
 @pytest.mark.parametrize(
     "field",
-    ["attempt", "schema_version", "denominator_count"],
+    ["attempt", "terminal_rc", "schema_version", "denominator_count"],
 )
 @pytest.mark.parametrize("ambiguous", [False, True])
 def test_retry_receipt_rejects_bool_for_persisted_integer(
@@ -79,6 +80,71 @@ def test_retry_receipt_rejects_bool_for_persisted_integer(
     payload[field] = ambiguous
 
     with pytest.raises(RuntimeError, match=field):
+        RetryReceipt.from_dict(payload)
+
+
+@pytest.mark.parametrize("digest", ["A" * 64, "0" * 63, True])
+def test_retry_receipt_rejects_malformed_explicit_retry_plan_digest(
+    digest: object,
+) -> None:
+    payload = _retry_receipt_payload()
+    payload["retry_plan_digest"] = digest
+
+    with pytest.raises(RuntimeError, match="retry_plan_digest"):
+        RetryReceipt.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "terminal_rc,status",
+    [
+        (0, "CLEARED"),
+        (0, "PROGRESSED"),
+        (0, "NO_PROGRESS"),
+        (0, "FAILED"),
+        (-3, "INTERRUPTED"),
+        (1, "FAILED"),
+        (-1, "FAILED"),
+    ],
+)
+def test_retry_receipt_accepts_only_semantically_valid_terminal_rc_statuses(
+    terminal_rc: int, status: str,
+) -> None:
+    payload = _retry_receipt_payload()
+    payload["terminal_rc"] = terminal_rc
+    payload["status"] = status
+
+    receipt = RetryReceipt.from_dict(payload)
+    assert receipt.terminal_rc == terminal_rc
+    assert receipt.status == status
+
+
+@pytest.mark.parametrize(
+    "terminal_rc,status",
+    [
+        (-3, "FAILED"),
+        (0, "INTERRUPTED"),
+        (1, "CLEARED"),
+        (1, "PROGRESSED"),
+        (1, "NO_PROGRESS"),
+        (1, "INTERRUPTED"),
+    ],
+)
+def test_retry_receipt_rejects_contradictory_terminal_rc_statuses(
+    terminal_rc: int, status: str,
+) -> None:
+    payload = _retry_receipt_payload()
+    payload["terminal_rc"] = terminal_rc
+    payload["status"] = status
+
+    with pytest.raises(RuntimeError, match="terminal_rc|INTERRUPTED"):
+        RetryReceipt.from_dict(payload)
+
+
+def test_retry_receipt_requires_persisted_terminal_rc() -> None:
+    payload = _retry_receipt_payload()
+    del payload["terminal_rc"]
+
+    with pytest.raises(RuntimeError, match="terminal_rc"):
         RetryReceipt.from_dict(payload)
 
 

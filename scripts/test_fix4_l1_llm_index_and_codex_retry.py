@@ -157,9 +157,9 @@ def test_codex_extra_retry_loop_wired_into_driver():
     )
     # The extra-attempt block re-runs the same gated phase and re-validates.
     loop_idx = src.index("_codex_budget = _codex_max_attempts_for_phase(")
-    window = src[loop_idx:loop_idx + 4000]
-    assert "run_phase(phase, config, attempt=_codex_attempt)" in window, (
-        "extra attempt must re-run the same phase via run_phase"
+    window = src[loop_idx:loop_idx + 8000]
+    assert "rc = _run_retry_phase(" in window, (
+        "extra attempt must re-run the same phase via retry authority"
     )
     assert "_run_phase_validators(" in window, (
         "extra attempt must re-run the full phase validators (no gate relaxed)"
@@ -289,7 +289,7 @@ def test_extra_retry_loop_runs_before_degrade_and_relaxes_nothing():
         "on a real gate failure)"
     )
     # Re-runs the SAME phase and re-validates with the SAME validators.
-    assert "run_phase(phase, config, attempt=_codex_attempt)" in window
+    assert "rc = _run_retry_phase(" in window
     assert "_run_phase_validators(" in window
     # NEVER relaxes a gate: no gate-bypass / faked-pass inside the block.
     for forbidden in (

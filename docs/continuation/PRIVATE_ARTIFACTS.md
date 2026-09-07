@@ -94,8 +94,9 @@ bytes is not verification.
     for unfinished work. Re-authenticate through supported tools and create new
     machine-local keys. Never restore a private archive into the Git checkout.
 11. **Observe a retention window.** Keep the old machine and source archives
-    unchanged until the destination installation and continuation workflow have
-    remained usable for the agreed period.
+    unchanged until the macOS source-development workflow and the exact release
+    candidate's authenticated Windows production validation have remained
+    usable for the agreed period.
 12. **Approve cleanup separately.** Produce a final keep/archive/dispose list
     and obtain explicit operator approval before changing the old machine.
 
@@ -105,15 +106,22 @@ No cleanup operation is authorized merely because the branch was created or
 pushed. The minimum deletion gate is all-green:
 
 - remote branch visible;
-- fresh macOS clone at the expected commit;
-- source integrity checked;
-- native installation successful;
-- required tests and backend smoke checks successful;
+- fresh macOS clone at the exact final commit and clean submodule identities;
+- source integrity and the macOS source-development bootstrap checked;
+- a separate fresh clone of the same commit installed successfully through the
+  authenticated production installer on a supported Windows host;
+- `plamen doctor` authenticated that exact installed source/package identity;
+- fresh Codex and Claude non-ground-truth E2E audits completed through final
+  report from distinct clean destinations on that Windows package;
+- required source, package, fault, recovery, and backend checks successful;
 - private archive digests recomputed and matched;
 - retained items confirmed readable; and
 - explicit cleanup approval recorded.
 
 If any item is unknown, failed, or not yet run, the gate is closed.
+This gate does not claim or require a native macOS production install in the
+current generation. Native macOS installation remains unsupported until the
+POSIX runtime acceptance gates close.
 
 ## Cleanup order after acceptance
 

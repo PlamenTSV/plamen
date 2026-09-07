@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import logging
 import math
@@ -64,6 +65,7 @@ __all__ = [
     "_render_phase_isolation_block",
     "_render_forbidden_output_block",
     "_render_runtime_placeholders",
+    "_validated_inventory_v2_prompt_plan",
     "_resolve_l1_skill_paths",
     "_resolve_recon_prompt",
     "build_phase_prompt",
@@ -84,6 +86,122 @@ class PhasePromptError(Exception):
     the scratchpad. A clean halt is always better than a runaway agent.
     """
     pass
+
+
+_INVENTORY_RETRY_PROMPT_PHASES = frozenset({
+    "inventory",
+    "inventory_chunk_a",
+    "inventory_chunk_b",
+    "inventory_chunk_c",
+})
+_INVENTORY_RETRY_PROMPT_SCHEMA = "plamen.inventory-retry-plan/v2"
+
+
+def _validated_inventory_v2_prompt_plan(
+    config: dict[str, Any], phase: Phase
+) -> dict[str, Any]:
+    """Replay the driver-validated inventory plan passed to prompt assembly."""
+
+    if phase.name not in _INVENTORY_RETRY_PROMPT_PHASES:
+        return {}
+    attempt_map_name = (
+        "_phase_io_model_attempts"
+        if phase.name.startswith("inventory_chunk_")
+        else "_active_model_attempts"
+    )
+    attempt_map = config.get(attempt_map_name)
+    attempt = (
+        attempt_map.get(phase.name, 1)
+        if isinstance(attempt_map, dict)
+        else 1
+    )
+    if type(attempt) is not int or attempt < 1:
+        raise PhasePromptError(
+            f"{phase.name}: retry prompt attempt authority is malformed"
+        )
+    payloads = config.get("_inventory_retry_prompt_plans")
+    payload = (
+        payloads.get(phase.name)
+        if isinstance(payloads, dict)
+        else None
+    )
+    if attempt == 1 and payload is None:
+        return {}
+    if attempt <= 1 or not isinstance(payload, dict):
+        raise PhasePromptError(
+            f"{phase.name}: validated attempt-scoped retry plan is absent"
+        )
+    required = {
+        "schema", "run_id", "phase_name", "work_unit_id", "attempt",
+        "input_digest", "output_digest_before", "contract_digest",
+        "launch_digest", "required_output_schema", "failed_predicates",
+        "semantic_retry", "plan_digest",
+    }
+    if set(payload) != required:
+        raise PhasePromptError(
+            f"{phase.name}: retry prompt plan field set is malformed"
+        )
+    unsigned = dict(payload)
+    plan_digest = unsigned.pop("plan_digest", None)
+    calculated = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    run_id = str(config.get("_run_id") or "").strip()
+    rows = payload.get("failed_predicates")
+    canonical_failures = True
+    if isinstance(rows, list) and rows:
+        try:
+            for row in rows:
+                if not isinstance(row, dict):
+                    canonical_failures = False
+                    break
+                failure = GateFailure.from_dict(row)  # noqa: F405
+                unsigned_failure = dict(row)
+                unsigned_failure["predicate_digest"] = ""
+                unsigned_failure["failure_instance_id"] = ""
+                recomputed = GateFailure.from_dict(  # noqa: F405
+                    unsigned_failure
+                )
+                if (
+                    failure.to_dict() != row
+                    or failure.predicate_digest != recomputed.predicate_digest
+                    or failure.failure_instance_id
+                    != recomputed.failure_instance_id
+                ):
+                    canonical_failures = False
+                    break
+        except (RuntimeError, TypeError, ValueError):
+            canonical_failures = False
+    else:
+        canonical_failures = False
+    if (
+        payload.get("schema") != _INVENTORY_RETRY_PROMPT_SCHEMA
+        or payload.get("run_id") != run_id
+        or payload.get("phase_name") != phase.name
+        or payload.get("work_unit_id") != "phase"
+        or payload.get("attempt") != attempt
+        or not isinstance(plan_digest, str)
+        or plan_digest != calculated
+        or not isinstance(rows, list)
+        or not rows
+        or not canonical_failures
+        or any(
+            not isinstance(row, dict)
+            or not str(row.get("gate_id") or "").startswith(
+                f"{phase.name}."
+            )
+            for row in rows
+        )
+    ):
+        raise PhasePromptError(
+            f"{phase.name}: retry prompt plan identity/digest is invalid"
+        )
+    return dict(payload)
 
 
 # --- Helpers ---
@@ -4416,22 +4534,28 @@ narrower scope.
     try:
         scratchpad = Path(config["scratchpad"])
         hint = _read_retry_hint(scratchpad, phase.name)
-        if hint:
-            retry_plan: dict = {}
-            retry_plan_path = scratchpad / f"{phase.name}_retry_plan.json"
-            try:
-                loaded_plan = json.loads(
-                    retry_plan_path.read_text(encoding="utf-8")
-                )
-                if (
-                    isinstance(loaded_plan, dict)
-                    and loaded_plan.get("schema") == "plamen.retry-plan/v1"
-                    and loaded_plan.get("phase_name") == phase.name
-                ):
-                    retry_plan = loaded_plan
-            except Exception:
-                retry_plan = {}
-            semantic_retry = bool(retry_plan.get("semantic_retry"))
+        inventory_v2_plan = _validated_inventory_v2_prompt_plan(
+            config, phase
+        )
+        if hint or inventory_v2_plan:
+            retry_plan: dict = dict(inventory_v2_plan)
+            if not retry_plan:
+                retry_plan_path = scratchpad / f"{phase.name}_retry_plan.json"
+                try:
+                    loaded_plan = json.loads(
+                        retry_plan_path.read_text(encoding="utf-8")
+                    )
+                    if (
+                        isinstance(loaded_plan, dict)
+                        and loaded_plan.get("schema") == "plamen.retry-plan/v1"
+                        and loaded_plan.get("phase_name") == phase.name
+                    ):
+                        retry_plan = loaded_plan
+                except Exception:
+                    retry_plan = {}
+            semantic_retry = bool(
+                inventory_v2_plan or retry_plan.get("semantic_retry")
+            )
             semantic_contract_block = ""
             if semantic_retry:
                 semantic_contract_block = (
@@ -4578,6 +4702,8 @@ narrower scope.
                 f"WebSearch). Do NOT retry the same MCP call.\n"
             )
             header = compact
+    except PhasePromptError:
+        raise
     except Exception as e:
         log.debug(f"[{phase.name}] retry hint skipped: {e}")
     boundary_violations = _find_prompt_phase_boundary_violations(

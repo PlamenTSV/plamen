@@ -10,7 +10,6 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import uuid
-import venv
 
 import pytest
 
@@ -24,6 +23,7 @@ from phase_io_contracts import LaunchSpec, resolve_phase_io_contract
 from test_claude_launch_authority_fixtures import (
     OFFLINE_OAUTH_TOKEN,
     install_test_only_launch_authority_adapter,
+    materialize_test_provider_executable,
 )
 from test_claude_mcp_generation_authority import (
     authenticated_mcp_selection_fixture,
@@ -101,23 +101,12 @@ def _functional_single_link_python(tmp_path: Path) -> Path:
     """Return a relocatable interpreter with one filesystem name.
 
     The ordinary Windows development interpreter is commonly hard-linked and
-    correctly rejected by the production execution guard.  Prefer the local
-    reviewed test runtime when present; otherwise build a copy-based venv so
-    the executable keeps a functional stdlib/prefix instead of relocating
-    only ``python.exe``.
+    correctly rejected by the production execution guard.  Build the
+    test-local copy-based venv so the executable keeps a functional
+    stdlib/prefix instead of relocating only ``python.exe``.
     """
 
-    reviewed = Path(r"C:\p27rt\python.exe")
-    if os.name == "nt" and reviewed.is_file():
-        candidate = reviewed.resolve(strict=True)
-    else:
-        runtime_root = tmp_path / "single-link-python"
-        venv.EnvBuilder(with_pip=False, symlinks=False).create(runtime_root)
-        candidate = (
-            runtime_root / "Scripts" / "python.exe"
-            if os.name == "nt"
-            else runtime_root / "bin" / "python"
-        ).resolve(strict=True)
+    candidate = materialize_test_provider_executable(tmp_path)
     metadata = candidate.stat()
     assert int(getattr(metadata, "st_nlink", 1) or 1) == 1
     return candidate
@@ -177,8 +166,9 @@ def test_codex_leaf_uses_transactional_runtime_when_phaseio_is_armed(
         needs_mcp: bool = False,
         output_last_message: str = "",
         writable_dirs=None,
+        live_search: bool = False,
     ) -> list[str]:
-        del needs_mcp, output_last_message
+        del needs_mcp, output_last_message, live_search
         output_root = str(writable_dirs[0])
         return [
             str(private_python),

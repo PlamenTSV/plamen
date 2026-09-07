@@ -67,15 +67,18 @@ host_system=$(uname -s 2>/dev/null || true)
 
 host_arch=$(uname -m 2>/dev/null || true)
 case "$host_arch" in
-    arm64|x86_64)
+    arm64)
+        ;;
+    x86_64)
+        fail 2 "Intel macOS source bootstrap is not supported by the binary-only dependency authority; cryptography 50.0.1 has no CPython Intel-macOS wheel and the governed source-build path is not yet implemented"
         ;;
     *)
-        fail 2 "unsupported macOS architecture: ${host_arch:-unknown}; expected arm64 or x86_64"
+        fail 2 "unsupported macOS architecture: ${host_arch:-unknown}; expected arm64"
         ;;
 esac
 
 if [ "$require_native_audit" -eq 1 ]; then
-    fail 3 "native macOS E2E audit execution is not supported by this tree; continue docs/continuation/GOAL.md or use a supported Windows/Linux audit host"
+    fail 3 "native macOS E2E audit execution is not supported by this tree; continue docs/continuation/GOAL.md or use a supported Windows audit host"
 fi
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
@@ -102,10 +105,10 @@ python_identity=$(
     "$python_path" -I -c 'import platform, sys; print(f"{sys.implementation.name}:{sys.version_info.major}.{sys.version_info.minor}:{platform.machine()}")'
 ) || fail 2 "could not inspect the requested Python interpreter"
 case "$python_identity" in
-    cpython:3.12:arm64|cpython:3.12:x86_64)
+    cpython:3.12:arm64)
         ;;
     *)
-        fail 2 "expected CPython 3.12 for arm64/x86_64, observed: $python_identity"
+        fail 2 "expected CPython 3.12 for arm64, observed: $python_identity"
         ;;
 esac
 
@@ -209,5 +212,5 @@ Activate it with:
 Native macOS audit runtime: UNSUPPORTED IN THIS TREE.
 Do not run plamen.py install or claim a macOS E2E audit from this bootstrap.
 Continue the native/VM audit-host work tracked in docs/continuation/GOAL.md,
-or run audits on an already-supported Windows/Linux host.
+or run audits on an already-supported Windows host.
 EOF

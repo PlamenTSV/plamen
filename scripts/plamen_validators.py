@@ -13,9 +13,12 @@ import sys
 import tempfile
 import time
 import hashlib
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Optional
+
+import rooted_path_io as rooted_io
 
 # The driver is also launched by absolute `scripts/plamen_driver.py` path from
 # an audited project cwd. In that mode Python adds only `scripts/` to sys.path;
@@ -4119,6 +4122,10 @@ def _collect_semantic_dedup_acknowledged_ids(scratchpad: Path) -> set[str]:
 _PROJECT_SOURCE_STATE_PREFIX = "../PROJECT_SOURCE/"
 _PROJECT_SOURCE_STATE_MAX_FILES = 25_000
 _PROJECT_SOURCE_STATE_MAX_BYTES = 512 * 1024 * 1024
+_SCRATCHPAD_STATE_MAX_FILES = 100_000
+_SCRATCHPAD_STATE_MAX_DIRECTORIES = 25_000
+_SCRATCHPAD_STATE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+_SCRATCHPAD_STATE_MAX_DEPTH = 128
 
 
 def _snapshot_project_source_state(
@@ -4194,33 +4201,1840 @@ def _snapshot_project_source_state(
     return state
 
 
+def _containment_identity(row: os.stat_result) -> tuple[int, int, int]:
+    return (
+        int(getattr(row, "st_dev", 0)),
+        int(getattr(row, "st_ino", 0)),
+        int(getattr(row, "st_mode", 0)),
+    )
+
+
+def _reserve_retired_reparse_evidence(
+    scratchpad: Path,
+    phase_name: str,
+    relative: str,
+    source_identity: tuple[int, ...],
+    *,
+    transaction_id: str,
+    disposition: str = "REPARSE_OBJECT_RETIRED_NOFOLLOW",
+) -> dict[str, Any]:
+    """Durably reserve one immutable retirement-evidence segment.
+
+    This happens before the object mutation.  The prepared transaction remains
+    the liveness authority until recovery removes it, while this exact segment
+    guarantees that completing the move never depends on growing the monolithic
+    artifact-state projection.
+    """
+
+    root = rooted_io.checked_directory(
+        Path(scratchpad), label="containment evidence scratchpad"
+    )
+    evidence_directory = rooted_io.safe_descendant(
+        root,
+        _CONTAINMENT_REPARSE_EVIDENCE,
+        allow_missing=True,
+        label="containment segmented evidence",
+    )
+    rooted_io.ensure_directory(
+        evidence_directory,
+        parents=False,
+        label="containment segmented evidence",
+    )
+    segment_name = f"{transaction_id}.json"
+    if re.fullmatch(r"[0-9a-f]{64}\.json", segment_name) is None:
+        raise RuntimeError("containment evidence transaction id is malformed")
+    # Construct only the final deterministic leaf beneath the already checked
+    # directory.  ``safe_descendant`` intentionally rejects a final reparse,
+    # but an attacker-controlled object at this exact name must be retired as
+    # a leaf object without ever following its target.
+    segment_path = evidence_directory / segment_name
+    base_event = {
+        "schema": "plamen.containment-reparse-retirement/v1",
+        "transaction_id": transaction_id,
+        "phase_name": phase_name,
+        "path": relative,
+        "disposition": disposition,
+        "source_lstat_identity": list(source_identity),
+    }
+    segment_event: dict[str, Any] | None = None
+    if rooted_io.lexists(segment_path):
+        exact = False
+        try:
+            rooted_io.exact_existing_name(segment_path)
+            row = rooted_io.lstat(segment_path)
+            if (
+                not stat.S_ISREG(row.st_mode)
+                or stat.S_ISLNK(row.st_mode)
+                or rooted_io.is_reparse(segment_path)
+                or int(getattr(row, "st_nlink", 1) or 1) != 1
+            ):
+                raise RuntimeError(
+                    "containment evidence segment is not a stable regular file"
+                )
+            segment_raw = rooted_io.read_bytes(
+                segment_path,
+                label="containment retirement evidence segment",
+                require_single_link=True,
+                max_bytes=_CONTAINMENT_REPARSE_RECORD_MAX_BYTES,
+            )
+            parsed = json.loads(segment_raw.decode("utf-8", errors="strict"))
+            if not isinstance(parsed, dict) or set(parsed) != {
+                *base_event.keys(), "recorded_at",
+            }:
+                raise RuntimeError(
+                    "containment retirement evidence segment is malformed"
+                )
+            comparable = dict(parsed)
+            recorded_at = comparable.pop("recorded_at", None)
+            canonical = (
+                json.dumps(parsed, indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            if (
+                comparable != base_event
+                or not isinstance(recorded_at, str)
+                or not recorded_at.strip()
+                or segment_raw != canonical
+            ):
+                raise RuntimeError(
+                    "containment retirement evidence segment drifted"
+                )
+            segment_event = dict(parsed)
+            exact = True
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+            json.JSONDecodeError,
+            rooted_io.RootedPathIOError,
+        ):
+            exact = False
+        if not exact:
+            collision = _retire_containment_namespace_collision(segment_path)
+            _containment_evidence_collision_hook(segment_path, collision)
+    if segment_event is None:
+        segment_event = {
+            **base_event,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        segment_raw = (
+            json.dumps(segment_event, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        _publish_exact_containment_evidence_bytes(
+            evidence_directory,
+            segment_name,
+            segment_raw,
+            label="containment retirement evidence segment",
+        )
+    return dict(segment_event)
+
+
+def _containment_evidence_collision_hook(
+    segment_path: Path, collision_path: Path,
+) -> None:
+    """Deterministic crash/race seam after foreign evidence retirement."""
+
+
+def _containment_evidence_reserved_hook(
+    segment_event: Mapping[str, Any],
+) -> None:
+    """Deterministic crash seam after evidence reservation, before mutation."""
+
+
+def _publish_exact_containment_evidence_bytes(
+    evidence_directory: Path,
+    name: str,
+    raw: bytes,
+    *,
+    label: str,
+) -> Path:
+    """Publish one deterministic evidence leaf after retiring any collision."""
+
+    directory = rooted_io.checked_directory(
+        evidence_directory, label=f"{label} directory"
+    )
+    if (
+        re.fullmatch(r"(?:[0-9a-f]{64}|debt-[0-9a-f]{64})\.json", name)
+        is None
+    ):
+        raise RuntimeError(f"{label} name is malformed")
+    path = directory / name
+    exact = False
+    if rooted_io.lexists(path):
+        try:
+            rooted_io.exact_existing_name(path)
+            row = rooted_io.lstat(path)
+            if (
+                not stat.S_ISREG(row.st_mode)
+                or stat.S_ISLNK(row.st_mode)
+                or rooted_io.is_reparse(path)
+                or int(getattr(row, "st_nlink", 1) or 1) != 1
+            ):
+                raise RuntimeError(f"{label} is not a stable regular file")
+            exact = rooted_io.read_bytes(
+                path,
+                label=label,
+                require_single_link=True,
+                max_bytes=len(raw),
+            ) == raw
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            rooted_io.RootedPathIOError,
+        ):
+            exact = False
+        if not exact:
+            collision = _retire_containment_namespace_collision(path)
+            _containment_evidence_collision_hook(path, collision)
+    if not exact:
+        rooted_io.durable_write_once_bytes(path, raw)
+    observed = rooted_io.read_bytes(
+        path,
+        label=label,
+        require_single_link=True,
+        max_bytes=len(raw),
+    )
+    if observed != raw:
+        raise RuntimeError(f"{label} publication drifted")
+    return path
+
+
+def _record_retired_reparse_evidence(
+    scratchpad: Path,
+    phase_name: str,
+    relative: str,
+    source_identity: tuple[int, ...],
+    *,
+    transaction_id: str,
+    disposition: str = "REPARSE_OBJECT_RETIRED_NOFOLLOW",
+) -> None:
+    """Finalize the bounded artifact-state projection for a reserved segment."""
+
+    root = rooted_io.checked_directory(
+        Path(scratchpad), label="containment evidence scratchpad"
+    )
+    segment_event = _reserve_retired_reparse_evidence(
+        root,
+        phase_name,
+        relative,
+        source_identity,
+        transaction_id=transaction_id,
+        disposition=disposition,
+    )
+
+    # The immutable segment above is the authority.  Keep the legacy state
+    # projection only while its entire read/serialize/write cost is tightly
+    # bounded; a valid near-cap state must never strand an already moved object.
+    current_raw = _artifact_state_raw(root)
+    if (
+        current_raw is not None
+        and len(current_raw) > _CONTAINMENT_STATE_PROJECTION_MAX_BYTES
+    ):
+        return
+
+    state = _read_artifact_state(root)
+    artifacts = state.setdefault("artifacts", {})
+    if not isinstance(artifacts, dict):
+        raise RuntimeError("artifact state rows are malformed")
+    now = str(segment_event["recorded_at"])
+    prior = artifacts.get(relative)
+    if isinstance(prior, dict) or len([
+        value for value in artifacts.values()
+        if isinstance(value, dict) and value.get("status") == "QUARANTINED"
+    ]) < _CONTAINMENT_INLINE_EVIDENCE_MAX:
+        if not isinstance(prior, dict):
+            prior = {}
+        artifacts[relative] = {
+            **prior,
+            "path": relative,
+            "owner_phase": prior.get("owner_phase") or phase_name,
+            "quarantined_by_phase": phase_name,
+            "status": "QUARANTINED",
+            "containment_disposition": disposition,
+            "source_lstat_identity": list(source_identity),
+            "updated_at": now,
+        }
+    events = state.setdefault("containment_events", [])
+    if not isinstance(events, list):
+        raise RuntimeError("artifact state containment events are malformed")
+    event = dict(segment_event)
+    prior_events = [
+        item for item in events
+        if isinstance(item, dict)
+        and item.get("transaction_id") == transaction_id
+    ]
+    if prior_events:
+        comparable = dict(event)
+        comparable.pop("recorded_at", None)
+        observed = dict(prior_events[0])
+        observed.pop("recorded_at", None)
+        if comparable != observed or len(prior_events) != 1:
+            raise RuntimeError(
+                "containment reparse evidence transaction drifted"
+            )
+    elif len(events) < _CONTAINMENT_INLINE_EVIDENCE_MAX:
+        events.append(event)
+    elif not any(
+        isinstance(item, dict)
+        and item.get("disposition") == "SEGMENTED_CONTAINMENT_EVIDENCE"
+        for item in events
+    ):
+        events.append({
+            "schema": "plamen.containment-reparse-segment-index/v1",
+            "disposition": "SEGMENTED_CONTAINMENT_EVIDENCE",
+            "path": _CONTAINMENT_REPARSE_EVIDENCE,
+            "inline_limit": _CONTAINMENT_INLINE_EVIDENCE_MAX,
+        })
+    projected = (
+        json.dumps(state, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if len(projected) > _CONTAINMENT_STATE_PROJECTION_MAX_BYTES:
+        return
+    _write_artifact_state(root, state)
+
+
+_CONTAINMENT_REPARSE_JOURNAL = "_containment_reparse_journal"
+_CONTAINMENT_REPARSE_QUARANTINE = "_containment_reparse_quarantine"
+_CONTAINMENT_REPARSE_EVIDENCE = "_containment_reparse_evidence"
+_CONTAINMENT_INLINE_EVIDENCE_MAX = 256
+_CONTAINMENT_STATE_PROJECTION_MAX_BYTES = 1024 * 1024
+_CONTAINMENT_REPARSE_MAX_TRANSACTIONS = 2048
+_CONTAINMENT_REPARSE_RECORD_MAX_BYTES = 64 * 1024
+_CONTAINMENT_CONTROL_SCHEMA = "plamen.containment-control-retirement/v1"
+_CONTAINMENT_CONTROL_PREFIX = "._containment-control-"
+_CONTAINMENT_CONTROL_AUTHORITY_SUFFIX = ".authority.json"
+_CONTAINMENT_CONTROL_SCAN_MAX_ENTRIES = 32_768
+_CONTAINMENT_CONTROL_SCAN_MAX_NAME_BYTES = 4 * 1024 * 1024
+_CONTAINMENT_CONTROL_DEBT_SAMPLES = 16
+_CONTAINMENT_JOURNAL_SCAN_MAX_ENTRIES = 32_768
+_CONTAINMENT_JOURNAL_SCAN_MAX_NAME_BYTES = 4 * 1024 * 1024
+_CONTAINMENT_CONTROL_NAMES = {
+    "journal": _CONTAINMENT_REPARSE_JOURNAL,
+    "quarantine": _CONTAINMENT_REPARSE_QUARANTINE,
+    "evidence": _CONTAINMENT_REPARSE_EVIDENCE,
+}
+
+
+def _containment_reparse_leaf(
+    root: Path, relative: str,
+) -> tuple[Path, os.stat_result] | None:
+    text = str(relative).replace("\\", "/")
+    parts = text.split("/")
+    if (
+        not text
+        or text != text.strip()
+        or text.startswith("/")
+        or any(part in {"", ".", ".."} or ":" in part for part in parts)
+    ):
+        raise rooted_io.RootedPathIOError(
+            "containment reparse relative path is malformed"
+        )
+    checked_root = rooted_io.checked_directory(
+        root, label="containment reparse root"
+    )
+    parent_text = "/".join(parts[:-1])
+    parent = (
+        rooted_io.safe_descendant(
+            checked_root,
+            parent_text,
+            allow_missing=False,
+            label="containment reparse parent",
+        )
+        if parent_text
+        else checked_root
+    )
+    parent = rooted_io.checked_directory(
+        parent, label="containment reparse parent"
+    )
+    candidate = parent / parts[-1]
+    if not rooted_io.lexists(candidate):
+        return None
+    rooted_io.exact_existing_name(candidate)
+    return candidate, rooted_io.lstat(candidate)
+
+
+def _containment_reparse_json(path: Path) -> dict[str, Any] | None:
+    if not rooted_io.lexists(path):
+        return None
+    raw = rooted_io.read_bytes(
+        path,
+        label="containment reparse transaction",
+        require_single_link=True,
+        max_bytes=_CONTAINMENT_REPARSE_RECORD_MAX_BYTES,
+    )
+    payload = json.loads(raw.decode("utf-8", errors="strict"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("containment reparse transaction is not an object")
+    return payload
+
+
+def _containment_reparse_publish(path: Path, payload: Mapping[str, Any]) -> None:
+    raw = (
+        json.dumps(dict(payload), indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if len(raw) > _CONTAINMENT_REPARSE_RECORD_MAX_BYTES:
+        raise RuntimeError("containment reparse transaction is oversized")
+    if rooted_io.lexists(path):
+        exact = False
+        try:
+            exact = rooted_io.read_bytes(
+                path,
+                label="containment transaction replay",
+                require_single_link=True,
+                max_bytes=len(raw),
+            ) == raw
+        except (OSError, rooted_io.RootedPathIOError):
+            exact = False
+        if exact:
+            return
+        _retire_containment_namespace_collision(path)
+    rooted_io.durable_write_once_bytes(path, raw)
+
+
+def _retire_containment_namespace_collision(path: Path) -> Path:
+    """Move one exact foreign control-name object aside without traversal."""
+
+    parent = rooted_io.checked_directory(
+        path.parent, label="containment collision parent"
+    )
+    rooted_io.exact_existing_name(path)
+    row = rooted_io.lstat(path)
+    identity = _containment_identity(row)
+    # Randomness is not authority; it only provides a no-clobber private name
+    # attackers could not have preoccupied before this exact mutation.  The
+    # retained object identity is encoded for forensic classification.
+    for _candidate in range(16):
+        foreign_name = (
+            f"._foreign-{path.name}-{identity[0]:x}-{identity[1]:x}-"
+            f"{uuid.uuid4().hex}.object"
+        )
+        destination = parent / foreign_name
+        if rooted_io.lexists(destination):
+            continue
+        rooted_io.durable_quarantine_reparse(
+            parent,
+            path.name,
+            parent,
+            foreign_name,
+            expected_identity=identity,
+            require_reparse=False,
+            allow_directory=True,
+        )
+        return destination
+    raise RuntimeError("containment collision quarantine namespace exhausted")
+
+
+def _containment_control_payload(
+    root: Path,
+    tag: str,
+    source_identity: tuple[int, ...],
+) -> dict[str, Any]:
+    source_name = _CONTAINMENT_CONTROL_NAMES[tag]
+    unsigned: dict[str, Any] = {
+        "schema": _CONTAINMENT_CONTROL_SCHEMA,
+        "phase_name": "containment_snapshot",
+        "source_root": os.fspath(root),
+        "source_root_identity": list(
+            _containment_identity(rooted_io.lstat(root))
+        ),
+        "source_name": source_name,
+        "source_identity": list(source_identity),
+        "tag": tag,
+    }
+    txid = hashlib.sha256(json.dumps(
+        unsigned,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+    return {
+        **unsigned,
+        "transaction_id": txid,
+        "bootstrap_relative": (
+            f"{_CONTAINMENT_CONTROL_PREFIX}{tag}-{txid}.link"
+        ),
+        "quarantine_relative": (
+            f"{_CONTAINMENT_REPARSE_QUARANTINE}/{txid}.control.link"
+        ),
+    }
+
+
+def _containment_control_authority_path(root: Path, tag: str) -> Path:
+    if tag not in _CONTAINMENT_CONTROL_NAMES:
+        raise RuntimeError("containment control authority tag is invalid")
+    return root / (
+        f"{_CONTAINMENT_CONTROL_PREFIX}{tag}"
+        f"{_CONTAINMENT_CONTROL_AUTHORITY_SUFFIX}"
+    )
+
+
+def _validated_containment_control_payload(
+    root: Path,
+    payload: Mapping[str, Any],
+    *,
+    observed_identity: tuple[int, ...],
+) -> dict[str, Any]:
+    required = {
+        "schema", "phase_name", "source_root", "source_root_identity",
+        "source_name", "source_identity", "tag", "transaction_id",
+        "bootstrap_relative", "quarantine_relative",
+    }
+    if set(payload) != required:
+        raise RuntimeError("containment control transaction is malformed")
+    tag = str(payload.get("tag") or "")
+    if tag not in _CONTAINMENT_CONTROL_NAMES:
+        raise RuntimeError("containment control transaction tag is invalid")
+    expected = _containment_control_payload(root, tag, observed_identity)
+    if dict(payload) != expected:
+        raise RuntimeError("containment control transaction identity drifted")
+    return expected
+
+
+def _validated_direct_containment_control_authority(
+    root: Path,
+    tag: str,
+    authority_path: Path,
+) -> dict[str, Any]:
+    """Read a fixed control authority without directory-order discovery."""
+
+    rooted_io.exact_existing_name(authority_path)
+    row = rooted_io.lstat(authority_path)
+    if (
+        not stat.S_ISREG(row.st_mode)
+        or stat.S_ISLNK(row.st_mode)
+        or rooted_io.is_reparse(authority_path)
+        or int(getattr(row, "st_nlink", 1) or 1) != 1
+    ):
+        raise RuntimeError(
+            "containment control authority is not a stable regular file"
+        )
+    raw = rooted_io.read_bytes(
+        authority_path,
+        label="containment control direct authority",
+        require_single_link=True,
+        max_bytes=_CONTAINMENT_REPARSE_RECORD_MAX_BYTES,
+    )
+    payload = json.loads(raw.decode("utf-8", errors="strict"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("containment control authority is not an object")
+    if payload.get("tag") != tag:
+        raise RuntimeError("containment control authority tag drifted")
+    txid = payload.get("transaction_id")
+    source_identity_raw = payload.get("source_identity")
+    if (
+        not isinstance(txid, str)
+        or re.fullmatch(r"[0-9a-f]{64}", txid) is None
+        or not isinstance(source_identity_raw, list)
+        or len(source_identity_raw) != 3
+        or any(
+            isinstance(item, bool) or not isinstance(item, int)
+            for item in source_identity_raw
+        )
+    ):
+        raise RuntimeError("containment control authority identity is malformed")
+    expected_identity = tuple(source_identity_raw)
+    candidate_relatives = (
+        _CONTAINMENT_CONTROL_NAMES[tag],
+        f"{_CONTAINMENT_CONTROL_PREFIX}{tag}-{txid}.link",
+        f"{_CONTAINMENT_REPARSE_QUARANTINE}/{txid}.control.link",
+    )
+    observed_identity: tuple[int, ...] | None = None
+    for relative in candidate_relatives:
+        try:
+            candidate = _containment_reparse_leaf(root, relative)
+        except (OSError, RuntimeError, rooted_io.RootedPathIOError):
+            candidate = None
+        if (
+            candidate is not None
+            and _containment_identity(candidate[1]) == expected_identity
+        ):
+            observed_identity = _containment_identity(candidate[1])
+            break
+    if observed_identity is None:
+        raise RuntimeError(
+            "containment control authority has no exact live transaction object"
+        )
+    validated = _validated_containment_control_payload(
+        root, payload, observed_identity=observed_identity
+    )
+    canonical = (
+        json.dumps(validated, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if raw != canonical:
+        raise RuntimeError("containment control authority bytes are non-canonical")
+    return validated
+
+
+def _containment_control_authority_reserved_hook(
+    authority_path: Path, payload: Mapping[str, Any],
+) -> None:
+    """Deterministic crash seam after fixed authority, before mutation."""
+
+
+def _is_containment_control_collision_name(name: str) -> bool:
+    return re.fullmatch(
+        r"\._foreign-\._containment-control-"
+        r"(?:journal|quarantine|evidence)\.authority\.json-"
+        r"[0-9a-f]+-[0-9a-f]+-[0-9a-f]{32}\.object",
+        name,
+    ) is not None
+
+
+def _is_authenticated_flat_control_bootstrap(
+    root: Path,
+    name: str,
+    identity: tuple[int, ...],
+) -> bool:
+    """Keep an undiscovered legacy bootstrap intact until bounded recovery."""
+
+    match = re.fullmatch(
+        re.escape(_CONTAINMENT_CONTROL_PREFIX)
+        + r"(journal|quarantine|evidence)-([0-9a-f]{64})\.link",
+        name,
+    )
+    if match is None:
+        return False
+    tag, txid = match.groups()
+    prepared_path = root / (
+        f"{_CONTAINMENT_CONTROL_PREFIX}{tag}-{txid}.prepared.json"
+    )
+    try:
+        payload = _containment_reparse_json(prepared_path)
+        if payload is None:
+            return False
+        validated = _validated_containment_control_payload(
+            root, payload, observed_identity=identity
+        )
+        raw = rooted_io.read_bytes(
+            prepared_path,
+            label="containment control paired prepared authority",
+            require_single_link=True,
+            max_bytes=_CONTAINMENT_REPARSE_RECORD_MAX_BYTES,
+        )
+        canonical = (
+            json.dumps(validated, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        return (
+            validated["tag"] == tag
+            and validated["transaction_id"] == txid
+            and validated["bootstrap_relative"] == name
+            and raw == canonical
+        )
+    except (
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        json.JSONDecodeError,
+        rooted_io.RootedPathIOError,
+    ):
+        return False
+
+
+def _prepare_containment_control_roots(
+    scratchpad: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Bootstrap poisoned driver control roots without traversing them.
+
+    The deterministic flat prepared row is published before mutation.  The
+    flat quarantine name then remains sufficient to recover a crash even when
+    both ordinary journal directories were attacker-controlled reparses.
+    """
+
+    root = rooted_io.checked_directory(
+        scratchpad, label="containment control scratchpad"
+    )
+    pending: dict[str, dict[str, Any]] = {}
+    invalid_count = 0
+    invalid_sum = 0
+    invalid_xor = 0
+    invalid_samples: list[str] = []
+    scan_entries = 0
+    scan_name_bytes = 0
+    scan_exhausted = False
+
+    def _invalid(name: str, row: os.stat_result, reason: str) -> None:
+        nonlocal invalid_count, invalid_sum, invalid_xor, invalid_samples
+        digest = hashlib.sha256(json.dumps(
+            {
+                "name": name,
+                "identity": list(_containment_identity(row)),
+                "reason": reason,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).digest()
+        value = int.from_bytes(digest, "big")
+        invalid_count += 1
+        invalid_sum = (invalid_sum + value) % (1 << 256)
+        invalid_xor ^= value
+        invalid_samples.append(name)
+        invalid_samples.sort()
+        del invalid_samples[_CONTAINMENT_CONTROL_DEBT_SAMPLES:]
+
+    # Current control transactions publish one fixed per-tag authority before
+    # any source mutation.  Resolve these names directly so unrelated root
+    # entries can never starve a previously durable transaction.
+    for tag in sorted(_CONTAINMENT_CONTROL_NAMES):
+        authority_path = _containment_control_authority_path(root, tag)
+        if not rooted_io.lexists(authority_path):
+            continue
+        rooted_io.exact_existing_name(authority_path)
+        authority_row = rooted_io.lstat(authority_path)
+        try:
+            pending[tag] = _validated_direct_containment_control_authority(
+                root, tag, authority_path
+            )
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+            json.JSONDecodeError,
+            rooted_io.RootedPathIOError,
+        ) as exc:
+            _invalid(authority_path.name, authority_row, str(exc)[:256])
+            _retire_containment_namespace_collision(authority_path)
+
+    # Recover flat quarantine residues first.  Their source tag and immutable
+    # link identity deterministically reconstruct the exact prepared payload.
+    residue_pattern = re.compile(
+        re.escape(_CONTAINMENT_CONTROL_PREFIX)
+        + r"(journal|quarantine|evidence)-([0-9a-f]{64})\.link"
+    )
+    prepared_pattern = re.compile(
+        re.escape(_CONTAINMENT_CONTROL_PREFIX)
+        + r"(journal|quarantine|evidence)-([0-9a-f]{64})\.prepared\.json"
+    )
+    with rooted_io.scandir(root) as entries:
+        for entry in entries:
+            scan_entries += 1
+            scan_name_bytes += len(os.fsencode(entry.name))
+            if (
+                scan_entries > _CONTAINMENT_CONTROL_SCAN_MAX_ENTRIES
+                or scan_name_bytes > _CONTAINMENT_CONTROL_SCAN_MAX_NAME_BYTES
+            ):
+                scan_exhausted = True
+                break
+            if _is_containment_control_collision_name(entry.name):
+                candidate = root / entry.name
+                rooted_io.exact_existing_name(candidate)
+                _invalid(
+                    entry.name,
+                    rooted_io.lstat(candidate),
+                    "RETIRED_CONTROL_AUTHORITY_COLLISION",
+                )
+                continue
+            prepared_match = prepared_pattern.fullmatch(entry.name)
+            if prepared_match is not None:
+                candidate = root / entry.name
+                rooted_io.exact_existing_name(candidate)
+                row = rooted_io.lstat(candidate)
+                try:
+                    payload = _containment_reparse_json(candidate)
+                    if payload is None:
+                        raise RuntimeError(
+                            "containment control prepared row disappeared"
+                        )
+                    tag = prepared_match.group(1)
+                    txid = prepared_match.group(2)
+                    bootstrap = _containment_reparse_leaf(
+                        root,
+                        f"{_CONTAINMENT_CONTROL_PREFIX}{tag}-{txid}.link",
+                    )
+                    archived = _containment_reparse_leaf(
+                        root,
+                        f"{_CONTAINMENT_REPARSE_QUARANTINE}/"
+                        f"{txid}.control.link",
+                    )
+                    observed = bootstrap or archived
+                    if observed is None:
+                        raise RuntimeError(
+                            "containment control prepared row has no exact "
+                            "bootstrap or archive object"
+                        )
+                    payload = _validated_containment_control_payload(
+                        root,
+                        payload,
+                        observed_identity=_containment_identity(observed[1]),
+                    )
+                    if (
+                        payload["tag"] != tag
+                        or payload["transaction_id"] != txid
+                    ):
+                        raise RuntimeError(
+                            "containment control prepared filename drifted"
+                        )
+                except (
+                    OSError,
+                    RuntimeError,
+                    TypeError,
+                    ValueError,
+                    UnicodeError,
+                    json.JSONDecodeError,
+                    rooted_io.RootedPathIOError,
+                ) as exc:
+                    _invalid(entry.name, row, str(exc)[:256])
+                    continue
+                prior = pending.get(tag)
+                if prior is not None and prior != payload:
+                    _invalid(
+                        entry.name, row, "DUPLICATE_CONTROL_PREPARED_AUTHORITY"
+                    )
+                    continue
+                pending[tag] = payload
+                continue
+            match = residue_pattern.fullmatch(entry.name)
+            if match is None:
+                continue
+            candidate = root / entry.name
+            rooted_io.exact_existing_name(candidate)
+            row = rooted_io.lstat(candidate)
+            payload = _containment_control_payload(
+                root, match.group(1), _containment_identity(row)
+            )
+            if payload["transaction_id"] != match.group(2):
+                _invalid(entry.name, row, "IDENTITY_DERIVED_NAME_MISMATCH")
+                continue
+            prepared_path = root / (
+                f"{_CONTAINMENT_CONTROL_PREFIX}{match.group(1)}-"
+                f"{match.group(2)}.prepared.json"
+            )
+            try:
+                prepared = _containment_reparse_json(prepared_path)
+            except Exception:
+                prepared = None
+            if prepared != payload:
+                _invalid(entry.name, row, "MISSING_EXACT_PREPARED_AUTHORITY")
+                continue
+            prior = pending.get(match.group(1))
+            if prior is not None and prior != payload:
+                _invalid(entry.name, row, "DUPLICATE_CONTROL_AUTHORITY")
+                continue
+            pending[match.group(1)] = payload
+
+    for tag, source_name in _CONTAINMENT_CONTROL_NAMES.items():
+        source = root / source_name
+        if not rooted_io.lexists(source):
+            continue
+        rooted_io.exact_existing_name(source)
+        row = rooted_io.lstat(source)
+        if stat.S_ISDIR(row.st_mode) and not (
+            rooted_io.is_reparse(source) or stat.S_ISLNK(row.st_mode)
+        ):
+            continue
+        payload = _containment_control_payload(
+            root, tag, _containment_identity(row)
+        )
+        prior = pending.get(tag)
+        if prior is not None and prior != payload:
+            prior_path = root / str(prior["bootstrap_relative"])
+            if rooted_io.lexists(prior_path):
+                _invalid(
+                    prior_path.name,
+                    rooted_io.lstat(prior_path),
+                    "CONTROL_SOURCE_AUTHORITY_CONFLICT",
+                )
+        pending[tag] = payload
+
+    for tag in sorted(pending):
+        payload = pending[tag]
+        authority_path = _containment_control_authority_path(root, tag)
+        _containment_reparse_publish(authority_path, payload)
+        _containment_control_authority_reserved_hook(authority_path, payload)
+        prepared_path = rooted_io.safe_descendant(
+            root,
+            f"{_CONTAINMENT_CONTROL_PREFIX}{tag}-"
+            f"{payload['transaction_id']}.prepared.json",
+            allow_missing=True,
+            label="containment control prepared record",
+        )
+        _containment_reparse_publish(prepared_path, payload)
+        source_name = str(payload["source_name"])
+        bootstrap_relative = str(payload["bootstrap_relative"])
+        source = root / source_name
+        bootstrap = root / bootstrap_relative
+        expected_source_identity = tuple(
+            int(item) for item in payload["source_identity"]
+        )
+        source_is_transaction_object = bool(
+            rooted_io.lexists(source)
+            and _containment_identity(rooted_io.lstat(source))
+            == expected_source_identity
+        )
+        if source_is_transaction_object:
+            if rooted_io.lexists(bootstrap) and _containment_identity(
+                rooted_io.lstat(bootstrap)
+            ) != expected_source_identity:
+                _retire_containment_namespace_collision(bootstrap)
+            rooted_io.durable_quarantine_reparse(
+                root,
+                source_name,
+                root,
+                bootstrap_relative,
+                expected_identity=expected_source_identity,
+                require_reparse=False,
+            )
+        archived = root / str(payload["quarantine_relative"])
+        observed = next((
+            candidate for candidate in (bootstrap, archived)
+            if rooted_io.lexists(candidate)
+            and _containment_identity(rooted_io.lstat(candidate))
+            == expected_source_identity
+        ), source if source_is_transaction_object else None)
+        if observed is None or not rooted_io.lexists(observed):
+            raise RuntimeError(
+                "containment control transaction lost its reparse object"
+            )
+        _validated_containment_control_payload(
+            root,
+            payload,
+            observed_identity=_containment_identity(rooted_io.lstat(observed)),
+        )
+
+    for control_name in _CONTAINMENT_CONTROL_NAMES.values():
+        path = rooted_io.safe_descendant(
+            root,
+            control_name,
+            allow_missing=True,
+            label="containment control directory",
+        )
+        rooted_io.ensure_directory(
+            path, parents=False, label="containment control directory"
+        )
+    debts: list[dict[str, Any]] = []
+    if invalid_count:
+        debts.append({
+            "schema": "plamen.containment-control-scan-debt/v1",
+            "disposition": "UNAUTHENTICATED_CONTROL_RESIDUES_INERT",
+            "count": invalid_count,
+            "multiset_sum": f"{invalid_sum:064x}",
+            "multiset_xor": f"{invalid_xor:064x}",
+            "samples": sorted(invalid_samples),
+            "scratchpad_identity": list(
+                _containment_identity(rooted_io.lstat(root))
+            ),
+        })
+    if scan_exhausted:
+        debts.append({
+            "schema": "plamen.containment-control-scan-debt/v1",
+            "disposition": "CONTROL_SCAN_BOUNDED_OVERFLOW",
+            "entry_limit": _CONTAINMENT_CONTROL_SCAN_MAX_ENTRIES,
+            "name_byte_limit": _CONTAINMENT_CONTROL_SCAN_MAX_NAME_BYTES,
+            "scratchpad_identity": list(
+                _containment_identity(rooted_io.lstat(root))
+            ),
+        })
+    return [pending[tag] for tag in sorted(pending)], debts
+
+
+def _finalize_containment_control_roots(
+    scratchpad: Path,
+    pending: Iterable[Mapping[str, Any]],
+) -> None:
+    root = rooted_io.checked_directory(
+        scratchpad, label="containment control scratchpad"
+    )
+    for candidate_payload in pending:
+        tag = str(candidate_payload.get("tag") or "")
+        bootstrap = _containment_reparse_leaf(
+            root, str(candidate_payload["bootstrap_relative"])
+        )
+        archived = _containment_reparse_leaf(
+            root, str(candidate_payload["quarantine_relative"])
+        )
+        expected_identity = tuple(
+            int(item) for item in candidate_payload["source_identity"]
+        )
+        if (
+            archived is not None
+            and _containment_identity(archived[1]) != expected_identity
+        ):
+            _retire_containment_namespace_collision(archived[0])
+            archived = None
+        observed = bootstrap or archived
+        if observed is None:
+            raise RuntimeError(
+                "containment control transaction lost its quarantine object"
+            )
+        payload = _validated_containment_control_payload(
+            root,
+            candidate_payload,
+            observed_identity=_containment_identity(observed[1]),
+        )
+        source_identity = tuple(int(item) for item in payload["source_identity"])
+        _reserve_retired_reparse_evidence(
+            root,
+            str(payload["phase_name"]),
+            str(payload["source_name"]),
+            source_identity,
+            transaction_id=str(payload["transaction_id"]),
+            disposition="REPARSE_OBJECT_RETIRED_NOFOLLOW",
+        )
+        if bootstrap is not None:
+            rooted_io.durable_quarantine_reparse(
+                root,
+                str(payload["bootstrap_relative"]),
+                root,
+                str(payload["quarantine_relative"]),
+                expected_identity=source_identity,
+                require_reparse=False,
+            )
+        _record_retired_reparse_evidence(
+            root,
+            str(payload["phase_name"]),
+            str(payload["source_name"]),
+            source_identity,
+            transaction_id=str(payload["transaction_id"]),
+            disposition="REPARSE_OBJECT_RETIRED_NOFOLLOW",
+        )
+        prepared_path = rooted_io.safe_descendant(
+            root,
+            f"{_CONTAINMENT_CONTROL_PREFIX}{tag}-"
+            f"{payload['transaction_id']}.prepared.json",
+            allow_missing=True,
+            label="containment control prepared cleanup",
+        )
+        rooted_io.durable_unlink(prepared_path)
+        rooted_io.durable_unlink(
+            _containment_control_authority_path(root, tag)
+        )
+
+
+def _record_containment_scan_debts(
+    scratchpad: Path, debts: Iterable[Mapping[str, Any]],
+) -> None:
+    rows = [dict(row) for row in debts]
+    if not rows:
+        return
+    root = rooted_io.checked_directory(
+        scratchpad, label="containment scan-debt scratchpad"
+    )
+    evidence_directory = rooted_io.safe_descendant(
+        root,
+        _CONTAINMENT_REPARSE_EVIDENCE,
+        allow_missing=True,
+        label="containment scan-debt evidence",
+    )
+    rooted_io.ensure_directory(
+        evidence_directory,
+        parents=False,
+        label="containment scan-debt evidence",
+    )
+    events_to_project: list[dict[str, Any]] = []
+    for row in rows:
+        debt_id = hashlib.sha256(json.dumps(
+            row, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()
+        event = {**row, "debt_id": debt_id}
+        segment_name = f"debt-{debt_id}.json"
+        segment_raw = (
+            json.dumps(event, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        _publish_exact_containment_evidence_bytes(
+            evidence_directory,
+            segment_name,
+            segment_raw,
+            label="containment scan-debt segment",
+        )
+        events_to_project.append(event)
+
+    current_raw = _artifact_state_raw(root)
+    if (
+        current_raw is not None
+        and len(current_raw) > _CONTAINMENT_STATE_PROJECTION_MAX_BYTES
+    ):
+        return
+    state = _read_artifact_state(root)
+    events = state.setdefault("containment_events", [])
+    if not isinstance(events, list):
+        raise RuntimeError("artifact state containment events are malformed")
+    changed = False
+    for event in events_to_project:
+        debt_id = str(event["debt_id"])
+        prior = [
+            item for item in events
+            if isinstance(item, dict) and item.get("debt_id") == debt_id
+        ]
+        if prior and (len(prior) != 1 or prior[0] != event):
+            raise RuntimeError("containment scan-debt evidence drifted")
+        if not prior:
+            events.append(event)
+            changed = True
+    projected = (
+        json.dumps(state, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if changed and len(projected) <= _CONTAINMENT_STATE_PROJECTION_MAX_BYTES:
+        _write_artifact_state(root, state)
+
+
+def _validated_containment_reparse_prepared(
+    prepared: Mapping[str, Any],
+) -> tuple[str, str, tuple[int, ...]]:
+    required = {
+        "schema", "transaction_id", "phase_name", "source_root",
+        "source_root_identity", "source_relative", "source_identity",
+        "quarantine_relative", "prepared_digest",
+    }
+    if set(prepared) != required or prepared.get("schema") != (
+        "plamen.containment-reparse-transaction.prepared/v1"
+    ):
+        raise RuntimeError("containment reparse prepared record is malformed")
+    unsigned = dict(prepared)
+    prepared_digest = unsigned.pop("prepared_digest", None)
+    expected_digest = hashlib.sha256(json.dumps(
+        unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+    identity_payload = dict(unsigned)
+    identity_payload.pop("transaction_id", None)
+    identity_payload.pop("quarantine_relative", None)
+    expected_txid = hashlib.sha256(json.dumps(
+        identity_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")).hexdigest()
+    txid = str(prepared.get("transaction_id") or "")
+    source_identity_raw = prepared.get("source_identity")
+    if (
+        prepared_digest != expected_digest
+        or txid != expected_txid
+        or prepared.get("quarantine_relative") != (
+            f"{_CONTAINMENT_REPARSE_QUARANTINE}/{txid}.link"
+        )
+        or re.fullmatch(r"[0-9a-f]{64}", txid) is None
+        or not isinstance(source_identity_raw, list)
+        or len(source_identity_raw) != 3
+        or any(type(item) is not int for item in source_identity_raw)
+    ):
+        raise RuntimeError("containment reparse prepared digest is invalid")
+    return txid, str(prepared_digest), tuple(source_identity_raw)
+
+
+def _complete_containment_reparse_transaction(
+    prepared: Mapping[str, Any],
+    *,
+    evidence_scratchpad: Path,
+    failure_injector: Any = None,
+) -> bool:
+    txid, prepared_digest, source_identity = (
+        _validated_containment_reparse_prepared(prepared)
+    )
+    evidence_root = rooted_io.checked_directory(
+        evidence_scratchpad, label="containment evidence scratchpad"
+    )
+    source_root = rooted_io.checked_directory(
+        Path(str(prepared["source_root"])),
+        label="containment reparse recorded source root",
+    )
+    if list(_containment_identity(rooted_io.lstat(source_root))) != list(
+        prepared["source_root_identity"]
+    ):
+        raise RuntimeError("containment reparse source root identity drifted")
+    journal = rooted_io.safe_descendant(
+        evidence_root,
+        _CONTAINMENT_REPARSE_JOURNAL,
+        allow_missing=False,
+        label="containment reparse journal",
+    )
+    retired_path = rooted_io.safe_descendant(
+        journal,
+        f"{txid}.retired.json",
+        allow_missing=True,
+        label="containment reparse retired record",
+    )
+    committed_path = rooted_io.safe_descendant(
+        journal,
+        f"{txid}.committed.json",
+        allow_missing=True,
+        label="containment reparse committed record",
+    )
+    source = _containment_reparse_leaf(
+        source_root, str(prepared["source_relative"])
+    )
+    archived = _containment_reparse_leaf(
+        evidence_root, str(prepared["quarantine_relative"])
+    )
+    invalid_state_object = bool(
+        str(prepared["phase_name"]) == "containment_snapshot"
+        and str(prepared["source_relative"]) == _ARTIFACT_STATE_NAME
+        and os.path.normcase(os.fspath(source_root))
+        == os.path.normcase(os.fspath(evidence_root))
+    )
+    observed_before = source or archived
+    observed_before_is_reparse = bool(
+        observed_before is not None
+        and (
+            stat.S_ISLNK(observed_before[1].st_mode)
+            or rooted_io.is_reparse(observed_before[0])
+        )
+    )
+    disposition = (
+        "INVALID_ARTIFACT_STATE_OBJECT_RETIRED_NOFOLLOW"
+        if invalid_state_object and not observed_before_is_reparse
+        else "REPARSE_OBJECT_RETIRED_NOFOLLOW"
+    )
+    reserved_event = _reserve_retired_reparse_evidence(
+        evidence_root,
+        str(prepared["phase_name"]),
+        str(prepared["source_relative"]),
+        source_identity,
+        transaction_id=txid,
+        disposition=disposition,
+    )
+    _containment_evidence_reserved_hook(reserved_event)
+    if (
+        archived is not None
+        and _containment_identity(archived[1]) != source_identity
+    ):
+        _retire_containment_namespace_collision(archived[0])
+        archived = None
+    if archived is None:
+        if source is None:
+            raise RuntimeError(
+                "containment reparse transaction lost source and quarantine"
+            )
+        if _containment_identity(source[1]) != source_identity:
+            raise RuntimeError(
+                "containment reparse source was replaced before recovery"
+            )
+        rooted_io.durable_quarantine_reparse(
+            source_root,
+            str(prepared["source_relative"]),
+            evidence_root,
+            str(prepared["quarantine_relative"]),
+            expected_identity=source_identity,
+            require_reparse=not invalid_state_object,
+            allow_directory=invalid_state_object,
+        )
+        archived = _containment_reparse_leaf(
+            evidence_root, str(prepared["quarantine_relative"])
+        )
+        source = _containment_reparse_leaf(
+            source_root, str(prepared["source_relative"])
+        )
+        if failure_injector is not None:
+            failure_injector("after_quarantine")
+    if archived is None or _containment_identity(archived[1]) != source_identity:
+        raise RuntimeError("containment reparse quarantine identity drifted")
+    if source is not None and _containment_identity(source[1]) == source_identity:
+        # POSIX no-replace publication is a durable link+unlink transaction.
+        # A crash may leave both names bound to the exact same link object;
+        # replay the primitive so it retires only that ledger-bound source.
+        rooted_io.durable_quarantine_reparse(
+            source_root,
+            str(prepared["source_relative"]),
+            evidence_root,
+            str(prepared["quarantine_relative"]),
+            expected_identity=source_identity,
+            require_reparse=not invalid_state_object,
+            allow_directory=invalid_state_object,
+        )
+        source = _containment_reparse_leaf(
+            source_root, str(prepared["source_relative"])
+        )
+        if source is not None:
+            raise RuntimeError("containment reparse source remains live")
+    retired = {
+        "schema": "plamen.containment-reparse-transaction.retired/v1",
+        "transaction_id": txid,
+        "prepared_digest": prepared_digest,
+        "source_identity": list(source_identity),
+        "quarantine_relative": str(prepared["quarantine_relative"]),
+    }
+    _containment_reparse_publish(retired_path, retired)
+    if failure_injector is not None:
+        failure_injector("after_retired")
+    _record_retired_reparse_evidence(
+        evidence_root,
+        str(prepared["phase_name"]),
+        str(prepared["source_relative"]),
+        source_identity,
+        transaction_id=txid,
+        disposition=disposition,
+    )
+    if failure_injector is not None:
+        failure_injector("after_evidence")
+    committed = {
+        "schema": "plamen.containment-reparse-transaction.committed/v1",
+        "transaction_id": txid,
+        "prepared_digest": prepared_digest,
+        "retired_digest": hashlib.sha256(
+            (json.dumps(retired, indent=2, sort_keys=True) + "\n").encode(
+                "utf-8"
+            )
+        ).hexdigest(),
+    }
+    _containment_reparse_publish(committed_path, committed)
+    if failure_injector is not None:
+        failure_injector("after_committed")
+    # Delete the commit marker first and the prepared authority last.  At every
+    # crash prefix either recovery still sees the prepared record or all
+    # transaction-control rows are gone; completed retirements therefore do
+    # not consume the outstanding-transaction denominator forever.
+    rooted_io.durable_unlink(committed_path)
+    rooted_io.durable_unlink(retired_path)
+    prepared_path = rooted_io.safe_descendant(
+        journal,
+        f"{txid}.prepared.json",
+        allow_missing=True,
+        label="containment reparse prepared record cleanup",
+    )
+    rooted_io.durable_unlink(prepared_path)
+    return True
+
+
+def _recover_containment_reparse_transactions(
+    evidence_scratchpad: Path,
+    *,
+    allowed_source_roots: tuple[Path, ...],
+) -> None:
+    evidence_root = rooted_io.checked_directory(
+        evidence_scratchpad, label="containment recovery scratchpad"
+    )
+    journal = rooted_io.safe_descendant(
+        evidence_root,
+        _CONTAINMENT_REPARSE_JOURNAL,
+        allow_missing=True,
+        label="containment recovery journal",
+    )
+    if not rooted_io.lexists(journal):
+        return
+    journal = rooted_io.checked_directory(
+        journal, label="containment recovery journal"
+    )
+    allowed = {
+        os.path.normcase(os.fspath(rooted_io.checked_directory(
+            item, label="containment recovery allowed source"
+        )))
+        for item in allowed_source_roots
+    }
+
+    invalid_count = 0
+    invalid_sum = 0
+    invalid_xor = 0
+    invalid_samples: list[str] = []
+    valid_prepared: list[tuple[str, dict[str, Any]]] = []
+    scan_entries = 0
+    scan_name_bytes = 0
+    scan_exhausted = False
+
+    def _invalid(
+        record_name: str, identity: tuple[int, ...], exc: BaseException,
+    ) -> None:
+        nonlocal invalid_count, invalid_sum, invalid_xor
+        reason = f"{type(exc).__name__}: {str(exc)[:256]}"
+        digest = hashlib.sha256(json.dumps(
+            {
+                "name": record_name,
+                "identity": list(identity),
+                "reason": reason,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).digest()
+        value = int.from_bytes(digest, "big")
+        invalid_count += 1
+        invalid_sum = (invalid_sum + value) % (1 << 256)
+        invalid_xor ^= value
+        invalid_samples.append(record_name)
+        invalid_samples.sort()
+        del invalid_samples[_CONTAINMENT_CONTROL_DEBT_SAMPLES:]
+
+    with rooted_io.scandir(journal) as entries:
+        for entry in entries:
+            scan_entries += 1
+            scan_name_bytes += len(os.fsencode(entry.name))
+            if (
+                scan_entries > _CONTAINMENT_JOURNAL_SCAN_MAX_ENTRIES
+                or scan_name_bytes > _CONTAINMENT_JOURNAL_SCAN_MAX_NAME_BYTES
+            ):
+                scan_exhausted = True
+                break
+            if re.fullmatch(r"[0-9a-f]{64}\.prepared\.json", entry.name) is None:
+                continue
+            path = journal / entry.name
+            try:
+                rooted_io.exact_existing_name(path)
+                identity = _containment_identity(rooted_io.lstat(path))
+                prepared = _containment_reparse_json(path)
+                if prepared is None:
+                    raise RuntimeError("containment prepared record disappeared")
+                transaction_id, _digest, _source_identity = (
+                    _validated_containment_reparse_prepared(prepared)
+                )
+                if entry.name != f"{transaction_id}.prepared.json":
+                    raise RuntimeError(
+                        "containment prepared filename disagrees with "
+                        "transaction_id"
+                    )
+                recorded_root = os.path.normcase(
+                    str(prepared.get("source_root") or "")
+                )
+                if recorded_root not in allowed:
+                    raise RuntimeError(
+                        "containment transaction source root is outside recovery scope"
+                    )
+                recorded_source_root = rooted_io.checked_directory(
+                    Path(str(prepared["source_root"])),
+                    label="containment prepared source root",
+                )
+                if list(_containment_identity(rooted_io.lstat(
+                    recorded_source_root
+                ))) != prepared["source_root_identity"]:
+                    raise RuntimeError(
+                        "containment prepared source-root identity drifted"
+                    )
+                expected_object_identity = tuple(
+                    int(item) for item in prepared["source_identity"]
+                )
+                live_source = _containment_reparse_leaf(
+                    recorded_source_root, str(prepared["source_relative"])
+                )
+                live_archive = _containment_reparse_leaf(
+                    evidence_root, str(prepared["quarantine_relative"])
+                )
+                live_rows = [
+                    item for item in (live_source, live_archive)
+                    if item is not None
+                ]
+                if (
+                    not live_rows
+                    or any(
+                        _containment_identity(item[1])
+                        != expected_object_identity
+                        for item in live_rows
+                    )
+                ):
+                    raise RuntimeError(
+                        "containment prepared row has no exact live object"
+                    )
+                invalid_state_object = bool(
+                    str(prepared["phase_name"]) == "containment_snapshot"
+                    and str(prepared["source_relative"])
+                    == _ARTIFACT_STATE_NAME
+                    and os.path.normcase(os.fspath(recorded_source_root))
+                    == os.path.normcase(os.fspath(evidence_root))
+                )
+                if not invalid_state_object and any(
+                    not (
+                        stat.S_ISLNK(item[1].st_mode)
+                        or rooted_io.is_reparse(item[0])
+                    )
+                    for item in live_rows
+                ):
+                    raise RuntimeError(
+                        "containment prepared retirement source is not a "
+                        "reparse object"
+                    )
+            except (
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+                UnicodeError,
+                json.JSONDecodeError,
+                rooted_io.RootedPathIOError,
+            ) as exc:
+                try:
+                    identity = _containment_identity(rooted_io.lstat(path))
+                except (OSError, rooted_io.RootedPathIOError):
+                    identity = (0, 0, 0)
+                _invalid(entry.name, identity, exc)
+                continue
+            valid_prepared.append((entry.name, prepared))
+            if len(valid_prepared) > _CONTAINMENT_REPARSE_MAX_TRANSACTIONS:
+                raise RuntimeError(
+                    "containment reparse authoritative recovery denominator "
+                    "is oversized"
+                )
+
+    scan_debts: list[dict[str, Any]] = []
+    journal_identity = list(_containment_identity(rooted_io.lstat(journal)))
+    if invalid_count:
+        scan_debts.append({
+            "schema": "plamen.containment-invalid-journal-debt/v2",
+            "disposition": "INVALID_PREPARED_ROWS_PRESERVED_AS_INERT_DEBT",
+            "count": invalid_count,
+            "multiset_sum": f"{invalid_sum:064x}",
+            "multiset_xor": f"{invalid_xor:064x}",
+            "samples": invalid_samples,
+            "journal_identity": journal_identity,
+        })
+    if scan_exhausted:
+        scan_debts.append({
+            "schema": "plamen.containment-invalid-journal-debt/v2",
+            "disposition": "JOURNAL_SCAN_BOUNDED_OVERFLOW",
+            "entry_limit": _CONTAINMENT_JOURNAL_SCAN_MAX_ENTRIES,
+            "name_byte_limit": _CONTAINMENT_JOURNAL_SCAN_MAX_NAME_BYTES,
+            "journal_identity": journal_identity,
+        })
+    _record_containment_scan_debts(evidence_root, scan_debts)
+
+    for _name, prepared in sorted(valid_prepared):
+        try:
+            _complete_containment_reparse_transaction(
+                prepared, evidence_scratchpad=evidence_root
+            )
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+            json.JSONDecodeError,
+            rooted_io.RootedPathIOError,
+        ):
+            # Valid, authenticated prepared rows are authority.  Any live
+            # source/quarantine inconsistency remains fail closed.
+            raise
+
+
+def _retire_exact_reparse_object(
+    scratchpad: Path,
+    relative: str,
+    *,
+    phase_name: str,
+    evidence_scratchpad: Path | None = None,
+    failure_injector: Any = None,
+    retire_invalid_final: bool = False,
+) -> bool:
+    """Journal and quarantine the first exact in-root reparse name."""
+
+    text = str(relative).replace("\\", "/")
+    parts = text.split("/")
+    if (
+        not text
+        or text != text.strip()
+        or text.startswith("/")
+        or any(part in {"", ".", ".."} or ":" in part for part in parts)
+    ):
+        return False
+    root = rooted_io.checked_directory(
+        Path(scratchpad), label="containment reparse retirement root"
+    )
+    evidence_root = rooted_io.checked_directory(
+        Path(evidence_scratchpad) if evidence_scratchpad else root,
+        label="containment evidence scratchpad",
+    )
+    parent = root
+    for index, part in enumerate(parts):
+        parent = rooted_io.checked_directory(
+            parent, label="containment reparse retirement parent"
+        )
+        candidate = parent / part
+        if not rooted_io.lexists(candidate):
+            return False
+        rooted_io.exact_existing_name(candidate)
+        source_row = rooted_io.lstat(candidate)
+        reparse_object = bool(
+            rooted_io.is_reparse(candidate) or stat.S_ISLNK(source_row.st_mode)
+        )
+        invalid_final = bool(
+            retire_invalid_final
+            and index == len(parts) - 1
+            and (
+                not stat.S_ISREG(source_row.st_mode)
+                or int(getattr(source_row, "st_nlink", 1) or 1) != 1
+            )
+        )
+        if reparse_object or invalid_final:
+            retired_relative = "/".join(parts[:index + 1])
+            source_identity = _containment_identity(source_row)
+            journal = rooted_io.safe_descendant(
+                evidence_root,
+                _CONTAINMENT_REPARSE_JOURNAL,
+                allow_missing=True,
+                label="containment reparse journal",
+            )
+            quarantine_root = rooted_io.safe_descendant(
+                evidence_root,
+                _CONTAINMENT_REPARSE_QUARANTINE,
+                allow_missing=True,
+                label="containment reparse quarantine",
+            )
+            rooted_io.ensure_directory(
+                journal, parents=True, label="containment reparse journal"
+            )
+            rooted_io.ensure_directory(
+                quarantine_root,
+                parents=True,
+                label="containment reparse quarantine",
+            )
+            identity_payload = {
+                "schema": "plamen.containment-reparse-transaction.prepared/v1",
+                "phase_name": phase_name,
+                "source_root": os.fspath(root),
+                "source_root_identity": list(
+                    _containment_identity(rooted_io.lstat(root))
+                ),
+                "source_relative": retired_relative,
+                "source_identity": list(source_identity),
+            }
+            txid = hashlib.sha256(json.dumps(
+                identity_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")).hexdigest()
+            unsigned = {
+                **identity_payload,
+                "transaction_id": txid,
+                "quarantine_relative": (
+                f"{_CONTAINMENT_REPARSE_QUARANTINE}/{txid}.link"
+                ),
+            }
+            final_digest = hashlib.sha256(json.dumps(
+                unsigned,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")).hexdigest()
+            prepared = {**unsigned, "prepared_digest": final_digest}
+            prepared_path = rooted_io.safe_descendant(
+                journal,
+                f"{txid}.prepared.json",
+                allow_missing=True,
+                label="containment reparse prepared record",
+            )
+            _containment_reparse_publish(prepared_path, prepared)
+            if failure_injector is not None:
+                failure_injector("after_prepared")
+            return _complete_containment_reparse_transaction(
+                prepared,
+                evidence_scratchpad=evidence_root,
+                failure_injector=failure_injector,
+            )
+        if index == len(parts) - 1 or not stat.S_ISDIR(source_row.st_mode):
+            return False
+        parent = rooted_io.checked_directory(
+            candidate, label="containment reparse retirement ancestor"
+        )
+    return False
+
+
 def _snapshot_file_state(scratchpad: Path, project_root: str) -> dict[str, tuple]:
     """Return exact state for run artifacts and audited production source."""
     state: dict[str, tuple] = {}
     excluded_dirs = {
         "_overflow",
         "_retry_quarantine",
+        _CONTAINMENT_REPARSE_JOURNAL,
+        _CONTAINMENT_REPARSE_QUARANTINE,
+        _CONTAINMENT_REPARSE_EVIDENCE,
         ".pytest_cache",
         "__pycache__",
     }
-    for p in scratchpad.rglob("*"):
-        if not p.is_file():
-            continue
-        rel_parts = p.relative_to(scratchpad).parts
-        if rel_parts and rel_parts[0] in excluded_dirs:
-            continue
+    root = rooted_io.checked_directory(
+        Path(scratchpad), label="phase containment scratchpad"
+    )
+    project = rooted_io.checked_directory(
+        Path(project_root), label="phase containment project root"
+    )
+    # Repair the two driver-control directories without following a poisoned
+    # name, then retire artifact-state itself before any pending transaction
+    # needs to append typed evidence.  This ordering prevents either authority
+    # namespace from turning one recoverable retirement into a permanent DoS.
+    control_pending, control_debts = _prepare_containment_control_roots(root)
+    _retire_exact_reparse_object(
+        root,
+        _ARTIFACT_STATE_NAME,
+        phase_name="containment_snapshot",
+        retire_invalid_final=True,
+    )
+    _finalize_containment_control_roots(root, control_pending)
+    _recover_containment_reparse_transactions(
+        root,
+        allowed_source_roots=(root, project),
+    )
+    # Recovery must precede projection of a control-scan overflow.  When the
+    # interrupted object is ``_artifact_state.json``, writing that debt first
+    # would create a new live file beside the exact archived predecessor and
+    # falsely invalidate the still-authoritative retirement transaction.
+    _record_containment_scan_debts(root, control_debts)
+    stack: list[tuple[Path, PurePosixPath, int]] = [
+        (root, PurePosixPath("."), 0)
+    ]
+    directory_identities: set[tuple[int, int]] = set()
+    file_count = 0
+    directory_count = 0
+    enumerated_entry_count = 0
+    total_bytes = 0
+    folded_names: set[str] = set()
+    while stack:
+        directory, relative_parent, depth = stack.pop()
+        checked_directory = rooted_io.checked_directory(
+            directory, label="phase containment directory"
+        )
+        directory_row = rooted_io.lstat(checked_directory)
+        directory_identity = (
+            int(getattr(directory_row, "st_dev", 0)),
+            int(getattr(directory_row, "st_ino", 0)),
+        )
+        if directory_identity in directory_identities:
+            raise RuntimeError(
+                "phase containment scratchpad contains a directory cycle/alias"
+            )
+        directory_identities.add(directory_identity)
+        directory_count += 1
+        if directory_count > _SCRATCHPAD_STATE_MAX_DIRECTORIES:
+            raise RuntimeError(
+                "phase containment scratchpad exceeds bounded directory limit"
+            )
         try:
-            stat = p.stat()
-        except Exception:
-            continue
-        state[p.relative_to(scratchpad).as_posix()] = (stat.st_mtime_ns, stat.st_size)
-    report = Path(project_root) / "AUDIT_REPORT.md"
-    if report.exists():
-        try:
-            stat = report.stat()
-            state["../AUDIT_REPORT.md"] = (stat.st_mtime_ns, stat.st_size)
-        except Exception:
-            pass
+            with rooted_io.scandir(checked_directory) as iterator:
+                entries = []
+                for entry in iterator:
+                    enumerated_entry_count += 1
+                    if enumerated_entry_count > (
+                        _SCRATCHPAD_STATE_MAX_FILES
+                        + _SCRATCHPAD_STATE_MAX_DIRECTORIES
+                        + len(excluded_dirs)
+                    ):
+                        raise RuntimeError(
+                            "phase containment scratchpad exceeds bounded "
+                            "enumeration limit"
+                        )
+                    entries.append(entry)
+                entries.sort(key=lambda entry: entry.name.casefold())
+        except OSError as exc:
+            raise RuntimeError(
+                f"phase containment cannot enumerate {relative_parent}: {exc}"
+            ) from exc
+        for entry in entries:
+            relative = (
+                PurePosixPath(entry.name)
+                if relative_parent == PurePosixPath(".")
+                else relative_parent / entry.name
+            )
+            excluded_root = bool(
+                relative.parts and relative.parts[0] in excluded_dirs
+            )
+            if len(relative.parts) > _SCRATCHPAD_STATE_MAX_DEPTH:
+                raise RuntimeError(
+                    "phase containment scratchpad exceeds bounded depth limit"
+                )
+            relative_text = relative.as_posix()
+            folded = relative_text.casefold()
+            if folded in folded_names:
+                raise RuntimeError(
+                    "phase containment scratchpad path alias collision: "
+                    f"{relative_text}"
+                )
+            folded_names.add(folded)
+            # ``safe_descendant`` correctly rejects a reparse final component;
+            # enumerate that component from the already checked/retained
+            # directory instead so it can be lstat'ed and retired no-follow.
+            candidate = checked_directory / entry.name
+            rooted_io.exact_existing_name(candidate)
+            row = rooted_io.lstat(candidate)
+            if (
+                relative_parent == PurePosixPath(".")
+                and _is_containment_control_collision_name(entry.name)
+            ):
+                # This is the randomized no-follow quarantine name created
+                # while a poisoned fixed authority slot was retired.  It is
+                # typed by the bounded control scan and must remain opaque:
+                # following a directory or reclassifying a hardlink would
+                # turn safe preservation into a repeat-resume DoS.
+                continue
+            if rooted_io.is_reparse(candidate) or stat.S_ISLNK(row.st_mode):
+                if (
+                    relative_parent == PurePosixPath(".")
+                    and _is_authenticated_flat_control_bootstrap(
+                        root,
+                        entry.name,
+                        _containment_identity(row),
+                    )
+                ):
+                    # A legacy transaction without the fixed authority may be
+                    # discovered only after a bounded overflow is removed.
+                    # Preserve its exact paired bootstrap rather than
+                    # misclassifying it as a new generic retirement.
+                    continue
+                if not _retire_exact_reparse_object(
+                    root,
+                    relative_text,
+                    phase_name="containment_snapshot",
+                ):
+                    raise RuntimeError(
+                        "phase containment could not retire symlink/reparse "
+                        f"entry: {relative_text}"
+                    )
+                # The link object is typed quarantine evidence, not a member
+                # of the live artifact denominator.  A repeated resume sees a
+                # clean rooted tree and never follows the former target.
+                continue
+            if excluded_root:
+                # Exclusion applies only to a real checked directory.  A link
+                # wearing an excluded name was retired above, so `_overflow`
+                # or `_retry_quarantine` can never become an uninspected
+                # external traversal route.
+                if not stat.S_ISDIR(row.st_mode):
+                    raise RuntimeError(
+                        "phase containment excluded root is not a directory: "
+                        f"{relative_text}"
+                    )
+                rooted_io.checked_directory(
+                    candidate, label="phase containment excluded directory"
+                )
+                continue
+            if stat.S_ISDIR(row.st_mode):
+                rooted_io.checked_directory(
+                    candidate, label="phase containment child directory"
+                )
+                stack.append((candidate, relative, depth + 1))
+                continue
+            if not stat.S_ISREG(row.st_mode):
+                raise RuntimeError(
+                    "phase containment scratchpad rejects non-regular entry: "
+                    f"{relative_text}"
+                )
+            rooted_io.checked_file(
+                candidate,
+                label="phase containment artifact",
+                require_single_link=True,
+            )
+            file_count += 1
+            total_bytes += int(row.st_size)
+            if file_count > _SCRATCHPAD_STATE_MAX_FILES:
+                raise RuntimeError(
+                    "phase containment scratchpad exceeds bounded file limit"
+                )
+            if total_bytes > _SCRATCHPAD_STATE_MAX_BYTES:
+                raise RuntimeError(
+                    "phase containment scratchpad exceeds bounded byte limit"
+                )
+            state[relative_text] = (
+                int(row.st_mtime_ns), int(row.st_size)
+            )
+    _retire_exact_reparse_object(
+        project,
+        "AUDIT_REPORT.md",
+        phase_name="containment_snapshot",
+        evidence_scratchpad=root,
+    )
+    report = rooted_io.safe_descendant(
+        project,
+        "AUDIT_REPORT.md",
+        allow_missing=True,
+        label="phase containment report",
+    )
+    if rooted_io.lexists(report):
+        rooted_io.checked_file(
+            report,
+            label="phase containment report",
+            require_single_link=True,
+        )
+        report_row = rooted_io.lstat(report)
+        state["../AUDIT_REPORT.md"] = (
+            int(report_row.st_mtime_ns), int(report_row.st_size)
+        )
     state.update(_snapshot_project_source_state(scratchpad, project_root))
     return state
 
@@ -4374,10 +6188,42 @@ def _live_foreign_pattern_is_benign(phase_name: str, pattern: str) -> bool:
 
 _ARTIFACT_STATE_NAME = "_artifact_state.json"
 _BREADTH_WORKER_POOL_CONTRACT_NAME = "_breadth_worker_pool_contract.json"
+_ARTIFACT_STATE_MAX_BYTES = 32 * 1024 * 1024
 
 
 def _artifact_state_path(scratchpad: Path) -> Path:
     return scratchpad / _ARTIFACT_STATE_NAME
+
+
+def _artifact_state_raw(scratchpad: Path) -> bytes | None:
+    root = rooted_io.checked_directory(
+        Path(scratchpad), label="artifact-state scratchpad"
+    )
+    path = rooted_io.safe_descendant(
+        root,
+        _ARTIFACT_STATE_NAME,
+        allow_missing=True,
+        label="artifact-state authority",
+    )
+    if not rooted_io.lexists(path):
+        return None
+    return rooted_io.read_bytes(
+        path,
+        label="artifact-state authority",
+        require_single_link=True,
+        max_bytes=_ARTIFACT_STATE_MAX_BYTES,
+    )
+
+
+def _read_artifact_state_strict(scratchpad: Path) -> dict[str, Any] | None:
+    raw = _artifact_state_raw(Path(scratchpad))
+    if raw is None:
+        return None
+    data = json.loads(raw.decode("utf-8", errors="strict"))
+    if not isinstance(data, dict) or not isinstance(data.get("artifacts"), dict):
+        raise RuntimeError("artifact-state authority is malformed")
+    data.setdefault("version", 1)
+    return data
 
 
 def _read_artifact_state(scratchpad: Path) -> dict[str, Any]:
@@ -4387,13 +6233,12 @@ def _read_artifact_state(scratchpad: Path) -> dict[str, Any]:
     not crash the pipeline, but callers should then treat provenance as unknown
     instead of silently inferring ownership from file presence.
     """
-    path = _artifact_state_path(scratchpad)
-    if not path.exists():
-        return {"version": 1, "artifacts": {}}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _read_artifact_state_strict(Path(scratchpad))
     except Exception as exc:
         log.warning("[artifact-state] ignoring unreadable artifact ledger: %s", exc)
+        return {"version": 1, "artifacts": {}}
+    if data is None:
         return {"version": 1, "artifacts": {}}
     if not isinstance(data, dict):
         return {"version": 1, "artifacts": {}}
@@ -4405,17 +6250,44 @@ def _read_artifact_state(scratchpad: Path) -> dict[str, Any]:
 
 
 def _write_artifact_state(scratchpad: Path, state: dict[str, Any]) -> None:
-    path = _artifact_state_path(scratchpad)
-    payload = json.dumps(state, indent=2, sort_keys=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=str(path.parent), delete=False,
-        prefix=f".{path.name}.", suffix=".tmp",
-    ) as tmp:
-        tmp.write(payload)
-        tmp.write("\n")
-        tmp_path = Path(tmp.name)
-    os.replace(tmp_path, path)
+    root = rooted_io.checked_directory(
+        Path(scratchpad), label="artifact-state scratchpad"
+    )
+    path = rooted_io.safe_descendant(
+        root,
+        _ARTIFACT_STATE_NAME,
+        allow_missing=True,
+        label="artifact-state authority",
+    )
+    payload = (
+        json.dumps(state, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if len(payload) > _ARTIFACT_STATE_MAX_BYTES:
+        raise RuntimeError("artifact-state authority exceeds bounded size")
+    descriptor, stage = rooted_io.exclusive_temp_file(
+        root,
+        prefix="._artifact_state.",
+        suffix=".tmp",
+    )
+    try:
+        view = memoryview(payload)
+        offset = 0
+        while offset < len(view):
+            written = os.write(descriptor, view[offset:])
+            if written <= 0:
+                raise OSError("artifact-state authority short write")
+            offset += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    rooted_io.durable_replace(stage, path)
+    if rooted_io.read_bytes(
+        path,
+        label="artifact-state authority",
+        require_single_link=True,
+        max_bytes=_ARTIFACT_STATE_MAX_BYTES,
+    ) != payload:
+        raise RuntimeError("artifact-state authority publication drifted")
 
 
 def _artifact_path_for_name(scratchpad: Path, project_root: str, name: str) -> Path:
@@ -4511,22 +6383,21 @@ def _record_phase_artifact_state(
         "launch_digest",
         "authority_level",
     }
-    state_path = _artifact_state_path(scratchpad)
-    if state_path.exists():
+    try:
+        strict_state = _read_artifact_state_strict(scratchpad)
+    except Exception as exc:
+        log.warning(
+            "[artifact-state] refusing to replace unreadable shared typed "
+            "authority: %s",
+            exc,
+        )
+        return names
+    if strict_state is not None:
         # The generic ownership projection shares the typed PhaseIO ledger for
         # every phase, not only verification-queue publication.  Once that
         # ledger exists, read it strictly: replacing unreadable typed authority
         # with owner-only compatibility metadata would silently rebless (or
         # destroy) producer authority.
-        try:
-            strict_state = json.loads(state_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            log.warning(
-                "[artifact-state] refusing to replace unreadable shared typed "
-                "authority: %s",
-                exc,
-            )
-            return names
         if not isinstance(strict_state, dict) or not isinstance(
             strict_state.get("artifacts"), dict
         ):
@@ -21663,8 +23534,135 @@ def _quarantine_stale_on_retry(
     return renamed
 
 
+def _inventory_retry_owner_attempt(
+    phase_name: str,
+    owner_key: str,
+) -> int | None:
+    parts = str(owner_key or "").split("/")
+    if len(parts) != 6 or parts[4] != phase_name:
+        return None
+    unit = parts[5]
+    if phase_name.startswith("inventory_chunk_"):
+        match = re.fullmatch(r"model\.attempt(\d{4})", unit)
+        return int(match.group(1)) if match is not None else None
+    if phase_name == "inventory":
+        if unit == "model":
+            return 1
+        match = re.fullmatch(r"model\.attempt-(\d{4})", unit)
+        return int(match.group(1)) if match is not None else None
+    return None
+
+
+def _ledger_bound_inventory_attempt_backups(
+    scratchpad: Path,
+    phase: Phase,
+    pattern: str,
+    *,
+    run_id: str,
+) -> list[tuple[int, Path, int, str]]:
+    """Return newest-first nested inventory backups with exact ledger proof."""
+
+    if phase.name not in {
+        "inventory",
+        "inventory_chunk_a",
+        "inventory_chunk_b",
+        "inventory_chunk_c",
+    }:
+        return []
+    run = str(run_id or "").strip()
+    if not run:
+        return []
+    try:
+        root = rooted_io.checked_directory(
+            Path(scratchpad), label="inventory quarantine scratchpad"
+        )
+        qdir = rooted_io.safe_descendant(
+            root,
+            f"_retry_quarantine/{phase.name}",
+            allow_missing=True,
+            label="inventory quarantine root",
+        )
+        if not rooted_io.lexists(qdir):
+            return []
+        rooted_io.checked_directory(qdir, label="inventory quarantine root")
+        ledger = read_artifact_ledger(root)
+    except (OSError, TypeError, ValueError, rooted_io.RootedPathIOError):
+        return []
+    work_units = ledger.get("work_units", {})
+    if not isinstance(work_units, Mapping):
+        return []
+    by_attempt: dict[int, list[Mapping[str, Any]]] = {}
+    for owner_key, unit in work_units.items():
+        attempt = _inventory_retry_owner_attempt(
+            phase.name, str(owner_key)
+        )
+        if attempt is None or not isinstance(unit, Mapping):
+            continue
+        if (
+            unit.get("run_id") != run
+            or unit.get("model_invoked") is not True
+            or unit.get("semantic_status") != "QUARANTINED"
+            or unit.get("execution_state") != "OUTPUT_QUARANTINED"
+        ):
+            continue
+        by_attempt.setdefault(attempt, []).append(unit)
+
+    result: list[tuple[int, Path, int, str]] = []
+    for attempt in sorted(by_attempt):
+        units = by_attempt.get(attempt, [])
+        if len(units) != 1:
+            continue
+        unit = units[0]
+        artifacts = unit.get("artifacts")
+        if not isinstance(artifacts, Mapping):
+            continue
+        for identity, record in sorted(artifacts.items()):
+            if not str(identity).startswith("scratchpad:"):
+                continue
+            relative = str(identity).split(":", 1)[1]
+            if not PurePosixPath(relative).match(pattern):
+                continue
+            try:
+                path = rooted_io.safe_descendant(
+                    root,
+                    (
+                        f"_retry_quarantine/{phase.name}/"
+                        f"attempt-{attempt:04d}/{relative}"
+                    ),
+                    allow_missing=False,
+                    label="inventory ledger-bound quarantine backup",
+                )
+                if not isinstance(record, Mapping):
+                    continue
+                expected_size = record.get("size")
+                if type(expected_size) is not int or expected_size < 0:
+                    continue
+                raw = rooted_io.read_bytes(
+                    path,
+                    label="inventory ledger-bound quarantine backup",
+                    require_single_link=True,
+                    max_bytes=expected_size,
+                )
+            except (OSError, ValueError, rooted_io.RootedPathIOError):
+                continue
+            if (
+                record.get("status") != "QUARANTINED"
+                or record.get("size") != len(raw)
+                or record.get("sha256")
+                != hashlib.sha256(raw).hexdigest()
+            ):
+                continue
+            result.append((
+                attempt,
+                path,
+                expected_size,
+                str(record.get("sha256")),
+            ))
+    return sorted(result, key=lambda row: (-row[0], row[1].as_posix()))
+
+
 def _restore_quarantined_on_retry_failure(
-    scratchpad: Path, phase: Phase
+    scratchpad: Path, phase: Phase, *, run_id: str = ""
 ) -> None:
     """Restore retry-quarantine backups when retry also fails (degraded).
 
@@ -21677,6 +23675,10 @@ def _restore_quarantined_on_retry_failure(
         phase,
         include_recon_canonical=(phase.name == "recon"),
     )
+    is_inventory = phase.name in {
+        "inventory", "inventory_chunk_a", "inventory_chunk_b",
+        "inventory_chunk_c",
+    }
 
     for pattern in patterns:
         if pattern == "AUDIT_REPORT.md":
@@ -21684,11 +23686,19 @@ def _restore_quarantined_on_retry_failure(
         is_glob = any(ch in pattern for ch in "*?[")
         backups: list[Path] = []
         qdir = _retry_quarantine_dir(scratchpad, phase.name)
-        if is_glob:
+        nested = _ledger_bound_inventory_attempt_backups(
+            scratchpad, phase, pattern, run_id=run_id
+        )
+        if nested:
+            # Restore only the newest exact rejected predecessor.  Older
+            # attempts remain immutable forensic lineage rather than being
+            # replayed over the newer bytes one after another.
+            backups.append(nested[0][1])
+        if not is_inventory and is_glob:
             if qdir.exists():
                 backups.extend(qdir.glob(pattern))
             backups.extend(scratchpad.glob(pattern + ".attempt1"))
-        else:
+        elif not is_inventory:
             bp = qdir / pattern
             if bp.exists():
                 backups.append(bp)
@@ -21697,8 +23707,82 @@ def _restore_quarantined_on_retry_failure(
                 backups.append(legacy_bp)
 
         for backup in backups:
+            if is_inventory and backup in {
+                path for _attempt, path, _size, _sha256 in nested
+            }:
+                try:
+                    relative = backup.relative_to(qdir)
+                    if (
+                        len(relative.parts) < 2
+                        or re.fullmatch(r"attempt-\d{4}", relative.parts[0])
+                        is None
+                    ):
+                        continue
+                    original_relative = PurePosixPath(*relative.parts[1:]).as_posix()
+                    original = rooted_io.safe_descendant(
+                        scratchpad,
+                        original_relative,
+                        allow_missing=True,
+                        label="inventory quarantine restore target",
+                    )
+                    metadata = next(
+                        (size, digest)
+                        for _attempt, path, size, digest in nested
+                        if path == backup
+                    )
+                    expected_size, expected_sha256 = metadata
+                    raw = rooted_io.read_bytes(
+                        backup,
+                        label="inventory quarantine restore source",
+                        require_single_link=True,
+                        max_bytes=expected_size,
+                    )
+                    if (
+                        len(raw) != expected_size
+                        or hashlib.sha256(raw).hexdigest()
+                        != expected_sha256
+                    ):
+                        continue
+                    if rooted_io.lexists(original):
+                        current = rooted_io.read_bytes(
+                            original,
+                            label="inventory quarantine live restore target",
+                            require_single_link=True,
+                            max_bytes=len(raw),
+                        )
+                        if current != raw:
+                            # A foreign/retry-produced live object is retained;
+                            # the authenticated backup remains forensic debt.
+                            continue
+                    else:
+                        rooted_io.durable_write_once_bytes(original, raw)
+                        if rooted_io.read_bytes(
+                            original,
+                            label="inventory restored output",
+                            require_single_link=True,
+                            max_bytes=len(raw),
+                        ) != raw:
+                            continue
+                    # Inventory lineage is immutable terminal evidence.  Keep
+                    # the exact archive after restoring a live compatibility
+                    # copy so historical receipt recovery never depends on a
+                    # path-only or unauthenticated CLEANED assertion.
+                except (OSError, ValueError, rooted_io.RootedPathIOError):
+                    pass
+                continue
             try:
-                original = scratchpad / backup.relative_to(qdir)
+                quarantined_relative = backup.relative_to(qdir)
+                if (
+                    quarantined_relative.parts
+                    and re.fullmatch(
+                        r"attempt-\d{4}", quarantined_relative.parts[0]
+                    )
+                ):
+                    original = scratchpad.joinpath(
+                        *quarantined_relative.parts[1:]
+                    )
+                else:
+                    original = scratchpad / quarantined_relative
             except ValueError:
                 original = scratchpad / backup.name
             if backup.parent == scratchpad and backup.name.endswith(".attempt1"):
@@ -21719,7 +23803,7 @@ def _restore_quarantined_on_retry_failure(
 
 
 def _cleanup_quarantine_backups(
-    scratchpad: Path, phase: Phase
+    scratchpad: Path, phase: Phase, *, run_id: str = ""
 ) -> None:
     """Delete retry-quarantine backups after a successful retry.
 
@@ -21732,6 +23816,16 @@ def _cleanup_quarantine_backups(
         phase,
         include_recon_canonical=(phase.name == "recon"),
     )
+    is_inventory = phase.name in {
+        "inventory", "inventory_chunk_a", "inventory_chunk_b",
+        "inventory_chunk_c",
+    }
+    if is_inventory:
+        # Inventory retry archives are bounded by the semantic attempt budget
+        # and are receipt postimage/lineage authority.  Retention is the
+        # simplest fail-closed cleanup policy: there is no ambiguous partial
+        # deletion state to reconstruct after a crash.
+        return
 
     for pattern in patterns:
         if pattern == "AUDIT_REPORT.md":
@@ -21739,11 +23833,17 @@ def _cleanup_quarantine_backups(
         is_glob = any(ch in pattern for ch in "*?[")
         backups: list[Path] = []
         qdir = _retry_quarantine_dir(scratchpad, phase.name)
-        if is_glob:
+        backups.extend(
+            path for _attempt, path, _size, _sha256 in
+            _ledger_bound_inventory_attempt_backups(
+                scratchpad, phase, pattern, run_id=run_id
+            )
+        )
+        if not is_inventory and is_glob:
             if qdir.exists():
                 backups.extend(qdir.glob(pattern))
             backups.extend(scratchpad.glob(pattern + ".attempt1"))
-        else:
+        elif not is_inventory:
             bp = qdir / pattern
             if bp.exists():
                 backups.append(bp)
@@ -21753,9 +23853,16 @@ def _cleanup_quarantine_backups(
 
         for backup in backups:
             try:
-                backup.unlink()
+                if is_inventory:
+                    rooted_io.durable_unlink(backup)
+                else:
+                    backup.unlink()
             except Exception:
                 pass
+    if is_inventory:
+        # Empty attempt directories are harmless residue.  Recursive traversal
+        # would weaken the exact-name, no-follow cleanup boundary.
+        return
     qdir = _retry_quarantine_dir(scratchpad, phase.name)
     try:
         if qdir.exists():
@@ -21803,31 +23910,108 @@ def _quarantine_foreign_phase_writes(
     """
     if not offenders:
         return [], []
-    import shutil
-    overflow_dir = scratchpad / "_overflow" / phase_name
+    scratch_root = Path(scratchpad)
+    project = Path(project_root)
+    try:
+        scratch_root = rooted_io.checked_directory(
+            scratch_root, label="foreign-write quarantine scratchpad"
+        )
+        project = rooted_io.checked_directory(
+            project, label="foreign-write quarantine project"
+        )
+        overflow_dir = rooted_io.safe_descendant(
+            scratch_root,
+            f"_overflow/{phase_name}",
+            allow_missing=True,
+            label="foreign-write quarantine root",
+        )
+        rooted_io.ensure_directory(
+            overflow_dir,
+            parents=True,
+            label="foreign-write quarantine root",
+        )
+    except (OSError, ValueError, rooted_io.RootedPathIOError):
+        return [], list(dict.fromkeys(str(name) for name in offenders))
     moved: list[str] = []
     failed: list[str] = []
     for name in offenders:
-        if name == "../AUDIT_REPORT.md":
-            src = Path(project_root) / "AUDIT_REPORT.md"
-        elif name.startswith("../"):
-            src = Path(project_root) / name[3:]
-        else:
-            src = scratchpad / name
-        if not src.exists() or not src.is_file():
+        relative = str(name).replace("\\", "/")
+        if relative == "../AUDIT_REPORT.md":
+            source_root = project
+            source_relative = "AUDIT_REPORT.md"
+            destination_relative = "AUDIT_REPORT.md"
+        elif relative.startswith("../"):
+            failed.append(name)
             continue
+        else:
+            source_root = scratch_root
+            source_relative = relative
+            destination_relative = relative
         moved_ok = False
         try:
-            overflow_dir.mkdir(parents=True, exist_ok=True)
-            dst = overflow_dir / src.name
-            if dst.exists():
-                import time as _t
-                dst = overflow_dir / f"{src.stem}.{int(_t.time())}{src.suffix}"
-            try:
-                src.rename(dst)
-            except OSError:
-                # transient lock / cross-device: fall back to copy+delete.
-                shutil.move(str(src), str(dst))
+            if _retire_exact_reparse_object(
+                source_root,
+                source_relative,
+                phase_name=phase_name,
+                evidence_scratchpad=scratch_root,
+            ):
+                # The exact in-root link object (possibly an ancestor of the
+                # reported offender) is now absent.  Do not attempt to copy a
+                # target payload into overflow: that would cross the trust
+                # boundary the containment gate exists to enforce.
+                moved.append(name)
+                moved_ok = True
+                continue
+            src = rooted_io.safe_descendant(
+                source_root,
+                source_relative,
+                allow_missing=True,
+                label="foreign-write quarantine source",
+            )
+            if not rooted_io.lexists(src):
+                continue
+            source_row = rooted_io.lstat(src)
+            if (
+                rooted_io.is_reparse(src)
+                or stat.S_ISLNK(source_row.st_mode)
+                or not stat.S_ISREG(source_row.st_mode)
+            ):
+                raise rooted_io.RootedPathIOError(
+                    "foreign-write source is not a regular non-reparse file"
+                )
+            source_size = int(source_row.st_size)
+            if source_size > _SCRATCHPAD_STATE_MAX_BYTES:
+                raise rooted_io.RootedPathIOError(
+                    "foreign-write source exceeds bounded quarantine size"
+                )
+            raw = rooted_io.read_bytes(
+                src,
+                label="foreign-write quarantine source",
+                require_single_link=True,
+                max_bytes=source_size,
+            )
+            dst = rooted_io.safe_descendant(
+                scratch_root,
+                f"_overflow/{phase_name}/{destination_relative}",
+                allow_missing=True,
+                label="foreign-write quarantine destination",
+            )
+            rooted_io.ensure_directory(
+                dst.parent,
+                parents=True,
+                label="foreign-write quarantine destination parent",
+            )
+            rooted_io.durable_write_once_bytes(dst, raw)
+            if rooted_io.read_bytes(
+                dst,
+                label="foreign-write quarantine destination",
+                require_single_link=True,
+                max_bytes=source_size,
+            ) != raw:
+                raise rooted_io.RootedPathIOError(
+                    "foreign-write quarantine destination differs"
+                )
+            rooted_io.durable_unlink(src)
             moved.append(name)
             moved_ok = True
         except Exception as e:
@@ -21835,23 +24019,17 @@ def _quarantine_foreign_phase_writes(
                 f"[{phase_name}] quarantine of foreign artifact {name} "
                 f"failed: {e}"
             )
-        if not moved_ok and src.exists():
+        if not moved_ok:
             # Could not move it AND it is still live at root -> containment hole.
             failed.append(name)
     if moved:
         _mark_artifacts_quarantined(scratchpad, project_root, phase_name, moved)
-        try:
-            vp = scratchpad / "violations.md"
-            with vp.open("a", encoding="utf-8") as f:
-                f.write(
-                    f"\n## phase-containment foreign-artifact quarantine "
-                    f"({phase_name})\n"
-                )
-                for name in moved:
-                    f.write(f"- {name} -> _overflow/{phase_name}/\n")
-        except Exception:
-            pass
-    return moved, failed
+        log.warning(
+            "[%s] rooted quarantine moved foreign artifacts: %s",
+            phase_name,
+            moved,
+        )
+    return list(dict.fromkeys(moved)), list(dict.fromkeys(failed))
 
 
 def _quarantine_canonical_report_fail_closed(

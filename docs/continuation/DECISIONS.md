@@ -134,6 +134,14 @@ The August decision layer rejects these attractive but unsupported expansions:
     against old Plamen happens later under a separate goal.
 26. **Runtime E2E audits are validation, not benchmarking.** They may exercise
     the tool without exposing or scoring against grader-only ground truth.
+27. **Ambiguous dependency authority remains typed debt.** The pristine DODO
+    validation target contains both `yarn.lock` and `package-lock.json` without
+    a `packageManager` declaration or CI install authority. Repository history
+    favors Yarn, but that is operator evidence rather than a machine-bound
+    build input. The release-candidate E2Es therefore keep the target unchanged
+    and retain `AMBIGUOUS_JS_LOCKS`; pipeline completion must not be described as
+    proof-grade compiler or PoC closure. A future no-target-change override must
+    be config-bound and snapshot/receipt-bound before it can clear this debt.
 
 ## Historical corrections
 

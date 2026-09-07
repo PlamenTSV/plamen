@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-import sys
 
 import pytest
 
@@ -18,6 +17,7 @@ from test_claude_launch_authority_fixtures import (
     compile_test_claude_provider_preparation,
     compile_test_claude_runtime_local_inputs,
     install_test_only_launch_authority_adapter,
+    materialize_test_provider_executable,
 )
 import headless_worker_runtime as runtime
 from phase_io_contracts import (
@@ -133,8 +133,11 @@ def _writer(
     def build(output_directory: Path) -> tuple[str, ...]:
         del output_directory
         suffix = tuple(authority["command_suffix"])
+        provider_executable = authority["request"][
+            "executable_observation"
+        ]["resolved_executable"]
         return (
-            sys.executable,
+            provider_executable,
             str(provider_script),
             suffix[0],
             *suffix[1:],
@@ -151,11 +154,13 @@ def _prepare(
     command_builder=None,
 ) -> runtime.PreparedHeadlessWorker:
     contract, launch = _authority(root, unit_id)
+    provider_executable = materialize_test_provider_executable(root)
     authority = compile_test_claude_launch_authority(
         cwd=root,
         launch_model=launch.model,
         stdout_limit_bytes=STDOUT_LIMIT,
         session_label=f"prepare-split:{unit_id}",
+        configured_executable=provider_executable,
     )
     builder = command_builder or _writer(
         root,

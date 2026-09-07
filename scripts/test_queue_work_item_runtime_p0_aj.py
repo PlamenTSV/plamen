@@ -289,6 +289,42 @@ def test_typed_authority_accepts_rich_typed_only_fields_with_exact_markdown(
     assert replay[0].aliases == ("INV-041",)
 
 
+def test_visible_evidence_debt_is_typed_and_exactly_drift_checked(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "verification_queue.md"
+    debt = (
+        "UNVERIFIED_COMPOSITION: ordinary independent verification is "
+        "mandatory; constituents=H-1,M-1"
+    )
+    row = {
+        **_row("CH-77", "High"),
+        "constituents": "H-1,M-1",
+        "evidence debt": debt,
+    }
+
+    P._write_queue_subset_manifest(target, [row])
+
+    (typed,) = P._read_typed_queue_work_items(target)
+    assert typed.severity_proposal.rationale == (
+        P._TYPED_EVIDENCE_DEBT_PREFIX + debt
+    )
+    assert "| Evidence Debt |" in target.read_text(encoding="utf-8")
+    assert P._require_typed_queue_authority(
+        target, P.parse_verification_queue_rows(tmp_path)
+    ) == (typed,)
+
+    original = target.read_text(encoding="utf-8")
+    target.write_text(
+        original.replace("ordinary independent", "silent unreviewed", 1),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="typed queue/Markdown record drift"):
+        P._require_typed_queue_authority(
+            target, P.parse_verification_queue_rows(tmp_path)
+        )
+
+
 @pytest.mark.parametrize(
     ("old", "new"),
     [

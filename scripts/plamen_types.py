@@ -1114,7 +1114,7 @@ GATE_FALLBACK_POLICIES: frozenset[str] = frozenset({
 })
 
 RETRY_RECEIPT_STATUSES: frozenset[str] = frozenset({
-    "CLEARED", "PROGRESSED", "NO_PROGRESS", "FAILED",
+    "CLEARED", "PROGRESSED", "NO_PROGRESS", "FAILED", "INTERRUPTED",
 })
 
 
@@ -1140,6 +1140,38 @@ def _string_tuple(value: object, field_name: str) -> tuple[str, ...]:
     if not all(isinstance(item, str) and item.strip() for item in value):
         raise RuntimeError(f"{field_name} entries must be non-empty strings")
     return tuple(str(item).strip() for item in value)
+
+
+def _quarantine_lineage_tuple(value: object) -> tuple[object, ...]:
+    """Parse legacy path rows or exact byte-bound lineage records."""
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise RuntimeError("quarantine_lineage must be a list")
+    rows: list[object] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            rows.append(item.strip())
+            continue
+        if not isinstance(item, dict) or set(item) != {"path", "size", "sha256"}:
+            raise RuntimeError(
+                "quarantine_lineage entries must be paths or exact records"
+            )
+        path = item.get("path")
+        size = item.get("size")
+        digest = item.get("sha256")
+        if (
+            not isinstance(path, str)
+            or not path.strip()
+            or path != path.strip()
+            or type(size) is not int
+            or size < 0
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise RuntimeError("quarantine_lineage exact record is malformed")
+        rows.append({"path": path, "size": size, "sha256": digest})
+    return tuple(rows)
 
 
 @dataclass(frozen=True)
@@ -1199,9 +1231,17 @@ class GateFailure:
         predicate_digest = self.predicate_digest or hashlib.sha256(
             json.dumps(
                 {
+                    "predicate_identity_version": 2,
                     "gate_id": self.gate_id,
+                    "gate_class": self.gate_class,
                     "message": self.message,
                     "affected_identities": list(self.affected_identities),
+                    "evidence_paths": list(self.evidence_paths),
+                    "repair_owner": self.repair_owner,
+                    "fallback_policy": self.fallback_policy,
+                    "allowed_fallback": self.allowed_fallback,
+                    "schema_id": self.schema_id,
+                    "schema_version": self.schema_version,
                     "denominator_count": self.denominator_count,
                     "denominator_digest": self.denominator_digest,
                 },
@@ -1211,13 +1251,29 @@ class GateFailure:
         ).hexdigest()
         object.__setattr__(self, "predicate_digest", predicate_digest)
         failure_instance_id = self.failure_instance_id or hashlib.sha256(
-            "\0".join((
-                self.gate_id,
-                self.input_digest,
-                self.output_digest,
-                self.contract_digest,
-                predicate_digest,
-            )).encode("utf-8")
+            json.dumps(
+                {
+                    "failure_instance_identity_version": 2,
+                    "gate_id": self.gate_id,
+                    "gate_class": self.gate_class,
+                    "message": self.message,
+                    "affected_identities": list(self.affected_identities),
+                    "input_digest": self.input_digest,
+                    "output_digest": self.output_digest,
+                    "contract_digest": self.contract_digest,
+                    "evidence_paths": list(self.evidence_paths),
+                    "repair_owner": self.repair_owner,
+                    "fallback_policy": self.fallback_policy,
+                    "allowed_fallback": self.allowed_fallback,
+                    "schema_id": self.schema_id,
+                    "schema_version": self.schema_version,
+                    "denominator_count": self.denominator_count,
+                    "denominator_digest": self.denominator_digest,
+                    "predicate_digest": predicate_digest,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
         ).hexdigest()
         object.__setattr__(self, "failure_instance_id", failure_instance_id)
 
@@ -1449,6 +1505,7 @@ class RetryReceipt:
     phase_name: str
     work_unit_id: str
     attempt: int
+    terminal_rc: int
     status: str
     failure_instance_ids_before: tuple[str, ...]
     failure_instance_ids_after: tuple[str, ...]
@@ -1467,7 +1524,8 @@ class RetryReceipt:
     prompt_digest: str
     launch_digest: str
     contract_digest: str
-    quarantine_lineage: tuple[str, ...] = ()
+    retry_plan_digest: str = ""
+    quarantine_lineage: tuple[object, ...] = ()
     created_at: str = ""
 
     def __post_init__(self) -> None:
@@ -1484,12 +1542,26 @@ class RetryReceipt:
             "repair_owner", "prompt_digest", "launch_digest", "contract_digest",
         ):
             _required_nonempty_string(getattr(self, name), name)
+        if self.retry_plan_digest and re.fullmatch(
+            r"[0-9a-f]{64}", self.retry_plan_digest
+        ) is None:
+            raise RuntimeError(
+                "retry_plan_digest must be empty or a lowercase SHA-256 digest"
+            )
         if type(self.attempt) is not int or self.attempt < 1:
             raise RuntimeError("attempt must be a positive integer")
+        if type(self.terminal_rc) is not int:
+            raise RuntimeError("terminal_rc must be an integer")
         if self.status not in RETRY_RECEIPT_STATUSES:
             raise RuntimeError(
                 f"status must be one of {sorted(RETRY_RECEIPT_STATUSES)}"
             )
+        if self.terminal_rc == -3 and self.status != "INTERRUPTED":
+            raise RuntimeError("terminal_rc=-3 requires INTERRUPTED status")
+        if self.terminal_rc != -3 and self.status == "INTERRUPTED":
+            raise RuntimeError("INTERRUPTED status requires terminal_rc=-3")
+        if self.terminal_rc not in {0, -3} and self.status != "FAILED":
+            raise RuntimeError("nonzero terminal_rc requires FAILED status")
         if type(self.schema_version) is not int or self.schema_version < 1:
             raise RuntimeError("schema_version must be a positive integer")
         if self.denominator_count is not None and (
@@ -1499,9 +1571,10 @@ class RetryReceipt:
             raise RuntimeError("denominator_count must be null or non-negative")
         for name in (
             "failure_instance_ids_before", "failure_instance_ids_after",
-            "gate_ids_before", "gate_ids_after", "quarantine_lineage",
+            "gate_ids_before", "gate_ids_after",
         ):
             _string_tuple(getattr(self, name), name)
+        _quarantine_lineage_tuple(self.quarantine_lineage)
 
     def to_dict(self) -> dict:
         return {
@@ -1509,6 +1582,7 @@ class RetryReceipt:
             "phase_name": self.phase_name,
             "work_unit_id": self.work_unit_id,
             "attempt": self.attempt,
+            "terminal_rc": self.terminal_rc,
             "status": self.status,
             "failure_instance_ids_before": list(self.failure_instance_ids_before),
             "failure_instance_ids_after": list(self.failure_instance_ids_after),
@@ -1525,9 +1599,13 @@ class RetryReceipt:
             "predicate_digest_after": self.predicate_digest_after,
             "repair_owner": self.repair_owner,
             "prompt_digest": self.prompt_digest,
+            "retry_plan_digest": self.retry_plan_digest,
             "launch_digest": self.launch_digest,
             "contract_digest": self.contract_digest,
-            "quarantine_lineage": list(self.quarantine_lineage),
+            "quarantine_lineage": [
+                dict(item) if isinstance(item, dict) else item
+                for item in self.quarantine_lineage
+            ],
             "created_at": self.created_at,
         }
 
@@ -1544,6 +1622,7 @@ class RetryReceipt:
                 data.get("work_unit_id"), "work_unit_id"
             ),
             attempt=data.get("attempt"),
+            terminal_rc=data.get("terminal_rc"),
             status=_required_nonempty_string(data.get("status"), "status"),
             failure_instance_ids_before=_string_tuple(
                 data.get("failure_instance_ids_before", []),
@@ -1588,14 +1667,17 @@ class RetryReceipt:
             prompt_digest=_required_nonempty_string(
                 data.get("prompt_digest"), "prompt_digest"
             ),
+            retry_plan_digest=_optional_string(
+                data.get("retry_plan_digest", ""), "retry_plan_digest"
+            ),
             launch_digest=_required_nonempty_string(
                 data.get("launch_digest"), "launch_digest"
             ),
             contract_digest=_required_nonempty_string(
                 data.get("contract_digest"), "contract_digest"
             ),
-            quarantine_lineage=_string_tuple(
-                data.get("quarantine_lineage", []), "quarantine_lineage"
+            quarantine_lineage=_quarantine_lineage_tuple(
+                data.get("quarantine_lineage", [])
             ),
             created_at=_optional_string(
                 data.get("created_at", ""), "created_at"

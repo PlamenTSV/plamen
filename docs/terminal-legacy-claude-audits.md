@@ -31,7 +31,7 @@ python scripts/terminal_audit_launch.py \
   --language <ECOSYSTEM> \
   --mode thorough \
   --pipeline sc \
-  --cli-backend claude-headless \
+  --cli-backend claude \
   --claude-exec-mode headless \
   --forbidden-input <EXTERNAL_GROUND_TRUTH_PATH>
 ```
@@ -49,8 +49,12 @@ Preparation performs these deterministic operations in order:
    to the external evidence receipt.
 2. Copy source bytes into the new destination, omitting those sealed audit
    artifacts. The original project remains read-only.
-3. Create only `<NEW_ISOLATED_PROJECT>/.scratchpad/config.json` with
-   `"cli_backend": "claude-headless"` and `"claude_exec_mode": "headless"`.
+3. Create only `<NEW_ISOLATED_PROJECT>/.scratchpad/config.json` with the
+   canonical `"cli_backend": "claude"` identity and the explicit
+   `"claude_exec_mode": "headless"` transport. The public Plamen CLI accepts
+   `--claude-headless` as a convenience flag and normalizes it before config
+   validation; a hand-written or prepared config must use the canonical backend
+   identity shown here.
 4. Write a hash-bound preparation receipt containing `fresh_argv` and
    `resume_argv`, while leaving `launched: false`.
 
