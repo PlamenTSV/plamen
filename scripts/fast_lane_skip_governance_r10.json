@@ -44,7 +44,7 @@
     "unresolved_nodes_sha256": "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874",
     "quarantine_nodes_sha256": "29bdd0de57165822ae1472f57de64d272a30617a14c5fb654ac5ffae2158e98b",
     "source_path_roster_sha256": "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4",
-    "source_roster_sha256": "39819f42342d242e23b6e42464cb9370f8d3b176a64320acbae536acad05d032",
+    "source_roster_sha256": "dca6310cfc694bb0eed8e649e5f9723bc2907201cadb82df9986d8debb7d265c",
     "quarantine_source_path_roster_sha256": "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b",
     "quarantine_source_roster_sha256": "3592740ff9a393d0bce8f80d79f8c480651bb4bc2e12da4928c25a6445b21c64",
     "entry_roster_sha256": "ed7627a4d5705dac3529b91359eb964795bee193b24f5d416c442c05ae214fe1"
@@ -172,7 +172,7 @@
     },
     {
       "path": "scripts/test_toolchain_crossos_adversarial_reds.py",
-      "sha256": "35395253b522c6ea75f89f902c7e15f571b5e81567ba2e274d2f6ddfbff54a30"
+      "sha256": "3330de216e35b3f26f070e9eacfc9c8bb0c80941f6e6557e04fcbb1e7ddc4263"
     },
     {
       "path": "scripts/test_toolchain_round51_blockers.py",

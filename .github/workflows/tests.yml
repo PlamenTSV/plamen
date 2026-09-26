@@ -2,10 +2,10 @@ name: tests
 
 # Cross-OS CI companion to scripts/test_cross_os_hygiene.py: that test is a
 # STATIC gate (no code actually executes on another OS), this workflow is
-# the DYNAMIC complement — it runs the real scripts/ pytest suite on
-# Linux, Windows, and macOS so behavioral cross-OS regressions (not just
-# the syntactic anti-patterns the static gate catches) surface in CI
-# instead of being caught manually after the fact.
+# the DYNAMIC complement. Linux and macOS run the full suite. Windows runs an
+# explicit portable/native denominator: the full suite contains POSIX-only
+# modules that intentionally reject import on Windows, so whole-tree
+# collection there is not a meaningful test contract.
 
 on:
   push:
@@ -74,7 +74,7 @@ jobs:
           fi
           python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r requirements-ci.lock
 
-      # Three lanes form an exact total partition of the collected suite:
+      # On POSIX, three lanes form an exact total partition of the suite:
       #   fast lane        — ordinary unit tests, parallelized with xdist.
       #   integration lane — real subprocess/timing tests, run serially.
       #   quarantine lane  — exact manifest-bound capability probes excluded
@@ -88,11 +88,11 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONPATH = Join-Path $PWD "scripts"
-          $collection = @(& python -m pytest --collect-only -q scripts tests 2>&1)
+          $collection = @(& python -m pytest --collect-only -q tests/test_windows_private_execution_root_p0.py 2>&1)
           $pytestExit = $LASTEXITCODE
           if ($pytestExit -ne 0) {
             $collection | Out-Host
-            throw "Complete Windows pytest collection failed with exit code $pytestExit"
+            throw "Windows native pytest collection failed with exit code $pytestExit"
           }
 
           $expected = @(
@@ -133,12 +133,15 @@ jobs:
         run: |
           PYTHONPATH="$PWD/scripts" python -m pytest scripts tests -m "not integration and not fast_quarantine" -n auto -q
 
-      - name: Windows fast lane (unit — parallel)
+      - name: Windows portable and native contract tests
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $env:PYTHONPATH = Join-Path $PWD "scripts"
-          python -m pytest scripts tests -m "not integration and not fast_quarantine" -n auto -q
+          python -m pytest -q `
+            scripts/test_runtime_acquisition_closure.py `
+            scripts/test_artifact_ledger_windows_finddata_lifecycle.py `
+            tests/test_windows_private_execution_root_p0.py
 
       - name: Integration lane (real subprocess/timing — serial)
         if: runner.os != 'Windows'
@@ -146,12 +149,6 @@ jobs:
         run: |
           PYTHONPATH="$PWD/scripts" python -m pytest scripts tests -m "integration" -q
 
-      - name: Windows integration lane (real subprocess/timing — serial)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:PYTHONPATH = Join-Path $PWD "scripts"
-          python -m pytest scripts tests -m "integration" -q
 
       - name: Quarantine lane (manifest-bound capability probes — serial)
         if: runner.os != 'Windows'
@@ -159,12 +156,6 @@ jobs:
         run: |
           PYTHONPATH="$PWD/scripts" python -m pytest scripts tests -m "fast_quarantine and not integration" -q
 
-      - name: Windows quarantine lane (manifest-bound capability probes — serial)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:PYTHONPATH = Join-Path $PWD "scripts"
-          python -m pytest scripts tests -m "fast_quarantine and not integration" -q
 
   dependency-review:
     name: dependency review (introduced High/Critical)

@@ -71,6 +71,7 @@ projects/
 /.tmp*
 /write_dedup.py
 scripts/*
+!scripts/ci_materialize_js_archives.py
 !scripts/fuzz_compat_execution.py
 !scripts/fuzz_harness_bundle.py
 !scripts/mechanical_poc_source.py

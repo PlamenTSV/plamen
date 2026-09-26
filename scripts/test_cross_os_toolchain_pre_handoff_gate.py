@@ -152,7 +152,7 @@ def test_sec3_absent_or_malformed_sarif_is_failure_not_clean_zero(
     monkeypatch.setattr(RECON.shutil, "which", lambda name: f"/tool/{name}")
     monkeypatch.setattr(RECON, "_iter_files", lambda _project, _exts: [source])
 
-    def fake_run(cmd, _cwd, _timeout):
+    def fake_run(cmd, _cwd, _timeout, **_kwargs):
         if cmd[:2] == ["docker", "run"] and payload is not None:
             output = scratch / ".sec3-output"
             output.mkdir(parents=True, exist_ok=True)
@@ -461,13 +461,18 @@ def test_mcp_package_materialization_executes_npm_ci(
                 "require_ordinary_file": True,
                 "require_single_link": True,
                 "post_npm_actions": [{
-                    "schema": "plamen.claude_native_finalizer.v1",
-                    "package": "@anthropic-ai/claude-code",
-                    "version": "2.1.252",
-                    "script": "node_modules/@anthropic-ai/claude-code/install.cjs",
-                    "output": "node_modules/@anthropic-ai/claude-code/bin/claude.exe",
-                    "probe_args": ["--version"],
-                }],
+                "schema": "plamen.claude_native_finalizer.v2",
+                "package": "@anthropic-ai/claude-code",
+                "version": "2.1.252",
+                "script": "node_modules/@anthropic-ai/claude-code/install.cjs",
+                "output": "node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+                "probe_args": ["--version"],
+                "acquisition_policy_sha256": "1" * 64,
+                "registry_metadata_sha256": "2" * 64,
+                "upstream_manifest_sha256": "3" * 64,
+                "expected_executable_sha256": "4" * 64,
+                "expected_executable_size": 1,
+            }],
             }
             return SimpleNamespace(generation_id=generation_id)
 
@@ -511,6 +516,26 @@ def test_mcp_package_materialization_executes_npm_ci(
         lambda: {"plamen_root": str(home.absolute())},
     )
     monkeypatch.setattr(INSTALLER, "_mcp_runtime_module", lambda *_a: Runtime)
+    monkeypatch.setattr(
+        INSTALLER, "_dynamic_backend_generation_manifests",
+        lambda **kwargs: {
+            "package_value": kwargs["package_value"],
+            "package_bytes": Runtime._canonical_json(kwargs["package_value"]) + b"\n",
+            "lock_bytes": Runtime._canonical_json(kwargs["lock_value"]) + b"\n",
+            "policy_sha256": "1" * 64,
+            "resolutions": {
+                "claude": {
+                    "version": "2.1.252",
+                    "metadata_sha256": "2" * 64,
+                    "upstream_release": {
+                        "manifest_sha256": "3" * 64,
+                        "executable_sha256": "4" * 64,
+                        "executable_size": 1,
+                    },
+                },
+            },
+        },
+    )
     monkeypatch.setattr(
         INSTALLER, "_mcp_receipt_callbacks",
         lambda *_a: (lambda _raw: {}, lambda *_a: True, "1" * 64, "2" * 64),
@@ -563,6 +588,12 @@ def test_mcp_package_materialization_executes_npm_ci(
     monkeypatch.setattr(
         Runtime, "ensure_managed_node_runtime", unavailable_managed_runtime,
     )
+    monkeypatch.setattr(
+        INSTALLER, "_validated_mcp_current_selection",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("committed selection unavailable")
+        ),
+    )
     denied_messages: list[str] = []
     assert INSTALLER._setup_mcp_packages(
         denied_messages.append, mcp_root=str(home), update_claude=False,
@@ -570,7 +601,7 @@ def test_mcp_package_materialization_executes_npm_ci(
     ) is False
     assert (len(staged), len(npm_ci_calls)) == before
     assert any(
-        "managed Node authority unavailable" in message
+        "committed selection unavailable" in message
         for message in denied_messages
     )
 

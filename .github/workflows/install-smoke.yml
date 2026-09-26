@@ -72,6 +72,13 @@ jobs:
       - name: plamen --help (banner + dispatch)
         # If main()'s argument parsing or banner breaks, fail loud.
         run: python plamen.py help
+      - name: Materialize the exact signed JS source archives
+        # The public Windows installer accepts a complete source package.
+        # Git omits the seven large archives; CI prepares their pinned bytes
+        # before exercising the real non-TTY install, rather than declaring
+        # an archive-free checkout to be an installed runtime.
+        shell: bash
+        run: python scripts/ci_materialize_js_archives.py --root .
       - name: Clean managed install without ambient Node or backend CLIs
         # Exercise the public bootstrap contract, not a hosted-runner accident:
         # no ambient node/npm/npx/claude/codex and no pre-existing backend home.

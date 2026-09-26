@@ -813,6 +813,12 @@
     {
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
+      "path": "scripts/ci_materialize_js_archives.py",
+      "sha256": "4b3fd72f998785bc76d936912d06d3f07b14f69a052130253fe63661b0bf87ac"
+    },
+    {
+      "digest_mode": "utf8-lf-v1",
+      "kind": "python-source",
       "path": "scripts/claude_attempt_profile.py",
       "sha256": "eea41e1bd77fabb19cecd94be4d5d10f0f37e7a42c87ed027a10b2588f4d69bf"
     },
@@ -940,7 +946,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/conftest.py",
-      "sha256": "36f8a23e48f1430e222482457c4a345c40cceaac19c83a4ad32ef33bd245b042"
+      "sha256": "1ff38ebeb095b1d77a18511275bdd3339208d25daf6ed29b6c65e43afb78e512"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -3118,6 +3124,7 @@
     "scripts/chain_prep.py",
     "scripts/chain_tail_authority.py",
     "scripts/ci_dependency_authority.py",
+    "scripts/ci_materialize_js_archives.py",
     "scripts/claude_attempt_profile.py",
     "scripts/claude_auth_route.py",
     "scripts/claude_child_environment.py",

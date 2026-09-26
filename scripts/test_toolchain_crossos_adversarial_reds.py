@@ -98,7 +98,7 @@ def test_sec3_abnormal_exit_with_valid_empty_sarif_is_failure(
         lambda name: "/trusted/docker" if name == "docker" else None,
     )
 
-    def abnormal_scan(command, _cwd, _timeout):
+    def abnormal_scan(command, _cwd, _timeout, **_kwargs):
         if command[:2] == ["docker", "info"]:
             return 0, "daemon available"
         output = scratch / ".sec3-output"
