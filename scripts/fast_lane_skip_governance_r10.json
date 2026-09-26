@@ -44,9 +44,9 @@
     "unresolved_nodes_sha256": "3176c06f7446119f92bdd97eb4f2482f620ffff7474558665ded06cf95e7a874",
     "quarantine_nodes_sha256": "29bdd0de57165822ae1472f57de64d272a30617a14c5fb654ac5ffae2158e98b",
     "source_path_roster_sha256": "f27577b1f91e246ccb65d3e167399c2cbcc6c4832a6ec4bcd4557966ccc118d4",
-    "source_roster_sha256": "84c102d1f5d690be597e90ff36f78c92c1849c79ee28c41a9f716a760d2a7c6f",
+    "source_roster_sha256": "39819f42342d242e23b6e42464cb9370f8d3b176a64320acbae536acad05d032",
     "quarantine_source_path_roster_sha256": "858dd7735dd18648e7c4574e95ea0b2a3ba137469da99e9419b38ce63e8bd86b",
-    "quarantine_source_roster_sha256": "97cf890eadebb093b8a03784542fdbc148fb0668c690e714387ddaecfea383db",
+    "quarantine_source_roster_sha256": "3592740ff9a393d0bce8f80d79f8c480651bb4bc2e12da4928c25a6445b21c64",
     "entry_roster_sha256": "ed7627a4d5705dac3529b91359eb964795bee193b24f5d416c442c05ae214fe1"
   },
   "sources": [
@@ -340,7 +340,7 @@
     },
     {
       "path": "scripts/test_posix_path_persistence.py",
-      "sha256": "6583de2119a90876fb0e5716c8e17c19aac6aecc59136e86986e549c7105ef1a"
+      "sha256": "779a473f1b90b616e0198ce707c4f5796515c08c4899bfd03a937ca5cf0b6c6b"
     },
     {
       "path": "scripts/test_program_facts_phase_io_authority_regression.py",

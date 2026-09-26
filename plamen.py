@@ -5051,6 +5051,11 @@ def _atomic_write_bytes(path, raw):
 
     predecessor = snapshot()
     target_mode = predecessor[2] if predecessor is not None else 0o600
+    if os.name == "nt" and not target_mode & stat.S_IWRITE:
+        # Windows has no fchmod, and its chmod only controls the read-only
+        # attribute.  Do not replace a read-only preimage with a writable
+        # stage while retaining the parent's ACL as the access authority.
+        raise RuntimeError("read-only Windows atomic destination is unsupported")
     temporary = destination.with_name(
         f".{destination.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
     )
@@ -5061,7 +5066,11 @@ def _atomic_write_bytes(path, raw):
         )
         descriptor = os.open(temporary, flags, target_mode)
         try:
-            os.fchmod(descriptor, target_mode)
+            if os.name == "nt":
+                if not os.fstat(descriptor).st_mode & stat.S_IWRITE:
+                    raise RuntimeError("Windows atomic stage is not writable")
+            else:
+                os.fchmod(descriptor, target_mode)
             handle = os.fdopen(descriptor, "wb", closefd=False)
             handle.write(raw)
             handle.flush()

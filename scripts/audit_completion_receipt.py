@@ -974,7 +974,7 @@ def _git_head(root: Path) -> str:
     proc = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, timeout=10, check=False,
+        text=True, encoding="utf-8", timeout=10, check=False,
     )
     value = proc.stdout.strip().lower()
     if proc.returncode != 0 or not _COMMIT.fullmatch(value):

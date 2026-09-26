@@ -182,6 +182,7 @@ def _git_head(root: Path) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
         timeout=10,
         check=False,
     )
@@ -208,6 +209,7 @@ def _git_tracked_clean(root: Path, scope: Path | None = None) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             timeout=10,
             check=False,
         )

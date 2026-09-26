@@ -9,13 +9,17 @@ all setup mutations remain behind that opaque native authority.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import stat
 from typing import Any, Callable, Mapping
+
+if os.name == "posix":
+    import fcntl
+else:
+    fcntl = None
 
 
 class NativeManagedEVMSetupEffectsError(RuntimeError):
@@ -64,6 +68,8 @@ def _artifact(value: object, kind: str) -> dict[str, Any]:
 
 
 def _dup_project_fd(fd: int) -> tuple[int, dict[str, Any]]:
+    if fcntl is None:
+        _fail("native managed-EVM setup requires POSIX")
     duplicate = -1
     try:
         if type(fd) is not int or fd < 0:

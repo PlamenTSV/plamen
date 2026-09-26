@@ -328,7 +328,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "plamen.py",
-      "sha256": "74c05e8c80ea57781bc0055952cbb77da4339e61c1e17011b4b9079df3b5826d"
+      "sha256": "227923640ee551fc5df44eca231255039b65d864b5603fe046d606698ea22d9c"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -652,7 +652,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/audit_completion_receipt.py",
-      "sha256": "55ad31f4cb0f984ebb5e7568078cb9ee4c1fe61f9496f8118891f440cf776e83"
+      "sha256": "f0145e76cfa1b537eaf552969e5036ff7baade5aa901a6b81fc91efc448cd5db"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -940,7 +940,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/conftest.py",
-      "sha256": "3354d5f250539abc9f8c3c6fb3c3bd6c9ff7b490937091edf0e53d0073ee31ee"
+      "sha256": "36f8a23e48f1430e222482457c4a345c40cceaac19c83a4ad32ef33bd245b042"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1000,7 +1000,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/e2e_acceptance_verifier.py",
-      "sha256": "edcfcab40958a1b65d40bae45180b210255610fa9750677cd4e8df1804638531"
+      "sha256": "7bd8d598df131f200d08b0a15959c004821d36d9a1b3c242c57f67741215c2f1"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1432,7 +1432,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/native_fixed_role_acquisition.py",
-      "sha256": "902e397a893f9c13b26c7d5e0db06b8f267f2ad4de034d44eabba290d7028ccf"
+      "sha256": "1f6762d22c0962a7cff3f75be53618a6d4f80df11446c15d8e981477c4447008"
     },
     {
       "digest_mode": "utf8-lf-v1",
@@ -1444,7 +1444,7 @@
       "digest_mode": "utf8-lf-v1",
       "kind": "python-source",
       "path": "scripts/native_managed_evm_setup_effects.py",
-      "sha256": "5f6303dbe6ecea491b13946a20efcf681e9077a7e7778e8e7efca8149f7ca5ea"
+      "sha256": "17c59fe4868a1e51dd95c6a1a50a8139aa04110ccf241d8de719da33ecc2ba32"
     },
     {
       "digest_mode": "utf8-lf-v1",

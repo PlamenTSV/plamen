@@ -10,7 +10,6 @@ HOME pathname is accepted as authority.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import fcntl
 import hashlib
 import io
 import json
@@ -28,6 +27,11 @@ from typing import Any, Callable, Mapping, NoReturn, Protocol
 import urllib.error
 import urllib.parse
 import urllib.request
+
+if os.name == "posix":
+    import fcntl
+else:
+    fcntl = None
 
 
 FIXED_ROLE_ORDINALS = (0, 1, 2, 3, 4, 7, 10)
@@ -384,6 +388,8 @@ class ProductionFixedRoleMaterializationAuthority:
 
 
 def _fd_flags(descriptor: int) -> tuple[int, int]:
+    if fcntl is None:
+        _fail("native setup descriptors require POSIX")
     if type(descriptor) is not int or descriptor < 3:
         _fail("native setup descriptor differs")
     try:

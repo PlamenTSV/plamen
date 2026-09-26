@@ -282,6 +282,21 @@ def test_atomic_write_preserves_mode_and_flushes_parent(tmp_path, monkeypatch):
     assert flushed == [target.absolute()]
 
 
+def test_atomic_write_rejects_readonly_windows_preimage(tmp_path):
+    if os.name != "nt":
+        return
+    front = _load_front()
+    target = tmp_path / "settings.json"
+    target.write_bytes(b"admitted\n")
+    target.chmod(stat.S_IREAD)
+    try:
+        with pytest.raises(RuntimeError, match="read-only Windows atomic"):
+            front._atomic_write_bytes(target, b"successor\n")
+        assert target.read_bytes() == b"admitted\n"
+    finally:
+        target.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+
 def test_atomic_write_rejects_stale_preimage_without_overwriting_it(
     tmp_path, monkeypatch,
 ):

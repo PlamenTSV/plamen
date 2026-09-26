@@ -52,10 +52,13 @@ def test_dirs_accumulate_and_idempotent(monkeypatch):
         _home(monkeypatch, d)
         m._persist_path_posix("/opt/.foundry/bin")
         m._persist_path_posix("/opt/.cargo/bin")
+        prof_before_readd = open(os.path.join(d, ".profile"), encoding="utf-8").read()
         m._persist_path_posix("/opt/.foundry/bin")  # re-add -> no dup
         prof = open(os.path.join(d, ".profile"), encoding="utf-8").read()
+        assert prof == prof_before_readd
         assert prof.count("# >>> plamen toolchain PATH >>>") == 1
-        assert prof.count("/opt/.foundry/bin") == 1
+        assert prof.count('# plamen-path-json: "/opt/.foundry/bin"') == 1
+        assert prof.count('# plamen-path-json: "/opt/.cargo/bin"') == 1
         assert 'export PATH="/opt/.foundry/bin:/opt/.cargo/bin:$PATH"' in prof
 
 
@@ -118,11 +121,12 @@ def test_fish_config_written_with_fish_syntax(monkeypatch):
         fish_rc = os.path.join(d, ".config", "fish", "config.fish")
         assert os.path.isfile(fish_rc)
         txt = open(fish_rc, encoding="utf-8").read()
-        assert "set -gx PATH /opt/.cargo/bin $PATH" in txt
+        assert "set -gx PATH '/opt/.cargo/bin' $PATH" in txt
         m._persist_path_posix("/opt/.cargo/bin")  # idempotent
         txt2 = open(fish_rc, encoding="utf-8").read()
+        assert txt2 == txt
         assert txt2.count("set -gx PATH") == 1
-        assert txt2.count("/opt/.cargo/bin") == 1
+        assert txt2.count('# plamen-path-json: "/opt/.cargo/bin"') == 1
 
 
 def test_no_fish_config_created_without_fish(monkeypatch):

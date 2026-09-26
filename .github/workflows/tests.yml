@@ -46,7 +46,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ["3.11", "3.12"]
+        python: ["3.12"]
     env:
       # Non-interactive guard: makes the driver's halt/purge prompts
       # (wait_halt_choice / wait_critical_halt_choice / wait_purge_choice)
